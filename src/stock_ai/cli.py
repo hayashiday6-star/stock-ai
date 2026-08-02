@@ -7,7 +7,9 @@ are added as the phases progress.
 from __future__ import annotations
 
 import datetime as dt
+from pathlib import Path
 
+import pandas as pd
 import typer
 from rich.console import Console
 from rich.table import Table
@@ -21,6 +23,21 @@ from stock_ai.data.yfinance_provider import (
     YFinancePriceProvider,
 )
 from stock_ai.database.engine import Database
+from stock_ai.screening.base import All, Condition
+from stock_ai.screening.conditions import (
+    MaxPBR,
+    MaxPER,
+    MinDividendYield,
+    MinMarketCap,
+    MinROE,
+)
+from stock_ai.screening.engine import ScreeningEngine
+from stock_ai.screening.report import (
+    SUPPORTED_FORMATS,
+    build_report,
+    collect_fundamentals,
+    write_report,
+)
 
 app = typer.Typer(
     name="stock-ai",
@@ -98,6 +115,72 @@ def fundamentals(
 
     if any(not r.ok for r in results):
         raise typer.Exit(code=1)
+
+
+@app.command()
+def screen(
+    min_roe: float | None = typer.Option(None, help="Minimum return on equity."),
+    max_per: float | None = typer.Option(None, help="Maximum price/earnings."),
+    max_pbr: float | None = typer.Option(None, help="Maximum price/book."),
+    min_dividend_yield: float | None = typer.Option(None, help="Minimum dividend yield."),
+    min_market_cap: float | None = typer.Option(None, help="Minimum market cap."),
+    out: Path | None = typer.Option(None, help="Output file; prints a table if omitted."),
+    fmt: str = typer.Option("csv", "--format", help="csv | json | xlsx."),
+) -> None:
+    """Screen stored securities by fundamentals and report the matches."""
+    settings = get_settings()
+    configure_logging(settings.log_level)
+
+    condition = _build_condition(min_roe, max_per, max_pbr, min_dividend_yield, min_market_cap)
+    if out is not None and fmt.lower() not in SUPPORTED_FORMATS:
+        raise typer.BadParameter(f"format must be one of {SUPPORTED_FORMATS}.")
+
+    database = Database()
+    database.create_all()
+    passing = ScreeningEngine(database).screen(condition)
+    report = build_report(collect_fundamentals(database, passing))
+
+    console.print(f"Matched [bold]{len(passing)}[/] symbols for [cyan]{condition}[/]")
+    if out is not None:
+        write_report(report, out, fmt)
+        console.print(f"Wrote {len(report)} rows to [green]{out}[/] ({fmt}).")
+    else:
+        _render_report(report)
+
+
+def _build_condition(
+    min_roe: float | None,
+    max_per: float | None,
+    max_pbr: float | None,
+    min_dividend_yield: float | None,
+    min_market_cap: float | None,
+) -> Condition:
+    """Assemble a combined condition from the provided flags."""
+    conditions: list[Condition] = []
+    if min_roe is not None:
+        conditions.append(MinROE(min_roe))
+    if max_per is not None:
+        conditions.append(MaxPER(max_per))
+    if max_pbr is not None:
+        conditions.append(MaxPBR(max_pbr))
+    if min_dividend_yield is not None:
+        conditions.append(MinDividendYield(min_dividend_yield))
+    if min_market_cap is not None:
+        conditions.append(MinMarketCap(min_market_cap))
+
+    if not conditions:
+        raise typer.BadParameter("Provide at least one screening criterion.")
+    return conditions[0] if len(conditions) == 1 else All(*conditions)
+
+
+def _render_report(report: pd.DataFrame) -> None:
+    """Print a screening report as a Rich table."""
+    table = Table(title="screen results")
+    for column in report.columns:
+        table.add_column(column, overflow="fold")
+    for row in report.itertuples(index=False):
+        table.add_row(*(("" if v is None else str(v)) for v in row))
+    console.print(table)
 
 
 def _parse_date(value: str | None) -> dt.date | None:

@@ -17,7 +17,13 @@ dependencies = [
 # Heavy, phase-scoped dependencies are opt-in extras so the base install
 # stays small and fast. Install a phase's deps with e.g. `uv sync --extra data`.
 [project.optional-dependencies]
-data = ["pandas>=2.2", "numpy>=1.26", "httpx>=0.27", "yfinance>=0.2.40"]
+data = [
+    "pandas>=2.2",
+    "numpy>=1.26",
+    "httpx>=0.27",
+    "yfinance>=0.2.40",
+    "openpyxl>=3.1",
+]
 db = ["sqlalchemy>=2.0", "alembic>=1.13"]
 ai = ["anthropic>=0.30", "openai>=1.30", "google-generativeai>=0.7"]
 backtest = ["vectorbt>=0.26"]

@@ -62,6 +62,19 @@ uv run stock-ai fundamentals AAPL MSFT
 Each run stores one snapshot per symbol per day; missing metrics are kept as
 `NULL` rather than failing the whole fetch.
 
+## Screening
+
+Filter stored securities by fundamentals and export the matches:
+
+```bash
+uv run stock-ai screen --min-roe 0.15 --max-pbr 5 --format csv --out result.csv
+uv run stock-ai screen --max-per 15 --min-dividend-yield 0.03   # prints a table
+```
+
+Available criteria: `--min-roe`, `--max-per`, `--max-pbr`,
+`--min-dividend-yield`, `--min-market-cap` (combined with AND). Output formats:
+`csv`, `json`, `xlsx`.
+
 ## Development
 
 ```bash
