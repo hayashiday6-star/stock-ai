@@ -5,9 +5,13 @@ from __future__ import annotations
 from stock_ai.ai.anthropic_provider import AnthropicProvider
 from stock_ai.ai.base import AIProvider
 from stock_ai.ai.dummy import DummyAIProvider
+from stock_ai.ai.gemini_provider import GeminiProvider
+from stock_ai.ai.openai_provider import OpenAIProvider
 from stock_ai.config.settings import Settings
 
 _ANTHROPIC_ALIASES = {"anthropic", "claude"}
+_OPENAI_ALIASES = {"openai", "gpt"}
+_GEMINI_ALIASES = {"gemini", "google"}
 
 
 def get_ai_provider(name: str, settings: Settings) -> AIProvider:
@@ -28,6 +32,10 @@ def get_ai_provider(name: str, settings: Settings) -> AIProvider:
         return DummyAIProvider()
     if key in _ANTHROPIC_ALIASES:
         return AnthropicProvider(api_key=settings.anthropic_api_key)
+    if key in _OPENAI_ALIASES:
+        return OpenAIProvider(api_key=settings.openai_api_key)
+    if key in _GEMINI_ALIASES:
+        return GeminiProvider(api_key=settings.gemini_api_key)
 
     from stock_ai.core.exceptions import AIError
 

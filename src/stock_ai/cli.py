@@ -15,6 +15,9 @@ from rich.console import Console
 from rich.table import Table
 
 from stock_ai import __version__
+from stock_ai.ai.analysis import analyze_sentiment
+from stock_ai.ai.analysis import summarize as ai_summarize
+from stock_ai.ai.factory import get_ai_provider
 from stock_ai.backtest.engine import BacktestEngine
 from stock_ai.backtest.report import metrics_frame
 from stock_ai.backtest.strategy import BuyAndHold, SMACrossover, Strategy
@@ -187,6 +190,31 @@ def backtest(
 
     table = metrics_frame({strat.name: strat_result, bench_name: bench_result})
     _render_metrics_table(table)
+
+
+@app.command()
+def summarize(
+    text: str = typer.Argument(..., help="Text (IR excerpt, news, ...) to summarize."),
+    provider: str = typer.Option("dummy", help="AI provider: dummy|claude|openai|gemini."),
+    max_words: int = typer.Option(120, help="Maximum words in the summary."),
+) -> None:
+    """Summarize TEXT with the selected AI provider."""
+    settings = get_settings()
+    configure_logging(settings.log_level)
+    ai = get_ai_provider(provider, settings)
+    console.print(ai_summarize(ai, text, max_words=max_words))
+
+
+@app.command()
+def sentiment(
+    text: str = typer.Argument(..., help="Text to classify."),
+    provider: str = typer.Option("dummy", help="AI provider: dummy|claude|openai|gemini."),
+) -> None:
+    """Classify the sentiment of TEXT (positive / neutral / negative)."""
+    settings = get_settings()
+    configure_logging(settings.log_level)
+    ai = get_ai_provider(provider, settings)
+    console.print(analyze_sentiment(ai, text))
 
 
 def _load_prices(database: Database, symbol: str) -> pd.DataFrame:
