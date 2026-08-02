@@ -28,8 +28,10 @@ Under active development, built phase by phase.
 ## Setup
 
 ```bash
-uv sync                 # create .venv and install base + dev deps
-uv run stock-ai version # verify it runs
+uv sync                     # create .venv and install base + dev deps
+uv run pre-commit install   # enable commit-time lint/format hooks
+uv run stock-ai version     # verify it runs
+uv run stock-ai info        # show active config (secrets masked)
 ```
 
 Install phase-specific extras as you reach them:
@@ -42,9 +44,10 @@ uv sync --extra db      # sqlalchemy, alembic
 ## Development
 
 ```bash
-uv run pytest           # tests + coverage
-uv run ruff check .     # lint
-uv run ruff format .    # or: uv run black .
+uv run pytest                    # tests + coverage
+uv run ruff check .              # lint
+uv run ruff format .             # or: uv run black .
+uv run pre-commit run --all-files # run every hook manually
 ```
 
 ## Layout
