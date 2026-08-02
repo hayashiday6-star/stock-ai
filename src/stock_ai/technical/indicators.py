@@ -8,10 +8,11 @@ leading ``NaN`` rather than an error; a missing required column is an error.
 
 from __future__ import annotations
 
+import numpy as np
 import pandas as pd
 
 from stock_ai.core.exceptions import DataError
-from stock_ai.data.schema import CLOSE
+from stock_ai.data.schema import CLOSE, HIGH, LOW, VOLUME
 
 
 def _series(prices: pd.DataFrame, column: str) -> pd.Series:
@@ -19,6 +20,23 @@ def _series(prices: pd.DataFrame, column: str) -> pd.Series:
     if column not in prices.columns:
         raise DataError(f"Price frame is missing the {column!r} column.")
     return prices[column]
+
+
+def _wilder(series: pd.Series, window: int) -> pd.Series:
+    """Wilder's smoothing (RMA): an EWMA with ``alpha = 1 / window``."""
+    return series.ewm(alpha=1 / window, adjust=False).mean()
+
+
+def _true_range(prices: pd.DataFrame) -> pd.Series:
+    """Compute the True Range series from high, low, and previous close."""
+    high = _series(prices, HIGH)
+    low = _series(prices, LOW)
+    prev_close = _series(prices, CLOSE).shift(1)
+    ranges = pd.concat(
+        [high - low, (high - prev_close).abs(), (low - prev_close).abs()],
+        axis=1,
+    )
+    return ranges.max(axis=1)
 
 
 def sma(prices: pd.DataFrame, window: int = 20) -> pd.Series:
@@ -92,3 +110,63 @@ def bollinger_bands(
             "lower": middle - num_std * deviation,
         }
     )
+
+
+def atr(prices: pd.DataFrame, window: int = 14) -> pd.Series:
+    """Average True Range (Wilder-smoothed) over ``window`` bars."""
+    return _wilder(_true_range(prices), window).rename(f"atr_{window}")
+
+
+def adx(prices: pd.DataFrame, window: int = 14) -> pd.DataFrame:
+    """Average Directional Index with the directional indicators.
+
+    Returns:
+        A DataFrame with columns ``adx``, ``plus_di``, ``minus_di``.
+    """
+    high = _series(prices, HIGH)
+    low = _series(prices, LOW)
+
+    up_move = high.diff()
+    down_move = -low.diff()
+    plus_dm = pd.Series(
+        np.where((up_move > down_move) & (up_move > 0), up_move, 0.0),
+        index=prices.index,
+    )
+    minus_dm = pd.Series(
+        np.where((down_move > up_move) & (down_move > 0), down_move, 0.0),
+        index=prices.index,
+    )
+
+    atr_ = _wilder(_true_range(prices), window)
+    plus_di = 100.0 * _wilder(plus_dm, window) / atr_
+    minus_di = 100.0 * _wilder(minus_dm, window) / atr_
+    dx = 100.0 * (plus_di - minus_di).abs() / (plus_di + minus_di)
+    return pd.DataFrame({"adx": _wilder(dx, window), "plus_di": plus_di, "minus_di": minus_di})
+
+
+def stochastic(prices: pd.DataFrame, k: int = 14, d: int = 3) -> pd.DataFrame:
+    """Stochastic oscillator (%K and its %D moving average).
+
+    Returns:
+        A DataFrame with columns ``stoch_k``, ``stoch_d``.
+    """
+    low = _series(prices, LOW)
+    high = _series(prices, HIGH)
+    close = _series(prices, CLOSE)
+    lowest = low.rolling(k).min()
+    highest = high.rolling(k).max()
+    percent_k = 100.0 * (close - lowest) / (highest - lowest)
+    return pd.DataFrame({"stoch_k": percent_k, "stoch_d": percent_k.rolling(d).mean()})
+
+
+def on_balance_volume(prices: pd.DataFrame) -> pd.Series:
+    """On-Balance Volume: running total of volume signed by close direction."""
+    close = _series(prices, CLOSE)
+    volume = _series(prices, VOLUME)
+    direction = np.sign(close.diff().fillna(0.0))
+    return (direction * volume).cumsum().rename("obv")
+
+
+def volume_sma(prices: pd.DataFrame, window: int = 20) -> pd.Series:
+    """Simple moving average of volume over ``window`` bars."""
+    return _series(prices, VOLUME).rolling(window).mean().rename(f"volume_sma_{window}")
