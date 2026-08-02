@@ -15,6 +15,9 @@ from rich.console import Console
 from rich.table import Table
 
 from stock_ai import __version__
+from stock_ai.backtest.engine import BacktestEngine
+from stock_ai.backtest.report import metrics_frame
+from stock_ai.backtest.strategy import BuyAndHold, SMACrossover, Strategy
 from stock_ai.config.settings import Settings, get_settings
 from stock_ai.core.logging import configure_logging
 from stock_ai.data.service import FundamentalsService, IngestionService, IngestResult
@@ -23,6 +26,7 @@ from stock_ai.data.yfinance_provider import (
     YFinancePriceProvider,
 )
 from stock_ai.database.engine import Database
+from stock_ai.database.repository import PriceRepository
 from stock_ai.screening.base import All, Condition
 from stock_ai.screening.conditions import (
     MaxPBR,
@@ -146,6 +150,81 @@ def screen(
         console.print(f"Wrote {len(report)} rows to [green]{out}[/] ({fmt}).")
     else:
         _render_report(report)
+
+
+@app.command()
+def backtest(
+    symbol: str = typer.Argument(..., help="Ticker to backtest (must be fetched)."),
+    strategy: str = typer.Option("sma", help="Strategy: sma | hold."),
+    fast: int = typer.Option(20, help="Fast SMA window (sma strategy)."),
+    slow: int = typer.Option(50, help="Slow SMA window (sma strategy)."),
+    benchmark: str | None = typer.Option(
+        None, help="Benchmark symbol; default is buy-and-hold of SYMBOL."
+    ),
+    capital: float = typer.Option(100_000.0, help="Initial capital."),
+    commission: float = typer.Option(0.0, help="Per-trade cost fraction."),
+    slippage: float = typer.Option(0.0, help="Per-fill slippage fraction."),
+) -> None:
+    """Backtest a strategy on SYMBOL and compare it to a benchmark."""
+    settings = get_settings()
+    configure_logging(settings.log_level)
+
+    database = Database()
+    database.create_all()
+    engine = BacktestEngine(capital, commission, slippage)
+
+    prices = _load_prices(database, symbol)
+    strat = _build_strategy(strategy, fast, slow)
+    strat_result = engine.run(prices, strat.generate_signals(prices))
+
+    if benchmark is not None:
+        bench_prices = _load_prices(database, benchmark)
+        bench_name = f"{benchmark} buy&hold"
+    else:
+        bench_prices = prices
+        bench_name = f"{symbol} buy&hold"
+    bench_result = engine.run(bench_prices, BuyAndHold().generate_signals(bench_prices))
+
+    table = metrics_frame({strat.name: strat_result, bench_name: bench_result})
+    _render_metrics_table(table)
+
+
+def _load_prices(database: Database, symbol: str) -> pd.DataFrame:
+    """Load stored prices for ``symbol`` or fail with a helpful message."""
+    with database.session() as session:
+        prices = PriceRepository(session).get_prices(symbol)
+    if prices.empty:
+        raise typer.BadParameter(f"No price data for {symbol!r}; run 'fetch' first.")
+    return prices
+
+
+def _build_strategy(name: str, fast: int, slow: int) -> Strategy:
+    """Construct a strategy from its short name."""
+    if name == "hold":
+        return BuyAndHold()
+    if name == "sma":
+        return SMACrossover(fast=fast, slow=slow)
+    raise typer.BadParameter(f"Unknown strategy {name!r}; use 'sma' or 'hold'.")
+
+
+def _render_metrics_table(frame: pd.DataFrame) -> None:
+    """Print a strategy-vs-benchmark metrics comparison."""
+    table = Table(title="backtest comparison")
+    table.add_column("strategy", style="cyan")
+    for column in ("total_return", "cagr", "sharpe", "max_dd", "pf", "win", "trades"):
+        table.add_column(column, justify="right")
+    for row in frame.itertuples(index=False):
+        table.add_row(
+            row.strategy,
+            f"{row.total_return:.2%}",
+            f"{row.cagr:.2%}",
+            f"{row.sharpe:.2f}",
+            f"{row.max_drawdown:.2%}",
+            f"{row.profit_factor:.2f}",
+            f"{row.win_rate:.2%}",
+            str(int(row.num_trades)),
+        )
+    console.print(table)
 
 
 def _build_condition(

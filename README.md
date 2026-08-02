@@ -75,6 +75,22 @@ Available criteria: `--min-roe`, `--max-per`, `--max-pbr`,
 `--min-dividend-yield`, `--min-market-cap` (combined with AND). Output formats:
 `csv`, `json`, `xlsx`.
 
+## Backtesting
+
+```bash
+uv run stock-ai fetch AAPL --start 2022-01-01 --end 2024-01-01
+uv run stock-ai backtest AAPL --strategy sma --fast 20 --slow 50 --commission 0.001
+```
+
+The engine is deliberately conservative to avoid phantom profits:
+
+- signals are filled at the **next bar's open** (no same-day-close look-ahead);
+- equity is **marked to market daily** (`cash + shares * close`), so drawdown and
+  Sharpe reflect open positions, not just closed trades.
+
+Results are always shown next to a benchmark (buy-and-hold of the same symbol, or
+`--benchmark SPY`) and compared on risk-adjusted terms (Sharpe, max drawdown).
+
 ## Development
 
 ```bash
