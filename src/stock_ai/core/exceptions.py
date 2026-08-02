@@ -33,3 +33,7 @@ class BrokerError(StockAIError):
 
 class NotificationError(StockAIError):
     """A notification channel failed to deliver a message."""
+
+
+class AIError(StockAIError):
+    """An AI provider failed, was misconfigured, or refused a request."""
