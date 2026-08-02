@@ -29,8 +29,9 @@ from stock_ai.data.yfinance_provider import (
     YFinancePriceProvider,
 )
 from stock_ai.database.engine import Database
-from stock_ai.database.repository import PriceRepository
-from stock_ai.screening.base import All, Condition
+from stock_ai.database.repository import FundamentalsRepository, PriceRepository
+from stock_ai.portfolio.scoring import WeightedScorer, default_weighted_factors
+from stock_ai.screening.base import All, Condition, ScreeningContext
 from stock_ai.screening.conditions import (
     MaxPBR,
     MaxPER,
@@ -190,6 +191,41 @@ def backtest(
 
     table = metrics_frame({strat.name: strat_result, bench_name: bench_result})
     _render_metrics_table(table)
+
+
+@app.command()
+def score(
+    symbols: list[str] = typer.Argument(..., help="Ticker symbols to score."),
+) -> None:
+    """Score SYMBOLS (0-100) from stored fundamentals and price momentum."""
+    settings = get_settings()
+    configure_logging(settings.log_level)
+
+    database = Database()
+    database.create_all()
+    scorer = WeightedScorer(default_weighted_factors())
+
+    results = []
+    with database.session() as session:
+        fundamentals_repo = FundamentalsRepository(session)
+        price_repo = PriceRepository(session)
+        for symbol in symbols:
+            context = ScreeningContext(
+                symbol=symbol,
+                fundamentals=fundamentals_repo.get_latest(symbol),
+                prices=price_repo.get_prices(symbol),
+            )
+            results.append(scorer.score(context))
+
+    results.sort(key=lambda r: r.score, reverse=True)
+    table = Table(title="scores")
+    table.add_column("Symbol", style="cyan")
+    table.add_column("Score", justify="right")
+    table.add_column("Factors")
+    for result in results:
+        factors = ", ".join(f"{k}={v:.2f}" for k, v in sorted(result.breakdown.items()))
+        table.add_row(result.symbol, f"{result.score:.1f}", factors or "[dim]—[/]")
+    console.print(table)
 
 
 @app.command()
