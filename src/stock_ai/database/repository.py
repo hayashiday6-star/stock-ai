@@ -1,0 +1,133 @@
+"""Repository for reading and writing price data.
+
+The repository operates on an injected :class:`~sqlalchemy.orm.Session` (the
+caller owns the transaction, typically via ``Database.session()``). Writes are
+idempotent: re-ingesting overlapping dates updates existing rows instead of
+duplicating them.
+"""
+
+from __future__ import annotations
+
+import datetime as dt
+
+import pandas as pd
+from sqlalchemy import select
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+from sqlalchemy.orm import Session
+
+from stock_ai.data.schema import (
+    ADJ_CLOSE,
+    CLOSE,
+    DATE,
+    HIGH,
+    LOW,
+    OHLCV_COLUMNS,
+    OPEN,
+    VOLUME,
+)
+from stock_ai.database.models import PriceBar, Security
+
+_UPSERT_COLUMNS = [OPEN, HIGH, LOW, CLOSE, ADJ_CLOSE, VOLUME]
+
+
+class PriceRepository:
+    """Persist and query :class:`PriceBar` rows keyed by symbol and date."""
+
+    def __init__(self, session: Session) -> None:
+        """Bind the repository to an active session."""
+        self.session = session
+
+    def get_or_create_security(
+        self, symbol: str, market: str = "US", name: str | None = None
+    ) -> Security:
+        """Return the :class:`Security` for ``symbol``, creating it if absent."""
+        security = self.session.execute(
+            select(Security).where(Security.symbol == symbol)
+        ).scalar_one_or_none()
+        if security is None:
+            security = Security(symbol=symbol, market=market, name=name)
+            self.session.add(security)
+            self.session.flush()  # assign the primary key
+        return security
+
+    def upsert_prices(self, symbol: str, prices: pd.DataFrame, market: str = "US") -> int:
+        """Insert or update OHLCV bars for ``symbol``.
+
+        Args:
+            symbol: Provider-native ticker.
+            prices: A canonical OHLCV frame (see :mod:`stock_ai.data.schema`).
+            market: Market code stored on a newly created security.
+
+        Returns:
+            The number of rows written (inserted or updated).
+        """
+        if prices.empty:
+            return 0
+
+        security = self.get_or_create_security(symbol, market=market)
+        frame = prices.reset_index()
+        records = [
+            {
+                "security_id": security.id,
+                "date": pd.Timestamp(row[DATE]).date(),
+                OPEN: float(row[OPEN]),
+                HIGH: float(row[HIGH]),
+                LOW: float(row[LOW]),
+                CLOSE: float(row[CLOSE]),
+                ADJ_CLOSE: float(row[ADJ_CLOSE]),
+                VOLUME: int(row[VOLUME]),
+            }
+            for row in frame.to_dict("records")
+        ]
+
+        stmt = sqlite_insert(PriceBar).values(records)
+        stmt = stmt.on_conflict_do_update(
+            index_elements=["security_id", "date"],
+            set_={col: getattr(stmt.excluded, col) for col in _UPSERT_COLUMNS},
+        )
+        self.session.execute(stmt)
+        return len(records)
+
+    def get_prices(
+        self,
+        symbol: str,
+        start: dt.date | None = None,
+        end: dt.date | None = None,
+    ) -> pd.DataFrame:
+        """Return stored bars for ``symbol`` as a canonical OHLCV frame."""
+        stmt = (
+            select(PriceBar).join(Security).where(Security.symbol == symbol).order_by(PriceBar.date)
+        )
+        if start is not None:
+            stmt = stmt.where(PriceBar.date >= start)
+        if end is not None:
+            stmt = stmt.where(PriceBar.date <= end)
+
+        rows = self.session.execute(stmt).scalars().all()
+        frame = pd.DataFrame(
+            [
+                {
+                    DATE: row.date,
+                    OPEN: row.open,
+                    HIGH: row.high,
+                    LOW: row.low,
+                    CLOSE: row.close,
+                    ADJ_CLOSE: row.adj_close,
+                    VOLUME: row.volume,
+                }
+                for row in rows
+            ],
+            columns=[DATE, *OHLCV_COLUMNS],
+        )
+        frame[DATE] = pd.to_datetime(frame[DATE])
+        return frame.set_index(DATE)
+
+    def latest_date(self, symbol: str) -> dt.date | None:
+        """Return the most recent stored bar date for ``symbol``, or ``None``."""
+        return self.session.execute(
+            select(PriceBar.date)
+            .join(Security)
+            .where(Security.symbol == symbol)
+            .order_by(PriceBar.date.desc())
+            .limit(1)
+        ).scalar_one_or_none()
