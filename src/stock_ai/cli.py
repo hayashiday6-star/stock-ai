@@ -15,8 +15,11 @@ from rich.table import Table
 from stock_ai import __version__
 from stock_ai.config.settings import Settings, get_settings
 from stock_ai.core.logging import configure_logging
-from stock_ai.data.service import IngestionService, IngestResult
-from stock_ai.data.yfinance_provider import YFinancePriceProvider
+from stock_ai.data.service import FundamentalsService, IngestionService, IngestResult
+from stock_ai.data.yfinance_provider import (
+    YFinanceFundamentalsProvider,
+    YFinancePriceProvider,
+)
 from stock_ai.database.engine import Database
 
 app = typer.Typer(
@@ -72,6 +75,25 @@ def fetch(
     service = IngestionService(YFinancePriceProvider(), database, default_lookback_days=lookback)
 
     results = service.ingest_many(symbols, _parse_date(start), _parse_date(end))
+    _render_results(results)
+
+    if any(not r.ok for r in results):
+        raise typer.Exit(code=1)
+
+
+@app.command()
+def fundamentals(
+    symbols: list[str] = typer.Argument(..., help="Ticker symbols, e.g. AAPL MSFT"),
+) -> None:
+    """Fetch a fundamentals snapshot for SYMBOLS and store it in the database."""
+    settings = get_settings()
+    configure_logging(settings.log_level)
+
+    database = Database()
+    database.create_all()
+    service = FundamentalsService(YFinanceFundamentalsProvider(), database)
+
+    results = service.ingest_many(symbols)
     _render_results(results)
 
     if any(not r.ok for r in results):

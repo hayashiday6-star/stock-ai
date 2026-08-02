@@ -12,9 +12,9 @@ from dataclasses import dataclass
 
 from stock_ai.core.exceptions import StockAIError
 from stock_ai.core.logging import get_logger
-from stock_ai.data.base import PriceProvider
+from stock_ai.data.base import FundamentalsProvider, PriceProvider
 from stock_ai.database.engine import Database
-from stock_ai.database.repository import PriceRepository
+from stock_ai.database.repository import FundamentalsRepository, PriceRepository
 
 logger = get_logger(__name__)
 
@@ -109,3 +109,36 @@ class IngestionService:
         if latest is None:
             return end - dt.timedelta(days=self.default_lookback_days)
         return latest + dt.timedelta(days=1)
+
+
+class FundamentalsService:
+    """Fetch and store fundamentals snapshots, one symbol or many."""
+
+    def __init__(self, provider: FundamentalsProvider, database: Database) -> None:
+        """Wire the service to a fundamentals provider and a database."""
+        self.provider = provider
+        self.database = database
+
+    def ingest_symbol(self, symbol: str, market: str = "US") -> IngestResult:
+        """Fetch and store the latest fundamentals for ``symbol``.
+
+        Returns:
+            An :class:`IngestResult` (``rows=1`` on success); failures are
+            captured, never raised.
+        """
+        try:
+            with self.database.session() as session:
+                fundamentals = self.provider.fetch_fundamentals(symbol)
+                FundamentalsRepository(session).upsert_fundamentals(fundamentals, market=market)
+                logger.info("Ingested fundamentals for %s", symbol)
+                return IngestResult(symbol, 1, ok=True)
+        except StockAIError as exc:
+            logger.warning("Fundamentals ingest failed for %s: %s", symbol, exc)
+            return IngestResult(symbol, 0, ok=False, error=str(exc))
+        except Exception as exc:  # provider/network errors must not abort a batch
+            logger.exception("Unexpected fundamentals error for %s", symbol)
+            return IngestResult(symbol, 0, ok=False, error=str(exc))
+
+    def ingest_many(self, symbols: list[str], market: str = "US") -> list[IngestResult]:
+        """Ingest each symbol's fundamentals, continuing past failures."""
+        return [self.ingest_symbol(sym, market) for sym in symbols]

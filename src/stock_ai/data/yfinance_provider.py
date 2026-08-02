@@ -6,19 +6,26 @@ provider can be unit-tested without touching the network.
 
 from __future__ import annotations
 
+import datetime as dt
+import math
 from collections.abc import Callable
 from datetime import date, timedelta
+from typing import Any
 
 import pandas as pd
 
 from stock_ai.core.exceptions import DataError
 from stock_ai.core.logging import get_logger
 from stock_ai.data.schema import normalize_ohlcv
+from stock_ai.data.types import Fundamentals
 
 logger = get_logger(__name__)
 
 # A downloader takes (symbol, start, end) and returns a raw yfinance frame.
 Downloader = Callable[[str, date, date], pd.DataFrame]
+# An info fetcher takes a symbol and returns yfinance's ``Ticker.info`` dict.
+InfoFetcher = Callable[[str], dict[str, Any]]
+Clock = Callable[[], date]
 
 
 def _default_download(symbol: str, start: date, end: date) -> pd.DataFrame:
@@ -64,3 +71,54 @@ class YFinancePriceProvider:
         prices = normalize_ohlcv(raw)
         logger.info("Fetched %d bars for %s", len(prices), symbol)
         return prices
+
+
+def _to_float(value: Any) -> float | None:
+    """Coerce a provider value to ``float``, mapping missing/NaN/junk to ``None``."""
+    if value is None:
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return None if math.isnan(number) else number
+
+
+def _default_info_fetcher(symbol: str) -> dict[str, Any]:
+    """Fetch ``Ticker.info`` from yfinance (imported lazily)."""
+    import yfinance as yf
+
+    return yf.Ticker(symbol).info
+
+
+class YFinanceFundamentalsProvider:
+    """Fetch a fundamentals snapshot via yfinance's ``Ticker.info``."""
+
+    def __init__(self, info_fetcher: InfoFetcher | None = None, clock: Clock | None = None) -> None:
+        """Create the provider.
+
+        Args:
+            info_fetcher: Callable returning the raw info dict. Defaults to
+                :func:`_default_info_fetcher`; inject a fake in tests.
+            clock: Callable returning the snapshot date. Defaults to today.
+        """
+        self._info = info_fetcher or _default_info_fetcher
+        self._today = clock or dt.date.today
+
+    def fetch_fundamentals(self, symbol: str) -> Fundamentals:
+        """Fetch and normalize fundamentals for ``symbol``."""
+        info = self._info(symbol)
+        if not info:
+            raise DataError(f"No fundamentals returned for {symbol!r}.")
+
+        return Fundamentals(
+            symbol=symbol,
+            as_of=self._today(),
+            per=_to_float(info.get("trailingPE")),
+            pbr=_to_float(info.get("priceToBook")),
+            roe=_to_float(info.get("returnOnEquity")),
+            revenue=_to_float(info.get("totalRevenue")),
+            net_income=_to_float(info.get("netIncomeToCommon")),
+            dividend_yield=_to_float(info.get("dividendYield")),
+            market_cap=_to_float(info.get("marketCap")),
+        )

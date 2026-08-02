@@ -25,9 +25,33 @@ from stock_ai.data.schema import (
     OPEN,
     VOLUME,
 )
-from stock_ai.database.models import PriceBar, Security
+from stock_ai.data.types import Fundamentals
+from stock_ai.database.models import FundamentalSnapshot, PriceBar, Security
 
 _UPSERT_COLUMNS = [OPEN, HIGH, LOW, CLOSE, ADJ_CLOSE, VOLUME]
+_FUNDAMENTAL_COLUMNS = [
+    "per",
+    "pbr",
+    "roe",
+    "revenue",
+    "net_income",
+    "dividend_yield",
+    "market_cap",
+]
+
+
+def get_or_create_security(
+    session: Session, symbol: str, market: str = "US", name: str | None = None
+) -> Security:
+    """Return the :class:`Security` for ``symbol``, creating it if absent."""
+    security = session.execute(
+        select(Security).where(Security.symbol == symbol)
+    ).scalar_one_or_none()
+    if security is None:
+        security = Security(symbol=symbol, market=market, name=name)
+        session.add(security)
+        session.flush()  # assign the primary key
+    return security
 
 
 class PriceRepository:
@@ -36,19 +60,6 @@ class PriceRepository:
     def __init__(self, session: Session) -> None:
         """Bind the repository to an active session."""
         self.session = session
-
-    def get_or_create_security(
-        self, symbol: str, market: str = "US", name: str | None = None
-    ) -> Security:
-        """Return the :class:`Security` for ``symbol``, creating it if absent."""
-        security = self.session.execute(
-            select(Security).where(Security.symbol == symbol)
-        ).scalar_one_or_none()
-        if security is None:
-            security = Security(symbol=symbol, market=market, name=name)
-            self.session.add(security)
-            self.session.flush()  # assign the primary key
-        return security
 
     def upsert_prices(self, symbol: str, prices: pd.DataFrame, market: str = "US") -> int:
         """Insert or update OHLCV bars for ``symbol``.
@@ -64,7 +75,7 @@ class PriceRepository:
         if prices.empty:
             return 0
 
-        security = self.get_or_create_security(symbol, market=market)
+        security = get_or_create_security(self.session, symbol, market=market)
         frame = prices.reset_index()
         records = [
             {
@@ -131,3 +142,43 @@ class PriceRepository:
             .order_by(PriceBar.date.desc())
             .limit(1)
         ).scalar_one_or_none()
+
+
+class FundamentalsRepository:
+    """Persist and query fundamentals snapshots keyed by symbol and date."""
+
+    def __init__(self, session: Session) -> None:
+        """Bind the repository to an active session."""
+        self.session = session
+
+    def upsert_fundamentals(self, fundamentals: Fundamentals, market: str = "US") -> None:
+        """Insert or update the snapshot for its ``(symbol, as_of)``."""
+        security = get_or_create_security(self.session, fundamentals.symbol, market=market)
+        record = {
+            "security_id": security.id,
+            "as_of": fundamentals.as_of,
+            **{col: getattr(fundamentals, col) for col in _FUNDAMENTAL_COLUMNS},
+        }
+        stmt = sqlite_insert(FundamentalSnapshot).values([record])
+        stmt = stmt.on_conflict_do_update(
+            index_elements=["security_id", "as_of"],
+            set_={col: getattr(stmt.excluded, col) for col in _FUNDAMENTAL_COLUMNS},
+        )
+        self.session.execute(stmt)
+
+    def get_latest(self, symbol: str) -> Fundamentals | None:
+        """Return the most recent stored snapshot for ``symbol``, or ``None``."""
+        row = self.session.execute(
+            select(FundamentalSnapshot)
+            .join(Security)
+            .where(Security.symbol == symbol)
+            .order_by(FundamentalSnapshot.as_of.desc())
+            .limit(1)
+        ).scalar_one_or_none()
+        if row is None:
+            return None
+        return Fundamentals(
+            symbol=symbol,
+            as_of=row.as_of,
+            **{col: getattr(row, col) for col in _FUNDAMENTAL_COLUMNS},
+        )

@@ -11,6 +11,8 @@ from typing import Protocol, runtime_checkable
 
 import pandas as pd
 
+from stock_ai.data.types import Fundamentals
+
 
 @runtime_checkable
 class PriceProvider(Protocol):
@@ -29,5 +31,24 @@ class PriceProvider(Protocol):
 
         Raises:
             DataError: If no data is available or the response is malformed.
+        """
+        ...
+
+
+@runtime_checkable
+class FundamentalsProvider(Protocol):
+    """Fetches a fundamentals snapshot for a single symbol."""
+
+    def fetch_fundamentals(self, symbol: str) -> Fundamentals:
+        """Return a :class:`~stock_ai.data.types.Fundamentals` snapshot.
+
+        Args:
+            symbol: Provider-native ticker.
+
+        Returns:
+            A snapshot with whichever metrics are available (others ``None``).
+
+        Raises:
+            DataError: If the symbol is unknown or no data is returned.
         """
         ...

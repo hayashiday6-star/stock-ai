@@ -53,3 +53,27 @@ class PriceBar(Base):
     volume: Mapped[int]
 
     security: Mapped[Security] = relationship(back_populates="bars")
+
+
+class FundamentalSnapshot(Base):
+    """A point-in-time snapshot of fundamental metrics for a :class:`Security`."""
+
+    __tablename__ = "fundamental_snapshots"
+    __table_args__ = (
+        UniqueConstraint("security_id", "as_of", name="uq_fundamentals_security_asof"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    security_id: Mapped[int] = mapped_column(
+        ForeignKey("securities.id", ondelete="CASCADE"), index=True
+    )
+    as_of: Mapped[dt.date] = mapped_column(Date, index=True)
+    per: Mapped[float | None] = mapped_column(default=None)
+    pbr: Mapped[float | None] = mapped_column(default=None)
+    roe: Mapped[float | None] = mapped_column(default=None)
+    revenue: Mapped[float | None] = mapped_column(default=None)
+    net_income: Mapped[float | None] = mapped_column(default=None)
+    dividend_yield: Mapped[float | None] = mapped_column(default=None)
+    market_cap: Mapped[float | None] = mapped_column(default=None)
+
+    security: Mapped[Security] = relationship()

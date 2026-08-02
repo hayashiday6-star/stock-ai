@@ -53,6 +53,15 @@ Prices are stored in `data/stock_ai.db` (SQLite). Re-running is idempotent —
 already-stored dates are updated, not duplicated — so this is safe to schedule
 daily. A symbol with no data yet is backfilled `--lookback` days (default 365).
 
+Fundamentals (PER, PBR, ROE, revenue, net income, dividend yield, market cap):
+
+```bash
+uv run stock-ai fundamentals AAPL MSFT
+```
+
+Each run stores one snapshot per symbol per day; missing metrics are kept as
+`NULL` rather than failing the whole fetch.
+
 ## Development
 
 ```bash
