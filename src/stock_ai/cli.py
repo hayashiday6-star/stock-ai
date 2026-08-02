@@ -20,7 +20,7 @@ from stock_ai.ai.analysis import summarize as ai_summarize
 from stock_ai.ai.factory import get_ai_provider
 from stock_ai.backtest.engine import BacktestEngine
 from stock_ai.backtest.report import metrics_frame
-from stock_ai.backtest.strategy import BuyAndHold, SMACrossover, Strategy
+from stock_ai.backtest.strategy import BuyAndHold, Strategy, build_strategy
 from stock_ai.config.settings import Settings, get_settings
 from stock_ai.core.exceptions import NotificationError
 from stock_ai.core.logging import configure_logging
@@ -175,7 +175,7 @@ def screen(
 @app.command()
 def backtest(
     symbol: str = typer.Argument(..., help="Ticker to backtest (must be fetched)."),
-    strategy: str = typer.Option("sma", help="Strategy: sma | hold."),
+    strategy: str = typer.Option("sma", help="Strategy: hold|sma|sma200|macd|rsi."),
     fast: int = typer.Option(20, help="Fast SMA window (sma strategy)."),
     slow: int = typer.Option(50, help="Slow SMA window (sma strategy)."),
     benchmark: str | None = typer.Option(
@@ -294,12 +294,11 @@ def _load_prices(database: Database, symbol: str) -> pd.DataFrame:
 
 
 def _build_strategy(name: str, fast: int, slow: int) -> Strategy:
-    """Construct a strategy from its short name."""
-    if name == "hold":
-        return BuyAndHold()
-    if name == "sma":
-        return SMACrossover(fast=fast, slow=slow)
-    raise typer.BadParameter(f"Unknown strategy {name!r}; use 'sma' or 'hold'.")
+    """Construct a strategy from its short name (see ``build_strategy``)."""
+    try:
+        return build_strategy(name, fast=fast, slow=slow)
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc)) from exc
 
 
 def _render_metrics_table(frame: pd.DataFrame) -> None:

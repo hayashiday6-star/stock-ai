@@ -82,13 +82,15 @@ def _page_data(database: Database) -> None:
                     results = data.ingest_prices(database, symbols, source, start, end)
                 st.dataframe(data.results_frame(results), use_container_width=True)
     with c2:
-        disabled = source == "jquants"
-        if st.button("🧾 財務を取得（米国株のみ）", use_container_width=True, disabled=disabled):
-            with st.spinner("財務データを取得中..."):
-                results = data.ingest_fundamentals(database, symbols)
-            st.dataframe(data.results_frame(results), use_container_width=True)
-        if disabled:
-            st.caption("財務取得は現在 米国株(yfinance) のみ対応です。")
+        if st.button("🧾 財務を取得", use_container_width=True):
+            if not symbols:
+                st.warning("銘柄コードを入力してください。")
+            else:
+                with st.spinner("財務データを取得中..."):
+                    results = data.ingest_fundamentals(database, symbols, source)
+                st.dataframe(data.results_frame(results), use_container_width=True)
+        if source == "jquants":
+            st.caption("日本株の財務は売上・利益・ROEのみ（PER/PBRは株価が必要なため未取得）。")
 
     st.divider()
     st.subheader("取り込み済みデータ")
@@ -178,16 +180,26 @@ def _page_backtest(database: Database) -> None:
         st.info("先に「データ取得」で株価を取り込んでください。")
         return
     symbol = st.selectbox("銘柄", symbols)
+    strategy_labels = {
+        "移動平均クロス (sma)": "sma",
+        "200日線より上 (sma200)": "sma200",
+        "MACDクロス (macd)": "macd",
+        "RSI逆張り (rsi)": "rsi",
+    }
+    strategy_label = st.selectbox("戦略", list(strategy_labels.keys()))
+    strategy = strategy_labels[strategy_label]
     col1, col2 = st.columns(2)
     with col1:
         fast = st.number_input("短期移動平均（日）", min_value=2, value=20)
     with col2:
-        slow = st.number_input("長期移動平均（日）", min_value=3, value=50)
-    if fast >= slow:
+        slow = st.number_input("長期移動平均・トレンド（日）", min_value=3, value=50)
+    if strategy == "sma" and fast >= slow:
         st.warning("短期は長期より小さくしてください。")
         return
     if st.button("▶️ バックテスト実行", type="primary"):
-        equity, metrics = data.backtest_comparison(database, symbol, int(fast), int(slow))
+        equity, metrics = data.backtest_comparison(
+            database, symbol, int(fast), int(slow), strategy=strategy
+        )
         st.subheader("資産推移")
         st.line_chart(equity)
         st.subheader("成績")

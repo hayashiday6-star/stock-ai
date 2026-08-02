@@ -13,7 +13,7 @@ import pandas as pd
 
 from stock_ai.backtest.engine import BacktestEngine
 from stock_ai.backtest.report import metrics_frame
-from stock_ai.backtest.strategy import BuyAndHold, SMACrossover
+from stock_ai.backtest.strategy import BuyAndHold, build_strategy
 from stock_ai.data.base import FundamentalsProvider, PriceProvider
 from stock_ai.data.jquants_provider import JQuantsPriceProvider
 from stock_ai.data.service import (
@@ -90,11 +90,27 @@ def ingest_prices(
 def ingest_fundamentals(
     database: Database,
     symbols: list[str],
+    source: str = "yfinance",
     provider: FundamentalsProvider | None = None,
 ) -> list[IngestResult]:
-    """Fetch and store a fundamentals snapshot for ``symbols`` (US via yfinance)."""
-    service = FundamentalsService(provider or YFinanceFundamentalsProvider(), database)
-    return service.ingest_many(symbols)
+    """Fetch and store a fundamentals snapshot for ``symbols``.
+
+    ``source`` selects yfinance (US) or J-Quants (JP); ``provider`` overrides it.
+    """
+    market = "US"
+    if provider is None:
+        if source == "jquants":
+            from stock_ai.config.settings import get_settings
+            from stock_ai.data.jquants_fundamentals import JQuantsFundamentalsProvider
+
+            provider = JQuantsFundamentalsProvider(api_key=get_settings().jquants_api_key)
+            market = "JP"
+        else:
+            provider = YFinanceFundamentalsProvider()
+    elif source == "jquants":
+        market = "JP"
+    service = FundamentalsService(provider, database)
+    return service.ingest_many(symbols, market=market)
 
 
 def results_frame(results: list[IngestResult]) -> pd.DataFrame:
@@ -152,29 +168,35 @@ def score_table(database: Database, symbols: list[str]) -> pd.DataFrame:
 
 
 def backtest_comparison(
-    database: Database, symbol: str, fast: int = 20, slow: int = 50, capital: float = 100_000.0
+    database: Database,
+    symbol: str,
+    fast: int = 20,
+    slow: int = 50,
+    capital: float = 100_000.0,
+    strategy: str = "sma",
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """Return ``(equity_curves, metrics)`` for an SMA strategy vs buy-and-hold.
+    """Return ``(equity_curves, metrics)`` for a strategy vs buy-and-hold.
 
     Args:
         database: Source of stored prices.
         symbol: Ticker to backtest.
-        fast: Fast SMA window.
-        slow: Slow SMA window.
+        fast: Fast SMA window (``sma`` strategy).
+        slow: Slow SMA / trend window.
         capital: Initial capital.
+        strategy: Strategy name (``sma``/``sma200``/``macd``/``rsi``/``hold``).
 
     Returns:
         A tuple of the two equity curves (as one DataFrame) and the metrics table.
     """
     prices = load_prices(database, symbol)
     engine = BacktestEngine(capital)
-    strategy = SMACrossover(fast=fast, slow=slow)
+    strat = build_strategy(strategy, fast=fast, slow=slow)
 
-    strat_result = engine.run(prices, strategy.generate_signals(prices))
+    strat_result = engine.run(prices, strat.generate_signals(prices))
     bench_result = engine.run(prices, BuyAndHold().generate_signals(prices))
 
     equity = pd.DataFrame(
-        {strategy.name: strat_result.equity, f"{symbol} buy&hold": bench_result.equity}
+        {strat.name: strat_result.equity, f"{symbol} buy&hold": bench_result.equity}
     )
-    metrics = metrics_frame({strategy.name: strat_result, f"{symbol} buy&hold": bench_result})
+    metrics = metrics_frame({strat.name: strat_result, f"{symbol} buy&hold": bench_result})
     return equity, metrics
