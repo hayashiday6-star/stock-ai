@@ -56,6 +56,7 @@ class Settings(BaseSettings):
     telegram_bot_token: SecretStr | None = Field(
         default=None, validation_alias="TELEGRAM_BOT_TOKEN"
     )
+    telegram_chat_id: SecretStr | None = Field(default=None, validation_alias="TELEGRAM_CHAT_ID")
 
     @property
     def is_production(self) -> bool:

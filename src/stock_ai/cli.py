@@ -22,6 +22,7 @@ from stock_ai.backtest.engine import BacktestEngine
 from stock_ai.backtest.report import metrics_frame
 from stock_ai.backtest.strategy import BuyAndHold, SMACrossover, Strategy
 from stock_ai.config.settings import Settings, get_settings
+from stock_ai.core.exceptions import NotificationError
 from stock_ai.core.logging import configure_logging
 from stock_ai.data.service import FundamentalsService, IngestionService, IngestResult
 from stock_ai.data.yfinance_provider import (
@@ -30,6 +31,7 @@ from stock_ai.data.yfinance_provider import (
 )
 from stock_ai.database.engine import Database
 from stock_ai.database.repository import FundamentalsRepository, PriceRepository
+from stock_ai.notification.factory import get_notifier
 from stock_ai.portfolio.scoring import WeightedScorer, default_weighted_factors
 from stock_ai.screening.base import All, Condition, ScreeningContext
 from stock_ai.screening.conditions import (
@@ -226,6 +228,21 @@ def score(
         factors = ", ".join(f"{k}={v:.2f}" for k, v in sorted(result.breakdown.items()))
         table.add_row(result.symbol, f"{result.score:.1f}", factors or "[dim]—[/]")
     console.print(table)
+
+
+@app.command()
+def notify(
+    message: str = typer.Argument(..., help="Message text to send."),
+    channel: str = typer.Option("console", help="console | discord | telegram | line."),
+) -> None:
+    """Send MESSAGE to a notification CHANNEL (defaults to console)."""
+    settings = get_settings()
+    configure_logging(settings.log_level)
+    try:
+        get_notifier(channel, settings).send(message)
+    except NotificationError as exc:
+        console.print(f"[red]notification failed:[/] {exc}")
+        raise typer.Exit(code=1) from exc
 
 
 @app.command()
