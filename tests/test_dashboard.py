@@ -77,3 +77,34 @@ def test_backtest_comparison(db: Database) -> None:
     assert equity.shape[1] == 2  # strategy + benchmark curves
     assert len(metrics) == 2
     assert "sharpe" in metrics.columns
+
+
+def test_stored_overview(db: Database) -> None:
+    overview = data.stored_overview(db)
+    assert list(overview["銘柄"]) == ["AAPL"]
+    assert overview["日足本数"].iloc[0] == 10
+    assert overview["財務"].iloc[0] == "✓"
+
+
+def test_ingest_prices_with_injected_provider() -> None:
+    database = Database("sqlite:///:memory:")
+    database.create_all()
+
+    class _FakeProvider:
+        def fetch_prices(self, symbol: str, start: object, end: object) -> pd.DataFrame:
+            return _prices([10.0, 11.0, 12.0])
+
+    results = data.ingest_prices(database, ["7203"], source="jquants", provider=_FakeProvider())
+    assert results[0].ok
+    assert results[0].rows == 3
+    assert data.available_symbols(database) == ["7203"]
+    frame = data.results_frame(results)
+    assert list(frame["銘柄"]) == ["7203"]
+    database.dispose()
+
+
+def test_screen_table(db: Database) -> None:
+    from stock_ai.screening.conditions import MinROE
+
+    report = data.screen_table(db, MinROE(0.1))  # AAPL roe 0.30 passes
+    assert "AAPL" in list(report["symbol"])

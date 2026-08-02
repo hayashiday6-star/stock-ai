@@ -73,6 +73,8 @@ extend-immutable-calls = ["typer.Argument", "typer.Option"]
 [tool.ruff.lint.per-file-ignores]
 "tests/*" = ["D"]
 "main.py" = ["D"]
+# Japanese docstrings end with "。", which D415 does not recognize as terminal.
+"src/stock_ai/dashboard/app.py" = ["D415"]
 
 [tool.black]
 line-length = 100
