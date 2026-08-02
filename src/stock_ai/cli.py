@@ -24,6 +24,8 @@ from stock_ai.backtest.strategy import BuyAndHold, SMACrossover, Strategy
 from stock_ai.config.settings import Settings, get_settings
 from stock_ai.core.exceptions import NotificationError
 from stock_ai.core.logging import configure_logging
+from stock_ai.data.base import PriceProvider
+from stock_ai.data.jquants_provider import JQuantsPriceProvider
 from stock_ai.data.service import FundamentalsService, IngestionService, IngestResult
 from stock_ai.data.yfinance_provider import (
     YFinanceFundamentalsProvider,
@@ -92,20 +94,32 @@ def fetch(
     start: str | None = typer.Option(None, help="ISO start date YYYY-MM-DD."),
     end: str | None = typer.Option(None, help="ISO end date; defaults to today."),
     lookback: int = typer.Option(365, help="Backfill days when a symbol has no data."),
+    source: str = typer.Option("yfinance", help="Data source: yfinance (US) | jquants (JP)."),
 ) -> None:
     """Fetch daily prices for SYMBOLS and store them in the local database."""
     settings = get_settings()
     configure_logging(settings.log_level)
 
+    provider, market = _price_source(source, settings)
     database = Database()
     database.create_all()
-    service = IngestionService(YFinancePriceProvider(), database, default_lookback_days=lookback)
+    service = IngestionService(provider, database, default_lookback_days=lookback)
 
-    results = service.ingest_many(symbols, _parse_date(start), _parse_date(end))
+    results = service.ingest_many(symbols, _parse_date(start), _parse_date(end), market=market)
     _render_results(results)
 
     if any(not r.ok for r in results):
         raise typer.Exit(code=1)
+
+
+def _price_source(source: str, settings: Settings) -> tuple[PriceProvider, str]:
+    """Return the price provider and market code for a data source name."""
+    key = source.lower()
+    if key == "yfinance":
+        return YFinancePriceProvider(), "US"
+    if key == "jquants":
+        return JQuantsPriceProvider(api_key=settings.jquants_api_key), "JP"
+    raise typer.BadParameter(f"Unknown source {source!r}; use 'yfinance' or 'jquants'.")
 
 
 @app.command()
