@@ -7,18 +7,18 @@ AI-driven stock **screening / backtesting / trading** system for Japanese and US
 
 ## Status
 
-Under active development, built phase by phase.
+Built phase by phase; all ten phases are in place.
 
-- [x] **Phase 1** — Dev environment (in progress)
-- [ ] Phase 2 — Data acquisition (JP/US, SQLite)
-- [ ] Phase 3 — Screening
-- [ ] Phase 4 — Technical analysis
-- [ ] Phase 5 — Backtesting
-- [ ] Phase 6 — AI (Claude / OpenAI / Gemini)
-- [ ] Phase 7 — AI scoring
-- [ ] Phase 8 — Notifications (LINE / Discord / Telegram)
-- [ ] Phase 9 — Automated trading (dummy → IBKR)
-- [ ] Phase 10 — Streamlit dashboard
+- [x] **Phase 1** — Dev environment (uv, ruff/black, pytest, pre-commit, CI)
+- [x] **Phase 2** — Data acquisition (US via yfinance, SQLite, daily updates)
+- [x] **Phase 3** — Screening (composable conditions, CSV/JSON/XLSX export)
+- [x] **Phase 4** — Technical analysis (SMA/EMA/RSI/MACD/Bollinger/ATR/ADX/Stochastic/OBV)
+- [x] **Phase 5** — Backtesting (next-open fills, daily mark-to-market, benchmark)
+- [x] **Phase 6** — AI (Claude / OpenAI / Gemini, swappable + dummy)
+- [x] **Phase 7** — AI scoring (100-point, configurable weights)
+- [x] **Phase 8** — Notifications (Console / Discord / Telegram / LINE)
+- [x] **Phase 9** — Automated trading (paper broker; IBKR skeleton, opt-in)
+- [x] **Phase 10** — Streamlit dashboard
 
 ## Requirements
 
@@ -74,6 +74,24 @@ uv run stock-ai screen --max-per 15 --min-dividend-yield 0.03   # prints a table
 Available criteria: `--min-roe`, `--max-per`, `--max-pbr`,
 `--min-dividend-yield`, `--min-market-cap` (combined with AND). Output formats:
 `csv`, `json`, `xlsx`.
+
+## Scoring, AI, notifications
+
+```bash
+uv run stock-ai score AAPL MSFT                 # 0-100 weighted score + factor breakdown
+uv run stock-ai summarize "..." --provider dummy  # dummy|claude|openai|gemini
+uv run stock-ai sentiment "..." --provider dummy
+uv run stock-ai notify "buy: AAPL" --channel console  # console|discord|telegram|line
+```
+
+## Dashboard
+
+```bash
+uv sync --extra dashboard
+uv run streamlit run src/stock_ai/dashboard/app.py
+```
+
+Sections: Rankings (scores), Backtest (equity curves + metrics), AI Analysis.
 
 ## Backtesting
 
