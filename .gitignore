@@ -1,0 +1,38 @@
+# --- Python ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+
+# --- uv / venv ---
+.venv/
+uv.lock.bak
+
+# --- Test / coverage ---
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.ruff_cache/
+
+# --- Secrets & local config ---
+.env
+.env.*
+!.env.example
+設定.txt
+
+# --- Data / logs / DB (runtime artifacts) ---
+logs/*
+!logs/.gitkeep
+data/*.db
+data/*.sqlite
+data/*.sqlite3
+*.db-journal
+
+# --- IDE / OS ---
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
