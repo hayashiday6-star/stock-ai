@@ -41,6 +41,18 @@ uv sync --extra data    # pandas, numpy, httpx, yfinance
 uv sync --extra db      # sqlalchemy, alembic
 ```
 
+## Fetching prices
+
+```bash
+uv sync --extra data --extra db
+uv run stock-ai fetch AAPL MSFT --start 2024-01-02 --end 2024-01-10
+uv run stock-ai fetch AAPL MSFT   # incremental: only bars newer than what's stored
+```
+
+Prices are stored in `data/stock_ai.db` (SQLite). Re-running is idempotent —
+already-stored dates are updated, not duplicated — so this is safe to schedule
+daily. A symbol with no data yet is backfilled `--lookback` days (default 365).
+
 ## Development
 
 ```bash
