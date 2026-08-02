@@ -40,6 +40,11 @@ _FUNDAMENTAL_COLUMNS = [
 ]
 
 
+def list_symbols(session: Session) -> list[str]:
+    """Return all stored security symbols, sorted alphabetically."""
+    return list(session.execute(select(Security.symbol).order_by(Security.symbol)).scalars().all())
+
+
 def get_or_create_security(
     session: Session, symbol: str, market: str = "US", name: str | None = None
 ) -> Security:
