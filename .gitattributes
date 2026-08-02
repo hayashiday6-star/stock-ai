@@ -1,0 +1,21 @@
+# Normalize line endings to LF in the repository (silences CRLF warnings on Windows).
+* text=auto eol=lf
+
+# Explicit text types
+*.py    text eol=lf
+*.pyi   text eol=lf
+*.toml  text eol=lf
+*.md    text eol=lf
+*.txt   text eol=lf
+*.cfg   text eol=lf
+*.ini   text eol=lf
+*.yml   text eol=lf
+*.yaml  text eol=lf
+*.json  text eol=lf
+*.lock  text eol=lf
+
+# Binary (never touch)
+*.png   binary
+*.jpg   binary
+*.ico   binary
+*.parquet binary
