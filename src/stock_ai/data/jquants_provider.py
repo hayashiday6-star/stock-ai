@@ -37,8 +37,17 @@ logger = get_logger(__name__)
 # A fetcher takes (symbol, start, end) and returns raw daily-quote records.
 JQuantsFetcher = Callable[[str, dt.date, dt.date], list[dict[str, Any]]]
 
+# V2 uses short field names (O/H/L/C/Vo) with Adj* for split-adjusted values.
+# The long V1-style names are kept as fallbacks so either shape normalizes.
 _FIELD_MAP: dict[str, str] = {
     "Date": DATE,
+    "O": OPEN,
+    "H": HIGH,
+    "L": LOW,
+    "C": CLOSE,
+    "AdjC": ADJ_CLOSE,
+    "Vo": VOLUME,
+    # Fallbacks (V1-style / verbose payloads)
     "Open": OPEN,
     "High": HIGH,
     "Low": LOW,
@@ -47,7 +56,7 @@ _FIELD_MAP: dict[str, str] = {
     "Volume": VOLUME,
 }
 
-_DAILY_QUOTES_URL = "https://api.jquants.com/v2/prices/daily_quotes"
+_DAILY_QUOTES_URL = "https://api.jquants.com/v2/equities/bars/daily"
 
 
 def normalize_jquants(records: list[dict[str, Any]]) -> pd.DataFrame:
@@ -65,7 +74,10 @@ def normalize_jquants(records: list[dict[str, Any]]) -> pd.DataFrame:
     if not records:
         raise DataError("J-Quants returned no records.")
 
-    df = pd.DataFrame(records).rename(columns=_FIELD_MAP)
+    df = pd.DataFrame(records)
+    # Rename only the fields present, so duplicate targets can't collide.
+    df = df.rename(columns={k: v for k, v in _FIELD_MAP.items() if k in df.columns})
+    df = df.loc[:, ~df.columns.duplicated()]
     if ADJ_CLOSE not in df.columns and CLOSE in df.columns:
         df[ADJ_CLOSE] = df[CLOSE]
 
@@ -100,7 +112,8 @@ def _default_fetcher(api_key: SecretStr | None) -> JQuantsFetcher:
                 response = client.get(_DAILY_QUOTES_URL, headers=headers, params=query)
                 response.raise_for_status()
                 payload = response.json()
-                records.extend(payload.get("daily_quotes", []))
+                # V2 returns {"data": [...]}; older shapes used "daily_quotes".
+                records.extend(payload.get("data") or payload.get("daily_quotes") or [])
                 pagination_key = payload.get("pagination_key")
                 if not pagination_key:
                     break

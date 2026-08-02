@@ -1,14 +1,14 @@
 """J-Quants fundamentals provider (Japanese equities).
 
-Maps J-Quants financial-statement records to the canonical
-:class:`~stock_ai.data.types.Fundamentals`. Price-dependent ratios (PER, PBR,
-dividend yield, market cap) are left ``None`` here — they require a current
-price and can be filled by a later enrichment step — while revenue, net income,
-and ROE (profit / equity) come straight from the statements.
+Reads the V2 ``/fins/summary`` endpoint (available on the free plan; the richer
+``/fins/details`` requires a paid plan) and maps the latest disclosure to the
+canonical :class:`~stock_ai.data.types.Fundamentals`:
 
-The HTTP call is injectable so the provider is unit-testable without network.
-The default fetcher targets the J-Quants V2 statements endpoint; verify its
-exact shape against current J-Quants docs before live use.
+- ``Sales`` → revenue, ``NP`` → net income, ``NP / Eq`` → ROE
+- ``EPS``, ``BPS``, ``DivAnn`` combine with an optional current price to give
+  PER, PBR, and dividend yield; without a price those stay ``None``.
+
+The HTTP call is injectable, so the provider is unit-testable without network.
 """
 
 from __future__ import annotations
@@ -28,8 +28,9 @@ logger = get_logger(__name__)
 # A fetcher takes a symbol and returns raw statement records.
 StatementFetcher = Callable[[str], list[dict[str, Any]]]
 Clock = Callable[[], dt.date]
+PriceLookup = Callable[[str], float | None]
 
-_STATEMENTS_URL = "https://api.jquants.com/v2/fins/statements"
+_STATEMENTS_URL = "https://api.jquants.com/v2/fins/summary"
 
 
 def _to_float(value: Any) -> float | None:
@@ -43,20 +44,38 @@ def _to_float(value: Any) -> float | None:
 
 
 def _latest(records: list[dict[str, Any]]) -> dict[str, Any]:
-    """Return the most recently disclosed statement record."""
-    return max(records, key=lambda r: str(r.get("DisclosedDate", "")))
+    """Return the most recently disclosed record (V2 ``DiscDate``, V1 fallback)."""
+    return max(
+        records,
+        key=lambda r: str(r.get("DiscDate") or r.get("DisclosedDate") or ""),
+    )
 
 
-def normalize_statement(symbol: str, records: list[dict[str, Any]], as_of: dt.date) -> Fundamentals:
-    """Build a :class:`Fundamentals` snapshot from statement records.
+def _first(record: dict[str, Any], *keys: str) -> float | None:
+    """Return the first parseable numeric value among ``keys``."""
+    for key in keys:
+        value = _to_float(record.get(key))
+        if value is not None:
+            return value
+    return None
+
+
+def normalize_statement(
+    symbol: str,
+    records: list[dict[str, Any]],
+    as_of: dt.date,
+    price: float | None = None,
+) -> Fundamentals:
+    """Build a :class:`Fundamentals` snapshot from ``fins/summary`` records.
 
     Args:
         symbol: The security code.
-        records: J-Quants ``statements`` records.
+        records: J-Quants summary records (newest disclosure wins).
         as_of: Snapshot date.
+        price: Current share price; enables PER, PBR, dividend yield, market cap.
 
     Returns:
-        A fundamentals snapshot (price-dependent ratios left ``None``).
+        A fundamentals snapshot. Ratios needing a price stay ``None`` without one.
 
     Raises:
         DataError: If ``records`` is empty.
@@ -65,18 +84,30 @@ def normalize_statement(symbol: str, records: list[dict[str, Any]], as_of: dt.da
         raise DataError(f"No J-Quants statements for {symbol!r}.")
 
     latest = _latest(records)
-    revenue = _to_float(latest.get("NetSales"))
-    net_income = _to_float(latest.get("Profit"))
-    equity = _to_float(latest.get("Equity"))
+    revenue = _first(latest, "Sales", "NetSales")
+    net_income = _first(latest, "NP", "Profit")
+    equity = _first(latest, "Eq", "Equity")
+    eps = _first(latest, "EPS")
+    bps = _first(latest, "BPS")
+    dividend = _first(latest, "DivAnn")
+    shares = _first(latest, "ShOutFY")
+
     roe = net_income / equity if (net_income is not None and equity) else None
+    per = price / eps if (price is not None and eps) else None
+    pbr = price / bps if (price is not None and bps) else None
+    dividend_yield = dividend / price if (price and dividend is not None) else None
+    market_cap = price * shares if (price is not None and shares) else None
 
     return Fundamentals(
         symbol=symbol,
         as_of=as_of,
         roe=roe,
+        per=per,
+        pbr=pbr,
+        dividend_yield=dividend_yield,
+        market_cap=market_cap,
         revenue=revenue,
         net_income=net_income,
-        # PER / PBR / dividend yield / market cap need a current price → left None.
     )
 
 
@@ -97,7 +128,8 @@ def _default_fetcher(api_key: SecretStr | None) -> StatementFetcher:
                 response = client.get(_STATEMENTS_URL, headers=headers, params=params)
                 response.raise_for_status()
                 payload = response.json()
-                records.extend(payload.get("statements", []))
+                # V2 returns {"data": [...]}; older shapes used "statements".
+                records.extend(payload.get("data") or payload.get("statements") or [])
                 pagination_key = payload.get("pagination_key")
                 if not pagination_key:
                     break
@@ -116,6 +148,7 @@ class JQuantsFundamentalsProvider:
         api_key: SecretStr | None = None,
         fetcher: StatementFetcher | None = None,
         clock: Clock | None = None,
+        price_source: PriceLookup | None = None,
     ) -> None:
         """Create the provider.
 
@@ -123,13 +156,22 @@ class JQuantsFundamentalsProvider:
             api_key: J-Quants V2 API key.
             fetcher: Callable performing the raw fetch; injected in tests.
             clock: Callable returning the snapshot date; defaults to today.
+            price_source: Optional callable returning a symbol's current price,
+                which enables PER, PBR, dividend yield, and market cap.
         """
         self._fetch = fetcher or _default_fetcher(api_key)
         self._today = clock or dt.date.today
+        self._price_source = price_source
 
     def fetch_fundamentals(self, symbol: str) -> Fundamentals:
         """Fetch and normalize the latest fundamentals for ``symbol``."""
         records = self._fetch(symbol)
-        snapshot = normalize_statement(symbol, records, self._today())
+        price: float | None = None
+        if self._price_source is not None:
+            try:
+                price = self._price_source(symbol)
+            except Exception as exc:  # price is optional — never fail the fetch
+                logger.warning("Price lookup failed for %s: %s", symbol, exc)
+        snapshot = normalize_statement(symbol, records, self._today(), price)
         logger.info("Fetched J-Quants fundamentals for %s", symbol)
         return snapshot

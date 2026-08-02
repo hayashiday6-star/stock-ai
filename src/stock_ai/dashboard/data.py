@@ -103,7 +103,10 @@ def ingest_fundamentals(
             from stock_ai.config.settings import get_settings
             from stock_ai.data.jquants_fundamentals import JQuantsFundamentalsProvider
 
-            provider = JQuantsFundamentalsProvider(api_key=get_settings().jquants_api_key)
+            provider = JQuantsFundamentalsProvider(
+                api_key=get_settings().jquants_api_key,
+                price_source=lambda sym: latest_close(database, sym),
+            )
             market = "JP"
         else:
             provider = YFinanceFundamentalsProvider()
@@ -138,6 +141,14 @@ def load_prices(database: Database, symbol: str) -> pd.DataFrame:
     """Return the stored OHLCV price frame for ``symbol``."""
     with database.session() as session:
         return PriceRepository(session).get_prices(symbol)
+
+
+def latest_close(database: Database, symbol: str) -> float | None:
+    """Return the most recent stored close for ``symbol``, or ``None``."""
+    prices = load_prices(database, symbol)
+    if prices.empty:
+        return None
+    return float(prices["close"].iloc[-1])
 
 
 def score_table(database: Database, symbols: list[str]) -> pd.DataFrame:

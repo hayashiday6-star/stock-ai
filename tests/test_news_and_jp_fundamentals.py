@@ -28,18 +28,23 @@ _TODAY = dt.date(2024, 6, 30)
 
 
 def _statements() -> list[dict[str, Any]]:
+    """Records in the real V2 ``fins/summary`` shape (Sales/NP/Eq/EPS/BPS)."""
     return [
         {
-            "DisclosedDate": "2024-02-14",
-            "NetSales": "1000000",
-            "Profit": "50000",
-            "Equity": "500000",
+            "DiscDate": "2024-02-14",
+            "Sales": "1000000",
+            "NP": "50000",
+            "Eq": "500000",
         },
         {  # newer disclosure must win
-            "DisclosedDate": "2024-05-15",
-            "NetSales": "1200000",
-            "Profit": "90000",
-            "Equity": "600000",
+            "DiscDate": "2024-05-15",
+            "Sales": "1200000",
+            "NP": "90000",
+            "Eq": "600000",
+            "EPS": "100",
+            "BPS": "1000",
+            "DivAnn": "40",
+            "ShOutFY": "1000",
         },
     ]
 
@@ -51,15 +56,23 @@ def test_normalize_statement_uses_latest_and_computes_roe() -> None:
     assert result.revenue == 1_200_000
     assert result.net_income == 90_000
     assert result.roe == pytest.approx(90_000 / 600_000)
-    # Price-dependent ratios are intentionally absent.
+    # Without a price, price-dependent ratios stay absent.
     assert result.per is None
     assert result.pbr is None
 
 
-def test_normalize_statement_tolerates_missing_equity() -> None:
+def test_normalize_statement_with_price_computes_ratios() -> None:
+    result = normalize_statement("7203", _statements(), _TODAY, price=2000.0)
+    assert result.per == pytest.approx(2000 / 100)  # price / EPS
+    assert result.pbr == pytest.approx(2000 / 1000)  # price / BPS
+    assert result.dividend_yield == pytest.approx(40 / 2000)
+    assert result.market_cap == pytest.approx(2000 * 1000)
+
+
+def test_normalize_statement_accepts_v1_field_names() -> None:
     records = [{"DisclosedDate": "2024-05-15", "NetSales": "100", "Profit": "10"}]
     result = normalize_statement("7203", records, _TODAY)
-    assert result.roe is None
+    assert result.roe is None  # equity missing
     assert result.revenue == 100
 
 

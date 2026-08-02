@@ -120,6 +120,8 @@ def test_notify_cli_console() -> None:
     assert "AAPL" in result.stdout
 
 
-def test_notify_cli_unconfigured_channel_exits_nonzero() -> None:
+def test_notify_cli_unconfigured_channel_exits_nonzero(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Force the channel to be unconfigured regardless of the developer's .env.
+    monkeypatch.setattr(cli, "get_notifier", lambda *_: DiscordNotifier(None))
     result = runner.invoke(cli.app, ["notify", "hi", "--channel", "discord"])
-    assert result.exit_code == 1  # no webhook configured
+    assert result.exit_code == 1

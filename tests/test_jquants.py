@@ -54,6 +54,28 @@ def test_normalize_defaults_adj_close_to_close() -> None:
     assert result[ADJ_CLOSE].iloc[0] == 10
 
 
+def test_normalize_v2_short_field_names() -> None:
+    """Real V2 payloads use O/H/L/C/Vo with AdjC for the adjusted close."""
+    records = [
+        {
+            "Date": "2026-06-01",
+            "Code": "72030",
+            "O": 3006.0,
+            "H": 3009.0,
+            "L": 2891.0,
+            "C": 2905.5,
+            "AdjC": 2905.5,
+            "Vo": 37687200.0,
+            "AdjFactor": 1.0,
+        }
+    ]
+    result = normalize_jquants(records)
+    assert list(result.columns) == OHLCV_COLUMNS
+    assert result["open"].iloc[0] == 3006.0
+    assert result[ADJ_CLOSE].iloc[0] == 2905.5
+    assert result[VOLUME].iloc[0] == 37687200
+
+
 def test_normalize_empty_raises() -> None:
     with pytest.raises(DataError):
         normalize_jquants([])
