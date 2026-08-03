@@ -141,6 +141,23 @@ uv run stock-ai rank --fx JPY=0.0064       # pinned rate, reproducible
 uv run stock-ai rank --max-market-cap 1e9  # small caps, both markets
 ```
 
+### Multi-bagger candidates
+
+```bash
+uv run stock-ai statements 4593 7203              # the preset reads the series
+uv run stock-ai rank --preset tenbagger --max-market-cap 2e9
+```
+
+`--preset tenbagger` swaps the default ratio factors for sustained revenue
+CAGR, latest-year revenue and profit growth, retained earnings, and smallness
+(converted, so a JP small cap is not mistaken for a mega cap). Momentum is left
+out on purpose — it measures what the market has already paid for.
+
+Treat the output as a shortlist to research, not a prediction. No weighting of
+trailing fundamentals picks future multi-baggers reliably. The engine to check
+it with is already here: score a universe, hold the top decile, and
+`backtest` it against buy-and-hold before trusting the ranking.
+
 The composite score is built from unitless ratios, so it already compares
 across markets. Market cap does not — it arrives in the listing market's
 currency — so it is converted to `--base` (default USD) before being shown or

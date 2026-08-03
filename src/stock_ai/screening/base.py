@@ -20,6 +20,8 @@ class ScreeningContext:
     """Everything a condition may inspect for one candidate symbol."""
 
     symbol: str
+    market: str = "US"
+    """Listing market — selects the quote currency for absolute figures."""
     fundamentals: Fundamentals | None = None
     prices: pd.DataFrame | None = None
     statements: list[FinancialReport] = field(default_factory=list)

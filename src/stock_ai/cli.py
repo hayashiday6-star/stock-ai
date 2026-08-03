@@ -45,8 +45,13 @@ from stock_ai.database.repository import (
 )
 from stock_ai.notification.factory import get_notifier
 from stock_ai.portfolio.analysis import PortfolioAnalysis, analyze_portfolio
+from stock_ai.portfolio.growth_factors import tenbagger_weighted_factors
 from stock_ai.portfolio.ranking import rank_securities
-from stock_ai.portfolio.scoring import WeightedScorer, default_weighted_factors
+from stock_ai.portfolio.scoring import (
+    WeightedFactor,
+    WeightedScorer,
+    default_weighted_factors,
+)
 from stock_ai.screening.base import All, Condition, ScreeningContext
 from stock_ai.screening.conditions import (
     MaxMarketCap,
@@ -499,6 +504,9 @@ def rank(
     ),
     min_market_cap: float | None = typer.Option(None, help="Minimum market cap, in --base."),
     max_market_cap: float | None = typer.Option(None, help="Maximum market cap, in --base."),
+    preset: str = typer.Option(
+        "default", help="Factor set: default | tenbagger (small-cap growth)."
+    ),
     top: int = typer.Option(20, help="Show only the top N rows."),
 ) -> None:
     """Rank JP and US securities together on one score.
@@ -506,24 +514,44 @@ def rank(
     The composite score is built from unitless ratios, so it already compares
     across markets; only the market cap needs converting, which is what
     ``--fx``/``--base`` control.
+
+    ``--preset tenbagger`` swaps in a small-cap growth factor set. It reads the
+    statement series, so run ``statements`` first, and treat its output as a
+    shortlist to research rather than a prediction — backtest it before
+    trusting it.
     """
     settings = get_settings()
     configure_logging(settings.log_level)
+
+    fx = FxConverter(base=base, rates=_parse_fx_rates(fx_rate))
+    factors, needs_statements = _factor_preset(preset, fx)
 
     database = Database()
     database.create_all()
     frame = rank_securities(
         database,
         symbols=list(symbols) if symbols else None,
-        fx=FxConverter(base=base, rates=_parse_fx_rates(fx_rate)),
+        scorer=WeightedScorer(factors),
+        fx=fx,
         min_market_cap=min_market_cap,
         max_market_cap=max_market_cap,
+        load_statements=needs_statements,
     )
 
     if frame.empty:
         console.print("[yellow]No securities matched; run 'fetch' and 'fundamentals' first.[/]")
         return
     _render_ranking(frame.head(top), base.upper())
+
+
+def _factor_preset(name: str, fx: FxConverter) -> tuple[list[WeightedFactor], bool]:
+    """Return the named factor set and whether it needs the statement series."""
+    key = name.lower()
+    if key == "default":
+        return default_weighted_factors(), False
+    if key == "tenbagger":
+        return tenbagger_weighted_factors(fx=fx), True
+    raise typer.BadParameter(f"Unknown preset {name!r}; use 'default' or 'tenbagger'.")
 
 
 def _parse_fx_rates(pairs: list[str]) -> dict[str, float]:

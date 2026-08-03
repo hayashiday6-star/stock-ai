@@ -17,6 +17,7 @@ from stock_ai.core.logging import get_logger
 from stock_ai.data.fx import DEFAULT_BASE, FxConverter
 from stock_ai.database.engine import Database
 from stock_ai.database.repository import (
+    FinancialStatementRepository,
     FundamentalsRepository,
     PriceRepository,
     list_securities,
@@ -36,6 +37,7 @@ def rank_securities(
     fx: FxConverter | None = None,
     min_market_cap: float | None = None,
     max_market_cap: float | None = None,
+    load_statements: bool = False,
 ) -> pd.DataFrame:
     """Rank securities across markets, highest composite score first.
 
@@ -47,6 +49,9 @@ def rank_securities(
             live-rate converter; pass a pinned one for reproducible reports.
         min_market_cap: Lower size bound, **in the converter's base currency**.
         max_market_cap: Upper size bound, in the same base currency.
+        load_statements: Attach each name's annual statement series, which
+            the growth factors need. Off by default because it costs a
+            query per symbol and the default factor set does not use it.
 
     Returns:
         A frame of ``symbol, market, score, market_cap`` plus one column per
@@ -62,6 +67,7 @@ def rank_securities(
         wanted = set(symbols) if symbols is not None else None
         fundamentals_repo = FundamentalsRepository(session)
         price_repo = PriceRepository(session)
+        statement_repo = FinancialStatementRepository(session)
 
         for symbol, market in securities:
             if wanted is not None and symbol not in wanted:
@@ -69,8 +75,10 @@ def rank_securities(
             fundamentals = fundamentals_repo.get_latest(symbol)
             context = ScreeningContext(
                 symbol=symbol,
+                market=market,
                 fundamentals=fundamentals,
                 prices=price_repo.get_prices(symbol),
+                statements=statement_repo.get_reports(symbol) if load_statements else [],
             )
             native_cap = fundamentals.market_cap if fundamentals else None
             rows.append(

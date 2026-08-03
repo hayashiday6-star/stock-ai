@@ -12,7 +12,7 @@ from stock_ai.database.repository import (
     FinancialStatementRepository,
     FundamentalsRepository,
     PriceRepository,
-    list_symbols,
+    list_securities,
 )
 from stock_ai.screening.base import Condition, ScreeningContext
 
@@ -53,7 +53,8 @@ class ScreeningEngine:
             Passing symbols, in the order tested.
         """
         with self.database.session() as session:
-            targets = symbols if symbols is not None else list_symbols(session)
+            markets = dict(list_securities(session))
+            targets = symbols if symbols is not None else list(markets)
             fundamentals_repo = FundamentalsRepository(session)
             price_repo = PriceRepository(session)
             statement_repo = FinancialStatementRepository(session)
@@ -64,6 +65,7 @@ class ScreeningEngine:
                 statements = statement_repo.get_reports(symbol) if self.load_statements else []
                 context = ScreeningContext(
                     symbol=symbol,
+                    market=markets.get(symbol, "US"),
                     fundamentals=fundamentals_repo.get_latest(symbol),
                     prices=prices,
                     statements=statements,
