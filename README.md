@@ -75,6 +75,35 @@ uv run stock-ai statements 7203 4593   # one request returns the whole history
 Rows are keyed by `(symbol, fiscal year, period)`, so re-running updates
 restated periods instead of duplicating them.
 
+## Loading a whole universe (JP)
+
+Everything above takes symbols as input. This is where the list comes from:
+
+```bash
+uv run stock-ai universe --segment prime          # ~1,600 names, one request
+uv run stock-ai universe --segment growth --limit 20   # trial run first
+
+uv run stock-ai bulk-fetch --what prices --segment prime --lookback 1500
+uv run stock-ai bulk-fetch --what statements --segment stored
+```
+
+`universe` stores each listing's code, name, and sector. `bulk-fetch` then
+backfills prices or statements across them.
+
+**Safe to interrupt.** A symbol whose data is already current is skipped
+without a request, so re-running after a Ctrl-C or a dropped connection costs
+only the remainder — and re-running after failures retries just those. One
+symbol failing never ends the run.
+
+Budget roughly `symbols × --throttle` seconds plus network time; the default
+0.2s pause is there because a rate-limited free-tier key costs more time than
+the pause does. Start with `--segment growth --limit 20` to confirm the
+pipeline works before committing to Prime.
+
+ETFs, REITs, and index products are excluded — they share the code format with
+equities but have no revenue to grow or sector to group by, and letting them in
+poisons every screen built on the universe.
+
 ## Screening
 
 Filter stored securities by fundamentals and export the matches:

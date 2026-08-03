@@ -12,6 +12,14 @@ from pathlib import Path
 import pandas as pd
 import typer
 from rich.console import Console
+from rich.progress import (
+    BarColumn,
+    Progress,
+    SpinnerColumn,
+    TaskProgressColumn,
+    TextColumn,
+    TimeRemainingColumn,
+)
 from rich.table import Table
 
 from stock_ai import __version__
@@ -28,12 +36,14 @@ from stock_ai.core.exceptions import AIError, BacktestError, NotificationError
 from stock_ai.core.logging import configure_logging
 from stock_ai.core.scheduler import DailyScheduler
 from stock_ai.data.base import PriceProvider
+from stock_ai.data.bulk import BulkIngester, Dataset, store_universe
 from stock_ai.data.fx import FxConverter
 from stock_ai.data.jquants_fundamentals import JQuantsFundamentalsProvider
 from stock_ai.data.jquants_profile import JQuantsProfileProvider
 from stock_ai.data.jquants_provider import JQuantsPriceProvider
 from stock_ai.data.service import FundamentalsService, IngestionService, IngestResult
 from stock_ai.data.types import Importance
+from stock_ai.data.universe import JQuantsUniverse, Segment
 from stock_ai.data.yfinance_provider import (
     YFinanceFundamentalsProvider,
     YFinancePriceProvider,
@@ -46,6 +56,7 @@ from stock_ai.database.repository import (
     HoldingRepository,
     PriceRepository,
     WatchlistRepository,
+    list_securities,
     upsert_profile,
 )
 from stock_ai.ir.edinet import EdinetDisclosureSource
@@ -358,6 +369,144 @@ def _render_portfolio(analysis: PortfolioAnalysis) -> None:
 def _optional_pct(value: float | None) -> str:
     """Render an optional fraction as a percentage."""
     return "—" if value is None else f"{value:.2%}"
+
+
+@app.command()
+def universe(
+    segment: str = typer.Option("prime", help="prime | standard | growth | all."),
+    limit: int | None = typer.Option(None, help="Cap the list — use for a trial run."),
+    store: bool = typer.Option(True, help="Store the profiles (names and sectors)."),
+) -> None:
+    """List (and store) the JP listed universe for a market segment.
+
+    One request. Run this before ``bulk-fetch``: it gives every later step a
+    symbol list, a company name, and a sector.
+    """
+    settings = get_settings()
+    configure_logging(settings.log_level)
+
+    try:
+        chosen = Segment(segment.lower())
+    except ValueError as exc:
+        raise typer.BadParameter(
+            f"segment must be prime, standard, growth, or all; got {segment!r}."
+        ) from exc
+
+    profiles = JQuantsUniverse(api_key=settings.jquants_api_key).profiles(chosen, limit=limit)
+    if not profiles:
+        console.print(f"[yellow]No listings found on {chosen.value}.[/]")
+        raise typer.Exit(code=1)
+
+    database = Database()
+    database.create_all()
+    if store:
+        store_universe(database, profiles)
+
+    table = Table(title=f"{chosen.value} universe ({len(profiles)} listings)")
+    table.add_column("code", style="cyan")
+    table.add_column("name")
+    table.add_column("sector")
+    for profile in profiles[:30]:
+        table.add_row(profile.symbol, profile.name or "—", profile.sector or "—")
+    console.print(table)
+    if len(profiles) > 30:
+        console.print(f"[dim]... and {len(profiles) - 30} more.[/]")
+    if store:
+        console.print(f"Stored [bold]{len(profiles)}[/] profiles.")
+
+
+@app.command()
+def bulk_fetch(
+    what: str = typer.Option("prices", help="prices | statements."),
+    segment: str = typer.Option(
+        "stored", help="prime | standard | growth | all | stored (symbols already in the DB)."
+    ),
+    limit: int | None = typer.Option(None, help="Cap the symbol count."),
+    lookback: int = typer.Option(365, help="Backfill days for a symbol with no prices."),
+    throttle: float = typer.Option(0.2, help="Seconds to pause between symbols."),
+    resume: bool = typer.Option(True, help="Skip symbols that are already current."),
+) -> None:
+    """Backfill prices or statements across a whole universe.
+
+    Safe to interrupt and re-run: already-current symbols are skipped without a
+    request, and one symbol's failure never ends the run. Expect roughly
+    ``symbols x throttle`` seconds plus network time — TSE Prime is ~1,600 names.
+    """
+    settings = get_settings()
+    configure_logging(settings.log_level)
+
+    try:
+        dataset = Dataset(what.lower())
+    except ValueError as exc:
+        raise typer.BadParameter(f"--what must be prices or statements; got {what!r}.") from exc
+
+    database = Database()
+    database.create_all()
+    symbols = _bulk_symbols(segment, settings, database, limit)
+    if not symbols:
+        console.print("[yellow]No symbols to process.[/] Run 'universe' first, or pass a segment.")
+        raise typer.Exit(code=1)
+
+    console.print(
+        f"Fetching [bold]{dataset.value}[/] for {len(symbols)} symbol(s). "
+        "Interrupting is safe — re-run to resume."
+    )
+    ingester = BulkIngester(database, api_key=settings.jquants_api_key, throttle_seconds=throttle)
+
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        BarColumn(),
+        TaskProgressColumn(),
+        TimeRemainingColumn(),
+        console=console,
+    ) as progress:
+        task = progress.add_task(dataset.value, total=len(symbols))
+
+        def advance(index: int, total: int, symbol: str) -> None:
+            progress.update(task, completed=index - 1, description=f"{dataset.value} {symbol}")
+
+        report = ingester.run(
+            symbols, dataset, resume=resume, lookback_days=lookback, progress=advance
+        )
+        progress.update(task, completed=len(symbols))
+
+    console.print(report.summary())
+    if report.failed:
+        failures = Table(title=f"failed ({len(report.failed)})")
+        failures.add_column("symbol", style="cyan")
+        failures.add_column("error", overflow="fold")
+        for symbol, error in list(report.failed.items())[:20]:
+            failures.add_row(symbol, error)
+        console.print(failures)
+        if len(report.failed) > 20:
+            console.print(f"[dim]... and {len(report.failed) - 20} more.[/]")
+        console.print("[dim]Re-run to retry only the failures.[/]")
+
+
+def _bulk_symbols(
+    segment: str, settings: Settings, database: Database, limit: int | None
+) -> list[str]:
+    """Resolve the symbol list for a bulk run.
+
+    ``stored`` reuses what is already in the database, which avoids a universe
+    request when the list has not changed.
+    """
+    key = segment.lower()
+    if key == "stored":
+        with database.session() as session:
+            symbols = [symbol for symbol, _market in list_securities(session)]
+    else:
+        try:
+            chosen = Segment(key)
+        except ValueError as exc:
+            raise typer.BadParameter(
+                f"segment must be prime, standard, growth, all, or stored; got {segment!r}."
+            ) from exc
+        profiles = JQuantsUniverse(api_key=settings.jquants_api_key).profiles(chosen)
+        store_universe(database, profiles)
+        symbols = [profile.symbol for profile in profiles]
+    return symbols[:limit] if limit else symbols
 
 
 @app.command()
