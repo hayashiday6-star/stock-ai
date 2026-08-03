@@ -32,6 +32,26 @@ Built phase by phase; all ten phases are in place.
 
 ## Setup
 
+The numbered scripts in `scripts\` automate the whole first-run sequence. Run
+them in order from the project folder:
+
+```powershell
+.\scripts\1-setup.ps1                            # install deps, create .env, list missing keys
+.\scripts\2-verify.ps1                           # check the integrations, save a report
+.\scripts\3-load-data.ps1 -Segment growth -Limit 20   # small trial
+.\scripts\3-load-data.ps1 -Segment prime         # the real load
+.\scripts\4-daily.ps1 -Register -At 18:00 -Provider claude -Channel discord
+```
+
+`2-verify.ps1` exists because three data sources fail *silently* — with zero
+rows, not an error. It runs each one and writes `verify-output.txt`; paste that
+file when asking for help. `3-load-data.ps1` is safe to interrupt: re-running
+skips whatever is already current. `4-daily.ps1 -Register` creates a Windows
+scheduled task (needs an elevated PowerShell) that catches up after the machine
+has been asleep, which the blocking `daily --at` mode cannot do.
+
+Or do it by hand:
+
 ```bash
 uv sync                     # create .venv and install base + dev deps
 uv run pre-commit install   # enable commit-time lint/format hooks
