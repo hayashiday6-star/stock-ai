@@ -32,7 +32,7 @@ from stock_ai.backtest.factor_test import FactorTestResult, run_factor_test
 from stock_ai.backtest.report import metrics_frame
 from stock_ai.backtest.strategy import BuyAndHold, Strategy, build_strategy
 from stock_ai.config.settings import Settings, get_settings
-from stock_ai.core.exceptions import AIError, BacktestError, NotificationError
+from stock_ai.core.exceptions import AIError, BacktestError, DataError, NotificationError
 from stock_ai.core.logging import configure_logging
 from stock_ai.core.scheduler import DailyScheduler
 from stock_ai.data.base import PriceProvider
@@ -291,11 +291,15 @@ def portfolio(
 
     database = Database()
     database.create_all()
-    analysis = analyze_portfolio(
-        database,
-        fx=FxConverter(base=base, rates=_parse_fx_rates(fx_rate)),
-        lookback=lookback,
-    )
+    try:
+        analysis = analyze_portfolio(
+            database,
+            fx=FxConverter(base=base, rates=_parse_fx_rates(fx_rate)),
+            lookback=lookback,
+        )
+    except DataError as exc:
+        console.print(f"[red]{exc}[/]")
+        raise typer.Exit(code=1) from exc
 
     if not analysis.positions:
         console.print("[yellow]No priced holdings; record some with 'hold' first.[/]")
@@ -650,7 +654,7 @@ def factor_test(
             horizon_days=horizon,
             buckets=buckets,
         )
-    except BacktestError as exc:
+    except (BacktestError, DataError) as exc:
         console.print(f"[red]{exc}[/]")
         raise typer.Exit(code=1) from exc
 
@@ -793,15 +797,19 @@ def rank(
 
     database = Database()
     database.create_all()
-    frame = rank_securities(
-        database,
-        symbols=list(symbols) if symbols else None,
-        scorer=WeightedScorer(factors),
-        fx=fx,
-        min_market_cap=min_market_cap,
-        max_market_cap=max_market_cap,
-        load_statements=needs_statements,
-    )
+    try:
+        frame = rank_securities(
+            database,
+            symbols=list(symbols) if symbols else None,
+            scorer=WeightedScorer(factors),
+            fx=fx,
+            min_market_cap=min_market_cap,
+            max_market_cap=max_market_cap,
+            load_statements=needs_statements,
+        )
+    except DataError as exc:
+        console.print(f"[red]{exc}[/]")
+        raise typer.Exit(code=1) from exc
 
     if frame.empty:
         console.print("[yellow]No securities matched; run 'fetch' and 'fundamentals' first.[/]")
@@ -1109,6 +1117,15 @@ def ask(
     """
     settings = get_settings()
     configure_logging(settings.log_level)
+
+    if provider.lower() == "dummy":
+        # The dummy provider echoes its prompt; it cannot emit the JSON this
+        # command parses. Saying so beats "no JSON object" on a test run.
+        console.print(
+            "[yellow]The 'dummy' provider only echoes text and cannot answer this.[/] "
+            "Use --provider claude, openai, or gemini."
+        )
+        raise typer.Exit(code=1)
 
     ai = get_ai_provider(provider, settings)
     try:

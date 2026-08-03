@@ -107,7 +107,7 @@ else {
 
 Write-Host ''
 Write-Host 'Next:'
-Write-Host '  Dashboard    :  .\dashboard.bat   (or: uv run streamlit run src/stock_ai/dashboard/app.py)'
+Write-Host '  Dashboard    :  uv run streamlit run src/stock_ai/dashboard/app.py'
 Write-Host '  Check a score:  uv run stock-ai factor-test 2024-06-28 --preset tenbagger'
 
 Exit-WithPause 0

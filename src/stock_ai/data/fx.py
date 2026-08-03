@@ -72,11 +72,29 @@ class FxConverter:
         self._fetch = fetcher or _default_rate_fetcher
 
     def rate(self, currency: str) -> float:
-        """Return the ``currency -> base`` rate, fetching and caching on first use."""
+        """Return the ``currency -> base`` rate, fetching and caching on first use.
+
+        Raises:
+            DataError: If the rate is neither pinned nor fetchable. The message
+                names the fix, because the common cause is running a JP ranking
+                offline or behind a proxy, and an unhandled transport error
+                buries that under a stack trace from deep inside the HTTP stack.
+        """
         key = currency.upper()
-        if key not in self._rates:
+        if key in self._rates:
+            return self._rates[key]
+
+        try:
             self._rates[key] = self._fetch(key, self.base)
-            logger.info("Resolved FX %s->%s = %g", key, self.base, self._rates[key])
+        except DataError:
+            raise
+        except Exception as exc:
+            raise DataError(
+                f"Could not fetch the {key}->{self.base} exchange rate ({exc}). "
+                f"Pin it instead with --fx {key}=<rate>."
+            ) from None
+
+        logger.info("Resolved FX %s->%s = %g", key, self.base, self._rates[key])
         return self._rates[key]
 
     def convert(self, amount: float | None, currency: str) -> float | None:

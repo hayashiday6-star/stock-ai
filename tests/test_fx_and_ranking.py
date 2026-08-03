@@ -185,3 +185,27 @@ def test_empty_database_ranks_to_an_empty_frame(database: Database) -> None:
     frame = rank_securities(database, fx=static_converter("USD"))
     assert frame.empty
     assert list(frame.columns) == ["symbol", "market", "score", "market_cap"]
+
+
+# --- failure messages must name the fix -------------------------------------
+
+
+def test_an_unfetchable_rate_says_how_to_pin_it() -> None:
+    """A transport failure buried in a stack trace tells the user nothing."""
+
+    def boom(currency: str, base: str) -> float:
+        raise RuntimeError("CONNECT tunnel failed, response 403")
+
+    fx = FxConverter(base="USD", fetcher=boom)
+    with pytest.raises(DataError) as excinfo:
+        fx.convert(1.0, "JPY")
+
+    message = str(excinfo.value)
+    assert "JPY" in message
+    assert "--fx JPY=" in message  # the actionable part
+
+
+def test_a_data_error_from_the_fetcher_passes_through_unwrapped() -> None:
+    """static_converter's refusal already reads well; do not re-wrap it."""
+    with pytest.raises(DataError, match="No FX rate configured"):
+        static_converter("USD").convert(1.0, "EUR")

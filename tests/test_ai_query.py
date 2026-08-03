@@ -230,3 +230,11 @@ def test_an_empty_universe_returns_nothing(database: Database) -> None:
 def test_an_empty_query_is_reported_as_such() -> None:
     assert ScreenQuery(condition=None).is_empty
     assert not ScreenQuery(condition=None, markets=["JP"]).is_empty
+
+
+def test_the_dummy_provider_cannot_answer_a_structured_query() -> None:
+    """It echoes its prompt, so the failure should name the cause, not the JSON."""
+    from stock_ai.ai.dummy import DummyAIProvider
+
+    with pytest.raises(AIError, match="no JSON object"):
+        parse_query(DummyAIProvider(), "PER15以下の株")
