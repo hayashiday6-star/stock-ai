@@ -25,6 +25,11 @@ Built phase by phase; all ten phases are in place.
 - Windows 11
 - [uv](https://docs.astral.sh/uv/) (manages Python 3.13 automatically)
 
+> **PowerShell users:** every command below is a single line — run them from the
+> project folder. The examples use no shell-specific syntax, but note that
+> Windows PowerShell 5.1 (the Windows 11 default) does not support `&&`; run
+> chained commands on separate lines, or use PowerShell 7.
+
 ## Setup
 
 ```bash
@@ -124,8 +129,7 @@ All criteria combine with AND. Output formats: `csv`, `json`, `xlsx`.
 
 ```bash
 # 割安成長株: 増収・増益・増配かつ割安
-uv run stock-ai screen --min-revenue-growth 0.05 --min-profit-growth 0.05 \
-                       --min-dividend-growth 0.001 --max-per 20
+uv run stock-ai screen --min-revenue-growth 0.05 --min-profit-growth 0.05 --min-dividend-growth 0.001 --max-per 20
 
 # 配当: 3年以上の連続増配で、配当性向は 30% 以下
 uv run stock-ai screen --min-dividend-streak 3 --max-payout-ratio 0.30
