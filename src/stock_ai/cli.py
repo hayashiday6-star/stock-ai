@@ -30,7 +30,11 @@ from stock_ai.ai.analysis import summarize as ai_summarize
 from stock_ai.ai.factory import get_ai_provider
 from stock_ai.ai.query import parse_query, run_query
 from stock_ai.backtest.engine import BacktestEngine
-from stock_ai.backtest.factor_test import FactorTestResult, run_factor_test
+from stock_ai.backtest.factor_test import (
+    FactorTestResult,
+    run_factor_test,
+    suggest_formation,
+)
 from stock_ai.backtest.report import metrics_frame
 from stock_ai.backtest.strategy import BuyAndHold, Strategy, build_strategy
 from stock_ai.config.settings import Settings, get_settings
@@ -817,10 +821,36 @@ def _render_factor_test(result: FactorTestResult, preset: str) -> None:
                 console.print(
                     "  Most were dropped for want of a disclosure, not for want of "
                     "price history. Fetching more prices will not help; a later "
-                    "formation date will, because more has been filed by then.\n"
-                    "  Leave at least horizon_days of trading after it: for a "
-                    "252-day horizon, roughly 14 months before today."
+                    "formation date might, because more has been filed by then."
                 )
+            _print_formation_advice(result.horizon_days)
+
+
+def _print_formation_advice(horizon_days: int) -> None:
+    """Say which formation dates the stored data can actually support.
+
+    Chosen by coverage, never by outcome. Hunting for the formation date that
+    produces the best t-statistic is how a noise factor gets believed; this
+    reports where the most names can be tested, which is a property of the data
+    and not of the answer.
+    """
+    advice = suggest_formation(Database(), horizon_days)
+    if advice.best is None:
+        console.print(
+            "[yellow]No formation date works with the data stored.[/] "
+            f"The first disclosure is {advice.first_disclosure or '?'}, but a full "
+            f"{horizon_days}-bar horizon has to start by {advice.latest_feasible or '?'}. "
+            "The disclosure history is shorter than the holding period.\n"
+            "  Shorten the horizon instead: --horizon 120 tests a six-month hold."
+        )
+        return
+    console.print(
+        f"  Best coverage is at [cyan]{advice.best}[/] ({advice.coverage:.0%} of the "
+        f"universe): [dim]stock-ai factor-test {advice.best} --horizon {horizon_days}[/]\n"
+        "  [dim]That date is picked by how many names can be tested, not by the "
+        "result. Choosing a formation date because it produced a better spread "
+        "manufactures the edge it appears to find.[/]"
+    )
 
 
 def _require_date(value: str) -> dt.date:

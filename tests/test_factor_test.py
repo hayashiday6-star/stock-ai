@@ -394,3 +394,106 @@ def test_no_snapshot_old_enough_yields_none_not_a_newer_one() -> None:
     with database.session() as session:
         assert FundamentalsRepository(session).get_latest("7203", as_of=dt.date(2020, 1, 1)) is None
     database.dispose()
+
+
+# --- which formation dates the data can support -----------------------------
+
+
+def _advice_db(n: int, first_disclosure, price_start, today):
+    """A database shaped like a plan that serves only recent disclosures."""
+    import datetime as dt
+
+    import numpy as np
+    import pandas as pd
+
+    from stock_ai.data.types import FinancialReport
+    from stock_ai.database.engine import Database
+    from stock_ai.database.repository import (
+        FinancialStatementRepository,
+        PriceRepository,
+        get_or_create_security,
+    )
+
+    database = Database("sqlite:///:memory:")
+    database.create_all()
+    index = pd.bdate_range(price_start, today, name="date")
+    close = np.full(len(index), 1000.0)
+    frame = pd.DataFrame(
+        {
+            "open": close,
+            "high": close,
+            "low": close,
+            "close": close,
+            "adj_close": close,
+            "volume": 1000,
+        },
+        index=index,
+    )
+    with database.session() as session:
+        for i in range(n):
+            symbol = f"{1300 + i:04d}"
+            get_or_create_security(session, symbol, market="JP")
+            PriceRepository(session).upsert_prices(symbol, frame, market="JP")
+            FinancialStatementRepository(session).upsert_reports(
+                symbol,
+                [
+                    FinancialReport(
+                        symbol=symbol,
+                        fiscal_year=2024 + k,
+                        disclosed_on=first_disclosure + dt.timedelta(days=182 * k),
+                        revenue=1e10,
+                    )
+                    for k in range(4)
+                ],
+                market="JP",
+            )
+    return database
+
+
+def test_the_advised_date_is_not_before_the_first_disclosure() -> None:
+    """Advising an earlier date would advise a test on nothing."""
+    import datetime as dt
+
+    from stock_ai.backtest.factor_test import suggest_formation
+
+    first = dt.date(2025, 1, 15)
+    database = _advice_db(10, first, dt.date(2022, 6, 25), dt.date(2026, 8, 3))
+    advice = suggest_formation(database, horizon_days=252)
+
+    assert advice.best is not None
+    assert advice.best >= first
+    assert advice.best <= advice.latest_feasible
+    assert advice.coverage > 0.9
+    database.dispose()
+
+
+def test_a_horizon_longer_than_the_history_is_reported_as_impossible() -> None:
+    """Silently advising an unusable date is worse than saying there is none.
+
+    A plan whose disclosures start after the last feasible formation cannot
+    support the test at all, and the fix is a shorter horizon - not more data.
+    """
+    import datetime as dt
+
+    from stock_ai.backtest.factor_test import suggest_formation
+
+    database = _advice_db(10, dt.date(2026, 3, 1), dt.date(2022, 6, 25), dt.date(2026, 8, 3))
+
+    assert suggest_formation(database, horizon_days=252).best is None
+    # The same data supports a short hold, which is the actionable alternative.
+    assert suggest_formation(database, horizon_days=60).best is not None
+    database.dispose()
+
+
+def test_an_empty_database_gives_no_advice_rather_than_a_wrong_date() -> None:
+    from stock_ai.backtest.factor_test import suggest_formation
+    from stock_ai.database.engine import Database
+
+    database = Database("sqlite:///:memory:")
+    database.create_all()
+    advice = suggest_formation(database, horizon_days=252)
+
+    assert advice.best is None
+    assert advice.first_disclosure is None
+    assert advice.coverage == 0.0
+    database.dispose()

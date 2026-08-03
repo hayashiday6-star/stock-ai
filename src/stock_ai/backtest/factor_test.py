@@ -40,12 +40,14 @@ import math
 from dataclasses import dataclass, field
 
 import pandas as pd
+from sqlalchemy import func, select
 
 from stock_ai.backtest.metrics import TRADING_DAYS_PER_YEAR
 from stock_ai.core.exceptions import BacktestError
 from stock_ai.core.logging import get_logger
 from stock_ai.data.schema import ADJ_CLOSE
 from stock_ai.database.engine import Database
+from stock_ai.database.models import FinancialStatement, PriceBar, Security
 from stock_ai.database.repository import (
     FinancialStatementRepository,
     FundamentalsRepository,
@@ -389,3 +391,85 @@ def _bucket_label(index: int, count: int) -> str:
     if index == count - 1:
         return "bottom"
     return f"mid{index}"
+
+
+@dataclass(frozen=True)
+class FormationAdvice:
+    """Which formation dates the stored data can actually support."""
+
+    best: dt.date | None
+    """Date whose coverage is highest, or ``None`` if no date works."""
+    coverage: float
+    """Fraction of the universe scoreable and measurable at :attr:`best`."""
+    latest_feasible: dt.date | None
+    """Latest formation leaving a full horizon of prices after it."""
+    first_disclosure: dt.date | None
+    """Earliest disclosure anywhere in the database."""
+
+
+def suggest_formation(
+    database: Database, horizon_days: int = TRADING_DAYS_PER_YEAR
+) -> FormationAdvice:
+    """Find the formation date the stored data supports best.
+
+    Two constraints pull against each other. A formation date must be *late*
+    enough that companies have filed something by then, and *early* enough that
+    a full horizon of prices exists after it. A plan that only serves recent
+    disclosures can leave that window narrow or empty, and the symptom is a
+    factor test that silently runs on a tenth of the market.
+
+    The date is chosen by **coverage**, never by outcome. Picking the formation
+    that produces the best t-statistic is how a noise factor gets published;
+    picking the one where the most names can be tested is just using the data.
+    """
+    calendar_horizon = dt.timedelta(days=round(horizon_days * 7 / 5))
+
+    with database.session() as session:
+        first_disclosures = dict(
+            session.execute(
+                select(Security.symbol, func.min(FinancialStatement.disclosed_on))
+                .join(FinancialStatement, FinancialStatement.security_id == Security.id)
+                .where(FinancialStatement.disclosed_on.is_not(None))
+                .group_by(Security.symbol)
+            ).all()
+        )
+        last_prices = dict(
+            session.execute(
+                select(Security.symbol, func.max(PriceBar.date))
+                .join(PriceBar, PriceBar.security_id == Security.id)
+                .group_by(Security.symbol)
+            ).all()
+        )
+        universe = session.execute(select(func.count(Security.id))).scalar_one()
+
+    if not first_disclosures or not last_prices or not universe:
+        return FormationAdvice(None, 0.0, None, None)
+
+    first_disclosure = min(first_disclosures.values())
+    latest_feasible = max(last_prices.values()) - calendar_horizon
+    if latest_feasible < first_disclosure:
+        # No date satisfies both constraints: the disclosure history starts
+        # after the last date a full horizon could be measured from.
+        return FormationAdvice(None, 0.0, latest_feasible, first_disclosure)
+
+    best: dt.date | None = None
+    best_count = -1
+    candidate = first_disclosure
+    while candidate <= latest_feasible:
+        count = sum(
+            1
+            for symbol, disclosed in first_disclosures.items()
+            if disclosed <= candidate
+            and (last := last_prices.get(symbol)) is not None
+            and last >= candidate + calendar_horizon
+        )
+        if count > best_count:
+            best, best_count = candidate, count
+        candidate += dt.timedelta(days=14)
+
+    return FormationAdvice(
+        best=best,
+        coverage=best_count / universe if universe else 0.0,
+        latest_feasible=latest_feasible,
+        first_disclosure=first_disclosure,
+    )
