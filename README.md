@@ -41,7 +41,14 @@ project folder itself, so it does not matter where Windows opens:
 | `APIキー設定.bat` | Store one API key in `.env`, hidden as you paste it |
 | `2-動作確認.bat` | Check every data source, write `verify-output.txt` |
 | `3-データ取得.bat` | Load a 20-symbol trial, so a problem shows up cheaply |
+| `5-分析.bat` | Fill any gaps, screen, then test whether the score holds up |
 | `ダッシュボード起動.bat` | Open the dashboard in a browser |
+| `PowerShellを開く.bat` | A terminal already in this folder, for one-off commands |
+
+That last one exists because a new PowerShell window starts in
+`C:\WINDOWS\system32`, where `uv` and `git` cannot see the project and every
+command fails with `program not found` or `not a git repository`. Open the
+terminal with that file and any command below works as written.
 
 Between 1 and 2, run the API key one once per key that step 1 reported missing.
 It hides the value while you paste, which matters: a key typed into a normal
