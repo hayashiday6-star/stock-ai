@@ -47,8 +47,14 @@ try {
     $results['yfinance fundamentals'] = Invoke-Step 'yfinance: fundamentals (AAPL)' @(
         'fundamentals', 'AAPL'
     )
+    # 'fundamentals' reports rows written, not the values it wrote, so the
+    # dividend yield this check exists for has to be read back explicitly.
+    $results['yfinance values'] = Invoke-Step 'yfinance: show what was stored' @(
+        'screen', '--max-per', '100000'
+    )
     Write-Host ''
-    Write-Host '  >> EXPECT dividend_yield around 0.004. If it reads 0.4, the unit is wrong.'
+    Write-Host '  >> EXPECT the dividend_yield column around 0.004 for AAPL.'
+    Write-Host '     If it reads 0.4 the unit is wrong - report that.'
 
     # --- 2. J-Quants statements -------------------------------------------
     $results['jquants statements'] = Invoke-Step "J-Quants: statements ($Symbol)" @(

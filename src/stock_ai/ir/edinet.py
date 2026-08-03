@@ -206,14 +206,37 @@ class EdinetDisclosureSource:
             return []
 
         matches: list[Disclosure] = []
+        scanned = 0
+        with_codes = 0
         for day in self._recent_days():
             for record in self._day_records(day):
-                if _sec_code_of(record) != code or not _is_visible(record):
+                scanned += 1
+                record_code = _sec_code_of(record)
+                if record_code is not None:
+                    with_codes += 1
+                if record_code != code or not _is_visible(record):
                     continue
                 matches.append(to_disclosure(symbol, record))
 
         matches.sort(key=lambda d: d.published_on or dt.date.min, reverse=True)
-        logger.debug("EDINET: %d filing(s) for %s", len(matches), symbol)
+        # Zero matches is ambiguous on its own: the company may simply not have
+        # filed, or the payload may have stopped carrying the field we match on.
+        # Logging what was scanned is what tells those two apart.
+        logger.info(
+            "EDINET %s: %d match(es) from %d filing(s) over %d day(s), "
+            "%d of which carried a securities code",
+            symbol,
+            len(matches),
+            scanned,
+            self.lookback_days,
+            with_codes,
+        )
+        if scanned and not with_codes:
+            logger.warning(
+                "EDINET returned %d filing(s) but none had a securities code — "
+                "the 'secCode' field may have been renamed upstream.",
+                scanned,
+            )
         return matches[:limit]
 
     def clear_cache(self) -> None:

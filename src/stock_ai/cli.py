@@ -396,7 +396,22 @@ def universe(
             f"segment must be prime, standard, growth, or all; got {segment!r}."
         ) from exc
 
-    profiles = JQuantsUniverse(api_key=settings.jquants_api_key).profiles(chosen, limit=limit)
+    try:
+        profiles = JQuantsUniverse(api_key=settings.jquants_api_key).profiles(chosen, limit=limit)
+    except DataError as exc:
+        console.print(f"[red]{exc}[/]")
+        if "403" in str(exc):
+            # A 403 on this endpoint while other endpoints answer 200 means the
+            # key is fine and the plan is not — worth saying, because "403"
+            # otherwise reads as "wrong key" and sends people to re-issue one.
+            console.print(
+                "[yellow]403 means the key is valid but this endpoint is not in your "
+                "J-Quants plan.[/] Other endpoints may still work. You can skip "
+                "'universe' and name symbols directly:\n"
+                "  uv run stock-ai fetch 7203 6758 --source jquants"
+            )
+        raise typer.Exit(code=1) from exc
+
     if not profiles:
         console.print(f"[yellow]No listings found on {chosen.value}.[/]")
         raise typer.Exit(code=1)
