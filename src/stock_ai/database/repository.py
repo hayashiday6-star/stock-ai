@@ -45,6 +45,17 @@ def list_symbols(session: Session) -> list[str]:
     return list(session.execute(select(Security.symbol).order_by(Security.symbol)).scalars().all())
 
 
+def list_securities(session: Session) -> list[tuple[str, str]]:
+    """Return ``(symbol, market)`` for every stored security, sorted by symbol.
+
+    Cross-market work needs the listing market alongside the symbol — it is
+    what selects the quote currency — so this is kept separate from the
+    symbols-only :func:`list_symbols`.
+    """
+    rows = session.execute(select(Security.symbol, Security.market).order_by(Security.symbol)).all()
+    return [(symbol, market) for symbol, market in rows]
+
+
 def get_or_create_security(
     session: Session, symbol: str, market: str = "US", name: str | None = None
 ) -> Security:

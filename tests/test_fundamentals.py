@@ -113,3 +113,48 @@ def test_fundamentals_cli(db: Database, monkeypatch: pytest.MonkeyPatch) -> None
 
     with db.session() as s:
         assert FundamentalsRepository(s).get_latest("AAPL") is not None
+
+
+# --- dividend yield must be a fraction on both providers --------------------
+
+
+def test_dividend_yield_prefers_rate_over_price() -> None:
+    """The unambiguous path: annual DPS / price, matching the J-Quants side."""
+    provider = YFinanceFundamentalsProvider(
+        info_fetcher=lambda _s: {"dividendRate": 2.0, "currentPrice": 100.0, "dividendYield": 99.0},
+        clock=lambda: dt.date(2024, 6, 30),
+    )
+    assert provider.fetch_fundamentals("X").dividend_yield == pytest.approx(0.02)
+
+
+def test_dividend_yield_falls_back_to_previous_close() -> None:
+    provider = YFinanceFundamentalsProvider(
+        info_fetcher=lambda _s: {"dividendRate": 3.0, "previousClose": 150.0},
+        clock=lambda: dt.date(2024, 6, 30),
+    )
+    assert provider.fetch_fundamentals("X").dividend_yield == pytest.approx(0.02)
+
+
+def test_percentage_dividend_yield_is_rescaled_to_a_fraction() -> None:
+    """Yahoo has shipped this field as both 2.3 and 0.023; only one can be right."""
+    provider = YFinanceFundamentalsProvider(
+        info_fetcher=lambda _s: {"dividendYield": 2.3},
+        clock=lambda: dt.date(2024, 6, 30),
+    )
+    assert provider.fetch_fundamentals("X").dividend_yield == pytest.approx(0.023)
+
+
+def test_fractional_dividend_yield_is_left_alone() -> None:
+    provider = YFinanceFundamentalsProvider(
+        info_fetcher=lambda _s: {"dividendYield": 0.023},
+        clock=lambda: dt.date(2024, 6, 30),
+    )
+    assert provider.fetch_fundamentals("X").dividend_yield == pytest.approx(0.023)
+
+
+def test_absent_dividend_stays_none() -> None:
+    provider = YFinanceFundamentalsProvider(
+        info_fetcher=lambda _s: {"trailingPE": 15.0},
+        clock=lambda: dt.date(2024, 6, 30),
+    )
+    assert provider.fetch_fundamentals("X").dividend_yield is None

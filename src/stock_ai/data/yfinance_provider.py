@@ -84,6 +84,27 @@ def _to_float(value: Any) -> float | None:
     return None if math.isnan(number) else number
 
 
+def _dividend_yield(info: dict[str, Any]) -> float | None:
+    """Return the annual dividend yield as a **fraction** (0.023 = 2.3%).
+
+    ``dividendRate / price`` is the primary path because it is unambiguous and
+    matches how the J-Quants provider derives the same figure — the two must
+    agree for cross-market ranking to mean anything. Yahoo's ``dividendYield``
+    has shipped as both a fraction and a percentage across versions, so it is
+    only a fallback, and a value above 1.0 is rescaled as the percentage it
+    must be (no equity sustains a 100% yield).
+    """
+    price = _to_float(info.get("currentPrice")) or _to_float(info.get("previousClose"))
+    rate = _to_float(info.get("dividendRate"))
+    if rate is not None and price:
+        return rate / price
+
+    raw = _to_float(info.get("dividendYield"))
+    if raw is None:
+        return None
+    return raw / 100.0 if raw > 1.0 else raw
+
+
 def _default_info_fetcher(symbol: str) -> dict[str, Any]:
     """Fetch ``Ticker.info`` from yfinance (imported lazily)."""
     import yfinance as yf
@@ -119,6 +140,6 @@ class YFinanceFundamentalsProvider:
             roe=_to_float(info.get("returnOnEquity")),
             revenue=_to_float(info.get("totalRevenue")),
             net_income=_to_float(info.get("netIncomeToCommon")),
-            dividend_yield=_to_float(info.get("dividendYield")),
+            dividend_yield=_dividend_yield(info),
             market_cap=_to_float(info.get("marketCap")),
         )

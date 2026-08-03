@@ -25,6 +25,7 @@ from stock_ai.config.settings import Settings, get_settings
 from stock_ai.core.exceptions import NotificationError
 from stock_ai.core.logging import configure_logging
 from stock_ai.data.base import PriceProvider
+from stock_ai.data.fx import FxConverter
 from stock_ai.data.jquants_provider import JQuantsPriceProvider
 from stock_ai.data.service import FundamentalsService, IngestionService, IngestResult
 from stock_ai.data.yfinance_provider import (
@@ -34,6 +35,7 @@ from stock_ai.data.yfinance_provider import (
 from stock_ai.database.engine import Database
 from stock_ai.database.repository import FundamentalsRepository, PriceRepository
 from stock_ai.notification.factory import get_notifier
+from stock_ai.portfolio.ranking import rank_securities
 from stock_ai.portfolio.scoring import WeightedScorer, default_weighted_factors
 from stock_ai.screening.base import All, Condition, ScreeningContext
 from stock_ai.screening.conditions import (
@@ -241,6 +243,110 @@ def score(
     for result in results:
         factors = ", ".join(f"{k}={v:.2f}" for k, v in sorted(result.breakdown.items()))
         table.add_row(result.symbol, f"{result.score:.1f}", factors or "[dim]—[/]")
+    console.print(table)
+
+
+@app.command()
+def rank(
+    symbols: list[str] | None = typer.Argument(None, help="Symbols to rank; default is all."),
+    base: str = typer.Option("USD", help="Currency the market cap column is stated in."),
+    fx_rate: list[str] = typer.Option(
+        [],
+        "--fx",
+        help="Pin a rate as CUR=VALUE (e.g. --fx JPY=0.0064). Repeatable; "
+        "unpinned currencies are fetched live.",
+    ),
+    min_market_cap: float | None = typer.Option(None, help="Minimum market cap, in --base."),
+    max_market_cap: float | None = typer.Option(None, help="Maximum market cap, in --base."),
+    top: int = typer.Option(20, help="Show only the top N rows."),
+) -> None:
+    """Rank JP and US securities together on one score.
+
+    The composite score is built from unitless ratios, so it already compares
+    across markets; only the market cap needs converting, which is what
+    ``--fx``/``--base`` control.
+    """
+    settings = get_settings()
+    configure_logging(settings.log_level)
+
+    database = Database()
+    database.create_all()
+    frame = rank_securities(
+        database,
+        symbols=list(symbols) if symbols else None,
+        fx=FxConverter(base=base, rates=_parse_fx_rates(fx_rate)),
+        min_market_cap=min_market_cap,
+        max_market_cap=max_market_cap,
+    )
+
+    if frame.empty:
+        console.print("[yellow]No securities matched; run 'fetch' and 'fundamentals' first.[/]")
+        return
+    _render_ranking(frame.head(top), base.upper())
+
+
+def _parse_fx_rates(pairs: list[str]) -> dict[str, float]:
+    """Parse repeated ``CUR=VALUE`` options into a rate map."""
+    rates: dict[str, float] = {}
+    for pair in pairs:
+        currency, _, value = pair.partition("=")
+        if not currency or not value:
+            raise typer.BadParameter(f"Invalid --fx {pair!r}; use CUR=VALUE, e.g. JPY=0.0064.")
+        try:
+            rates[currency.strip().upper()] = float(value)
+        except ValueError as exc:
+            raise typer.BadParameter(f"Invalid --fx rate in {pair!r}.") from exc
+    return rates
+
+
+_META_COLUMNS = ("symbol", "market", "score", "market_cap")
+
+# Factor names are self-explanatory but too wide for a table that also carries
+# the meta columns; Rich would truncate them to an unreadable "divide…".
+_FACTOR_ABBREVIATIONS = {
+    "dividend": "div",
+    "momentum": "mom",
+    "profit_margin": "margin",
+    "value_per": "value",
+    "news_sentiment": "news",
+}
+
+
+def _format_cap(value: object) -> str:
+    """Render a market cap compactly (``2.00T``), never truncated mid-digits.
+
+    Printing the raw grouped number lets Rich cut "198,000,000,000" and
+    "198,000,000" to the same "198,00…" — a 1000x difference shown as identical.
+    """
+    if value is None or pd.isna(value):
+        return "—"
+    amount = float(value)
+    for limit, suffix in ((1e12, "T"), (1e9, "B"), (1e6, "M"), (1e3, "K")):
+        if abs(amount) >= limit:
+            return f"{amount / limit:.2f}{suffix}"
+    return f"{amount:.0f}"
+
+
+def _render_ranking(frame: pd.DataFrame, base: str) -> None:
+    """Print a cross-market ranking, market cap stated in ``base``."""
+    factor_columns = [c for c in frame.columns if c not in _META_COLUMNS]
+
+    table = Table(title=f"cross-market ranking (market cap in {base})")
+    table.add_column("symbol", style="cyan", no_wrap=True)
+    table.add_column("mkt", no_wrap=True)
+    table.add_column("score", justify="right", no_wrap=True)
+    table.add_column(f"cap ({base})", justify="right", no_wrap=True)
+    for column in factor_columns:
+        table.add_column(_FACTOR_ABBREVIATIONS.get(column, column), justify="right")
+
+    for row in frame.to_dict("records"):
+        table.add_row(
+            str(row["symbol"]),
+            str(row["market"]),
+            f"{row['score']:.1f}",
+            _format_cap(row["market_cap"]),
+            *("—" if pd.isna(row[c]) else f"{float(row[c]):.2f}" for c in factor_columns),
+        )
     console.print(table)
 
 
