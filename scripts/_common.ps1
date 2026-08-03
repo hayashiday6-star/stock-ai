@@ -79,6 +79,79 @@ function Test-EnvKeySet {
     return $false
 }
 
+function Set-EnvKey {
+    <#
+    .SYNOPSIS
+        Write $Name=$Value into .env, replacing any existing assignment.
+
+    .DESCRIPTION
+        Editing .env by hand is where keys go wrong: a stray quote, a trailing
+        space, a second assignment further down the file that quietly wins, or a
+        BOM prepended by Set-Content -Encoding UTF8. This does the write once and
+        correctly.
+
+        The value is never printed, returned, or passed on a command line. Read
+        it with Read-EnvKeyValue so it does not land in PSReadLine history
+        either - a pasted secret in a shell command persists in a plain-text
+        history file long after the window is closed.
+    #>
+    param(
+        [Parameter(Mandatory)][string]$Name,
+        [Parameter(Mandatory)][AllowEmptyString()][string]$Value
+    )
+
+    if (-not (Test-Path '.env')) {
+        if (-not (Test-Path '.env.example')) {
+            Write-Err '.env.example is missing; cannot create .env.'
+            return $false
+        }
+        Copy-Item '.env.example' '.env'
+        Write-Ok 'Created .env from .env.example.'
+    }
+
+    # Quotes and whitespace survive a paste far more often than they are meant
+    # to, and an API key with a stray quote fails as though it were wrong.
+    $clean = $Value.Trim().Trim('"').Trim("'").Trim()
+    if ([string]::IsNullOrWhiteSpace($clean)) {
+        Write-Err "No value given for $Name - .env left unchanged."
+        return $false
+    }
+
+    $pattern = "^\s*$([regex]::Escape($Name))\s*="
+    $lines = @(Get-Content '.env' -Encoding UTF8)
+    $replaced = $false
+    $result = foreach ($line in $lines) {
+        if ($line -match $pattern -and -not $line.Trim().StartsWith('#')) {
+            $replaced = $true
+            "$Name=$clean"
+        }
+        else { $line }
+    }
+    if (-not $replaced) { $result = @($result) + "$Name=$clean" }
+
+    # WriteAllLines writes UTF-8 *without* a BOM. Set-Content -Encoding UTF8 on
+    # Windows PowerShell 5.1 adds one, and a BOM on the first line of .env is
+    # read as part of the first variable's name.
+    $path = (Resolve-Path '.env').Path
+    [System.IO.File]::WriteAllLines($path, [string[]]@($result))
+
+    Write-Ok "$Name written to .env ($($clean.Length) characters)."
+    return $true
+}
+
+function Read-EnvKeyValue {
+    <#
+    .SYNOPSIS
+        Prompt for a secret without echoing it or recording it in history.
+    #>
+    param([Parameter(Mandatory)][string]$Name)
+
+    $secure = Read-Host "Paste $Name (input is hidden)" -AsSecureString
+    $bstr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secure)
+    try { return [Runtime.InteropServices.Marshal]::PtrToStringBSTR($bstr) }
+    finally { [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr) }
+}
+
 function Invoke-Step {
     <#
     .SYNOPSIS

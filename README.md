@@ -38,11 +38,15 @@ project folder itself, so it does not matter where Windows opens:
 | File | What it does |
 |---|---|
 | `1-セットアップ.bat` | Install dependencies, create `.env`, list the keys still missing |
+| `APIキー設定.bat` | Store one API key in `.env`, hidden as you paste it |
 | `2-動作確認.bat` | Check every data source, write `verify-output.txt` |
 | `3-データ取得.bat` | Load a 20-symbol trial, so a problem shows up cheaply |
 | `ダッシュボード起動.bat` | Open the dashboard in a browser |
 
-Between 1 and 2, open `.env` in Notepad and paste in the API keys it listed.
+Between 1 and 2, run the API key one once per key that step 1 reported missing.
+It hides the value while you paste, which matters: a key typed into a normal
+command line is written to the PowerShell history file in plain text and stays
+there. Editing `.env` in Notepad works too.
 
 From a terminal instead, run the same scripts directly — but note two things
 that bite: PowerShell opens in `C:\WINDOWS\system32`, so `cd` to the project

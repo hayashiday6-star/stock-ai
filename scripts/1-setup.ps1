@@ -73,10 +73,16 @@ foreach ($name in $required.Keys) {
 
 Write-Host ''
 if ($missing.Count -gt 0) {
-    Write-Host 'Next: open .env in Notepad or VS Code and fill in the keys above.'
-    Write-Host '  notepad .env'
+    Write-Host 'Next: store each key above. Double-click the API key .bat in this'
+    Write-Host 'folder, or run:'
+    foreach ($name in $missing) {
+        Write-Host "  .\scripts\set-key.ps1 $name"
+    }
     Write-Host ''
-    Write-Host 'Then run:  2-doukakunin.bat  (2-<verify>.bat in this folder)'
+    Write-Host 'That hides the value as you paste it, so the key does not end up in'
+    Write-Host 'the PowerShell history file. Editing .env by hand also works.'
+    Write-Host ''
+    Write-Host 'Then run the step-2 .bat in this folder.'
 }
 else {
     Write-Ok 'All keys present.'
