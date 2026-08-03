@@ -8,14 +8,23 @@ Add a factor by subclassing :class:`Factor`; nothing else changes (OCP).
 
 from __future__ import annotations
 
+import math
 from abc import ABC, abstractmethod
 
 from stock_ai.data.schema import ADJ_CLOSE
 from stock_ai.screening.base import ScreeningContext
 
 
-def _clamp01(value: float) -> float:
-    """Clamp ``value`` into the closed unit interval."""
+def _clamp01(value: float) -> float | None:
+    """Clamp ``value`` into the closed unit interval, or ``None`` if not finite.
+
+    The non-finite guard is load-bearing: ``min``/``max`` treat ``NaN`` as
+    unordered and return the *bound*, so a plain clamp would turn a missing or
+    corrupt metric into a perfect 1.0 sub-score and float that stock to the top
+    of the ranking. Non-finite input means "not computable", never full marks.
+    """
+    if not math.isfinite(value):
+        return None
     return max(0.0, min(1.0, value))
 
 

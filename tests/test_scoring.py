@@ -133,3 +133,30 @@ def test_score_cli(db: Database, monkeypatch: pytest.MonkeyPatch) -> None:
     assert result.exit_code == 0
     assert "AAPL" in result.stdout
     assert "roe=" in result.stdout
+
+
+# --- non-finite input must never score ------------------------------------
+
+
+def test_nan_metric_is_not_computable_rather_than_full_marks() -> None:
+    """A NaN metric must read as missing, not as a perfect sub-score.
+
+    ``min``/``max`` treat NaN as unordered and hand back the bound, so a naive
+    clamp silently awarded 1.0 and floated broken data to the top of the rank.
+    """
+    nan = float("nan")
+    assert ROEFactor().score(_ctx(roe=nan)) is None
+    assert ValueFactor().score(_ctx(per=nan)) is None  # per <= 0 does not catch NaN
+
+
+def test_nan_price_does_not_score_momentum() -> None:
+    prices = _prices([100.0, float("nan")])
+    assert MomentumFactor().score(_ctx(prices=prices)) is None
+
+
+def test_scorer_drops_nan_factor_instead_of_inflating_the_score() -> None:
+    """A NaN ROE must be renormalized away, not counted as a perfect 25%."""
+    scorer = WeightedScorer([(ROEFactor(), 0.5), (ValueFactor(), 0.5)])
+    result = scorer.score(_ctx(roe=float("nan"), per=20.0))
+    assert "roe" not in result.breakdown
+    assert result.score == pytest.approx(50.0)  # value_per alone: 1 - 20/40

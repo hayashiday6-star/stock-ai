@@ -36,11 +36,21 @@ class Trade:
     entry_price: float
     exit_date: dt.date
     exit_price: float
+    commission: float = 0.0
+    """Per-side cost as a fraction of trade value, as charged by the engine."""
 
     @property
     def return_pct(self) -> float:
-        """Return of the trade as a fraction of the entry price."""
-        return self.exit_price / self.entry_price - 1.0
+        """Net return of the trade: fills adjusted for the round-trip commission.
+
+        Commission is charged on both legs, so a trade that looks flat on raw
+        fills is a loser once costs land. Netting it here keeps the trade stats
+        (win rate, profit factor) honest against the equity curve, which has
+        always paid the commission.
+        """
+        paid = self.entry_price * (1.0 + self.commission)
+        received = self.exit_price * (1.0 - self.commission)
+        return received / paid - 1.0
 
 
 @dataclass(frozen=True)
@@ -121,14 +131,18 @@ class BacktestEngine:
             elif not want_long and holding:
                 fill = open_[i] * (1.0 - self.slippage)
                 cash += shares * fill * (1.0 - self.commission)
-                trades.append(Trade(entry_date, entry_price, index[i].date(), fill))
+                trades.append(
+                    Trade(entry_date, entry_price, index[i].date(), fill, self.commission)
+                )
                 shares = 0.0
 
             nav[i] = cash + shares * close[i]
 
         # Close any position still open at the last bar for complete trade stats.
         if shares > 0.0 and entry_date is not None:
-            trades.append(Trade(entry_date, entry_price, index[-1].date(), close[-1]))
+            trades.append(
+                Trade(entry_date, entry_price, index[-1].date(), close[-1], self.commission)
+            )
 
         equity = pd.Series(nav, index=index, name="equity")
         metrics = compute_metrics(equity, [t.return_pct for t in trades])

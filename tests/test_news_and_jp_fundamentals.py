@@ -142,3 +142,15 @@ def test_news_pipeline_feeds_sentiment_factor() -> None:
     source = StaticNewsSource({"AAPL": [NewsItem("Record revenue", "Beat estimates.")]})
     factor = NewsSentimentFactor(_StubAI(), text_source=make_text_source(source))
     assert factor.score(ScreeningContext("AAPL")) == 1.0
+
+
+def test_jquants_to_float_rejects_non_finite_values() -> None:
+    """A NaN that escapes parsing poisons every ratio derived from it."""
+    from stock_ai.data.jquants_fundamentals import _to_float
+
+    assert _to_float(float("nan")) is None
+    assert _to_float("nan") is None
+    assert _to_float(float("inf")) is None
+    assert _to_float("1.5") == 1.5
+    assert _to_float("") is None
+    assert _to_float(None) is None

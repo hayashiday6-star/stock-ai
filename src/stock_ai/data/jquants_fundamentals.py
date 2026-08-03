@@ -14,6 +14,7 @@ The HTTP call is injectable, so the provider is unit-testable without network.
 from __future__ import annotations
 
 import datetime as dt
+import math
 from collections.abc import Callable
 from typing import Any
 
@@ -34,13 +35,19 @@ _STATEMENTS_URL = "https://api.jquants.com/v2/fins/summary"
 
 
 def _to_float(value: Any) -> float | None:
-    """Parse a J-Quants numeric field (strings, blanks) to ``float`` or ``None``."""
+    """Parse a J-Quants numeric field (strings, blanks) to ``float`` or ``None``.
+
+    Non-finite results map to ``None`` as well: ``float("nan")`` parses happily,
+    and a ``NaN`` that escapes here poisons every ratio derived from it
+    downstream (scoring treats non-finite input as missing, not as a score).
+    """
     if value in (None, ""):
         return None
     try:
-        return float(value)
+        number = float(value)
     except (TypeError, ValueError):
         return None
+    return number if math.isfinite(number) else None
 
 
 def _latest(records: list[dict[str, Any]]) -> dict[str, Any]:

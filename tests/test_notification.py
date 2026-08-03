@@ -125,3 +125,46 @@ def test_notify_cli_unconfigured_channel_exits_nonzero(monkeypatch: pytest.Monke
     monkeypatch.setattr(cli, "get_notifier", lambda *_: DiscordNotifier(None))
     result = runner.invoke(cli.app, ["notify", "hi", "--channel", "discord"])
     assert result.exit_code == 1
+
+
+# --- credentials must not escape via error messages ------------------------
+
+
+def test_telegram_error_does_not_leak_the_bot_token() -> None:
+    """The bot token rides in the URL path; a failure must not print it."""
+    client = _FakeClient(response=_FakeResponse(status_code=500))
+    with pytest.raises(NotificationError) as excinfo:
+        TelegramNotifier("SUPER-SECRET-TOKEN", "42", client=client).send("x")
+    assert "SUPER-SECRET-TOKEN" not in str(excinfo.value)
+
+
+def test_discord_error_does_not_leak_the_webhook_url() -> None:
+    """The Discord webhook URL is itself the credential."""
+    client = _FakeClient(response=_FakeResponse(status_code=500))
+    with pytest.raises(NotificationError) as excinfo:
+        DiscordNotifier(
+            "https://discord.com/api/webhooks/123/SUPER-SECRET-HOOK", client=client
+        ).send("x")
+    assert "SUPER-SECRET-HOOK" not in str(excinfo.value)
+
+
+def test_error_still_names_the_host_and_the_cause() -> None:
+    """Redaction must keep the message diagnosable."""
+    client = _FakeClient(response=_FakeResponse(status_code=500))
+    with pytest.raises(NotificationError) as excinfo:
+        TelegramNotifier("TOKEN", "42", client=client).send("x")
+    message = str(excinfo.value)
+    assert "api.telegram.org" in message
+    assert "HTTP 500" in message
+
+
+def test_transport_error_quoting_the_url_is_scrubbed() -> None:
+    """A client that echoes the target URL must not smuggle the token out."""
+
+    class _EchoingClient:
+        def post(self, url: str, **kwargs: Any) -> _FakeResponse:
+            raise RuntimeError(f"connection failed for url '{url}'")
+
+    with pytest.raises(NotificationError) as excinfo:
+        TelegramNotifier("SUPER-SECRET-TOKEN", "42", client=_EchoingClient()).send("x")
+    assert "SUPER-SECRET-TOKEN" not in str(excinfo.value)
