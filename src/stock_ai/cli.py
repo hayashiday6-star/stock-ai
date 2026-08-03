@@ -539,6 +539,19 @@ def bulk_fetch(
         progress.update(task, completed=len(targets))
 
     console.print(report.summary())
+    if report.aborted:
+        console.print(
+            f"[red]Stopped early:[/] {report.aborted}\n"
+            "  A rate limit applies to the whole run, not to one symbol, so "
+            "continuing would only collect the same refusal.\n"
+            "  Wait a while and re-run the same command - already-loaded symbols "
+            "are skipped without a request, so it picks up where it stopped."
+        )
+    elif report.rate_limited:
+        console.print(
+            f"[yellow]Rate limited {report.rate_limited}x[/] - the run slowed itself "
+            "down and continued. Nothing was lost."
+        )
     if report.failed:
         failures = Table(title=f"failed ({len(report.failed)})")
         failures.add_column("symbol", style="cyan")

@@ -78,3 +78,71 @@ def test_fetch_prices_rejects_reversed_range() -> None:
     provider = _provider_returning(_raw_yf_frame())
     with pytest.raises(DataError):
         provider.fetch_prices("AAPL", END, START)
+
+
+# --- 429 must be distinguishable from every other failure -------------------
+
+
+def test_a_429_becomes_a_rate_limit_error_with_the_requested_wait() -> None:
+    """The bulk ingester's pacing depends on telling 429 from a bad symbol."""
+    from stock_ai.core.exceptions import RateLimitError
+    from stock_ai.data.http import raise_for_status
+
+    class _Response:
+        status_code = 429
+        headers = {"Retry-After": "30"}
+
+    with pytest.raises(RateLimitError) as excinfo:
+        raise_for_status(_Response(), "statements for 7203")
+    assert excinfo.value.retry_after == 30.0
+
+
+def test_a_429_without_a_retry_after_still_carries_a_wait() -> None:
+    """A backoff of None would be read as "retry immediately"."""
+    from stock_ai.core.exceptions import RateLimitError
+    from stock_ai.data.http import DEFAULT_RETRY_AFTER, raise_for_status
+
+    class _Response:
+        status_code = 429
+        headers: dict[str, str] = {}
+
+    with pytest.raises(RateLimitError) as excinfo:
+        raise_for_status(_Response(), "x")
+    assert excinfo.value.retry_after == DEFAULT_RETRY_AFTER
+
+
+def test_an_http_date_retry_after_falls_back_rather_than_crashing() -> None:
+    from stock_ai.core.exceptions import RateLimitError
+    from stock_ai.data.http import DEFAULT_RETRY_AFTER, raise_for_status
+
+    class _Response:
+        status_code = 429
+        headers = {"Retry-After": "Wed, 21 Oct 2026 07:28:00 GMT"}
+
+    with pytest.raises(RateLimitError) as excinfo:
+        raise_for_status(_Response(), "x")
+    assert excinfo.value.retry_after == DEFAULT_RETRY_AFTER
+
+
+def test_other_errors_stay_ordinary_data_errors() -> None:
+    """A 404 is one symbol's problem; treating it as a rate limit would stall."""
+    from stock_ai.core.exceptions import DataError, RateLimitError
+    from stock_ai.data.http import raise_for_status
+
+    class _Response:
+        status_code = 404
+        headers: dict[str, str] = {}
+
+    with pytest.raises(DataError) as excinfo:
+        raise_for_status(_Response(), "x")
+    assert not isinstance(excinfo.value, RateLimitError)
+
+
+def test_a_successful_response_raises_nothing() -> None:
+    from stock_ai.data.http import raise_for_status
+
+    class _Response:
+        status_code = 200
+        headers: dict[str, str] = {}
+
+    raise_for_status(_Response(), "x")

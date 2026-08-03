@@ -29,7 +29,9 @@ from enum import StrEnum
 
 from pydantic import SecretStr
 
+from stock_ai.core.exceptions import RateLimitError
 from stock_ai.core.logging import get_logger
+from stock_ai.data.http import DEFAULT_RETRY_AFTER
 from stock_ai.data.jquants_fundamentals import JQuantsFundamentalsProvider
 from stock_ai.data.jquants_provider import JQuantsPriceProvider
 from stock_ai.data.service import IngestionService
@@ -46,6 +48,14 @@ logger = get_logger(__name__)
 
 #: Called with (index, total, symbol) before each symbol is processed.
 ProgressCallback = Callable[[int, int, str], None]
+
+#: How much slower to go after each rate limit, and the ceiling on that.
+_THROTTLE_GROWTH = 3.0
+_MAX_THROTTLE_SECONDS = 10.0
+
+
+class _RateLimitExhaustedError(Exception):
+    """The provider kept refusing after every retry; the run must stop."""
 
 
 class Dataset(StrEnum):
@@ -66,6 +76,10 @@ class BulkReport:
     failed: dict[str, str] = field(default_factory=dict)
     """Symbol -> error, for the ones worth retrying."""
     rows: int = 0
+    rate_limited: int = 0
+    """How many times the provider asked us to slow down."""
+    aborted: str | None = None
+    """Why the run stopped early, if it did. ``None`` means it covered everything."""
 
     @property
     def attempted(self) -> int:
@@ -74,10 +88,15 @@ class BulkReport:
 
     def summary(self) -> str:
         """A one-line summary suitable for a log or a console."""
-        return (
+        text = (
             f"{self.dataset.value}: {len(self.succeeded)} ok, "
             f"{len(self.skipped)} skipped, {len(self.failed)} failed, {self.rows} rows"
         )
+        if self.rate_limited:
+            text += f", rate limited {self.rate_limited}x"
+        if self.aborted:
+            text += f" - ABORTED: {self.aborted}"
+        return text
 
 
 def store_universe(database: Database, profiles: Sequence[SecurityProfile]) -> int:
@@ -100,7 +119,8 @@ class BulkIngester:
         self,
         database: Database,
         api_key: SecretStr | None = None,
-        throttle_seconds: float = 0.2,
+        throttle_seconds: float = 0.5,
+        max_rate_limit_retries: int = 4,
         price_provider: object | None = None,
         statement_provider: object | None = None,
         sleeper: Callable[[float], None] | None = None,
@@ -112,13 +132,17 @@ class BulkIngester:
             api_key: J-Quants key used by the default providers.
             throttle_seconds: Pause between symbols. The default is deliberately
                 non-zero; a free-tier key that gets rate-limited costs more time
-                than the pause does.
+                than the pause does. It is raised automatically on a 429 and
+                never lowered again within a run.
+            max_rate_limit_retries: How many times to wait out a 429 on one
+                symbol before giving up on the whole run.
             price_provider: Overrides the default price provider (tests).
             statement_provider: Overrides the default statements provider (tests).
             sleeper: Overrides ``time.sleep`` (tests).
         """
         self.database = database
         self.throttle_seconds = max(0.0, throttle_seconds)
+        self.max_rate_limit_retries = max(0, max_rate_limit_retries)
         self._prices = price_provider or JQuantsPriceProvider(api_key=api_key)
         # The snapshot's price comes from the database, not the network: prices
         # are loaded before statements in every bulk run, so it is already local
@@ -162,7 +186,14 @@ class BulkIngester:
                 continue
 
             try:
-                rows = self._ingest_one(symbol, dataset, lookback_days)
+                rows = self._fetch_with_backoff(symbol, dataset, lookback_days, report)
+            except _RateLimitExhaustedError as exc:
+                # Nothing left to do but stop. Continuing would spend the rest
+                # of the universe collecting the same refusal in seconds, which
+                # is how a run "finishes" having fetched nothing.
+                report.aborted = str(exc)
+                logger.error("Bulk %s aborted at %s: %s", dataset.value, symbol, exc)
+                break
             except Exception as exc:  # one symbol must not end the run
                 logger.warning("Bulk %s failed for %s: %s", dataset.value, symbol, exc)
                 report.failed[symbol] = str(exc)
@@ -176,6 +207,46 @@ class BulkIngester:
 
         logger.info("Bulk run finished - %s", report.summary())
         return report
+
+    def _fetch_with_backoff(
+        self, symbol: str, dataset: Dataset, lookback_days: int, report: BulkReport
+    ) -> int:
+        """Ingest one symbol, waiting out any rate limit rather than failing it.
+
+        A 429 says the *run* is going too fast. Recording it against the symbol
+        and moving on is doubly wrong: the symbol was never really attempted,
+        and the next request is issued immediately into the same closed door.
+
+        Each refusal also slows the rest of the run permanently. Recovering the
+        original pace would just walk back into the limit, and finishing slowly
+        beats finishing empty.
+        """
+        for attempt in range(self.max_rate_limit_retries + 1):
+            try:
+                return self._ingest_one(symbol, dataset, lookback_days)
+            except RateLimitError as exc:
+                report.rate_limited += 1
+                if attempt == self.max_rate_limit_retries:
+                    raise _RateLimitExhaustedError(
+                        f"still rate limited after {attempt + 1} attempts. "
+                        f"{len(report.succeeded)} symbol(s) were loaded; re-run later "
+                        "to continue from here."
+                    ) from exc
+                wait = (exc.retry_after or DEFAULT_RETRY_AFTER) * (2**attempt)
+                self.throttle_seconds = min(
+                    self.throttle_seconds * _THROTTLE_GROWTH, _MAX_THROTTLE_SECONDS
+                )
+                logger.warning(
+                    "Rate limited on %s; waiting %.0fs (attempt %d/%d), "
+                    "slowing to %.1fs between symbols.",
+                    symbol,
+                    wait,
+                    attempt + 1,
+                    self.max_rate_limit_retries,
+                    self.throttle_seconds,
+                )
+                self._sleep(wait)
+        raise AssertionError("unreachable")  # pragma: no cover
 
     def _ingest_one(self, symbol: str, dataset: Dataset, lookback_days: int) -> int:
         """Ingest one symbol, returning the rows written."""

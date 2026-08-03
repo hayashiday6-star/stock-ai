@@ -22,6 +22,7 @@ from pydantic import SecretStr
 
 from stock_ai.core.exceptions import DataError
 from stock_ai.core.logging import get_logger
+from stock_ai.data.http import raise_for_status
 from stock_ai.data.types import FinancialReport, FiscalPeriod, Fundamentals
 
 logger = get_logger(__name__)
@@ -266,7 +267,7 @@ def _default_fetcher(api_key: SecretStr | None) -> StatementFetcher:
                 if pagination_key:
                     params["pagination_key"] = pagination_key
                 response = client.get(_STATEMENTS_URL, headers=headers, params=params)
-                response.raise_for_status()
+                raise_for_status(response, f"statements for {symbol}")
                 payload = response.json()
                 # V2 returns {"data": [...]}; older shapes used "statements".
                 records.extend(payload.get("data") or payload.get("statements") or [])

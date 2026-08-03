@@ -21,6 +21,7 @@ from pydantic import SecretStr
 
 from stock_ai.core.exceptions import DataError
 from stock_ai.core.logging import get_logger
+from stock_ai.data.http import raise_for_status
 from stock_ai.data.schema import (
     ADJ_CLOSE,
     CLOSE,
@@ -110,7 +111,7 @@ def _default_fetcher(api_key: SecretStr | None) -> JQuantsFetcher:
                 if pagination_key:
                     query["pagination_key"] = pagination_key
                 response = client.get(_DAILY_QUOTES_URL, headers=headers, params=query)
-                response.raise_for_status()
+                raise_for_status(response, f"prices for {symbol}")
                 payload = response.json()
                 # V2 returns {"data": [...]}; older shapes used "daily_quotes".
                 records.extend(payload.get("data") or payload.get("daily_quotes") or [])

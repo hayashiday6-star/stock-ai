@@ -15,7 +15,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from stock_ai.core.exceptions import DataError
+from stock_ai.core.exceptions import DataError, RateLimitError
 from stock_ai.data.bulk import BulkIngester, Dataset, store_universe
 from stock_ai.data.sectors import Sector
 from stock_ai.data.types import FinancialReport, Fundamentals
@@ -25,6 +25,7 @@ from stock_ai.database.repository import (
     FinancialStatementRepository,
     FundamentalsRepository,
     PriceRepository,
+    get_or_create_security,
     get_profile,
     list_securities,
 )
@@ -718,3 +719,100 @@ def test_the_snapshot_price_comes_from_the_database(database: Database) -> None:
     ingester = _ingester(database)
     assert ingester._latest_close("7203") == 100.0
     assert ingester._latest_close("9999") is None  # no stored price, no crash
+
+
+# --- rate limits belong to the run, not to a symbol -------------------------
+
+
+class _RateLimited:
+    """Serves ``budget`` requests, then 429s until enough waits have happened."""
+
+    def __init__(self, budget: int, recover_after: int) -> None:
+        self.budget = budget
+        self.recover_after = recover_after
+        self.calls = 0
+        self.waits = 0
+
+    def fetch_snapshot_and_statements(
+        self, symbol: str
+    ) -> tuple[Fundamentals, list[FinancialReport]]:
+        self.calls += 1
+        if self.calls > self.budget and self.waits < self.recover_after:
+            raise RateLimitError(f"429 for {symbol}", retry_after=1.0)
+        return (
+            Fundamentals(symbol=symbol, as_of=dt.date(2026, 8, 3), per=10.0),
+            [
+                FinancialReport(
+                    symbol=symbol,
+                    fiscal_year=2024,
+                    revenue=1.0,
+                    disclosed_on=dt.date(2024, 5, 10),
+                )
+            ],
+        )
+
+
+def _rate_limited_run(database: Database, budget: int, recover_after: int, n: int = 12):
+    symbols = [f"{1300 + i:04d}" for i in range(n)]
+    with database.session() as session:
+        for symbol in symbols:
+            get_or_create_security(session, symbol, market="JP")
+
+    provider = _RateLimited(budget, recover_after)
+
+    def sleeper(seconds: float) -> None:
+        if seconds >= 1.0:  # a backoff wait, not the inter-symbol throttle
+            provider.waits += 1
+
+    ingester = BulkIngester(
+        database, statement_provider=provider, sleeper=sleeper, throttle_seconds=0.5
+    )
+    return ingester.run(symbols, Dataset.STATEMENTS), provider
+
+
+def test_a_rate_limit_is_waited_out_not_recorded_as_a_failure(database: Database) -> None:
+    """The symbol was never really attempted, so failing it loses real data.
+
+    Observed live: a 429 partway through TSE Prime was recorded against every
+    remaining symbol, and 1,365 names "failed" in seconds without one of them
+    having been fetched.
+    """
+    report, _ = _rate_limited_run(database, budget=3, recover_after=2)
+
+    assert report.failed == {}
+    assert len(report.succeeded) == 12
+    assert report.rate_limited == 2
+    assert report.aborted is None
+
+
+def test_the_run_slows_down_after_a_rate_limit(database: Database) -> None:
+    """Returning to the old pace would walk straight back into the limit."""
+    symbols = [f"{1300 + i:04d}" for i in range(6)]
+    with database.session() as session:
+        for symbol in symbols:
+            get_or_create_security(session, symbol, market="JP")
+    provider = _RateLimited(budget=2, recover_after=1)
+
+    def sleeper(seconds: float) -> None:
+        if seconds >= 1.0:
+            provider.waits += 1
+
+    ingester = BulkIngester(
+        database, statement_provider=provider, sleeper=sleeper, throttle_seconds=0.5
+    )
+    ingester.run(symbols, Dataset.STATEMENTS)
+
+    assert ingester.throttle_seconds > 0.5
+
+
+def test_a_persistent_rate_limit_stops_the_run_instead_of_burning_it(
+    database: Database,
+) -> None:
+    """Carrying on spends the whole universe collecting the same refusal."""
+    report, provider = _rate_limited_run(database, budget=3, recover_after=999, n=12)
+
+    assert report.aborted is not None
+    assert len(report.succeeded) == 3
+    assert report.failed == {}, "a rate limit is not a per-symbol failure"
+    # Five attempts on the one symbol, not one attempt on each of twelve.
+    assert provider.calls < 12
