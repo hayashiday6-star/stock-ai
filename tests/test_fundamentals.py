@@ -13,7 +13,7 @@ from stock_ai.core.exceptions import DataError
 from stock_ai.data.service import FundamentalsService
 from stock_ai.data.yfinance_provider import YFinanceFundamentalsProvider
 from stock_ai.database.engine import Database
-from stock_ai.database.repository import FundamentalsRepository
+from stock_ai.database.repository import FundamentalsRepository, get_or_create_security
 
 runner = CliRunner()
 
@@ -191,3 +191,51 @@ def test_a_negative_yield_is_dropped() -> None:
         clock=lambda: dt.date(2024, 6, 30),
     )
     assert provider.fetch_fundamentals("X").dividend_yield is None
+
+
+# --- refreshing what is already stored --------------------------------------
+
+
+def test_fundamentals_without_symbols_refreshes_stored_us_names(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A corrected parser is worthless until it is run back over the old rows.
+
+    Nothing re-reads a stored snapshot, so the no-argument form has to reach
+    every US symbol in the database — not just the ones a user still remembers
+    fetching.
+    """
+    with db.session() as s:
+        get_or_create_security(s, "AAPL", market="US")
+        get_or_create_security(s, "MSFT", market="US")
+        get_or_create_security(s, "7203", market="JP")
+
+    asked: list[str] = []
+
+    def fetcher(symbol: str) -> dict[str, object]:
+        asked.append(symbol)
+        return _RAW_INFO
+
+    monkeypatch.setattr(cli, "Database", lambda: db)
+    monkeypatch.setattr(
+        cli,
+        "YFinanceFundamentalsProvider",
+        lambda: YFinanceFundamentalsProvider(info_fetcher=fetcher, clock=lambda: _FIXED_DAY),
+    )
+
+    result = runner.invoke(cli.app, ["fundamentals"])
+    assert result.exit_code == 0
+    # The JP name is left alone: yfinance is the US provider, and asking it for
+    # 7203 would spend a request to store nothing.
+    assert asked == ["AAPL", "MSFT"]
+
+
+def test_fundamentals_without_symbols_and_an_empty_db_explains_itself(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(cli, "Database", lambda: db)
+    monkeypatch.setattr(cli, "YFinanceFundamentalsProvider", lambda: _provider(_RAW_INFO))
+
+    result = runner.invoke(cli.app, ["fundamentals"])
+    assert result.exit_code == 1
+    assert "No US symbols stored" in result.output

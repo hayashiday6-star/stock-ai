@@ -167,17 +167,38 @@ def _price_source(source: str, settings: Settings) -> tuple[PriceProvider, str]:
 
 @app.command()
 def fundamentals(
-    symbols: list[str] = typer.Argument(..., help="Ticker symbols, e.g. AAPL MSFT"),
+    symbols: list[str] = typer.Argument(
+        None, help="Ticker symbols, e.g. AAPL MSFT. Omit to refresh every stored US symbol."
+    ),
 ) -> None:
-    """Fetch a fundamentals snapshot for SYMBOLS and store it in the database."""
+    """Fetch a fundamentals snapshot for SYMBOLS and store it in the database.
+
+    Omitting SYMBOLS refreshes everything already stored for the US market. That
+    is the form to reach for after a provider-side fix: a snapshot is only as
+    correct as the code that parsed it, so a corrected parser has to be run back
+    over the rows the old one wrote — nothing re-reads them on its own.
+    """
     settings = get_settings()
     configure_logging(settings.log_level)
 
     database = Database()
     database.create_all()
+
+    targets = list(symbols or [])
+    if not targets:
+        with database.session() as session:
+            targets = [sym for sym, market in list_securities(session) if market.upper() == "US"]
+        if not targets:
+            console.print(
+                "[yellow]No US symbols stored.[/] Pass symbols explicitly, e.g. "
+                "'stock-ai fundamentals AAPL MSFT'."
+            )
+            raise typer.Exit(code=1)
+        console.print(f"Refreshing fundamentals for {len(targets)} stored US symbol(s).")
+
     service = FundamentalsService(YFinanceFundamentalsProvider(), database)
 
-    results = service.ingest_many(symbols)
+    results = service.ingest_many(targets)
     _render_results(results)
 
     if any(not r.ok for r in results):

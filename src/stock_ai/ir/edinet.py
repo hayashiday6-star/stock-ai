@@ -175,14 +175,23 @@ def _default_day_fetcher(api_key: SecretStr | None) -> DayFetcher:
         import httpx
 
         params: dict[str, str] = {"date": day.isoformat(), "type": "2"}
+        headers: dict[str, str] = {}
         if api_key is not None:
-            # EDINET v2 documents the key as a query parameter. It is kept out
-            # of every log line and error message below for the same reason the
-            # notification channels redact theirs.
-            params["Subscription-Key"] = api_key.get_secret_value()
+            # EDINET v2 documents the key as a query parameter, and that is the
+            # authoritative form. The header is sent as well because the service
+            # sits behind Azure API Management, whose own convention is the
+            # header — and the failure mode if only one of the two is accepted
+            # is HTTP 200 with an empty body, which reads as "nothing was filed"
+            # rather than as an auth error. Sending both costs nothing and
+            # removes a silent failure. The value is kept out of every log line
+            # and error message for the same reason the notification channels
+            # redact theirs.
+            secret = api_key.get_secret_value()
+            params["Subscription-Key"] = secret
+            headers["Ocp-Apim-Subscription-Key"] = secret
 
         with httpx.Client(timeout=30.0) as client:
-            response = client.get(_DOCUMENTS_URL, params=params)
+            response = client.get(_DOCUMENTS_URL, params=params, headers=headers)
             if response.status_code >= 400:
                 raise DataError(f"EDINET returned HTTP {response.status_code} for {day}.")
             payload = response.json()

@@ -12,9 +12,11 @@ import datetime as dt
 from typing import Any
 
 import pytest
+from pydantic import SecretStr
 
 from stock_ai.ir.edinet import (
     EdinetDisclosureSource,
+    _default_day_fetcher,
     normalize_sec_code,
     to_disclosure,
 )
@@ -228,3 +230,83 @@ def test_lookback_is_at_least_one_day() -> None:
 def test_the_common_filing_types_are_labelled(code: str) -> None:
     title = to_disclosure("4593", _record(docDescription="", docTypeCode=code)).title
     assert title and not title.startswith("EDINET書類")
+
+
+# --- the live request -------------------------------------------------------
+
+
+class _FakeResponse:
+    status_code = 200
+
+    def __init__(self, payload: dict[str, Any]) -> None:
+        self._payload = payload
+
+    def json(self) -> dict[str, Any]:
+        return self._payload
+
+
+class _FakeClient:
+    """Records the one GET made, so the request itself can be asserted on."""
+
+    last: dict[str, Any] = {}
+
+    def __init__(self, *_args: Any, **_kwargs: Any) -> None:
+        pass
+
+    def __enter__(self) -> _FakeClient:
+        return self
+
+    def __exit__(self, *_exc: Any) -> None:
+        return None
+
+    def get(self, url: str, params: dict[str, str], headers: dict[str, str]) -> _FakeResponse:
+        _FakeClient.last = {"url": url, "params": params, "headers": headers}
+        return _FakeResponse({"results": [_record()]})
+
+
+def test_the_api_key_is_sent_both_ways(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Query parameter and header both carry the key.
+
+    Whichever one EDINET's gateway is actually checking, rejecting a request for
+    the other reason costs a silent HTTP 200 with an empty body — the failure
+    that reads as 'nothing was filed'.
+    """
+    import httpx
+
+    monkeypatch.setattr(httpx, "Client", _FakeClient)
+
+    records = _default_day_fetcher(SecretStr("k3y"))(dt.date(2026, 8, 1))
+
+    assert len(records) == 1
+    assert _FakeClient.last["params"]["Subscription-Key"] == "k3y"
+    assert _FakeClient.last["headers"]["Ocp-Apim-Subscription-Key"] == "k3y"
+    assert _FakeClient.last["params"]["date"] == "2026-08-01"
+
+
+def test_no_api_key_sends_neither_carrier(monkeypatch: pytest.MonkeyPatch) -> None:
+    import httpx
+
+    monkeypatch.setattr(httpx, "Client", _FakeClient)
+
+    _default_day_fetcher(None)(dt.date(2026, 8, 1))
+
+    assert "Subscription-Key" not in _FakeClient.last["params"]
+    assert _FakeClient.last["headers"] == {}
+
+
+def test_a_keyless_empty_day_names_the_missing_key(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Zero documents and no key is the one empty-day case with a known cause."""
+    import httpx
+
+    class _EmptyClient(_FakeClient):
+        def get(self, url: str, params: dict[str, str], headers: dict[str, str]) -> _FakeResponse:
+            return _FakeResponse({"results": []})
+
+    monkeypatch.setattr(httpx, "Client", _EmptyClient)
+
+    with caplog.at_level("WARNING"):
+        assert _default_day_fetcher(None)(dt.date(2026, 8, 1)) == []
+
+    assert "EDINET_API_KEY" in caplog.text
