@@ -109,6 +109,46 @@ class Holding(Base):
     security: Mapped[Security] = relationship()
 
 
+class WatchlistItem(Base):
+    """A security the user wants disclosures monitored for."""
+
+    __tablename__ = "watchlist"
+    __table_args__ = (UniqueConstraint("security_id", name="uq_watchlist_security"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    security_id: Mapped[int] = mapped_column(
+        ForeignKey("securities.id", ondelete="CASCADE"), index=True, unique=True
+    )
+    note: Mapped[str | None] = mapped_column(String(256), default=None)
+    """Why this name is being watched — shown alongside its alerts."""
+    min_importance: Mapped[str] = mapped_column(String(8), default="medium")
+    """Alert threshold for this entry; quieter names can be set to ``high``."""
+    added_at: Mapped[dt.datetime] = mapped_column(DateTime, server_default=func.now())
+
+    security: Mapped[Security] = relationship()
+
+
+class SeenDisclosure(Base):
+    """A disclosure already reported, so a rerun does not alert on it again.
+
+    Monitoring is meant to run on a schedule, and a source returns the same
+    recent items every time. Without this the first run's news would be
+    re-delivered every day until it aged out of the feed.
+    """
+
+    __tablename__ = "seen_disclosures"
+    __table_args__ = (UniqueConstraint("uid", name="uq_seen_disclosure_uid"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    uid: Mapped[str] = mapped_column(String(32), unique=True, index=True)
+    security_id: Mapped[int] = mapped_column(
+        ForeignKey("securities.id", ondelete="CASCADE"), index=True
+    )
+    title: Mapped[str] = mapped_column(String(512))
+    importance: Mapped[str] = mapped_column(String(8), default="unknown")
+    seen_at: Mapped[dt.datetime] = mapped_column(DateTime, server_default=func.now())
+
+
 class FinancialStatement(Base):
     """One disclosed set of results for a fiscal period of a :class:`Security`.
 

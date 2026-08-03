@@ -26,11 +26,14 @@ from stock_ai.data.schema import (
     VOLUME,
 )
 from stock_ai.data.types import (
+    Disclosure,
     FinancialReport,
     FiscalPeriod,
     Fundamentals,
     HoldingRecord,
+    Importance,
     SecurityProfile,
+    WatchEntry,
 )
 from stock_ai.database.models import (
     FinancialStatement,
@@ -38,6 +41,8 @@ from stock_ai.database.models import (
     Holding,
     PriceBar,
     Security,
+    SeenDisclosure,
+    WatchlistItem,
 )
 
 _UPSERT_COLUMNS = [OPEN, HIGH, LOW, CLOSE, ADJ_CLOSE, VOLUME]
@@ -439,3 +444,87 @@ class HoldingRepository:
         return self.session.execute(
             select(Holding).join(Security).where(Security.symbol == symbol)
         ).scalar_one_or_none()
+
+
+class WatchlistRepository:
+    """Persist the watchlist and the disclosures already reported for it."""
+
+    def __init__(self, session: Session) -> None:
+        """Bind the repository to an active session."""
+        self.session = session
+
+    def add(
+        self,
+        symbol: str,
+        note: str | None = None,
+        min_importance: Importance = Importance.MEDIUM,
+        market: str = "US",
+    ) -> None:
+        """Add ``symbol`` to the watchlist, updating it if already present."""
+        security = get_or_create_security(self.session, symbol, market=market)
+        stmt = sqlite_insert(WatchlistItem).values(
+            [
+                {
+                    "security_id": security.id,
+                    "note": note,
+                    "min_importance": str(min_importance),
+                }
+            ]
+        )
+        stmt = stmt.on_conflict_do_update(
+            index_elements=["security_id"],
+            set_={"note": stmt.excluded.note, "min_importance": stmt.excluded.min_importance},
+        )
+        self.session.execute(stmt)
+
+    def remove(self, symbol: str) -> bool:
+        """Drop ``symbol`` from the watchlist; ``True`` if it was there."""
+        row = self.session.execute(
+            select(WatchlistItem).join(Security).where(Security.symbol == symbol)
+        ).scalar_one_or_none()
+        if row is None:
+            return False
+        self.session.delete(row)
+        return True
+
+    def list_entries(self) -> list[WatchEntry]:
+        """Return every watchlist entry, sorted by symbol."""
+        rows = (
+            self.session.execute(select(WatchlistItem).join(Security).order_by(Security.symbol))
+            .scalars()
+            .all()
+        )
+        return [
+            WatchEntry(
+                symbol=row.security.symbol,
+                market=row.security.market,
+                note=row.note,
+                min_importance=Importance(row.min_importance),
+            )
+            for row in rows
+        ]
+
+    def is_seen(self, uid: str) -> bool:
+        """Whether a disclosure with ``uid`` has already been reported."""
+        return (
+            self.session.execute(
+                select(SeenDisclosure.id).where(SeenDisclosure.uid == uid).limit(1)
+            ).scalar_one_or_none()
+            is not None
+        )
+
+    def mark_seen(self, disclosure: Disclosure, importance: Importance, market: str = "US") -> None:
+        """Record ``disclosure`` as reported so later runs skip it."""
+        security = get_or_create_security(self.session, disclosure.symbol, market=market)
+        stmt = sqlite_insert(SeenDisclosure).values(
+            [
+                {
+                    "uid": disclosure.uid,
+                    "security_id": security.id,
+                    "title": disclosure.title[:512],
+                    "importance": str(importance),
+                }
+            ]
+        )
+        # Two runs racing on the same item must not raise; first write wins.
+        self.session.execute(stmt.on_conflict_do_nothing(index_elements=["uid"]))

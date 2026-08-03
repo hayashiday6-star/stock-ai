@@ -8,6 +8,7 @@ omit individual figures for a given symbol or point in time.
 from __future__ import annotations
 
 import datetime as dt
+import hashlib
 from enum import StrEnum
 
 from pydantic import BaseModel, ConfigDict
@@ -28,6 +29,52 @@ class Fundamentals(BaseModel):
     net_income: float | None = None  # net income to common
     dividend_yield: float | None = None
     market_cap: float | None = None
+
+
+class Importance(StrEnum):
+    """How much attention a disclosure deserves."""
+
+    HIGH = "high"
+    MEDIUM = "medium"
+    LOW = "low"
+    UNKNOWN = "unknown"
+
+    @property
+    def rank(self) -> int:
+        """Sortable severity; ``UNKNOWN`` sits above ``LOW``.
+
+        An item the classifier could not read is more worth a human glance than
+        one it confidently judged routine.
+        """
+        return {"high": 3, "medium": 2, "unknown": 1, "low": 0}[self.value]
+
+
+class Disclosure(BaseModel):
+    """One news item or IR filing about a security."""
+
+    model_config = ConfigDict(frozen=True)
+
+    symbol: str
+    title: str
+    body: str = ""
+    published_on: dt.date | None = None
+    url: str | None = None
+    source: str = ""
+
+    def as_text(self) -> str:
+        """Return the item as one text block for summarization."""
+        return f"{self.title}\n\n{self.body}".strip()
+
+    @property
+    def uid(self) -> str:
+        """A stable identity used to avoid alerting on the same item twice.
+
+        Derived from the content rather than a provider id, because the sources
+        do not agree on one — and a title plus a date is what actually makes a
+        disclosure the same disclosure.
+        """
+        seed = f"{self.symbol}|{self.published_on or ''}|{self.title}"
+        return hashlib.sha256(seed.encode("utf-8")).hexdigest()[:32]
 
 
 class SecurityProfile(BaseModel):
@@ -121,3 +168,15 @@ class FinancialReport(BaseModel):
         if self.dividend_per_share is None or self.eps is None or self.eps <= 0:
             return None
         return self.dividend_per_share / self.eps
+
+
+class WatchEntry(BaseModel):
+    """A watchlist entry: which security, why, and how loud it should be."""
+
+    model_config = ConfigDict(frozen=True)
+
+    symbol: str
+    market: str = "US"
+    note: str | None = None
+    min_importance: Importance = Importance.MEDIUM
+    """Only disclosures at or above this level become alerts for this name."""

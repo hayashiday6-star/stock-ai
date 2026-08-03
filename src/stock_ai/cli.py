@@ -25,12 +25,14 @@ from stock_ai.backtest.strategy import BuyAndHold, Strategy, build_strategy
 from stock_ai.config.settings import Settings, get_settings
 from stock_ai.core.exceptions import AIError, NotificationError
 from stock_ai.core.logging import configure_logging
+from stock_ai.core.scheduler import DailyScheduler
 from stock_ai.data.base import PriceProvider
 from stock_ai.data.fx import FxConverter
 from stock_ai.data.jquants_fundamentals import JQuantsFundamentalsProvider
 from stock_ai.data.jquants_profile import JQuantsProfileProvider
 from stock_ai.data.jquants_provider import JQuantsPriceProvider
 from stock_ai.data.service import FundamentalsService, IngestionService, IngestResult
+from stock_ai.data.types import Importance
 from stock_ai.data.yfinance_provider import (
     YFinanceFundamentalsProvider,
     YFinancePriceProvider,
@@ -42,8 +44,12 @@ from stock_ai.database.repository import (
     FundamentalsRepository,
     HoldingRepository,
     PriceRepository,
+    WatchlistRepository,
     upsert_profile,
 )
+from stock_ai.ir.monitor import WatchMonitor
+from stock_ai.ir.sources import NewsDisclosureSource
+from stock_ai.news.sources import YFinanceNewsSource
 from stock_ai.notification.factory import get_notifier
 from stock_ai.portfolio.analysis import PortfolioAnalysis, analyze_portfolio
 from stock_ai.portfolio.growth_factors import tenbagger_weighted_factors
@@ -633,6 +639,175 @@ def notify(
     except NotificationError as exc:
         console.print(f"[red]notification failed:[/] {exc}")
         raise typer.Exit(code=1) from exc
+
+
+@app.command()
+def watch(
+    symbol: str | None = typer.Argument(None, help="Symbol to add; omit to list."),
+    note: str | None = typer.Option(None, help="Why this name is watched."),
+    importance: str = typer.Option("medium", help="Alert threshold: high | medium | low."),
+    market: str = typer.Option("US", help="Listing market: US | JP."),
+    remove: bool = typer.Option(False, "--remove", help="Drop SYMBOL from the watchlist."),
+) -> None:
+    """Manage the watchlist that ``monitor`` checks."""
+    settings = get_settings()
+    configure_logging(settings.log_level)
+
+    database = Database()
+    database.create_all()
+
+    if symbol is None:
+        with database.session() as session:
+            entries = WatchlistRepository(session).list_entries()
+        if not entries:
+            console.print("[yellow]Watchlist is empty.[/]")
+            return
+        table = Table(title="watchlist")
+        table.add_column("symbol", style="cyan")
+        table.add_column("mkt")
+        table.add_column("alerts at")
+        table.add_column("note")
+        for entry in entries:
+            table.add_row(entry.symbol, entry.market, entry.min_importance.value, entry.note or "—")
+        console.print(table)
+        return
+
+    with database.session() as session:
+        repo = WatchlistRepository(session)
+        if remove:
+            dropped = repo.remove(symbol)
+            console.print(
+                f"Removed [cyan]{symbol}[/]."
+                if dropped
+                else f"[yellow]{symbol} was not watched.[/]"
+            )
+            return
+        repo.add(
+            symbol,
+            note=note,
+            min_importance=_parse_importance(importance),
+            market=market.upper(),
+        )
+    console.print(f"Watching [cyan]{symbol}[/] (alerts at {importance.lower()} and above).")
+
+
+def _parse_importance(value: str) -> Importance:
+    """Parse an importance threshold from the CLI."""
+    try:
+        return Importance(value.strip().lower())
+    except ValueError as exc:
+        raise typer.BadParameter(
+            f"importance must be high, medium, or low; got {value!r}."
+        ) from exc
+
+
+@app.command()
+def monitor(
+    provider: str = typer.Option("dummy", help="AI provider: dummy|claude|openai|gemini."),
+    channel: str | None = typer.Option(None, help="Send alerts to console|discord|telegram|line."),
+    limit: int = typer.Option(10, help="Disclosures pulled per watched symbol."),
+) -> None:
+    """Check the watchlist for disclosures worth reporting.
+
+    Each new item is rated and summarized by the AI provider, and anything at
+    or above a name's threshold becomes an alert. Reported items are recorded,
+    so running this daily does not re-deliver the same news.
+    """
+    settings = get_settings()
+    configure_logging(settings.log_level)
+
+    database = Database()
+    database.create_all()
+    notifier = get_notifier(channel, settings) if channel else None
+    monitor_service = WatchMonitor(
+        database,
+        source=NewsDisclosureSource(YFinanceNewsSource()),
+        provider=get_ai_provider(provider, settings),
+        notifier=notifier,
+    )
+
+    result = monitor_service.run(limit=limit, notify=notifier is not None)
+    console.print(
+        f"Checked [bold]{result.checked}[/] new disclosure(s), "
+        f"skipped {result.skipped} already seen."
+    )
+    if result.unjudged:
+        console.print(
+            f"[yellow]{result.unjudged} could not be classified[/] "
+            "(AI provider failed); they stay unseen and are retried next run."
+        )
+    if result.alerts:
+        console.print(result.format())
+    else:
+        console.print("[dim]Nothing above threshold.[/]")
+
+
+@app.command()
+def daily(
+    at: str = typer.Option("18:00", help="Local HH:MM the jobs run at."),
+    symbols: list[str] | None = typer.Argument(None, help="Symbols to refresh."),
+    source: str = typer.Option("yfinance", help="Price source: yfinance | jquants."),
+    provider: str = typer.Option("dummy", help="AI provider used by the monitor."),
+    channel: str | None = typer.Option(None, help="Notification channel for alerts."),
+    once: bool = typer.Option(False, "--once", help="Run the jobs now and exit."),
+) -> None:
+    """Run the daily pipeline: refresh prices, then check the watchlist.
+
+    ``--once`` is the form to put in cron or Task Scheduler. Without it this
+    blocks and fires every day at ``--at``, which is convenient for a desktop
+    but has no catch-up if the machine was asleep.
+    """
+    settings = get_settings()
+    configure_logging(settings.log_level)
+
+    database = Database()
+    database.create_all()
+    scheduler = DailyScheduler(at=at)
+
+    targets = list(symbols) if symbols else None
+    if targets:
+        price_provider, market = _price_source(source, settings)
+        scheduler.add(
+            "prices",
+            lambda: _log_ingest(
+                IngestionService(price_provider, database).ingest_many(targets, market=market)
+            ),
+        )
+
+    notifier = get_notifier(channel, settings) if channel else None
+    scheduler.add(
+        "monitor",
+        lambda: WatchMonitor(
+            database,
+            source=NewsDisclosureSource(YFinanceNewsSource()),
+            provider=get_ai_provider(provider, settings),
+            notifier=notifier,
+        ).run(notify=notifier is not None),
+    )
+
+    if once:
+        results = scheduler.run_once()
+        table = Table(title="daily run")
+        table.add_column("job", style="cyan")
+        table.add_column("status")
+        for outcome in results:
+            table.add_row(
+                outcome.name,
+                "[green]ok[/]" if outcome.ok else f"[red]error[/] {outcome.error or ''}",
+            )
+        console.print(table)
+        if any(not r.ok for r in results):
+            raise typer.Exit(code=1)
+        return
+
+    console.print(f"Running daily at [cyan]{at}[/]. Ctrl-C to stop.")
+    scheduler.run_forever()
+
+
+def _log_ingest(results: list[IngestResult]) -> None:
+    """Raise if every symbol failed, so the scheduler records a failed job."""
+    if results and all(not r.ok for r in results):
+        raise RuntimeError(results[0].error or "all symbols failed")
 
 
 @app.command()

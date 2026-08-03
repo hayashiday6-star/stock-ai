@@ -185,6 +185,46 @@ Sector questions need `profile`, and growth or dividend-streak questions need
 `statements`. Percentages are normalized on the way in, since a model asked for
 "ROE 20%" answers `20` about as often as `0.2`.
 
+## Watchlist monitoring
+
+```bash
+uv run stock-ai watch 4593.T --note "ヘリオス: 再生医療" --market JP
+uv run stock-ai watch AAPL --importance high     # quieter name, high only
+uv run stock-ai watch                            # list
+uv run stock-ai watch AAPL --remove
+
+uv run stock-ai monitor --provider claude --channel discord
+```
+
+Each new disclosure is rated (high / medium / low) and summarized by the AI
+provider; anything at or above a name's threshold becomes an alert. Reported
+items are recorded, so a daily run does not re-deliver the same news, and an
+item judged routine is not re-classified (or re-billed) either.
+
+If the AI provider itself fails, those items are deliberately **not** recorded —
+they stay unseen and are retried, so a few minutes of downtime cannot bury a
+filing permanently. The count is reported so an incomplete pass is visible.
+
+> **Coverage.** The bundled source wraps yfinance news, which is thin for US
+> large caps and essentially empty for Japanese small caps — the very names a
+> watchlist is most useful for. A TDnet or EDINET adapter is the missing piece;
+> rather than ship an unverified HTTP integration, the seam is left explicit.
+> Implement `fetch` on `DisclosureSource` (or pass a callable to
+> `ir.sources.from_callable`) and nothing else has to change.
+
+## Daily automation
+
+```bash
+uv run stock-ai daily --once AAPL MSFT --provider claude --channel discord
+uv run stock-ai daily --at 18:00 AAPL MSFT       # blocks, fires daily
+```
+
+Refreshes prices, then checks the watchlist. A job that fails is logged and the
+run continues — a broken price fetch must not silence the monitor.
+
+`--once` is the form to put in cron or Task Scheduler, and is the recommended
+way to run this: the blocking mode has no catch-up if the machine was asleep.
+
 ## Scoring, AI, notifications
 
 ```bash
