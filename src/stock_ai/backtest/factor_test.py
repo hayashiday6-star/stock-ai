@@ -94,7 +94,9 @@ class FactorTestResult:
     no_forward_price: int = 0
     """Of ``skipped``: no price far enough after formation to measure."""
     no_visible_statements: int = 0
-    """Of ``skipped``: nothing had been *disclosed* by the formation date."""
+    """Of ``skipped``: statements exist, but none disclosed by the formation date."""
+    no_statements_stored: int = 0
+    """Of ``skipped``: no statements at all - never fetched, not merely too new."""
     no_score: int = 0
     """Of ``skipped``: statements were visible but no factor could be computed."""
 
@@ -269,6 +271,7 @@ def run_factor_test(
     # cause is that no statement had been *disclosed* by the formation date.
     no_forward_price = 0
     no_visible_statements = 0
+    no_statements_stored = 0
     no_score = 0
 
     with database.session() as session:
@@ -303,7 +306,15 @@ def run_factor_test(
             if not result.breakdown:  # nothing was computable; not a real score
                 skipped.append(symbol)
                 if not context.statements:
-                    no_visible_statements += 1
+                    # "Nothing visible at formation" has two causes with
+                    # opposite fixes: the company had not filed yet (move the
+                    # date), or this symbol has no statements stored at all
+                    # (fetch them). Counting them together sent the last round
+                    # of diagnosis after the wrong one.
+                    if statements:
+                        no_visible_statements += 1
+                    else:
+                        no_statements_stored += 1
                 else:
                     no_score += 1
                 continue
@@ -326,10 +337,11 @@ def run_factor_test(
     )
     if skipped:
         logger.info(
-            "Skipped %d: %d had no forward price, %d had no statement disclosed "
-            "by %s, %d could not be scored from what was visible.",
+            "Skipped %d: %d no forward price, %d no statements stored at all, "
+            "%d had statements but none disclosed by %s, %d unscoreable.",
             len(skipped),
             no_forward_price,
+            no_statements_stored,
             no_visible_statements,
             formation,
             no_score,
@@ -343,6 +355,7 @@ def run_factor_test(
         skipped=skipped,
         no_forward_price=no_forward_price,
         no_visible_statements=no_visible_statements,
+        no_statements_stored=no_statements_stored,
         no_score=no_score,
     )
 
@@ -405,6 +418,10 @@ class FormationAdvice:
     """Latest formation leaving a full horizon of prices after it."""
     first_disclosure: dt.date | None
     """Earliest disclosure anywhere in the database."""
+    with_statements: int = 0
+    """Symbols holding at least one dated statement - the coverage ceiling."""
+    universe: int = 0
+    """Symbols stored in total."""
 
 
 def suggest_formation(
@@ -443,14 +460,16 @@ def suggest_formation(
         universe = session.execute(select(func.count(Security.id))).scalar_one()
 
     if not first_disclosures or not last_prices or not universe:
-        return FormationAdvice(None, 0.0, None, None)
+        return FormationAdvice(None, 0.0, None, None, len(first_disclosures), universe)
 
     first_disclosure = min(first_disclosures.values())
     latest_feasible = max(last_prices.values()) - calendar_horizon
     if latest_feasible < first_disclosure:
         # No date satisfies both constraints: the disclosure history starts
         # after the last date a full horizon could be measured from.
-        return FormationAdvice(None, 0.0, latest_feasible, first_disclosure)
+        return FormationAdvice(
+            None, 0.0, latest_feasible, first_disclosure, len(first_disclosures), universe
+        )
 
     best: dt.date | None = None
     best_count = -1
@@ -472,4 +491,6 @@ def suggest_formation(
         coverage=best_count / universe if universe else 0.0,
         latest_feasible=latest_feasible,
         first_disclosure=first_disclosure,
+        with_statements=len(first_disclosures),
+        universe=universe,
     )

@@ -497,3 +497,86 @@ def test_an_empty_database_gives_no_advice_rather_than_a_wrong_date() -> None:
     assert advice.first_disclosure is None
     assert advice.coverage == 0.0
     database.dispose()
+
+
+def test_missing_statements_and_late_statements_are_counted_apart() -> None:
+    """Two causes, opposite fixes: fetch the data, or move the date.
+
+    Reported together they sent a real diagnosis after the wrong one - a run
+    where most names had simply never been downloaded was read as "pick a later
+    formation date", which cannot help.
+    """
+    import datetime as dt
+
+    import numpy as np
+    import pandas as pd
+
+    from stock_ai.backtest.factor_test import run_factor_test, suggest_formation
+    from stock_ai.data.fx import FxConverter
+    from stock_ai.data.types import FinancialReport
+    from stock_ai.database.engine import Database
+    from stock_ai.database.repository import (
+        FinancialStatementRepository,
+        PriceRepository,
+        get_or_create_security,
+    )
+    from stock_ai.portfolio.growth_factors import tenbagger_weighted_factors
+    from stock_ai.portfolio.scoring import WeightedScorer
+
+    formation = dt.date(2024, 6, 28)
+    index = pd.bdate_range(dt.date(2022, 6, 25), dt.date(2026, 8, 3), name="date")
+    close = np.full(len(index), 1000.0)
+    frame = pd.DataFrame(
+        {
+            "open": close,
+            "high": close,
+            "low": close,
+            "close": close,
+            "adj_close": close,
+            "volume": 1000,
+        },
+        index=index,
+    )
+
+    database = Database("sqlite:///:memory:")
+    database.create_all()
+    with database.session() as session:
+        for i in range(30):
+            symbol = f"{1300 + i:04d}"
+            get_or_create_security(session, symbol, market="JP")
+            PriceRepository(session).upsert_prices(symbol, frame, market="JP")
+            if i < 10:
+                first = dt.date(2022, 8, 1)  # disclosed before formation
+            elif i < 20:
+                first = dt.date(2025, 6, 1)  # disclosed only after formation
+            else:
+                continue  # statements never fetched at all
+            FinancialStatementRepository(session).upsert_reports(
+                symbol,
+                [
+                    FinancialReport(
+                        symbol=symbol,
+                        fiscal_year=2022 + k,
+                        disclosed_on=first + dt.timedelta(days=182 * k),
+                        revenue=1e10 * 1.2**k,
+                        net_income=5e8 * 1.1**k,
+                        equity=8e9,
+                        eps=100.0,
+                    )
+                    for k in range(4)
+                ],
+                market="JP",
+            )
+
+    scorer = WeightedScorer(tenbagger_weighted_factors(fx=FxConverter(rates={"JPY": 150.0})))
+    result = run_factor_test(database, scorer, formation, horizon_days=252, buckets=3)
+
+    assert result.no_statements_stored == 10
+    assert result.no_visible_statements == 10
+
+    # The advisor's ceiling reflects what can never be tested, not just the date.
+    advice = suggest_formation(database, 252)
+    assert advice.with_statements == 20
+    assert advice.universe == 30
+    assert advice.coverage <= 20 / 30
+    database.dispose()

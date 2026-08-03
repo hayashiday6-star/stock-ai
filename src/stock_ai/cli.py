@@ -806,22 +806,37 @@ def _render_factor_test(result: FactorTestResult, preset: str) -> None:
         console.print(
             f"[dim]{len(result.skipped)} name(s) skipped: "
             f"{result.no_forward_price} without a forward price, "
-            f"{result.no_visible_statements} with nothing disclosed by "
+            f"{result.no_statements_stored} with no statements stored at all, "
+            f"{result.no_visible_statements} whose statements all postdate "
             f"{result.formation}, {result.no_score} unscoreable from what was visible.[/]"
         )
         if result.coverage < 0.5:
             # Coverage this low changes what the numbers above mean, so it is
-            # said in full rather than left to be inferred from two integers.
+            # said in full rather than left to be inferred from a row of counts.
             console.print(
                 f"[yellow]Only {result.coverage:.0%} of the universe was tested.[/] "
                 "That sample is not random - it is the names with the longest "
                 "disclosure history, which skews old and large."
             )
-            if result.no_visible_statements > result.no_forward_price:
+            # The dominant reason decides the advice, and the two lead opposite
+            # ways: missing data is fetched, late data is waited out or dated
+            # around. Saying "try a later date" to someone whose statements were
+            # never downloaded sends them in circles.
+            if result.no_statements_stored >= max(
+                result.no_visible_statements, result.no_forward_price
+            ):
                 console.print(
-                    "  Most were dropped for want of a disclosure, not for want of "
-                    "price history. Fetching more prices will not help; a later "
-                    "formation date might, because more has been filed by then."
+                    f"  [yellow]{result.no_statements_stored} name(s) have no statements "
+                    "at all.[/] No formation date can fix that - the data was never "
+                    "fetched, or the fetch failed for them:\n"
+                    "      uv run stock-ai bulk-fetch --what statements --segment stored\n"
+                    "  It skips symbols already stored, so this only costs the missing ones."
+                )
+            elif result.no_visible_statements > result.no_forward_price:
+                console.print(
+                    "  Most were dropped because nothing had been filed by then, not "
+                    "for want of price history. Fetching more prices will not help; a "
+                    "later formation date will."
                 )
             _print_formation_advice(result.horizon_days)
 
@@ -835,6 +850,15 @@ def _print_formation_advice(horizon_days: int) -> None:
     and not of the answer.
     """
     advice = suggest_formation(Database(), horizon_days)
+    if advice.universe and advice.with_statements < advice.universe // 2:
+        # The ceiling matters more than the best date: no formation date can
+        # test a symbol whose statements were never stored, so a "best coverage"
+        # figure below this is a fact about the download, not about the calendar.
+        console.print(
+            f"  [yellow]Only {advice.with_statements} of {advice.universe} stored "
+            "symbols have any dated statement at all.[/] That caps coverage no "
+            "matter which date is chosen."
+        )
     if advice.best is None:
         console.print(
             "[yellow]No formation date works with the data stored.[/] "
