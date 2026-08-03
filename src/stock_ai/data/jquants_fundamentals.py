@@ -22,7 +22,7 @@ from pydantic import SecretStr
 
 from stock_ai.core.exceptions import DataError
 from stock_ai.core.logging import get_logger
-from stock_ai.data.types import Fundamentals
+from stock_ai.data.types import FinancialReport, FiscalPeriod, Fundamentals
 
 logger = get_logger(__name__)
 
@@ -118,6 +118,139 @@ def normalize_statement(
     )
 
 
+# V2 abbreviates period markers; V1-style spellings are kept as fallbacks.
+_PERIOD_ALIASES: dict[str, FiscalPeriod] = {
+    "1Q": FiscalPeriod.Q1,
+    "Q1": FiscalPeriod.Q1,
+    "2Q": FiscalPeriod.Q2,
+    "Q2": FiscalPeriod.Q2,
+    "HY": FiscalPeriod.Q2,  # a half-year report closes the second quarter
+    "3Q": FiscalPeriod.Q3,
+    "Q3": FiscalPeriod.Q3,
+    "FY": FiscalPeriod.FY,
+    "4Q": FiscalPeriod.FY,
+}
+
+
+# Chronological order within a fiscal year; alphabetical would put FY first.
+_PERIOD_ORDER: dict[FiscalPeriod, int] = {
+    FiscalPeriod.Q1: 1,
+    FiscalPeriod.Q2: 2,
+    FiscalPeriod.Q3: 3,
+    FiscalPeriod.FY: 4,
+}
+
+
+def _text(record: dict[str, Any], *keys: str) -> str | None:
+    """Return the first non-empty string among ``keys``."""
+    for key in keys:
+        value = record.get(key)
+        if value not in (None, ""):
+            return str(value)
+    return None
+
+
+def _parse_date(value: str | None) -> dt.date | None:
+    """Parse an ISO-ish J-Quants date, tolerating slashes and stray time parts."""
+    if not value:
+        return None
+    text = value.replace("/", "-")[:10]
+    try:
+        return dt.date.fromisoformat(text)
+    except ValueError:
+        return None
+
+
+def _period_of(record: dict[str, Any]) -> FiscalPeriod:
+    """Map a record's period marker onto :class:`FiscalPeriod`.
+
+    Anything unrecognised is treated as a full year: J-Quants annual rows are
+    the ones that carry no distinguishing quarter marker in some payloads.
+    """
+    marker = _text(record, "Period", "TypeOfCurrentPeriod", "PeriodType")
+    if marker is None:
+        return FiscalPeriod.FY
+    return _PERIOD_ALIASES.get(marker.strip().upper(), FiscalPeriod.FY)
+
+
+def _fiscal_year_of(record: dict[str, Any]) -> int | None:
+    """Determine the fiscal year a record belongs to.
+
+    Prefers an explicit fiscal-year field, then the fiscal-year-end date, and
+    finally the disclosure date — a disclosure names the year it reports on far
+    more reliably than the year it was published, so it is the last resort.
+    """
+    explicit = _to_float(_text(record, "FY", "FiscalYear"))
+    if explicit is not None and 1900 <= explicit <= 2999:
+        return int(explicit)
+
+    for key in ("FYEnd", "CurrentFiscalYearEndDate", "FiscalYearEnd", "PeriodEnd"):
+        parsed = _parse_date(_text(record, key))
+        if parsed is not None:
+            return parsed.year
+
+    disclosed = _parse_date(_text(record, "DiscDate", "DisclosedDate"))
+    return disclosed.year if disclosed else None
+
+
+def normalize_statements(symbol: str, records: list[dict[str, Any]]) -> list[FinancialReport]:
+    """Turn raw ``fins/summary`` records into a fiscal-period report series.
+
+    Every record is kept, not just the newest: the payload already carries the
+    company's disclosure history, and that history is exactly what growth rates
+    and dividend streaks are computed from.
+
+    Records whose fiscal year cannot be determined are dropped — placing them
+    on the wrong year would corrupt a year-over-year comparison, which is worse
+    than omitting them.
+
+    Args:
+        symbol: The security code.
+        records: J-Quants summary records.
+
+    Returns:
+        Reports sorted oldest first. Restatements of the same period collapse
+        to the latest disclosure.
+    """
+    by_period: dict[tuple[int, FiscalPeriod], tuple[str, FinancialReport]] = {}
+    skipped = 0
+
+    for record in records:
+        fiscal_year = _fiscal_year_of(record)
+        if fiscal_year is None:
+            skipped += 1
+            continue
+
+        period = _period_of(record)
+        disclosed_text = _text(record, "DiscDate", "DisclosedDate") or ""
+        report = FinancialReport(
+            symbol=symbol,
+            fiscal_year=fiscal_year,
+            period=period,
+            disclosed_on=_parse_date(disclosed_text),
+            revenue=_first(record, "Sales", "NetSales"),
+            operating_income=_first(record, "OP", "OperatingProfit"),
+            net_income=_first(record, "NP", "Profit"),
+            equity=_first(record, "Eq", "Equity"),
+            eps=_first(record, "EPS"),
+            bps=_first(record, "BPS"),
+            dividend_per_share=_first(record, "DivAnn"),
+            shares_outstanding=_first(record, "ShOutFY"),
+        )
+
+        key = (fiscal_year, period)
+        previous = by_period.get(key)
+        # A restatement supersedes the earlier disclosure of the same period.
+        if previous is None or disclosed_text >= previous[0]:
+            by_period[key] = (disclosed_text, report)
+
+    if skipped:
+        logger.warning("Dropped %d %s statement(s) with no resolvable fiscal year", skipped, symbol)
+
+    ordered = sorted(by_period.items(), key=lambda kv: (kv[0][0], _PERIOD_ORDER[kv[0][1]]))
+    return [report for _key, (_disclosed, report) in ordered]
+
+
 def _default_fetcher(api_key: SecretStr | None) -> StatementFetcher:
     """Build a fetcher that calls the J-Quants V2 statements endpoint."""
 
@@ -182,3 +315,14 @@ class JQuantsFundamentalsProvider:
         snapshot = normalize_statement(symbol, records, self._today(), price)
         logger.info("Fetched J-Quants fundamentals for %s", symbol)
         return snapshot
+
+    def fetch_statements(self, symbol: str) -> list[FinancialReport]:
+        """Fetch ``symbol``'s full disclosed statement history, oldest first.
+
+        The same request behind :meth:`fetch_fundamentals` already returns every
+        disclosure the plan covers; this keeps them all instead of collapsing to
+        the latest one.
+        """
+        reports = normalize_statements(symbol, self._fetch(symbol))
+        logger.info("Fetched %d J-Quants statement(s) for %s", len(reports), symbol)
+        return reports

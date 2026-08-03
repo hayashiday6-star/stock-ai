@@ -9,6 +9,7 @@ from __future__ import annotations
 from stock_ai.core.logging import get_logger
 from stock_ai.database.engine import Database
 from stock_ai.database.repository import (
+    FinancialStatementRepository,
     FundamentalsRepository,
     PriceRepository,
     list_symbols,
@@ -21,16 +22,25 @@ logger = get_logger(__name__)
 class ScreeningEngine:
     """Evaluate a condition over many symbols and collect the passers."""
 
-    def __init__(self, database: Database, load_prices: bool = False) -> None:
+    def __init__(
+        self,
+        database: Database,
+        load_prices: bool = False,
+        load_statements: bool = False,
+    ) -> None:
         """Create the engine.
 
         Args:
-            database: Source of fundamentals (and prices, if enabled).
+            database: Source of fundamentals (and prices/statements, if enabled).
             load_prices: Whether to attach price history to each context.
                 Leave ``False`` for fundamentals-only conditions.
+            load_statements: Whether to attach the annual statement series.
+                Required by the growth and dividend-streak conditions, which
+                otherwise see an empty series and correctly refuse to pass.
         """
         self.database = database
         self.load_prices = load_prices
+        self.load_statements = load_statements
 
     def screen(self, condition: Condition, symbols: list[str] | None = None) -> list[str]:
         """Return the symbols that satisfy ``condition``.
@@ -46,14 +56,17 @@ class ScreeningEngine:
             targets = symbols if symbols is not None else list_symbols(session)
             fundamentals_repo = FundamentalsRepository(session)
             price_repo = PriceRepository(session)
+            statement_repo = FinancialStatementRepository(session)
 
             passing: list[str] = []
             for symbol in targets:
                 prices = price_repo.get_prices(symbol) if self.load_prices else None
+                statements = statement_repo.get_reports(symbol) if self.load_statements else []
                 context = ScreeningContext(
                     symbol=symbol,
                     fundamentals=fundamentals_repo.get_latest(symbol),
                     prices=prices,
+                    statements=statements,
                 )
                 if condition.evaluate(context):
                     passing.append(symbol)

@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import datetime as dt
 
-from sqlalchemy import Date, DateTime, ForeignKey, String, UniqueConstraint, func
+from sqlalchemy import Date, DateTime, ForeignKey, Integer, String, UniqueConstraint, func
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
@@ -75,5 +75,41 @@ class FundamentalSnapshot(Base):
     net_income: Mapped[float | None] = mapped_column(default=None)
     dividend_yield: Mapped[float | None] = mapped_column(default=None)
     market_cap: Mapped[float | None] = mapped_column(default=None)
+
+    security: Mapped[Security] = relationship()
+
+
+class FinancialStatement(Base):
+    """One disclosed set of results for a fiscal period of a :class:`Security`.
+
+    Keyed by *fiscal period*, not by fetch date: that is what makes year-over-
+    year growth, dividend streaks, and payout history expressible at all. The
+    ``(security_id, fiscal_year, period)`` constraint makes re-ingesting a
+    restated disclosure an update rather than a duplicate row.
+    """
+
+    __tablename__ = "financial_statements"
+    __table_args__ = (
+        UniqueConstraint(
+            "security_id", "fiscal_year", "period", name="uq_statements_security_year_period"
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    security_id: Mapped[int] = mapped_column(
+        ForeignKey("securities.id", ondelete="CASCADE"), index=True
+    )
+    fiscal_year: Mapped[int] = mapped_column(Integer, index=True)
+    period: Mapped[str] = mapped_column(String(4), default="FY")
+    disclosed_on: Mapped[dt.date | None] = mapped_column(Date, default=None)
+
+    revenue: Mapped[float | None] = mapped_column(default=None)
+    operating_income: Mapped[float | None] = mapped_column(default=None)
+    net_income: Mapped[float | None] = mapped_column(default=None)
+    equity: Mapped[float | None] = mapped_column(default=None)
+    eps: Mapped[float | None] = mapped_column(default=None)
+    bps: Mapped[float | None] = mapped_column(default=None)
+    dividend_per_share: Mapped[float | None] = mapped_column(default=None)
+    shares_outstanding: Mapped[float | None] = mapped_column(default=None)
 
     security: Mapped[Security] = relationship()

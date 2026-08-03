@@ -62,6 +62,19 @@ uv run stock-ai fundamentals AAPL MSFT
 Each run stores one snapshot per symbol per day; missing metrics are kept as
 `NULL` rather than failing the whole fetch.
 
+## Financial statement history (JP)
+
+Snapshots answer "what are the ratios today"; a *series* answers "is revenue
+growing, has the dividend been raised every year". The latter needs a
+fiscal-period axis, which `statements` ingests:
+
+```bash
+uv run stock-ai statements 7203 4593   # one request returns the whole history
+```
+
+Rows are keyed by `(symbol, fiscal year, period)`, so re-running updates
+restated periods instead of duplicating them.
+
 ## Screening
 
 Filter stored securities by fundamentals and export the matches:
@@ -71,9 +84,40 @@ uv run stock-ai screen --min-roe 0.15 --max-pbr 5 --format csv --out result.csv
 uv run stock-ai screen --max-per 15 --min-dividend-yield 0.03   # prints a table
 ```
 
-Available criteria: `--min-roe`, `--max-per`, `--max-pbr`,
-`--min-dividend-yield`, `--min-market-cap` (combined with AND). Output formats:
-`csv`, `json`, `xlsx`.
+Snapshot criteria: `--min-roe`, `--max-per`, `--max-pbr`,
+`--min-dividend-yield`, `--min-market-cap`, `--max-market-cap`.
+
+Series criteria (require `statements` to have been run first):
+`--min-revenue-growth`, `--min-profit-growth`, `--min-dividend-growth`,
+`--growth-years`, `--min-dividend-streak`, `--max-payout-ratio`.
+
+All criteria combine with AND. Output formats: `csv`, `json`, `xlsx`.
+
+```bash
+# 割安成長株: 増収・増益・増配かつ割安
+uv run stock-ai screen --min-revenue-growth 0.05 --min-profit-growth 0.05 \
+                       --min-dividend-growth 0.001 --max-per 20
+
+# 配当: 3年以上の連続増配で、配当性向は 30% 以下
+uv run stock-ai screen --min-dividend-streak 3 --max-payout-ratio 0.30
+```
+
+`--min-dividend-growth 0` means "not cut"; pass a positive floor to require an
+actual raise. A criterion that cannot be computed never passes — an unverifiable
+metric is excluded rather than assumed good.
+
+## Cross-market ranking (JP + US)
+
+```bash
+uv run stock-ai rank                       # live FX
+uv run stock-ai rank --fx JPY=0.0064       # pinned rate, reproducible
+uv run stock-ai rank --max-market-cap 1e9  # small caps, both markets
+```
+
+The composite score is built from unitless ratios, so it already compares
+across markets. Market cap does not — it arrives in the listing market's
+currency — so it is converted to `--base` (default USD) before being shown or
+filtered on.
 
 ## Scoring, AI, notifications
 

@@ -26,6 +26,7 @@ from stock_ai.core.exceptions import NotificationError
 from stock_ai.core.logging import configure_logging
 from stock_ai.data.base import PriceProvider
 from stock_ai.data.fx import FxConverter
+from stock_ai.data.jquants_fundamentals import JQuantsFundamentalsProvider
 from stock_ai.data.jquants_provider import JQuantsPriceProvider
 from stock_ai.data.service import FundamentalsService, IngestionService, IngestResult
 from stock_ai.data.yfinance_provider import (
@@ -33,16 +34,26 @@ from stock_ai.data.yfinance_provider import (
     YFinancePriceProvider,
 )
 from stock_ai.database.engine import Database
-from stock_ai.database.repository import FundamentalsRepository, PriceRepository
+from stock_ai.database.repository import (
+    FinancialStatementRepository,
+    FundamentalsRepository,
+    PriceRepository,
+)
 from stock_ai.notification.factory import get_notifier
 from stock_ai.portfolio.ranking import rank_securities
 from stock_ai.portfolio.scoring import WeightedScorer, default_weighted_factors
 from stock_ai.screening.base import All, Condition, ScreeningContext
 from stock_ai.screening.conditions import (
+    MaxMarketCap,
+    MaxPayoutRatio,
     MaxPBR,
     MaxPER,
+    MinConsecutiveDividendIncreases,
+    MinDividendGrowth,
     MinDividendYield,
     MinMarketCap,
+    MinProfitGrowth,
+    MinRevenueGrowth,
     MinROE,
 )
 from stock_ai.screening.engine import ScreeningEngine
@@ -144,26 +155,98 @@ def fundamentals(
 
 
 @app.command()
+def statements(
+    symbols: list[str] = typer.Argument(..., help="JP security codes, e.g. 7203 4593"),
+) -> None:
+    """Fetch and store the disclosed statement history for SYMBOLS (J-Quants).
+
+    This is what the growth, dividend-streak, and payout screens read. One
+    request per symbol returns every period the plan covers, so the whole
+    history lands in a single run.
+    """
+    settings = get_settings()
+    configure_logging(settings.log_level)
+
+    database = Database()
+    database.create_all()
+    provider = JQuantsFundamentalsProvider(api_key=settings.jquants_api_key)
+
+    results: list[IngestResult] = []
+    for symbol in symbols:
+        try:
+            reports = provider.fetch_statements(symbol)
+            with database.session() as session:
+                rows = FinancialStatementRepository(session).upsert_reports(
+                    symbol, reports, market="JP"
+                )
+            results.append(IngestResult(symbol, rows, ok=True))
+        except Exception as exc:  # one bad symbol must not abort the batch
+            results.append(IngestResult(symbol, 0, ok=False, error=str(exc)))
+
+    _render_results(results)
+    if any(not r.ok for r in results):
+        raise typer.Exit(code=1)
+
+
+@app.command()
 def screen(
     min_roe: float | None = typer.Option(None, help="Minimum return on equity."),
     max_per: float | None = typer.Option(None, help="Maximum price/earnings."),
     max_pbr: float | None = typer.Option(None, help="Maximum price/book."),
     min_dividend_yield: float | None = typer.Option(None, help="Minimum dividend yield."),
     min_market_cap: float | None = typer.Option(None, help="Minimum market cap."),
+    max_market_cap: float | None = typer.Option(None, help="Maximum market cap (small caps)."),
+    min_revenue_growth: float | None = typer.Option(None, help="増収: min revenue growth."),
+    min_profit_growth: float | None = typer.Option(None, help="増益: min net income growth."),
+    min_dividend_growth: float | None = typer.Option(
+        None, help="増配: min DPS growth (use >0 to require a real raise)."
+    ),
+    growth_years: int = typer.Option(1, help="Fiscal years the growth options look back."),
+    min_dividend_streak: int | None = typer.Option(
+        None, help="連続増配: minimum consecutive years the dividend was raised."
+    ),
+    max_payout_ratio: float | None = typer.Option(None, help="Maximum payout ratio (DPS/EPS)."),
     out: Path | None = typer.Option(None, help="Output file; prints a table if omitted."),
     fmt: str = typer.Option("csv", "--format", help="csv | json | xlsx."),
 ) -> None:
-    """Screen stored securities by fundamentals and report the matches."""
+    """Screen stored securities by fundamentals and report the matches.
+
+    Growth and dividend-streak options read the stored statement series, which
+    ``statements`` ingests. Without it those criteria match nothing, by design.
+    """
     settings = get_settings()
     configure_logging(settings.log_level)
 
-    condition = _build_condition(min_roe, max_per, max_pbr, min_dividend_yield, min_market_cap)
+    condition = _build_condition(
+        min_roe,
+        max_per,
+        max_pbr,
+        min_dividend_yield,
+        min_market_cap,
+        max_market_cap,
+        min_revenue_growth,
+        min_profit_growth,
+        min_dividend_growth,
+        growth_years,
+        min_dividend_streak,
+        max_payout_ratio,
+    )
     if out is not None and fmt.lower() not in SUPPORTED_FORMATS:
         raise typer.BadParameter(f"format must be one of {SUPPORTED_FORMATS}.")
 
+    needs_statements = any(
+        option is not None
+        for option in (
+            min_revenue_growth,
+            min_profit_growth,
+            min_dividend_growth,
+            min_dividend_streak,
+            max_payout_ratio,
+        )
+    )
     database = Database()
     database.create_all()
-    passing = ScreeningEngine(database).screen(condition)
+    passing = ScreeningEngine(database, load_statements=needs_statements).screen(condition)
     report = build_report(collect_fundamentals(database, passing))
 
     console.print(f"Matched [bold]{len(passing)}[/] symbols for [cyan]{condition}[/]")
@@ -433,6 +516,13 @@ def _build_condition(
     max_pbr: float | None,
     min_dividend_yield: float | None,
     min_market_cap: float | None,
+    max_market_cap: float | None = None,
+    min_revenue_growth: float | None = None,
+    min_profit_growth: float | None = None,
+    min_dividend_growth: float | None = None,
+    growth_years: int = 1,
+    min_dividend_streak: int | None = None,
+    max_payout_ratio: float | None = None,
 ) -> Condition:
     """Assemble a combined condition from the provided flags."""
     conditions: list[Condition] = []
@@ -446,6 +536,18 @@ def _build_condition(
         conditions.append(MinDividendYield(min_dividend_yield))
     if min_market_cap is not None:
         conditions.append(MinMarketCap(min_market_cap))
+    if max_market_cap is not None:
+        conditions.append(MaxMarketCap(max_market_cap))
+    if min_revenue_growth is not None:
+        conditions.append(MinRevenueGrowth(min_revenue_growth, growth_years))
+    if min_profit_growth is not None:
+        conditions.append(MinProfitGrowth(min_profit_growth, growth_years))
+    if min_dividend_growth is not None:
+        conditions.append(MinDividendGrowth(min_dividend_growth, growth_years))
+    if min_dividend_streak is not None:
+        conditions.append(MinConsecutiveDividendIncreases(min_dividend_streak))
+    if max_payout_ratio is not None:
+        conditions.append(MaxPayoutRatio(max_payout_ratio))
 
     if not conditions:
         raise typer.BadParameter("Provide at least one screening criterion.")

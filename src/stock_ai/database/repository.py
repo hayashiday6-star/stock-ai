@@ -25,8 +25,13 @@ from stock_ai.data.schema import (
     OPEN,
     VOLUME,
 )
-from stock_ai.data.types import Fundamentals
-from stock_ai.database.models import FundamentalSnapshot, PriceBar, Security
+from stock_ai.data.types import FinancialReport, FiscalPeriod, Fundamentals
+from stock_ai.database.models import (
+    FinancialStatement,
+    FundamentalSnapshot,
+    PriceBar,
+    Security,
+)
 
 _UPSERT_COLUMNS = [OPEN, HIGH, LOW, CLOSE, ADJ_CLOSE, VOLUME]
 _FUNDAMENTAL_COLUMNS = [
@@ -37,6 +42,17 @@ _FUNDAMENTAL_COLUMNS = [
     "net_income",
     "dividend_yield",
     "market_cap",
+]
+_STATEMENT_COLUMNS = [
+    "disclosed_on",
+    "revenue",
+    "operating_income",
+    "net_income",
+    "equity",
+    "eps",
+    "bps",
+    "dividend_per_share",
+    "shares_outstanding",
 ]
 
 
@@ -198,3 +214,95 @@ class FundamentalsRepository:
             as_of=row.as_of,
             **{col: getattr(row, col) for col in _FUNDAMENTAL_COLUMNS},
         )
+
+
+class FinancialStatementRepository:
+    """Persist and query the fiscal-period statement series for a security.
+
+    Unlike :class:`FundamentalsRepository`, which keeps one snapshot per fetch
+    date, this stores one row per *fiscal period*. That axis is what makes
+    growth, dividend streaks, and payout history answerable.
+    """
+
+    def __init__(self, session: Session) -> None:
+        """Bind the repository to an active session."""
+        self.session = session
+
+    def upsert_reports(
+        self, symbol: str, reports: list[FinancialReport], market: str = "US"
+    ) -> int:
+        """Insert or update ``reports`` for ``symbol``, keyed by fiscal period.
+
+        A restated disclosure for a period already stored overwrites it, so
+        re-ingesting the same history is idempotent.
+
+        Returns:
+            The number of rows written.
+        """
+        if not reports:
+            return 0
+
+        security = get_or_create_security(self.session, symbol, market=market)
+        # Later entries win if a payload repeats a period, matching the upsert.
+        by_period = {(r.fiscal_year, str(r.period)): r for r in reports}
+        records = [
+            {
+                "security_id": security.id,
+                "fiscal_year": report.fiscal_year,
+                "period": str(report.period),
+                **{col: getattr(report, col) for col in _STATEMENT_COLUMNS},
+            }
+            for report in by_period.values()
+        ]
+
+        stmt = sqlite_insert(FinancialStatement).values(records)
+        stmt = stmt.on_conflict_do_update(
+            index_elements=["security_id", "fiscal_year", "period"],
+            set_={col: getattr(stmt.excluded, col) for col in _STATEMENT_COLUMNS},
+        )
+        self.session.execute(stmt)
+        return len(records)
+
+    def get_reports(
+        self, symbol: str, period: FiscalPeriod | None = FiscalPeriod.FY
+    ) -> list[FinancialReport]:
+        """Return ``symbol``'s statements oldest first.
+
+        Args:
+            symbol: The security to read.
+            period: Restrict to one fiscal period type; ``None`` returns every
+                period. Defaults to annual, which is what growth and dividend
+                streak calculations compare — mixing quarters into a
+                year-over-year series would silently corrupt it.
+        """
+        stmt = (
+            select(FinancialStatement)
+            .join(Security)
+            .where(Security.symbol == symbol)
+            .order_by(FinancialStatement.fiscal_year, FinancialStatement.period)
+        )
+        if period is not None:
+            stmt = stmt.where(FinancialStatement.period == str(period))
+
+        return [
+            FinancialReport(
+                symbol=symbol,
+                fiscal_year=row.fiscal_year,
+                period=FiscalPeriod(row.period),
+                **{col: getattr(row, col) for col in _STATEMENT_COLUMNS},
+            )
+            for row in self.session.execute(stmt).scalars().all()
+        ]
+
+    def latest_fiscal_year(self, symbol: str) -> int | None:
+        """Return the most recent stored annual fiscal year, or ``None``."""
+        return self.session.execute(
+            select(FinancialStatement.fiscal_year)
+            .join(Security)
+            .where(
+                Security.symbol == symbol,
+                FinancialStatement.period == str(FiscalPeriod.FY),
+            )
+            .order_by(FinancialStatement.fiscal_year.desc())
+            .limit(1)
+        ).scalar_one_or_none()
