@@ -139,6 +139,35 @@ def to_disclosure(symbol: str, record: dict[str, Any]) -> Disclosure:
     )
 
 
+def _log_empty_day(day: dt.date, payload: dict[str, Any], has_key: bool) -> None:
+    """Explain why a day came back with no documents, as far as EDINET says."""
+    metadata = payload.get("metadata")
+    status = message = None
+    if isinstance(metadata, dict):
+        result = metadata.get("resultset") if isinstance(metadata.get("resultset"), dict) else {}
+        status = metadata.get("status")
+        message = metadata.get("message")
+        count = result.get("count") if isinstance(result, dict) else None
+        if count == 0:
+            logger.info("EDINET %s: no filings that day (count 0).", day)
+            return
+
+    if not has_key:
+        logger.warning(
+            "EDINET %s returned no documents and no API key was sent. "
+            "The v2 API requires EDINET_API_KEY; set it in .env.",
+            day,
+        )
+        return
+
+    logger.warning(
+        "EDINET %s returned no documents (status=%s, message=%s).",
+        day,
+        status or "?",
+        message or "?",
+    )
+
+
 def _default_day_fetcher(api_key: SecretStr | None) -> DayFetcher:
     """Build a fetcher for one day's document list."""
 
@@ -159,7 +188,15 @@ def _default_day_fetcher(api_key: SecretStr | None) -> DayFetcher:
             payload = response.json()
 
         results = payload.get("results")
-        return list(results) if isinstance(results, list) else []
+        if not isinstance(results, list) or not results:
+            # EDINET answers 200 with an empty body for several very different
+            # reasons — a missing subscription key, a non-business day, a
+            # rejected request — and distinguishes them only in the metadata.
+            # Surfacing that is what turns "zero filings" from a dead end into
+            # a diagnosable one.
+            _log_empty_day(day, payload, has_key=api_key is not None)
+            return []
+        return list(results)
 
     return fetch
 

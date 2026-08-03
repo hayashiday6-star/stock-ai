@@ -85,25 +85,47 @@ def _to_float(value: Any) -> float | None:
     return None if math.isnan(number) else number
 
 
+#: A dividend yield above this is treated as bad data rather than a bargain.
+#: Real equities top out well under 30%; anything higher is a unit error or a
+#: stale price, and letting it through hands the name a perfect dividend score.
+_MAX_PLAUSIBLE_YIELD = 0.30
+
+
 def _dividend_yield(info: dict[str, Any]) -> float | None:
     """Return the annual dividend yield as a **fraction** (0.023 = 2.3%).
 
-    ``dividendRate / price`` is the primary path because it is unambiguous and
-    matches how the J-Quants provider derives the same figure — the two must
-    agree for cross-market ranking to mean anything. Yahoo's ``dividendYield``
-    has shipped as both a fraction and a percentage across versions, so it is
-    only a fallback, and a value above 1.0 is rescaled as the percentage it
-    must be (no equity sustains a 100% yield).
+    ``dividendRate / price`` is the primary path: it is unambiguous, and it
+    matches how the J-Quants provider derives the same figure, which the two
+    must agree on for cross-market ranking to mean anything.
+
+    The ``dividendYield`` fallback is read as a **percentage**. Observed live:
+    yfinance returned ``0.78`` for MSFT and ``0.13`` for MRVL — real yields of
+    0.78% and 0.13%. An earlier version of this function rescaled only values
+    above 1.0, on the theory that a percentage always exceeds one; those two
+    names disprove it, and both were stored as 78% and 13%, which is enough to
+    hand a mega-cap a perfect dividend score.
+
+    Anything still implausible after conversion is dropped rather than stored,
+    because a yield that cannot be right is worse than one that is missing:
+    missing is excluded from scoring, wrong is scored.
     """
     price = _to_float(info.get("currentPrice")) or _to_float(info.get("previousClose"))
     rate = _to_float(info.get("dividendRate"))
     if rate is not None and price:
-        return rate / price
+        return _plausible_yield(rate / price)
 
     raw = _to_float(info.get("dividendYield"))
     if raw is None:
         return None
-    return raw / 100.0 if raw > 1.0 else raw
+    return _plausible_yield(raw / 100.0)
+
+
+def _plausible_yield(value: float) -> float | None:
+    """Return ``value`` if it could be a real dividend yield, else ``None``."""
+    if value < 0.0 or value > _MAX_PLAUSIBLE_YIELD:
+        logger.warning("Discarding implausible dividend yield %.4f", value)
+        return None
+    return value
 
 
 def _default_info_fetcher(symbol: str) -> dict[str, Any]:

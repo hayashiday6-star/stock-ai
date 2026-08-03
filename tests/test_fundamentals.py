@@ -136,17 +136,9 @@ def test_dividend_yield_falls_back_to_previous_close() -> None:
 
 
 def test_percentage_dividend_yield_is_rescaled_to_a_fraction() -> None:
-    """Yahoo has shipped this field as both 2.3 and 0.023; only one can be right."""
+    """The fallback field is a percentage, so 2.3 means 2.3%."""
     provider = YFinanceFundamentalsProvider(
         info_fetcher=lambda _s: {"dividendYield": 2.3},
-        clock=lambda: dt.date(2024, 6, 30),
-    )
-    assert provider.fetch_fundamentals("X").dividend_yield == pytest.approx(0.023)
-
-
-def test_fractional_dividend_yield_is_left_alone() -> None:
-    provider = YFinanceFundamentalsProvider(
-        info_fetcher=lambda _s: {"dividendYield": 0.023},
         clock=lambda: dt.date(2024, 6, 30),
     )
     assert provider.fetch_fundamentals("X").dividend_yield == pytest.approx(0.023)
@@ -155,6 +147,47 @@ def test_fractional_dividend_yield_is_left_alone() -> None:
 def test_absent_dividend_stays_none() -> None:
     provider = YFinanceFundamentalsProvider(
         info_fetcher=lambda _s: {"trailingPE": 15.0},
+        clock=lambda: dt.date(2024, 6, 30),
+    )
+    assert provider.fetch_fundamentals("X").dividend_yield is None
+
+
+def test_a_sub_one_percent_yield_is_still_a_percentage() -> None:
+    """Observed live: yfinance returned 0.78 for MSFT, meaning 0.78%.
+
+    The earlier rescale only fired above 1.0, so this was stored as 78% —
+    enough to hand a mega-cap a perfect dividend score.
+    """
+    provider = YFinanceFundamentalsProvider(
+        info_fetcher=lambda _s: {"dividendYield": 0.78},
+        clock=lambda: dt.date(2024, 6, 30),
+    )
+    assert provider.fetch_fundamentals("MSFT").dividend_yield == pytest.approx(0.0078)
+
+
+def test_a_multi_percent_yield_converts_the_same_way() -> None:
+    provider = YFinanceFundamentalsProvider(
+        info_fetcher=lambda _s: {"dividendYield": 3.4},
+        clock=lambda: dt.date(2024, 6, 30),
+    )
+    assert provider.fetch_fundamentals("X").dividend_yield == pytest.approx(0.034)
+
+
+def test_an_implausible_yield_is_dropped_rather_than_stored() -> None:
+    """A yield that cannot be right is worse than one that is missing.
+
+    Missing is excluded from scoring; wrong is scored.
+    """
+    provider = YFinanceFundamentalsProvider(
+        info_fetcher=lambda _s: {"dividendRate": 80.0, "currentPrice": 100.0},
+        clock=lambda: dt.date(2024, 6, 30),
+    )
+    assert provider.fetch_fundamentals("X").dividend_yield is None
+
+
+def test_a_negative_yield_is_dropped() -> None:
+    provider = YFinanceFundamentalsProvider(
+        info_fetcher=lambda _s: {"dividendYield": -5.0},
         clock=lambda: dt.date(2024, 6, 30),
     )
     assert provider.fetch_fundamentals("X").dividend_yield is None
