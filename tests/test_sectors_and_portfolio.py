@@ -360,3 +360,51 @@ def test_an_empty_portfolio_reports_nothing_rather_than_dividing_by_zero(
     assert analysis.annual_volatility is None
     assert analysis.concentration is None
     assert analysis.effective_positions is None
+
+
+# --- TSE-33 buckets that real data proved wrong -----------------------------
+
+
+def test_service_sector_is_not_communication() -> None:
+    """9050 サービス業 is a catch-all, and COMMUNICATION is the wrong catch.
+
+    Found on live data: a 20-name TSE Growth sample put a biotech, a recycler,
+    and a photo-services firm in "Communication Services" together. Growth is
+    dominated by 9050, so the mistake collapses most of a screen into one bucket
+    and inflates every concentration figure computed from it.
+    """
+    from stock_ai.data.sectors import Sector, from_tse33
+
+    assert from_tse33("9050") is Sector.INDUSTRIALS
+
+
+def test_telecoms_keep_the_communication_bucket() -> None:
+    """5250 情報・通信業 is the code that genuinely means telecom and media."""
+    from stock_ai.data.sectors import Sector, from_tse33
+
+    assert from_tse33("5250") is Sector.COMMUNICATION
+
+
+def test_the_service_and_telecom_codes_stay_distinct() -> None:
+    """The two catch-alls must not collapse into each other.
+
+    Note what this does *not* claim. On the live Growth sample the fix did not
+    spread names out - it moved them, from 10 in Communication Services to 14 in
+    Industrials, because that slice really is mostly 建設業 and サービス業. A
+    concentrated breakdown can be the truth. What matters is that a telecom and
+    a staffing firm are not filed as the same business.
+    """
+    from stock_ai.data.sectors import Sector, from_tse33
+
+    assert from_tse33("9050") is not from_tse33("5250")
+    assert from_tse33("9050") is Sector.INDUSTRIALS
+    assert from_tse33("5250") is Sector.COMMUNICATION
+
+
+def test_the_tse33_table_covers_the_whole_canonical_set() -> None:
+    """A table that folded everything into two buckets would pass the tests above."""
+    from stock_ai.data.sectors import _TSE33_SECTORS, Sector
+
+    mapped = set(_TSE33_SECTORS.values())
+    assert Sector.OTHER not in mapped  # OTHER means "unknown", never a target
+    assert len(mapped) >= 8

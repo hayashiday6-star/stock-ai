@@ -115,7 +115,23 @@ _TSE33_SECTORS: dict[str, Sector] = {
     "7150": Sector.FINANCIALS,  # 保険業
     "7200": Sector.FINANCIALS,  # その他金融業
     "8050": Sector.REAL_ESTATE,  # 不動産業
-    "9050": Sector.COMMUNICATION,  # サービス業
+    # サービス業 is TSE-33's catch-all: staffing, consulting, waste management,
+    # education, clinical services, amusement. Morningstar - the taxonomy the US
+    # side of this project is normalized onto - files that bulk under
+    # Industrials (commercial & professional services), so that is where it goes.
+    #
+    # It was COMMUNICATION, which is wrong in a way that only showed up on real
+    # data: COMMUNICATION means telecom, media, and interactive entertainment,
+    # and 情報・通信業 (5250) already covers those. TSE Growth is dominated by
+    # サービス業, so a 20-name Growth sample put 9 unrelated businesses -
+    # a biotech, a recycler, a photo-services firm - in one bucket, which
+    # inflates the portfolio concentration index and makes the sector breakdown
+    # say nothing.
+    #
+    # This is the least-wrong single answer, not a right one. 9050 genuinely
+    # spans several Morningstar sectors and TSE-33 carries nothing finer to
+    # split it on; TOPIX-17 lumps the same names into 情報通信・サービスその他.
+    "9050": Sector.INDUSTRIALS,  # サービス業
 }
 
 
