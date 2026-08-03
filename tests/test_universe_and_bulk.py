@@ -18,11 +18,12 @@ import pytest
 from stock_ai.core.exceptions import DataError
 from stock_ai.data.bulk import BulkIngester, Dataset, store_universe
 from stock_ai.data.sectors import Sector
-from stock_ai.data.types import FinancialReport
+from stock_ai.data.types import FinancialReport, Fundamentals
 from stock_ai.data.universe import JQuantsUniverse, Segment, normalize_listings
 from stock_ai.database.engine import Database
 from stock_ai.database.repository import (
     FinancialStatementRepository,
+    FundamentalsRepository,
     PriceRepository,
     get_profile,
     list_securities,
@@ -197,17 +198,30 @@ def test_storing_the_universe_creates_securities(database: Database) -> None:
 
 
 class _Statements:
-    """A statements provider that fails for one nominated symbol."""
+    """A statements provider that fails for one nominated symbol.
+
+    Mirrors the real provider's combined call: one request yields both the
+    snapshot the valuation screens read and the series the growth screens read.
+    """
 
     def __init__(self, failing: str | None = None) -> None:
         self.failing = failing
         self.calls: list[str] = []
 
-    def fetch_statements(self, symbol: str) -> list[FinancialReport]:
+    def fetch_snapshot_and_statements(
+        self, symbol: str
+    ) -> tuple[Fundamentals, list[FinancialReport]]:
         self.calls.append(symbol)
         if symbol == self.failing:
             raise RuntimeError("HTTP 500")
-        return [
+        snapshot = Fundamentals(
+            symbol=symbol,
+            as_of=dt.date(2024, 6, 30),
+            per=12.0,
+            roe=0.15,
+            revenue=100.0,
+        )
+        reports = [
             FinancialReport(
                 symbol=symbol,
                 fiscal_year=2024,
@@ -215,6 +229,7 @@ class _Statements:
                 revenue=100.0,
             )
         ]
+        return snapshot, reports
 
 
 class _Prices:
@@ -635,3 +650,71 @@ def test_the_snapshot_date_is_sent_as_yyyymmdd(monkeypatch: pytest.MonkeyPatch) 
 
     fetch()
     assert client.calls == [{"date": "20250131"}]
+
+
+# --- the snapshot the valuation screens read --------------------------------
+
+
+def test_ingesting_statements_also_stores_the_snapshot(database: Database) -> None:
+    """One request yields both, and both have to be written.
+
+    Storing only the series left every JP valuation screen silently empty:
+    'screen --max-per' reads the snapshot table, and nothing wrote to it outside
+    the US path. A 1,600-symbol load would finish clean and screen nothing.
+    """
+    _ingester(database).run(["7203"], Dataset.STATEMENTS)
+
+    with database.session() as session:
+        assert FinancialStatementRepository(session).latest_fiscal_year("7203") == 2024
+        snapshot = FundamentalsRepository(session).get_latest("7203")
+    assert snapshot is not None
+    assert snapshot.per == 12.0
+
+
+def test_a_rerun_refetches_a_symbol_that_has_a_series_but_no_snapshot(
+    database: Database,
+) -> None:
+    """A database written before snapshots existed must not skip itself forever.
+
+    Checking only the series would let every already-loaded symbol resume-skip,
+    leaving the valuation screens permanently empty with nothing to notice.
+    """
+    # A symbol in the pre-fix state: statements stored, no snapshot.
+    with database.session() as session:
+        FinancialStatementRepository(session).upsert_reports(
+            "7203",
+            [FinancialReport(symbol="7203", fiscal_year=2024, revenue=100.0)],
+            market="JP",
+        )
+
+    statements = _Statements()
+    report = _ingester(database, statements=statements).run(["7203"], Dataset.STATEMENTS)
+
+    assert statements.calls == ["7203"], "should refetch, not skip"
+    assert report.succeeded == ["7203"]
+    with database.session() as session:
+        assert FundamentalsRepository(session).get_latest("7203") is not None
+
+
+def test_a_fully_loaded_symbol_is_still_skipped(database: Database) -> None:
+    """The resume check must not become a re-fetch-everything check."""
+    _ingester(database).run(["7203"], Dataset.STATEMENTS)
+
+    statements = _Statements()
+    report = _ingester(database, statements=statements).run(["7203"], Dataset.STATEMENTS)
+
+    assert statements.calls == []
+    assert report.skipped == ["7203"]
+
+
+def test_the_snapshot_price_comes_from_the_database(database: Database) -> None:
+    """Deriving the snapshot must not cost a second network call per symbol.
+
+    At TSE Prime scale a per-symbol price lookup is 1,600 avoidable requests.
+    Prices are loaded before statements, so the price is already local.
+    """
+    _ingester(database).run(["7203"], Dataset.PRICES)
+
+    ingester = _ingester(database)
+    assert ingester._latest_close("7203") == 100.0
+    assert ingester._latest_close("9999") is None  # no stored price, no crash

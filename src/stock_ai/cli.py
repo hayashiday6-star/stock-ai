@@ -649,6 +649,18 @@ def screen(
     report = build_report(collect_fundamentals(database, passing))
 
     console.print(f"Matched [bold]{len(passing)}[/] symbols for [cyan]{condition}[/]")
+    if passing and report.empty:
+        # A growth screen reads the statement series, but the report is built
+        # from the snapshot table. Matching symbols and then printing nothing is
+        # the exact silent failure this project keeps trying to avoid, so name
+        # the cause rather than leaving an empty table to be interpreted.
+        console.print(
+            f"[yellow]{len(passing)} symbol(s) passed but none has a fundamentals "
+            "snapshot, so there is nothing to tabulate.[/]\n"
+            "  JP snapshots are written by 'bulk-fetch --what statements'; if that "
+            "ran before this was fixed, re-run it to fill them in.\n"
+            "  US snapshots come from 'fundamentals'."
+        )
     if out is not None:
         write_report(report, out, fmt)
         console.print(f"Wrote {len(report)} rows to [green]{out}[/] ({fmt}).")

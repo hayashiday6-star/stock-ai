@@ -316,6 +316,32 @@ class JQuantsFundamentalsProvider:
         logger.info("Fetched J-Quants fundamentals for %s", symbol)
         return snapshot
 
+    def fetch_snapshot_and_statements(
+        self, symbol: str
+    ) -> tuple[Fundamentals, list[FinancialReport]]:
+        """Return both products of a single ``fins/summary`` request.
+
+        The snapshot and the series come from the same records, so fetching them
+        separately spends two requests on one answer. At TSE Prime scale that is
+        1,600 avoidable calls, which is the difference between a bulk load
+        finishing and a rate limit stopping it.
+
+        This exists because storing only the series left every valuation screen
+        silently empty on JP names: ``screen --max-per`` reads the snapshot
+        table, and nothing was writing to it outside the US path.
+        """
+        records = self._fetch(symbol)
+        price: float | None = None
+        if self._price_source is not None:
+            try:
+                price = self._price_source(symbol)
+            except Exception as exc:  # price is optional - never fail the fetch
+                logger.warning("Price lookup failed for %s: %s", symbol, exc)
+        snapshot = normalize_statement(symbol, records, self._today(), price)
+        reports = normalize_statements(symbol, records)
+        logger.info("Fetched J-Quants snapshot and %d statement(s) for %s", len(reports), symbol)
+        return snapshot, reports
+
     def fetch_statements(self, symbol: str) -> list[FinancialReport]:
         """Fetch ``symbol``'s full disclosed statement history, oldest first.
 

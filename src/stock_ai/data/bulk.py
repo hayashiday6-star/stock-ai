@@ -37,6 +37,7 @@ from stock_ai.data.types import SecurityProfile
 from stock_ai.database.engine import Database
 from stock_ai.database.repository import (
     FinancialStatementRepository,
+    FundamentalsRepository,
     PriceRepository,
     upsert_profile,
 )
@@ -119,7 +120,13 @@ class BulkIngester:
         self.database = database
         self.throttle_seconds = max(0.0, throttle_seconds)
         self._prices = price_provider or JQuantsPriceProvider(api_key=api_key)
-        self._statements = statement_provider or JQuantsFundamentalsProvider(api_key=api_key)
+        # The snapshot's price comes from the database, not the network: prices
+        # are loaded before statements in every bulk run, so it is already local
+        # by the time it is needed. Without a price the snapshot still stores
+        # ROE, revenue, and net income - just not PER, PBR, yield, or market cap.
+        self._statements = statement_provider or JQuantsFundamentalsProvider(
+            api_key=api_key, price_source=self._latest_close
+        )
         self._sleep = sleeper or time.sleep
 
     def run(
@@ -181,25 +188,50 @@ class BulkIngester:
                 raise RuntimeError(result.error or "ingest failed")
             return result.rows
 
-        reports = self._statements.fetch_statements(symbol)
+        # One request, both products. The series answers "is revenue growing";
+        # the snapshot answers "is it cheap", and the valuation screens read
+        # only the snapshot table.
+        snapshot, reports = self._statements.fetch_snapshot_and_statements(symbol)
         with self.database.session() as session:
-            return FinancialStatementRepository(session).upsert_reports(
+            rows = FinancialStatementRepository(session).upsert_reports(
                 symbol, reports, market="JP"
             )
+            FundamentalsRepository(session).upsert_fundamentals(snapshot, market="JP")
+        return rows
+
+    def _latest_close(self, symbol: str) -> float | None:
+        """Return the newest stored close, so the snapshot costs no extra request.
+
+        Prices are loaded before statements in every bulk run, so by the time a
+        snapshot is derived the price it needs is already local. A symbol with no
+        stored price still gets a snapshot - just one without the ratios that
+        need a price, which is the honest outcome rather than a failed fetch.
+        """
+        with self.database.session() as session:
+            frame = PriceRepository(session).get_prices(symbol)
+        if frame is None or frame.empty or "close" not in frame:
+            return None
+        close = frame["close"].dropna()
+        return float(close.iloc[-1]) if not close.empty else None
 
     def _is_current(self, symbol: str, dataset: Dataset) -> bool:
         """Whether ``symbol`` already has today's data for ``dataset``.
 
         Prices count as current if the latest stored bar is from the last
-        calendar day the market could have traded; statements, if any annual
-        report is stored at all - those arrive quarterly, so refetching daily
-        buys nothing.
+        calendar day the market could have traded.
+
+        Statements count as current only when *both* products of the request are
+        stored. Checking the series alone would let a database written before
+        snapshots were stored skip every symbol on re-run, leaving the valuation
+        screens permanently empty with no way to notice.
         """
         with self.database.session() as session:
             if dataset is Dataset.PRICES:
                 latest = PriceRepository(session).latest_date(symbol)
                 return latest is not None and latest >= _last_possible_session()
-            return FinancialStatementRepository(session).latest_fiscal_year(symbol) is not None
+            has_series = FinancialStatementRepository(session).latest_fiscal_year(symbol)
+            has_snapshot = FundamentalsRepository(session).get_latest(symbol)
+            return has_series is not None and has_snapshot is not None
 
 
 def _last_possible_session() -> dt.date:
