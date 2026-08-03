@@ -18,11 +18,12 @@ from stock_ai import __version__
 from stock_ai.ai.analysis import analyze_sentiment
 from stock_ai.ai.analysis import summarize as ai_summarize
 from stock_ai.ai.factory import get_ai_provider
+from stock_ai.ai.query import parse_query, run_query
 from stock_ai.backtest.engine import BacktestEngine
 from stock_ai.backtest.report import metrics_frame
 from stock_ai.backtest.strategy import BuyAndHold, Strategy, build_strategy
 from stock_ai.config.settings import Settings, get_settings
-from stock_ai.core.exceptions import NotificationError
+from stock_ai.core.exceptions import AIError, NotificationError
 from stock_ai.core.logging import configure_logging
 from stock_ai.data.base import PriceProvider
 from stock_ai.data.fx import FxConverter
@@ -632,6 +633,52 @@ def notify(
     except NotificationError as exc:
         console.print(f"[red]notification failed:[/] {exc}")
         raise typer.Exit(code=1) from exc
+
+
+@app.command()
+def ask(
+    question: str = typer.Argument(..., help='e.g. "PER15以下でROE20%以上の半導体株"'),
+    provider: str = typer.Option("dummy", help="AI provider: dummy|claude|openai|gemini."),
+    explain_only: bool = typer.Option(
+        False, "--explain-only", help="Show the interpretation without running it."
+    ),
+) -> None:
+    """Screen stored securities from a plain-language QUESTION.
+
+    The model only fills in a fixed set of screening criteria — it never writes
+    a query and never sees the database — so an unsupported or hallucinated
+    field is refused rather than executed. The interpretation is printed before
+    the results so it can be checked.
+    """
+    settings = get_settings()
+    configure_logging(settings.log_level)
+
+    ai = get_ai_provider(provider, settings)
+    try:
+        query = parse_query(ai, question)
+    except AIError as exc:
+        console.print(f"[red]could not interpret the question:[/] {exc}")
+        raise typer.Exit(code=1) from exc
+
+    console.print(f"Understood as: [cyan]{query.describe()}[/]")
+    if explain_only:
+        return
+    if query.is_empty:
+        console.print("[yellow]No criteria were recognised; nothing to screen.[/]")
+        raise typer.Exit(code=1)
+
+    database = Database()
+    database.create_all()
+    matches = run_query(database, query)
+
+    console.print(f"Matched [bold]{len(matches)}[/] symbols.")
+    if matches:
+        _render_report(build_report(collect_fundamentals(database, matches)))
+    elif query.needs_statements:
+        console.print(
+            "[dim]This question needs the statement series; run 'statements' "
+            "for the symbols you want covered.[/]"
+        )
 
 
 @app.command()

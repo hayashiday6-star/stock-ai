@@ -163,6 +163,28 @@ across markets. Market cap does not — it arrives in the listing market's
 currency — so it is converted to `--base` (default USD) before being shown or
 filtered on.
 
+## Ask in plain language
+
+```bash
+uv run stock-ai ask "PER15以下でROE20%以上の半導体株" --provider claude
+uv run stock-ai ask "連続増配5年以上の日本株" --explain-only   # check the reading first
+```
+
+The model never writes a query and never sees the database. It fills in a fixed
+JSON schema of screening criteria, which is validated and turned into the same
+condition tree the `screen` flags build — so an unsupported or hallucinated
+field is refused rather than executed. The interpretation is always printed
+first, so you can see what the question was understood to mean before trusting
+the tickers:
+
+```
+Understood as: (ROE >= 0.2 AND PER <= 15.0) AND sector in [Technology]
+```
+
+Sector questions need `profile`, and growth or dividend-streak questions need
+`statements`. Percentages are normalized on the way in, since a model asked for
+"ROE 20%" answers `20` about as often as `0.2`.
+
 ## Scoring, AI, notifications
 
 ```bash
