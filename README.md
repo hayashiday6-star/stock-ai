@@ -32,15 +32,29 @@ Built phase by phase; all ten phases are in place.
 
 ## Setup
 
-The numbered scripts in `scripts\` automate the whole first-run sequence. Run
-them in order from the project folder:
+**Double-click these, in order** — no terminal needed. Each one moves to the
+project folder itself, so it does not matter where Windows opens:
+
+| File | What it does |
+|---|---|
+| `1-セットアップ.bat` | Install dependencies, create `.env`, list the keys still missing |
+| `2-動作確認.bat` | Check every data source, write `verify-output.txt` |
+| `3-データ取得.bat` | Load a 20-symbol trial, so a problem shows up cheaply |
+| `ダッシュボード起動.bat` | Open the dashboard in a browser |
+
+Between 1 and 2, open `.env` in Notepad and paste in the API keys it listed.
+
+From a terminal instead, run the same scripts directly — but note two things
+that bite: PowerShell opens in `C:\WINDOWS\system32`, so `cd` to the project
+folder first, and Windows blocks unsigned `.ps1` files by default, hence
+`-ExecutionPolicy Bypass`:
 
 ```powershell
-.\scripts\1-setup.ps1                            # install deps, create .env, list missing keys
-.\scripts\2-verify.ps1                           # check the integrations, save a report
-.\scripts\3-load-data.ps1 -Segment growth -Limit 20   # small trial
-.\scripts\3-load-data.ps1 -Segment prime         # the real load
-.\scripts\4-daily.ps1 -Register -At 18:00 -Provider claude -Channel discord
+cd C:\path\to\stock-ai
+powershell -ExecutionPolicy Bypass -File .\scripts\1-setup.ps1
+powershell -ExecutionPolicy Bypass -File .\scripts\2-verify.ps1
+powershell -ExecutionPolicy Bypass -File .\scripts\3-load-data.ps1 -Segment prime
+powershell -ExecutionPolicy Bypass -File .\scripts\4-daily.ps1 -Register -At 18:00 -Provider claude
 ```
 
 `2-verify.ps1` exists because three data sources fail *silently* — with zero

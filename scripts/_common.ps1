@@ -123,9 +123,12 @@ function Exit-WithPause {
         Exit, pausing first if the window would otherwise vanish.
 
     .DESCRIPTION
-        Double-clicking a .ps1 opens a console that closes the instant the
-        script ends, taking the error message with it. Pausing only when the
+        Running a .ps1 by double-click opens a console that closes the instant
+        the script ends, taking the error message with it. Pausing only when the
         session is interactive keeps Task Scheduler runs non-blocking.
+
+        Set STOCK_AI_NO_PAUSE to skip it. The .bat launchers do exactly that,
+        because they pause themselves and asking twice is just annoying.
     #>
     param([int]$Code = 0)
 

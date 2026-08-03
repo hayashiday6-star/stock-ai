@@ -76,11 +76,11 @@ if ($missing.Count -gt 0) {
     Write-Host 'Next: open .env in Notepad or VS Code and fill in the keys above.'
     Write-Host '  notepad .env'
     Write-Host ''
-    Write-Host 'Then run:  .\scripts\2-verify.ps1'
+    Write-Host 'Then run:  2-doukakunin.bat  (2-<verify>.bat in this folder)'
 }
 else {
     Write-Ok 'All keys present.'
-    Write-Host 'Next: .\scripts\2-verify.ps1'
+    Write-Host 'Next: run the step-2 .bat in this folder.'
 }
 
 Exit-WithPause 0

@@ -56,7 +56,7 @@ Write-Section "stock-ai data load ($Segment)"
 if (-not (Test-UvInstalled)) { Exit-WithPause 1 }
 
 if (-not (Test-EnvKeySet -Name 'JQUANTS_API_KEY')) {
-    Write-Err 'JQUANTS_API_KEY is not set in .env. Run .\scripts\1-setup.ps1 first.'
+    Write-Err 'JQUANTS_API_KEY is not set in .env. Run the step-1 .bat first.'
     Exit-WithPause 1
 }
 
