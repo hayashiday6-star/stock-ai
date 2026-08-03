@@ -800,8 +800,27 @@ def _render_factor_test(result: FactorTestResult, preset: str) -> None:
         )
     if result.skipped:
         console.print(
-            f"[dim]{len(result.skipped)} name(s) skipped for want of a score or a forward price.[/]"
+            f"[dim]{len(result.skipped)} name(s) skipped: "
+            f"{result.no_forward_price} without a forward price, "
+            f"{result.no_visible_statements} with nothing disclosed by "
+            f"{result.formation}, {result.no_score} unscoreable from what was visible.[/]"
         )
+        if result.coverage < 0.5:
+            # Coverage this low changes what the numbers above mean, so it is
+            # said in full rather than left to be inferred from two integers.
+            console.print(
+                f"[yellow]Only {result.coverage:.0%} of the universe was tested.[/] "
+                "That sample is not random - it is the names with the longest "
+                "disclosure history, which skews old and large."
+            )
+            if result.no_visible_statements > result.no_forward_price:
+                console.print(
+                    "  Most were dropped for want of a disclosure, not for want of "
+                    "price history. Fetching more prices will not help; a later "
+                    "formation date will, because more has been filed by then.\n"
+                    "  Leave at least horizon_days of trading after it: for a "
+                    "252-day horizon, roughly 14 months before today."
+                )
 
 
 def _require_date(value: str) -> dt.date:

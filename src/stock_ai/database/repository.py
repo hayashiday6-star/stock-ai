@@ -242,14 +242,22 @@ class FundamentalsRepository:
         )
         self.session.execute(stmt)
 
-    def get_latest(self, symbol: str) -> Fundamentals | None:
-        """Return the most recent stored snapshot for ``symbol``, or ``None``."""
+    def get_latest(self, symbol: str, as_of: dt.date | None = None) -> Fundamentals | None:
+        """Return the newest stored snapshot for ``symbol``, or ``None``.
+
+        Args:
+            symbol: The security.
+            as_of: Ignore snapshots taken after this date. Pass the formation
+                date in any historical test - a snapshot is stamped with the day
+                it was *fetched*, so the newest one is by definition today's, and
+                scoring a 2024 formation on today's market cap is look-ahead of
+                the most flattering kind.
+        """
+        query = select(FundamentalSnapshot).join(Security).where(Security.symbol == symbol)
+        if as_of is not None:
+            query = query.where(FundamentalSnapshot.as_of <= as_of)
         row = self.session.execute(
-            select(FundamentalSnapshot)
-            .join(Security)
-            .where(Security.symbol == symbol)
-            .order_by(FundamentalSnapshot.as_of.desc())
-            .limit(1)
+            query.order_by(FundamentalSnapshot.as_of.desc()).limit(1)
         ).scalar_one_or_none()
         if row is None:
             return None

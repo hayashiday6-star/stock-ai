@@ -334,3 +334,63 @@ def test_the_universe_can_be_restricted(database: Database) -> None:
     )
     assert result.scored == 1
     assert result.buckets[0].symbols == ["A"]
+
+
+# --- look-ahead through the snapshot, and why names get dropped -------------
+
+
+def test_a_snapshot_taken_after_formation_is_not_visible() -> None:
+    """A snapshot carries its *fetch* date, so "latest" means today's.
+
+    JP snapshots are written by the bulk loader stamped with the day it ran, so
+    before this bound a 2024 formation was ranked on 2026 market caps - the
+    single most flattering look-ahead a factor test can have, and invisible in
+    the output.
+    """
+    import datetime as dt
+
+    from stock_ai.data.types import Fundamentals
+    from stock_ai.database.engine import Database
+    from stock_ai.database.repository import FundamentalsRepository, get_or_create_security
+
+    database = Database("sqlite:///:memory:")
+    database.create_all()
+    with database.session() as session:
+        get_or_create_security(session, "7203", market="JP")
+        repo = FundamentalsRepository(session)
+        repo.upsert_fundamentals(
+            Fundamentals(symbol="7203", as_of=dt.date(2026, 8, 3), market_cap=4.0e13), market="JP"
+        )
+        repo.upsert_fundamentals(
+            Fundamentals(symbol="7203", as_of=dt.date(2024, 3, 1), market_cap=3.0e13), market="JP"
+        )
+
+    formation = dt.date(2024, 6, 28)
+    with database.session() as session:
+        repo = FundamentalsRepository(session)
+        assert repo.get_latest("7203").as_of == dt.date(2026, 8, 3)  # newest overall
+        bounded = repo.get_latest("7203", as_of=formation)
+    assert bounded is not None
+    assert bounded.as_of == dt.date(2024, 3, 1)
+    assert bounded.market_cap == 3.0e13
+    database.dispose()
+
+
+def test_no_snapshot_old_enough_yields_none_not_a_newer_one() -> None:
+    """Falling back to a later snapshot would reintroduce the bias silently."""
+    import datetime as dt
+
+    from stock_ai.data.types import Fundamentals
+    from stock_ai.database.engine import Database
+    from stock_ai.database.repository import FundamentalsRepository, get_or_create_security
+
+    database = Database("sqlite:///:memory:")
+    database.create_all()
+    with database.session() as session:
+        get_or_create_security(session, "7203", market="JP")
+        FundamentalsRepository(session).upsert_fundamentals(
+            Fundamentals(symbol="7203", as_of=dt.date(2026, 8, 3), market_cap=4.0e13), market="JP"
+        )
+    with database.session() as session:
+        assert FundamentalsRepository(session).get_latest("7203", as_of=dt.date(2020, 1, 1)) is None
+    database.dispose()

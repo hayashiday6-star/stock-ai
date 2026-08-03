@@ -89,6 +89,23 @@ class FactorTestResult:
     scored: int
     skipped: list[str] = field(default_factory=list)
     """Names dropped for want of a score or a forward price."""
+    no_forward_price: int = 0
+    """Of ``skipped``: no price far enough after formation to measure."""
+    no_visible_statements: int = 0
+    """Of ``skipped``: nothing had been *disclosed* by the formation date."""
+    no_score: int = 0
+    """Of ``skipped``: statements were visible but no factor could be computed."""
+
+    @property
+    def coverage(self) -> float:
+        """Fraction of the universe that was actually tested.
+
+        Worth reading before the returns are. A spread measured on a tenth of
+        the market is a statement about that tenth, and which tenth is not
+        random: it is the names with the longest disclosure history.
+        """
+        total = self.scored + len(self.skipped)
+        return self.scored / total if total else 0.0
 
     @property
     def top(self) -> BucketResult | None:
@@ -245,6 +262,12 @@ def run_factor_test(
     wanted = set(symbols) if symbols is not None else None
     scored: list[tuple[str, float, float]] = []  # symbol, score, forward return
     skipped: list[str] = []
+    # Three very different reasons to drop a name, counted apart. Reporting one
+    # total invites the wrong fix: "fetch more history" does nothing when the
+    # cause is that no statement had been *disclosed* by the formation date.
+    no_forward_price = 0
+    no_visible_statements = 0
+    no_score = 0
 
     with database.session() as session:
         price_repo = PriceRepository(session)
@@ -259,19 +282,28 @@ def run_factor_test(
             forward = _forward_return(prices, formation, horizon_days)
             if forward is None:
                 skipped.append(symbol)
+                no_forward_price += 1
                 continue
 
+            statements = statement_repo.get_reports(symbol)
             context = _as_of_context(
                 symbol,
                 market,
                 prices,
-                statement_repo.get_reports(symbol),
-                fundamentals_repo.get_latest(symbol),
+                statements,
+                # Bounded by the formation date: a snapshot carries the day it
+                # was fetched, so the unbounded "latest" is today's, and using
+                # today's market cap to rank a 2024 formation is look-ahead.
+                fundamentals_repo.get_latest(symbol, as_of=formation),
                 formation,
             )
             result = scorer.score(context)
             if not result.breakdown:  # nothing was computable; not a real score
                 skipped.append(symbol)
+                if not context.statements:
+                    no_visible_statements += 1
+                else:
+                    no_score += 1
                 continue
             scored.append((symbol, result.score, forward))
 
@@ -290,6 +322,16 @@ def run_factor_test(
         len(skipped),
         universe_return * 100,
     )
+    if skipped:
+        logger.info(
+            "Skipped %d: %d had no forward price, %d had no statement disclosed "
+            "by %s, %d could not be scored from what was visible.",
+            len(skipped),
+            no_forward_price,
+            no_visible_statements,
+            formation,
+            no_score,
+        )
     return FactorTestResult(
         formation=formation,
         horizon_days=horizon_days,
@@ -297,6 +339,9 @@ def run_factor_test(
         universe_return=universe_return,
         scored=len(scored),
         skipped=skipped,
+        no_forward_price=no_forward_price,
+        no_visible_statements=no_visible_statements,
+        no_score=no_score,
     )
 
 
