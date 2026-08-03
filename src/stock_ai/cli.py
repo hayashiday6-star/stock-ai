@@ -27,19 +27,24 @@ from stock_ai.core.logging import configure_logging
 from stock_ai.data.base import PriceProvider
 from stock_ai.data.fx import FxConverter
 from stock_ai.data.jquants_fundamentals import JQuantsFundamentalsProvider
+from stock_ai.data.jquants_profile import JQuantsProfileProvider
 from stock_ai.data.jquants_provider import JQuantsPriceProvider
 from stock_ai.data.service import FundamentalsService, IngestionService, IngestResult
 from stock_ai.data.yfinance_provider import (
     YFinanceFundamentalsProvider,
     YFinancePriceProvider,
+    YFinanceProfileProvider,
 )
 from stock_ai.database.engine import Database
 from stock_ai.database.repository import (
     FinancialStatementRepository,
     FundamentalsRepository,
+    HoldingRepository,
     PriceRepository,
+    upsert_profile,
 )
 from stock_ai.notification.factory import get_notifier
+from stock_ai.portfolio.analysis import PortfolioAnalysis, analyze_portfolio
 from stock_ai.portfolio.ranking import rank_securities
 from stock_ai.portfolio.scoring import WeightedScorer, default_weighted_factors
 from stock_ai.screening.base import All, Condition, ScreeningContext
@@ -186,6 +191,159 @@ def statements(
     _render_results(results)
     if any(not r.ok for r in results):
         raise typer.Exit(code=1)
+
+
+@app.command()
+def profile(
+    symbols: list[str] = typer.Argument(..., help="Symbols whose sector to fetch."),
+    source: str = typer.Option("yfinance", help="yfinance (US) | jquants (JP)."),
+) -> None:
+    """Fetch and store name and sector for SYMBOLS.
+
+    Sector is what the portfolio breakdown groups by, and it is normalized onto
+    one taxonomy so JP and US holdings can be compared.
+    """
+    settings = get_settings()
+    configure_logging(settings.log_level)
+
+    key = source.lower()
+    if key == "jquants":
+        provider = JQuantsProfileProvider(api_key=settings.jquants_api_key)
+    elif key == "yfinance":
+        provider = YFinanceProfileProvider()
+    else:
+        raise typer.BadParameter(f"Unknown source {source!r}; use 'yfinance' or 'jquants'.")
+
+    database = Database()
+    database.create_all()
+
+    results: list[IngestResult] = []
+    for symbol in symbols:
+        try:
+            fetched = provider.fetch_profile(symbol)
+            with database.session() as session:
+                upsert_profile(session, fetched)
+            results.append(IngestResult(symbol, 1, ok=True))
+        except Exception as exc:  # one bad symbol must not abort the batch
+            results.append(IngestResult(symbol, 0, ok=False, error=str(exc)))
+
+    _render_results(results)
+    if any(not r.ok for r in results):
+        raise typer.Exit(code=1)
+
+
+@app.command()
+def hold(
+    symbol: str = typer.Argument(..., help="Symbol to record a position in."),
+    quantity: float = typer.Option(..., help="Shares held; 0 removes the position."),
+    cost: float = typer.Option(0.0, help="Average cost per share, in the listing currency."),
+    market: str = typer.Option("US", help="Listing market: US | JP."),
+) -> None:
+    """Record (or clear) a holding used by the portfolio report."""
+    settings = get_settings()
+    configure_logging(settings.log_level)
+
+    database = Database()
+    database.create_all()
+    with database.session() as session:
+        HoldingRepository(session).set_holding(symbol, quantity, cost, market=market.upper())
+
+    if quantity <= 0:
+        console.print(f"Cleared holding in [cyan]{symbol}[/].")
+    else:
+        console.print(f"Holding {quantity:g} [cyan]{symbol}[/] at {cost:g} ({market.upper()}).")
+
+
+@app.command()
+def portfolio(
+    base: str = typer.Option("USD", help="Reporting currency."),
+    fx_rate: list[str] = typer.Option([], "--fx", help="Pin a rate as CUR=VALUE."),
+    lookback: int = typer.Option(252, help="Trailing bars used for the risk figures."),
+) -> None:
+    """Report the stored portfolio: exposure, concentration, and realized risk."""
+    settings = get_settings()
+    configure_logging(settings.log_level)
+
+    database = Database()
+    database.create_all()
+    analysis = analyze_portfolio(
+        database,
+        fx=FxConverter(base=base, rates=_parse_fx_rates(fx_rate)),
+        lookback=lookback,
+    )
+
+    if not analysis.positions:
+        console.print("[yellow]No priced holdings; record some with 'hold' first.[/]")
+        return
+    _render_portfolio(analysis)
+
+
+def _render_portfolio(analysis: PortfolioAnalysis) -> None:
+    """Print the portfolio report as a set of Rich tables."""
+    base = analysis.base_currency
+    positions = Table(title=f"portfolio ({base})")
+    for column, justify in (
+        ("symbol", "left"),
+        ("mkt", "left"),
+        ("sector", "left"),
+        ("qty", "right"),
+        (f"value ({base})", "right"),
+        ("weight", "right"),
+        ("P/L", "right"),
+    ):
+        positions.add_column(column, justify=justify, style="cyan" if column == "symbol" else None)
+    for position in analysis.positions:
+        gain = position.unrealized_return
+        positions.add_row(
+            position.symbol,
+            position.market,
+            str(position.sector),
+            f"{position.quantity:g}",
+            _format_cap(position.value),
+            f"{position.weight:.1%}",
+            "—" if gain is None else f"{gain:+.1%}",
+        )
+    console.print(positions)
+
+    breakdown = Table(title="exposure")
+    breakdown.add_column("group", style="cyan")
+    breakdown.add_column("weight", justify="right")
+    for sector, weight in analysis.sector_weights.items():
+        breakdown.add_row(str(sector), f"{weight:.1%}")
+    for market, weight in analysis.market_weights.items():
+        breakdown.add_row(f"[dim]market:[/] {market}", f"{weight:.1%}")
+    console.print(breakdown)
+
+    risk = Table(title="risk (realized, trailing window)")
+    risk.add_column("metric", style="cyan")
+    risk.add_column("value", justify="right")
+    total = analysis.unrealized_return
+    risk.add_row(f"total value ({base})", _format_cap(analysis.total_value))
+    risk.add_row("unrealized P/L", "—" if total is None else f"{total:+.2%}")
+    risk.add_row("annual volatility", _optional_pct(analysis.annual_volatility))
+    risk.add_row("max drawdown", _optional_pct(analysis.max_drawdown))
+    risk.add_row(
+        "concentration (HHI)",
+        "—" if analysis.concentration is None else f"{analysis.concentration:.3f}",
+    )
+    effective = analysis.effective_positions
+    risk.add_row("effective positions", "—" if effective is None else f"{effective:.2f}")
+    console.print(risk)
+
+    if analysis.unpriced:
+        console.print(
+            f"[yellow]Excluded (no stored price):[/] {', '.join(analysis.unpriced)} "
+            "— run 'fetch' for these to include them in the weights."
+        )
+    console.print(
+        "[dim]No expected-return figure: a trailing mean is too noisy to project "
+        "forward, so only realized risk is reported.[/]"
+    )
+
+
+def _optional_pct(value: float | None) -> str:
+    """Render an optional fraction as a percentage."""
+    return "—" if value is None else f"{value:.2%}"
 
 
 @app.command()

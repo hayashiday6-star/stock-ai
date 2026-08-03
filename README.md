@@ -106,6 +106,33 @@ uv run stock-ai screen --min-dividend-streak 3 --max-payout-ratio 0.30
 actual raise. A criterion that cannot be computed never passes — an unverifiable
 metric is excluded rather than assumed good.
 
+## Portfolio
+
+Sector is what the breakdown groups by, so fetch it first — it is normalized
+onto one taxonomy so JP and US holdings land in the same buckets:
+
+```bash
+uv run stock-ai profile AAPL MSFT               # US, via yfinance
+uv run stock-ai profile 7203 8306 --source jquants
+
+uv run stock-ai hold AAPL --quantity 100 --cost 120
+uv run stock-ai hold 7203.T --quantity 1000 --cost 2000 --market JP
+uv run stock-ai hold AAPL --quantity 0          # clears the position
+
+uv run stock-ai portfolio --fx JPY=0.0066
+```
+
+The report gives per-position value and weight, sector and market exposure,
+and realized risk (annualized volatility, max drawdown, and a Herfindahl
+concentration index with its effective-position count). Positions are valued in
+one base currency, since a ¥ position and a $ position cannot be weighted
+against each other otherwise. A holding with no stored price is listed
+separately and left out of the weights rather than counted as zero.
+
+There is deliberately **no expected-return figure**. The usual implementation —
+annualizing a trailing mean — carries enough estimation error to swamp the
+signal, so the report sticks to what actually happened.
+
 ## Cross-market ranking (JP + US)
 
 ```bash

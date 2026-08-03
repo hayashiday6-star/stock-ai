@@ -11,12 +11,15 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from typing import Any
 
-from sqlalchemy import create_engine, event
+from sqlalchemy import create_engine, event, inspect, text
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from stock_ai.config.constants import DATA_DIR
+from stock_ai.core.logging import get_logger
 from stock_ai.database.models import Base
+
+logger = get_logger(__name__)
 
 
 def default_sqlite_url() -> str:
@@ -56,8 +59,51 @@ class Database:
         self._session_factory = sessionmaker(self.engine, expire_on_commit=False)
 
     def create_all(self) -> None:
-        """Create all tables that do not yet exist."""
+        """Bring the schema up to date: create missing tables, add missing columns.
+
+        ``create_all`` alone only ever creates whole tables, so a database
+        written by an older version keeps its old columns and every query
+        touching a newly mapped one fails with "no such column". Adding the
+        gap-filling step here means an existing ``data/stock_ai.db`` survives an
+        upgrade instead of having to be deleted.
+
+        The migration is deliberately additive-only: it adds nullable columns
+        and new tables. Renames, drops, and type changes are out of scope and
+        would need a real migration tool.
+        """
         Base.metadata.create_all(self.engine)
+        added = self._add_missing_columns()
+        if added:
+            logger.info("Schema updated with new column(s): %s", ", ".join(added))
+
+    def _add_missing_columns(self) -> list[str]:
+        """Add columns the models declare but an existing table lacks."""
+        inspector = inspect(self.engine)
+        added: list[str] = []
+
+        with self.engine.begin() as connection:
+            for table in Base.metadata.sorted_tables:
+                if not inspector.has_table(table.name):
+                    continue  # create_all() already built it in full
+                existing = {column["name"] for column in inspector.get_columns(table.name)}
+                for column in table.columns:
+                    if column.name in existing:
+                        continue
+                    if not column.nullable and column.server_default is None:
+                        # SQLite cannot back-fill a NOT NULL column for rows
+                        # that already exist; refusing beats corrupting.
+                        logger.warning(
+                            "Cannot add NOT NULL column %s.%s to an existing table",
+                            table.name,
+                            column.name,
+                        )
+                        continue
+                    ddl = column.type.compile(dialect=self.engine.dialect)
+                    connection.execute(
+                        text(f'ALTER TABLE {table.name} ADD COLUMN "{column.name}" {ddl}')
+                    )
+                    added.append(f"{table.name}.{column.name}")
+        return added
 
     def dispose(self) -> None:
         """Close all pooled connections and release the engine."""

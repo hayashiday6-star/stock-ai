@@ -25,10 +25,17 @@ from stock_ai.data.schema import (
     OPEN,
     VOLUME,
 )
-from stock_ai.data.types import FinancialReport, FiscalPeriod, Fundamentals
+from stock_ai.data.types import (
+    FinancialReport,
+    FiscalPeriod,
+    Fundamentals,
+    HoldingRecord,
+    SecurityProfile,
+)
 from stock_ai.database.models import (
     FinancialStatement,
     FundamentalSnapshot,
+    Holding,
     PriceBar,
     Security,
 )
@@ -70,6 +77,38 @@ def list_securities(session: Session) -> list[tuple[str, str]]:
     """
     rows = session.execute(select(Security.symbol, Security.market).order_by(Security.symbol)).all()
     return [(symbol, market) for symbol, market in rows]
+
+
+def upsert_profile(session: Session, profile: SecurityProfile) -> None:
+    """Store descriptive attributes for a security, creating it if needed.
+
+    Only fields the profile actually carries are written: a provider that omits
+    the industry must not blank one another provider already supplied.
+    """
+    security = get_or_create_security(
+        session, profile.symbol, market=profile.market, name=profile.name
+    )
+    for field in ("name", "sector", "industry"):
+        value = getattr(profile, field)
+        if value is not None:
+            setattr(security, field, value)
+    session.flush()
+
+
+def get_profile(session: Session, symbol: str) -> SecurityProfile | None:
+    """Return the stored profile for ``symbol``, or ``None`` if unknown."""
+    security = session.execute(
+        select(Security).where(Security.symbol == symbol)
+    ).scalar_one_or_none()
+    if security is None:
+        return None
+    return SecurityProfile(
+        symbol=security.symbol,
+        market=security.market,
+        name=security.name,
+        sector=security.sector,
+        industry=security.industry,
+    )
 
 
 def get_or_create_security(
@@ -305,4 +344,98 @@ class FinancialStatementRepository:
             )
             .order_by(FinancialStatement.fiscal_year.desc())
             .limit(1)
+        ).scalar_one_or_none()
+
+
+class HoldingRepository:
+    """Persist and query the user's actual positions."""
+
+    def __init__(self, session: Session) -> None:
+        """Bind the repository to an active session."""
+        self.session = session
+
+    def set_holding(
+        self, symbol: str, quantity: float, average_cost: float, market: str = "US"
+    ) -> None:
+        """Set ``symbol``'s position outright, replacing any existing one.
+
+        A non-positive quantity removes the holding, so closing a position is
+        expressible without a separate call.
+        """
+        if quantity <= 0:
+            self.remove_holding(symbol)
+            return
+
+        security = get_or_create_security(self.session, symbol, market=market)
+        stmt = sqlite_insert(Holding).values(
+            [
+                {
+                    "security_id": security.id,
+                    "quantity": quantity,
+                    "average_cost": average_cost,
+                }
+            ]
+        )
+        stmt = stmt.on_conflict_do_update(
+            index_elements=["security_id"],
+            set_={
+                "quantity": stmt.excluded.quantity,
+                "average_cost": stmt.excluded.average_cost,
+            },
+        )
+        self.session.execute(stmt)
+
+    def add_shares(self, symbol: str, quantity: float, price: float, market: str = "US") -> None:
+        """Add ``quantity`` shares bought at ``price``, blending the cost basis."""
+        existing = self.get_holding(symbol)
+        if existing is None:
+            self.set_holding(symbol, quantity, price, market=market)
+            return
+
+        total = existing.quantity + quantity
+        if total <= 0:
+            self.remove_holding(symbol)
+            return
+        blended = (existing.average_cost * existing.quantity + price * quantity) / total
+        self.set_holding(symbol, total, blended, market=market)
+
+    def remove_holding(self, symbol: str) -> None:
+        """Delete ``symbol``'s position if one is stored."""
+        row = self._row(symbol)
+        if row is not None:
+            self.session.delete(row)
+
+    def get_holding(self, symbol: str) -> HoldingRecord | None:
+        """Return ``symbol``'s position, or ``None`` if it is not held."""
+        row = self._row(symbol)
+        if row is None:
+            return None
+        return HoldingRecord(
+            symbol=symbol,
+            market=row.security.market,
+            quantity=row.quantity,
+            average_cost=row.average_cost,
+        )
+
+    def list_holdings(self) -> list[HoldingRecord]:
+        """Return every stored position, sorted by symbol."""
+        rows = (
+            self.session.execute(select(Holding).join(Security).order_by(Security.symbol))
+            .scalars()
+            .all()
+        )
+        return [
+            HoldingRecord(
+                symbol=row.security.symbol,
+                market=row.security.market,
+                quantity=row.quantity,
+                average_cost=row.average_cost,
+            )
+            for row in rows
+        ]
+
+    def _row(self, symbol: str) -> Holding | None:
+        """Return the ORM row for ``symbol``, or ``None``."""
+        return self.session.execute(
+            select(Holding).join(Security).where(Security.symbol == symbol)
         ).scalar_one_or_none()

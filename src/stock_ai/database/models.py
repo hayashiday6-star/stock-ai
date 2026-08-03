@@ -25,6 +25,10 @@ class Security(Base):
     symbol: Mapped[str] = mapped_column(String(32), unique=True, index=True)
     name: Mapped[str | None] = mapped_column(String(128), default=None)
     market: Mapped[str] = mapped_column(String(8), default="US")
+    sector: Mapped[str | None] = mapped_column(String(64), default=None, index=True)
+    """Broad classification, normalized across markets — see :mod:`stock_ai.data.sectors`."""
+    industry: Mapped[str | None] = mapped_column(String(128), default=None)
+    """The provider's finer-grained label, kept verbatim for reference."""
     created_at: Mapped[dt.datetime] = mapped_column(DateTime, server_default=func.now())
 
     bars: Mapped[list[PriceBar]] = relationship(
@@ -75,6 +79,32 @@ class FundamentalSnapshot(Base):
     net_income: Mapped[float | None] = mapped_column(default=None)
     dividend_yield: Mapped[float | None] = mapped_column(default=None)
     market_cap: Mapped[float | None] = mapped_column(default=None)
+
+    security: Mapped[Security] = relationship()
+
+
+class Holding(Base):
+    """A position the user actually owns, as opposed to a simulated one.
+
+    Separate from the broker's in-memory ``Position``: that models a running
+    simulation, this is the durable record the portfolio breakdown reads. One
+    row per security, so adding to a position updates quantity and cost basis
+    rather than appending a lot.
+    """
+
+    __tablename__ = "holdings"
+    __table_args__ = (UniqueConstraint("security_id", name="uq_holdings_security"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    security_id: Mapped[int] = mapped_column(
+        ForeignKey("securities.id", ondelete="CASCADE"), index=True, unique=True
+    )
+    quantity: Mapped[float]
+    average_cost: Mapped[float]
+    """Cost basis per share, in the listing market's currency."""
+    updated_at: Mapped[dt.datetime] = mapped_column(
+        DateTime, server_default=func.now(), onupdate=func.now()
+    )
 
     security: Mapped[Security] = relationship()
 

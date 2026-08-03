@@ -30,6 +30,43 @@ class Fundamentals(BaseModel):
     market_cap: float | None = None
 
 
+class SecurityProfile(BaseModel):
+    """Descriptive attributes of a listing, as opposed to its numbers.
+
+    Kept apart from :class:`Fundamentals` because it changes on a completely
+    different clock: a company's sector is stable for years, while its metrics
+    move daily.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    symbol: str
+    market: str = "US"
+    name: str | None = None
+    sector: str | None = None  # a canonical stock_ai.data.sectors.Sector value
+    industry: str | None = None  # the provider's own finer label, verbatim
+
+
+class HoldingRecord(BaseModel):
+    """A position the user owns, with the cost basis it was built at."""
+
+    model_config = ConfigDict(frozen=True)
+
+    symbol: str
+    market: str = "US"
+    quantity: float
+    average_cost: float
+    """Cost per share, in the listing market's currency."""
+
+    def cost_basis(self) -> float:
+        """Total amount paid for the position, in the listing currency."""
+        return self.quantity * self.average_cost
+
+    def market_value(self, price: float | None) -> float | None:
+        """Position value at ``price``, or ``None`` when the price is unknown."""
+        return None if price is None else self.quantity * price
+
+
 class FiscalPeriod(StrEnum):
     """Which slice of a fiscal year a disclosure covers."""
 

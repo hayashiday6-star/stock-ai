@@ -17,7 +17,8 @@ import pandas as pd
 from stock_ai.core.exceptions import DataError
 from stock_ai.core.logging import get_logger
 from stock_ai.data.schema import normalize_ohlcv
-from stock_ai.data.types import Fundamentals
+from stock_ai.data.sectors import from_yfinance
+from stock_ai.data.types import Fundamentals, SecurityProfile
 
 logger = get_logger(__name__)
 
@@ -142,4 +143,32 @@ class YFinanceFundamentalsProvider:
             net_income=_to_float(info.get("netIncomeToCommon")),
             dividend_yield=_dividend_yield(info),
             market_cap=_to_float(info.get("marketCap")),
+        )
+
+
+class YFinanceProfileProvider:
+    """Fetch a security's descriptive profile via yfinance's ``Ticker.info``."""
+
+    name = "yfinance"
+
+    def __init__(self, info_fetcher: InfoFetcher | None = None) -> None:
+        """Create the provider.
+
+        Args:
+            info_fetcher: Callable returning the raw info dict; injected in tests.
+        """
+        self._info = info_fetcher or _default_info_fetcher
+
+    def fetch_profile(self, symbol: str) -> SecurityProfile:
+        """Fetch and normalize the profile for ``symbol``."""
+        info = self._info(symbol)
+        if not info:
+            raise DataError(f"No profile returned for {symbol!r}.")
+
+        return SecurityProfile(
+            symbol=symbol,
+            market="US",
+            name=info.get("longName") or info.get("shortName"),
+            sector=str(from_yfinance(info.get("sector"))),
+            industry=info.get("industry"),
         )
