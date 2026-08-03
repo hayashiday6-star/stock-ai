@@ -21,11 +21,11 @@ class ScreeningContext:
 
     symbol: str
     market: str = "US"
-    """Listing market — selects the quote currency for absolute figures."""
+    """Listing market - selects the quote currency for absolute figures."""
     fundamentals: Fundamentals | None = None
     prices: pd.DataFrame | None = None
     statements: list[FinancialReport] = field(default_factory=list)
-    """Annual reports, oldest first — the series growth and streak rules read.
+    """Annual reports, oldest first - the series growth and streak rules read.
 
     Empty when the caller did not load statements, which conditions must treat
     the same as "unknown": what cannot be verified does not pass.

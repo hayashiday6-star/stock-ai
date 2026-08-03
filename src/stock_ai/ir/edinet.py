@@ -2,7 +2,7 @@
 
 EDINET is the statutory filing system: 有価証券報告書, 四半期報告書, 臨時報告書
 and so on. It has an official, documented JSON API (v2), which is why it is
-implemented here and TDnet is not — TDnet publishes 適時開示 but offers no
+implemented here and TDnet is not - TDnet publishes 適時開示 but offers no
 public API, so the only route is scraping an unofficial HTML endpoint. See
 :mod:`stock_ai.ir.sources` for how to plug a third-party TDnet feed in.
 
@@ -12,7 +12,7 @@ Two things shape this adapter:
   7203" endpoint; you ask for a day and filter. Monitoring a watchlist
   therefore costs one request per *day* looked back, not per symbol, so the
   day responses are cached and shared across symbols in one pass.
-- **``secCode`` is five digits.** Toyota is ``72030``, not ``7203`` — the
+- **``secCode`` is five digits.** Toyota is ``72030``, not ``7203`` - the
   trailing zero is a share-class digit. Matching on the raw string silently
   finds nothing, so codes are compared on their first four digits.
 
@@ -72,8 +72,8 @@ _VISIBLE_DISCLOSURE_STATUS = {"", "0"}
 def normalize_sec_code(symbol: str) -> str | None:
     """Return the four-digit securities code for ``symbol``, or ``None``.
 
-    Accepts the shapes symbols actually arrive in — ``7203``, ``7203.T``,
-    ``7203.JP`` — and rejects anything that is not a Japanese ticker, so a US
+    Accepts the shapes symbols actually arrive in - ``7203``, ``7203.T``,
+    ``7203.JP`` - and rejects anything that is not a Japanese ticker, so a US
     symbol on the watchlist is skipped rather than matched by accident.
     """
     head = symbol.strip().upper().split(".")[0]
@@ -139,19 +139,8 @@ def to_disclosure(symbol: str, record: dict[str, Any]) -> Disclosure:
     )
 
 
-def _log_empty_day(day: dt.date, payload: dict[str, Any], has_key: bool) -> None:
+def _log_empty_day(day: dt.date, payload: Any, has_key: bool) -> None:
     """Explain why a day came back with no documents, as far as EDINET says."""
-    metadata = payload.get("metadata")
-    status = message = None
-    if isinstance(metadata, dict):
-        result = metadata.get("resultset") if isinstance(metadata.get("resultset"), dict) else {}
-        status = metadata.get("status")
-        message = metadata.get("message")
-        count = result.get("count") if isinstance(result, dict) else None
-        if count == 0:
-            logger.info("EDINET %s: no filings that day (count 0).", day)
-            return
-
     if not has_key:
         logger.warning(
             "EDINET %s returned no documents and no API key was sent. "
@@ -160,11 +149,40 @@ def _log_empty_day(day: dt.date, payload: dict[str, Any], has_key: bool) -> None
         )
         return
 
+    if not isinstance(payload, dict):
+        logger.warning(
+            "EDINET %s returned no documents and no JSON object (got %s). "
+            "The endpoint may have moved.",
+            day,
+            type(payload).__name__,
+        )
+        return
+
+    metadata = payload.get("metadata")
+    if isinstance(metadata, dict):
+        resultset = metadata.get("resultset")
+        count = resultset.get("count") if isinstance(resultset, dict) else None
+        if count == 0:
+            logger.info("EDINET %s: no filings that day (count 0).", day)
+            return
+        logger.warning(
+            "EDINET %s returned no documents (status=%s, message=%s).",
+            day,
+            metadata.get("status") or "?",
+            metadata.get("message") or "?",
+        )
+        return
+
+    # No metadata at all is the interesting case: a v2 response always carries
+    # it, so its absence says the body is not the one this adapter was written
+    # against. Naming the keys that *are* there is what turns that into a fix
+    # rather than another round of guessing.
     logger.warning(
-        "EDINET %s returned no documents (status=%s, message=%s).",
+        "EDINET %s returned no documents and no 'metadata' block. "
+        "Top-level keys were: %s. The response shape has changed, or this is "
+        "not the documents endpoint any more.",
         day,
-        status or "?",
-        message or "?",
+        sorted(payload) or "(none - empty object)",
     )
 
 
@@ -177,18 +195,19 @@ def _default_day_fetcher(api_key: SecretStr | None) -> DayFetcher:
         params: dict[str, str] = {"date": day.isoformat(), "type": "2"}
         headers: dict[str, str] = {}
         if api_key is not None:
-            # EDINET v2 documents the key as a query parameter, and that is the
-            # authoritative form. The header is sent as well because the service
-            # sits behind Azure API Management, whose own convention is the
-            # header — and the failure mode if only one of the two is accepted
-            # is HTTP 200 with an empty body, which reads as "nothing was filed"
-            # rather than as an auth error. Sending both costs nothing and
-            # removes a silent failure. The value is kept out of every log line
-            # and error message for the same reason the notification channels
-            # redact theirs.
+            # The key goes in a *header*, never the query string. EDINET v2
+            # documents both forms, but httpx logs the URL it fetched at INFO,
+            # so a key in the query string is a key in the console, in
+            # logs/stock_ai.log, and in the verify-output.txt this project tells
+            # people to paste when asking for help. A header cannot leak that
+            # way. (The log redactor catches it too, but not leaking beats
+            # scrubbing.) Both header spellings are sent because the service sits
+            # behind Azure API Management and the failure mode if the wrong one
+            # is read is HTTP 200 with an empty body - indistinguishable from a
+            # day on which nobody filed anything.
             secret = api_key.get_secret_value()
-            params["Subscription-Key"] = secret
             headers["Ocp-Apim-Subscription-Key"] = secret
+            headers["Subscription-Key"] = secret
 
         with httpx.Client(timeout=30.0) as client:
             response = client.get(_DOCUMENTS_URL, params=params, headers=headers)
@@ -199,8 +218,8 @@ def _default_day_fetcher(api_key: SecretStr | None) -> DayFetcher:
         results = payload.get("results")
         if not isinstance(results, list) or not results:
             # EDINET answers 200 with an empty body for several very different
-            # reasons — a missing subscription key, a non-business day, a
-            # rejected request — and distinguishes them only in the metadata.
+            # reasons - a missing subscription key, a non-business day, a
+            # rejected request - and distinguishes them only in the metadata.
             # Surfacing that is what turns "zero filings" from a dead end into
             # a diagnosable one.
             _log_empty_day(day, payload, has_key=api_key is not None)
@@ -244,7 +263,7 @@ class EdinetDisclosureSource:
     def fetch(self, symbol: str, limit: int = 10) -> list[Disclosure]:
         """Return up to ``limit`` recent filings for ``symbol``, newest first.
 
-        A symbol that is not a Japanese four-digit code yields nothing — EDINET
+        A symbol that is not a Japanese four-digit code yields nothing - EDINET
         has no filings for it, and scanning anyway would waste the day budget.
         """
         code = normalize_sec_code(symbol)
@@ -279,7 +298,7 @@ class EdinetDisclosureSource:
         )
         if scanned and not with_codes:
             logger.warning(
-                "EDINET returned %d filing(s) but none had a securities code — "
+                "EDINET returned %d filing(s) but none had a securities code - "
                 "the 'secCode' field may have been renamed upstream.",
                 scanned,
             )

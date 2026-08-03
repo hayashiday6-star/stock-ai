@@ -1,6 +1,6 @@
 """Weighted composite scoring: combine factors into a 0..100 score.
 
-Weights are fully configurable — pass any ``(factor, weight)`` list. A factor
+Weights are fully configurable - pass any ``(factor, weight)`` list. A factor
 that returns ``None`` is dropped and the remaining weights are renormalized, so
 a single missing metric never collapses the whole score to zero.
 """

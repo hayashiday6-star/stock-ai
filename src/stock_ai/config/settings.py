@@ -14,6 +14,7 @@ from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from stock_ai.config.constants import ENV_FILE
+from stock_ai.core.logging import register_secret
 
 Environment = Literal["development", "production"]
 LogLevel = Literal["DEBUG", "INFO", "WARNING", "ERROR"]
@@ -71,5 +72,16 @@ def get_settings() -> Settings:
 
     Cached so configuration is read once. Call ``get_settings.cache_clear()``
     in tests when you need to re-read the environment.
+
+    Loading also registers every secret with the log redactor. :class:`SecretStr`
+    keeps a key out of *our* logs, but the HTTP client underneath logs the URL it
+    fetched, and an API that authenticates by query parameter puts the key in
+    that URL. Registering the values here is what makes them unprintable no
+    matter which library does the printing.
     """
-    return Settings()
+    settings = Settings()
+    for field in Settings.model_fields:
+        value = getattr(settings, field, None)
+        if isinstance(value, SecretStr):
+            register_secret(value.get_secret_value())
+    return settings

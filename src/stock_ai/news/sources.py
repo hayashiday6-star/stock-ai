@@ -3,7 +3,7 @@
 A :class:`NewsSource` returns recent headlines/snippets for a symbol. The
 :func:`make_text_source` adapter joins them into a single string, which is
 exactly the ``text_source`` callable that
-:class:`~stock_ai.portfolio.ai_factors.NewsSentimentFactor` expects — so the
+:class:`~stock_ai.portfolio.ai_factors.NewsSentimentFactor` expects - so the
 news pipeline plugs into scoring without either side knowing about the other.
 """
 
@@ -44,7 +44,7 @@ class NewsSource(Protocol):
 
 
 class StaticNewsSource:
-    """Serve pre-supplied items — for offline development and tests."""
+    """Serve pre-supplied items - for offline development and tests."""
 
     name = "static"
 
@@ -81,7 +81,7 @@ class YFinanceNewsSource:
         """Return up to ``limit`` recent headlines; failures yield an empty list."""
         try:
             raw = self._fetch(symbol)
-        except Exception as exc:  # news is best-effort — never break scoring
+        except Exception as exc:  # news is best-effort - never break scoring
             logger.warning("News fetch failed for %s: %s", symbol, exc)
             return []
 

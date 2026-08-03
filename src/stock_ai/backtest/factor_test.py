@@ -4,7 +4,7 @@ A composite score is a hypothesis until it is measured. This runs the honest
 version of that measurement: form a portfolio from the top-ranked names, hold
 it over a forward window, and compare against an equal-weight basket of the
 whole universe. If the top bucket does not beat the universe, the score is not
-adding information — however sensible its factors read.
+adding information - however sensible its factors read.
 
 What is deliberately built in, because leaving it out is how a backtest lies:
 
@@ -85,7 +85,7 @@ class FactorTestResult:
     horizon_days: int
     buckets: list[BucketResult]
     universe_return: float
-    """Equal-weight forward return of every scored name — the benchmark."""
+    """Equal-weight forward return of every scored name - the benchmark."""
     scored: int
     skipped: list[str] = field(default_factory=list)
     """Names dropped for want of a score or a forward price."""

@@ -70,8 +70,8 @@ def stored_overview(database: Database) -> pd.DataFrame:
                 {
                     "銘柄": symbol,
                     "日足本数": len(price_repo.get_prices(symbol)),
-                    "最新日": latest.isoformat() if latest else "—",
-                    "財務": "✓" if has_fund else "—",
+                    "最新日": latest.isoformat() if latest else "-",
+                    "財務": "✓" if has_fund else "-",
                 }
             )
     return pd.DataFrame(rows, columns=["銘柄", "日足本数", "最新日", "財務"])
@@ -323,7 +323,7 @@ def watchlist_frame(database: Database) -> pd.DataFrame:
                 "銘柄": entry.symbol,
                 "市場": entry.market,
                 "通知しきい値": entry.min_importance.value,
-                "メモ": entry.note or "—",
+                "メモ": entry.note or "-",
             }
             for entry in entries
         ],

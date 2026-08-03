@@ -1,8 +1,8 @@
 """A small daily scheduler for the recurring jobs (prices, screens, monitoring).
 
 Deliberately thin: it wraps the ``schedule`` package so jobs are declared in one
-place and a job that raises cannot kill the loop. Anything more — retries with
-backoff, catch-up after downtime, distributed locking — belongs to a real
+place and a job that raises cannot kill the loop. Anything more - retries with
+backoff, catch-up after downtime, distributed locking - belongs to a real
 scheduler (cron, Task Scheduler, systemd timers), and this is designed to be
 run *under* one of those rather than to replace it.
 

@@ -30,8 +30,8 @@ def _reveal(value: SecretStr | str | None) -> str | None:
 def _safe_url(url: str) -> str:
     """Return ``url`` reduced to ``scheme://host`` for use in messages.
 
-    Every channel here carries its credential in the URL path — a Telegram bot
-    token (``/bot<token>/sendMessage``) or a Discord webhook id and token — so
+    Every channel here carries its credential in the URL path - a Telegram bot
+    token (``/bot<token>/sendMessage``) or a Discord webhook id and token - so
     the full URL must never reach an exception message, a log line, or the
     console. Only the host survives, which is enough to tell channels apart.
     """
@@ -65,7 +65,7 @@ def _post_json(
         response.raise_for_status()
     except Exception as exc:
         # httpx quotes the full request URL in its own error text, so scrubbing
-        # only our prefix is not enough — the credential rides in the path.
+        # only our prefix is not enough - the credential rides in the path.
         detail = _scrub(str(exc), url)
         # ``from None``: the chained httpx traceback would reprint the raw URL.
         raise NotificationError(f"POST {safe} failed: {detail}") from None

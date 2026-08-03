@@ -3,11 +3,11 @@
 The HTTP call is isolated behind an injectable ``fetcher`` so the provider is
 unit-testable without the network. The default fetcher targets the J-Quants V2
 API (``x-api-key`` auth); its exact endpoint/params should be checked against the
-current J-Quants docs before live use — the tested contract here is the
+current J-Quants docs before live use - the tested contract here is the
 normalization and provider logic, exercised via an injected fetcher.
 
 Note: J-Quants subscriptions are a *rolling* 5-year window, so always pass a
-dynamically computed date range — a hard-coded start date will eventually 400.
+dynamically computed date range - a hard-coded start date will eventually 400.
 """
 
 from __future__ import annotations

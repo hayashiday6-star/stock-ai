@@ -1,8 +1,8 @@
 """Currency handling, so JP and US figures can be compared on one scale.
 
 Ratio metrics (ROE, margin, P/E, yield) are already unitless and need nothing
-here. Absolute figures — market cap above all — are quoted in the listing
-market's currency, so a ¥100bn company and a $100bn company would otherwise
+here. Absolute figures - market cap above all - are quoted in the listing
+market's currency, so a JPY 100bn company and a $100bn company would otherwise
 rank as equals. :class:`FxConverter` normalizes those onto a single base.
 
 The rate lookup is injectable, so conversion is unit-testable without network

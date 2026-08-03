@@ -177,7 +177,7 @@ def _fiscal_year_of(record: dict[str, Any]) -> int | None:
     """Determine the fiscal year a record belongs to.
 
     Prefers an explicit fiscal-year field, then the fiscal-year-end date, and
-    finally the disclosure date — a disclosure names the year it reports on far
+    finally the disclosure date - a disclosure names the year it reports on far
     more reliably than the year it was published, so it is the last resort.
     """
     explicit = _to_float(_text(record, "FY", "FiscalYear"))
@@ -200,7 +200,7 @@ def normalize_statements(symbol: str, records: list[dict[str, Any]]) -> list[Fin
     company's disclosure history, and that history is exactly what growth rates
     and dividend streaks are computed from.
 
-    Records whose fiscal year cannot be determined are dropped — placing them
+    Records whose fiscal year cannot be determined are dropped - placing them
     on the wrong year would corrupt a year-over-year comparison, which is worse
     than omitting them.
 
@@ -310,7 +310,7 @@ class JQuantsFundamentalsProvider:
         if self._price_source is not None:
             try:
                 price = self._price_source(symbol)
-            except Exception as exc:  # price is optional — never fail the fetch
+            except Exception as exc:  # price is optional - never fail the fetch
                 logger.warning("Price lookup failed for %s: %s", symbol, exc)
         snapshot = normalize_statement(symbol, records, self._today(), price)
         logger.info("Fetched J-Quants fundamentals for %s", symbol)

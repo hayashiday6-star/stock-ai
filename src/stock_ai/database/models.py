@@ -26,7 +26,7 @@ class Security(Base):
     name: Mapped[str | None] = mapped_column(String(128), default=None)
     market: Mapped[str] = mapped_column(String(8), default="US")
     sector: Mapped[str | None] = mapped_column(String(64), default=None, index=True)
-    """Broad classification, normalized across markets — see :mod:`stock_ai.data.sectors`."""
+    """Broad classification, normalized across markets - see :mod:`stock_ai.data.sectors`."""
     industry: Mapped[str | None] = mapped_column(String(128), default=None)
     """The provider's finer-grained label, kept verbatim for reference."""
     created_at: Mapped[dt.datetime] = mapped_column(DateTime, server_default=func.now())
@@ -120,7 +120,7 @@ class WatchlistItem(Base):
         ForeignKey("securities.id", ondelete="CASCADE"), index=True, unique=True
     )
     note: Mapped[str | None] = mapped_column(String(256), default=None)
-    """Why this name is being watched — shown alongside its alerts."""
+    """Why this name is being watched - shown alongside its alerts."""
     min_importance: Mapped[str] = mapped_column(String(8), default="medium")
     """Alert threshold for this entry; quieter names can be set to ``high``."""
     added_at: Mapped[dt.datetime] = mapped_column(DateTime, server_default=func.now())

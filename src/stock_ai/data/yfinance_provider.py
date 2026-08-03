@@ -99,7 +99,7 @@ def _dividend_yield(info: dict[str, Any]) -> float | None:
     must agree on for cross-market ranking to mean anything.
 
     The ``dividendYield`` fallback is read as a **percentage**. Observed live:
-    yfinance returned ``0.78`` for MSFT and ``0.13`` for MRVL — real yields of
+    yfinance returned ``0.78`` for MSFT and ``0.13`` for MRVL - real yields of
     0.78% and 0.13%. An earlier version of this function rescaled only values
     above 1.0, on the theory that a percentage always exceeds one; those two
     names disprove it, and both were stored as 78% and 13%, which is enough to

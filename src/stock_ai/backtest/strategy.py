@@ -112,8 +112,8 @@ class MACDCross(Strategy):
 class RSIReversion(Strategy):
     """Mean reversion: enter when RSI drops below ``buy_below``, exit above ``exit_above``.
 
-    The signal is stateful — once long, it stays long until RSI recovers past
-    ``exit_above`` — so it holds through the middle band rather than flip-flopping.
+    The signal is stateful - once long, it stays long until RSI recovers past
+    ``exit_above`` - so it holds through the middle band rather than flip-flopping.
     """
 
     def __init__(self, period: int = 14, buy_below: float = 30.0, exit_above: float = 55.0) -> None:

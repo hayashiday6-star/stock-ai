@@ -6,7 +6,9 @@ are added as the phases progress.
 
 from __future__ import annotations
 
+import contextlib
 import datetime as dt
+import sys
 from pathlib import Path
 
 import pandas as pd
@@ -127,7 +129,7 @@ def info() -> None:
     table.add_row("env", settings.env)
     table.add_row("log_level", settings.log_level)
     for label, is_set in _secret_status(settings):
-        table.add_row(label, "[green]set[/]" if is_set else "[dim]—[/]")
+        table.add_row(label, "[green]set[/]" if is_set else "[dim]-[/]")
     console.print(table)
 
 
@@ -176,7 +178,7 @@ def fundamentals(
     Omitting SYMBOLS refreshes everything already stored for the US market. That
     is the form to reach for after a provider-side fix: a snapshot is only as
     correct as the code that parsed it, so a corrected parser has to be run back
-    over the rows the old one wrote — nothing re-reads them on its own.
+    over the rows the old one wrote - nothing re-reads them on its own.
     """
     settings = get_settings()
     configure_logging(settings.log_level)
@@ -351,7 +353,7 @@ def _render_portfolio(analysis: PortfolioAnalysis) -> None:
             f"{position.quantity:g}",
             _format_cap(position.value),
             f"{position.weight:.1%}",
-            "—" if gain is None else f"{gain:+.1%}",
+            "-" if gain is None else f"{gain:+.1%}",
         )
     console.print(positions)
 
@@ -369,21 +371,21 @@ def _render_portfolio(analysis: PortfolioAnalysis) -> None:
     risk.add_column("value", justify="right")
     total = analysis.unrealized_return
     risk.add_row(f"total value ({base})", _format_cap(analysis.total_value))
-    risk.add_row("unrealized P/L", "—" if total is None else f"{total:+.2%}")
+    risk.add_row("unrealized P/L", "-" if total is None else f"{total:+.2%}")
     risk.add_row("annual volatility", _optional_pct(analysis.annual_volatility))
     risk.add_row("max drawdown", _optional_pct(analysis.max_drawdown))
     risk.add_row(
         "concentration (HHI)",
-        "—" if analysis.concentration is None else f"{analysis.concentration:.3f}",
+        "-" if analysis.concentration is None else f"{analysis.concentration:.3f}",
     )
     effective = analysis.effective_positions
-    risk.add_row("effective positions", "—" if effective is None else f"{effective:.2f}")
+    risk.add_row("effective positions", "-" if effective is None else f"{effective:.2f}")
     console.print(risk)
 
     if analysis.unpriced:
         console.print(
             f"[yellow]Excluded (no stored price):[/] {', '.join(analysis.unpriced)} "
-            "— run 'fetch' for these to include them in the weights."
+            "- run 'fetch' for these to include them in the weights."
         )
     console.print(
         "[dim]No expected-return figure: a trailing mean is too noisy to project "
@@ -393,13 +395,13 @@ def _render_portfolio(analysis: PortfolioAnalysis) -> None:
 
 def _optional_pct(value: float | None) -> str:
     """Render an optional fraction as a percentage."""
-    return "—" if value is None else f"{value:.2%}"
+    return "-" if value is None else f"{value:.2%}"
 
 
 @app.command()
 def universe(
     segment: str = typer.Option("prime", help="prime | standard | growth | all."),
-    limit: int | None = typer.Option(None, help="Cap the list — use for a trial run."),
+    limit: int | None = typer.Option(None, help="Cap the list - use for a trial run."),
     store: bool = typer.Option(True, help="Store the profiles (names and sectors)."),
     as_of: str | None = typer.Option(
         None, "--as-of", help="Snapshot date (YYYY-MM-DD) for a delayed J-Quants plan."
@@ -429,16 +431,19 @@ def universe(
         if "403" in str(exc):
             # 403 covers two different problems and the fix differs. Saying so
             # matters because "403" otherwise reads as "wrong key" and sends
-            # people to re-issue a key that was never the problem — this one
+            # people to re-issue a key that was never the problem - this one
             # already answers 200 on other endpoints.
             console.print(
-                "[yellow]403 with a working key means the plan, not the key.[/]\n"
-                "  - The endpoint may not be in your plan at all.\n"
-                "  - Or your plan serves delayed data and today's snapshot is "
-                "inside the embargo. The message above is J-Quants' own wording; "
-                "if it mentions a date or a period, try an older one:\n"
+                "[yellow]Read the message above, not the 403.[/] J-Quants answers "
+                "403 for three different problems and only the message tells them "
+                "apart:\n"
+                "  - 'endpoint does not exist' -> the URL is wrong, not your plan. "
+                "Report it; this is a bug here.\n"
+                "  - a date or period -> your plan serves delayed data. Ask for an "
+                "older snapshot:\n"
                 "      uv run stock-ai universe --segment growth --as-of 2025-01-31\n"
-                "Either way you can skip 'universe' and name symbols directly:\n"
+                "  - a subscription or plan -> the endpoint really is not included.\n"
+                "In every case you can skip 'universe' and name symbols directly:\n"
                 "  uv run stock-ai bulk-fetch --what prices --symbols 7203,6758,9984"
             )
         raise typer.Exit(code=1) from exc
@@ -457,7 +462,7 @@ def universe(
     table.add_column("name")
     table.add_column("sector")
     for profile in profiles[:30]:
-        table.add_row(profile.symbol, profile.name or "—", profile.sector or "—")
+        table.add_row(profile.symbol, profile.name or "-", profile.sector or "-")
     console.print(table)
     if len(profiles) > 30:
         console.print(f"[dim]... and {len(profiles) - 30} more.[/]")
@@ -485,7 +490,7 @@ def bulk_fetch(
 
     Safe to interrupt and re-run: already-current symbols are skipped without a
     request, and one symbol's failure never ends the run. Expect roughly
-    ``symbols x throttle`` seconds plus network time — TSE Prime is ~1,600 names.
+    ``symbols x throttle`` seconds plus network time - TSE Prime is ~1,600 names.
     """
     settings = get_settings()
     configure_logging(settings.log_level)
@@ -507,7 +512,7 @@ def bulk_fetch(
 
     console.print(
         f"Fetching [bold]{dataset.value}[/] for {len(targets)} symbol(s). "
-        "Interrupting is safe — re-run to resume."
+        "Interrupting is safe - re-run to resume."
     )
     ingester = BulkIngester(database, api_key=settings.jquants_api_key, throttle_seconds=throttle)
 
@@ -765,20 +770,20 @@ def _render_factor_test(result: FactorTestResult, preset: str) -> None:
     t_stat = result.spread_t_stat
     if t_stat is None:
         console.print(
-            "[yellow]Too few names to tell signal from noise[/] — "
+            "[yellow]Too few names to tell signal from noise[/] - "
             "an excess return here means nothing yet."
         )
     elif result.is_significant:
         console.print(f"Top-bottom spread t = [green]{t_stat:+.2f}[/] (clears 2σ).")
     else:
         console.print(
-            f"[yellow]Top-bottom spread t = {t_stat:+.2f}, inside 2σ[/] — "
+            f"[yellow]Top-bottom spread t = {t_stat:+.2f}, inside 2σ[/] - "
             "not distinguishable from chance. On a small universe an edge this "
             "size arises routinely at random."
         )
     if not result.is_monotonic:
         console.print(
-            "[yellow]Returns are not monotonic across buckets[/] — the ordering "
+            "[yellow]Returns are not monotonic across buckets[/] - the ordering "
             "carries little information, so treat any edge as noise."
         )
     if result.skipped:
@@ -826,7 +831,7 @@ def score(
     table.add_column("Factors")
     for result in results:
         factors = ", ".join(f"{k}={v:.2f}" for k, v in sorted(result.breakdown.items()))
-        table.add_row(result.symbol, f"{result.score:.1f}", factors or "[dim]—[/]")
+        table.add_row(result.symbol, f"{result.score:.1f}", factors or "[dim]-[/]")
     console.print(table)
 
 
@@ -855,7 +860,7 @@ def rank(
 
     ``--preset tenbagger`` swaps in a small-cap growth factor set. It reads the
     statement series, so run ``statements`` first, and treat its output as a
-    shortlist to research rather than a prediction — backtest it before
+    shortlist to research rather than a prediction - backtest it before
     trusting it.
     """
     settings = get_settings()
@@ -927,10 +932,10 @@ def _format_cap(value: object) -> str:
     """Render a market cap compactly (``2.00T``), never truncated mid-digits.
 
     Printing the raw grouped number lets Rich cut "198,000,000,000" and
-    "198,000,000" to the same "198,00…" — a 1000x difference shown as identical.
+    "198,000,000" to the same "198,00…" - a 1000x difference shown as identical.
     """
     if value is None or pd.isna(value):
-        return "—"
+        return "-"
     amount = float(value)
     for limit, suffix in ((1e12, "T"), (1e9, "B"), (1e6, "M"), (1e3, "K")):
         if abs(amount) >= limit:
@@ -956,7 +961,7 @@ def _render_ranking(frame: pd.DataFrame, base: str) -> None:
             str(row["market"]),
             f"{row['score']:.1f}",
             _format_cap(row["market_cap"]),
-            *("—" if pd.isna(row[c]) else f"{float(row[c]):.2f}" for c in factor_columns),
+            *("-" if pd.isna(row[c]) else f"{float(row[c]):.2f}" for c in factor_columns),
         )
     console.print(table)
 
@@ -1003,7 +1008,7 @@ def watch(
         table.add_column("alerts at")
         table.add_column("note")
         for entry in entries:
-            table.add_row(entry.symbol, entry.market, entry.min_importance.value, entry.note or "—")
+            table.add_row(entry.symbol, entry.market, entry.min_importance.value, entry.note or "-")
         console.print(table)
         return
 
@@ -1179,8 +1184,8 @@ def ask(
 ) -> None:
     """Screen stored securities from a plain-language QUESTION.
 
-    The model only fills in a fixed set of screening criteria — it never writes
-    a query and never sees the database — so an unsupported or hallucinated
+    The model only fills in a fixed set of screening criteria - it never writes
+    a query and never sees the database - so an unsupported or hallucinated
     field is refused rather than executed. The interpretation is printed before
     the results so it can be checked.
     """
@@ -1376,8 +1381,30 @@ def _secret_status(settings: Settings) -> list[tuple[str, bool]]:
     ]
 
 
+def _make_output_encoding_safe() -> None:
+    """Stop an unencodable character from killing the process.
+
+    A Japanese Windows console runs on cp932, which has no mapping for an em
+    dash, a yen sign, or any emoji. Printing one raises ``UnicodeEncodeError``
+    from inside Rich, and because that happens while rendering, the command dies
+    *before* doing its work - a bulk fetch that was about to load 1,600 symbols
+    instead exits on a dash in its own progress message.
+
+    The literals that caused this are gone, but the class of bug is not: any
+    company name, error string, or API message could contain one. Degrading the
+    character is always better than losing the run.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is None:  # pytest's capture object, a plain pipe, ...
+            continue
+        with contextlib.suppress(ValueError, OSError):  # detached or already closed
+            reconfigure(errors="backslashreplace")
+
+
 def main() -> None:
     """Entry point for the ``stock-ai`` console script."""
+    _make_output_encoding_safe()
     app()
 
 

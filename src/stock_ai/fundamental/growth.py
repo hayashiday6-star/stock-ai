@@ -1,7 +1,7 @@
 """Growth, dividend, and streak metrics derived from a statement series.
 
 Everything here reads a list of :class:`~stock_ai.data.types.FinancialReport`
-sorted oldest first — the annual series, unless stated otherwise. Mixing
+sorted oldest first - the annual series, unless stated otherwise. Mixing
 quarters into a year-over-year comparison would silently corrupt it, so the
 caller is expected to have filtered to one period type (which
 ``FinancialStatementRepository.get_reports`` does by default).
@@ -26,8 +26,8 @@ def _usable(value: float | None) -> bool:
 def _growth(previous: float | None, current: float | None) -> float | None:
     """Year-over-year change as a fraction, or ``None`` if not meaningful.
 
-    A non-positive base makes the percentage meaningless — going from a ¥1bn
-    loss to a ¥2bn profit is not "-300% growth" — so those return ``None``
+    A non-positive base makes the percentage meaningless - going from a JPY 1bn
+    loss to a JPY 2bn profit is not "-300% growth" - so those return ``None``
     instead of a number that would sort wrongly against real growth rates.
     """
     if not _usable(previous) or not _usable(current) or previous <= 0:

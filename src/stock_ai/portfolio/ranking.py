@@ -1,6 +1,6 @@
 """Cross-market ranking: score JP and US names on one scale.
 
-The composite score is already comparable across markets — every default
+The composite score is already comparable across markets - every default
 factor (ROE, margin, P/E, yield, momentum) is a unitless ratio, so nothing
 about it is denominated in yen or dollars. What is *not* comparable is size:
 market cap arrives in the listing market's own currency. This module converts
@@ -118,7 +118,7 @@ def _apply_size_bounds(
     """Filter by converted market cap, dropping rows whose size is unknown.
 
     A missing market cap cannot be shown to satisfy a size bound, so it is
-    excluded rather than assumed to pass — the same "what cannot be verified is
+    excluded rather than assumed to pass - the same "what cannot be verified is
     excluded" rule the screening conditions follow.
     """
     if minimum is None and maximum is None:

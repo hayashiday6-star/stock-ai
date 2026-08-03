@@ -182,7 +182,7 @@ class WatchMonitor:
         treated as transient and deliberately *not* remembered: marking it seen
         would let a few minutes of provider downtime bury those filings
         permanently, since a seen item is never looked at again. An unparseable
-        answer is different — the model did reply, so ``UNKNOWN`` is a verdict
+        answer is different - the model did reply, so ``UNKNOWN`` is a verdict
         and is recorded like any other.
         """
         text = disclosure.as_text()
@@ -202,8 +202,8 @@ class WatchMonitor:
     def _summarize(self, entry: WatchEntry, text: str) -> str:
         """Summarize a disclosure, degrading to an empty summary on failure.
 
-        An alert with no summary is still worth delivering — the headline and
-        the rating carry most of the signal — so a summarization failure must
+        An alert with no summary is still worth delivering - the headline and
+        the rating carry most of the signal - so a summarization failure must
         not swallow the alert.
         """
         try:

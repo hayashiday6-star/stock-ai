@@ -1,19 +1,25 @@
 """The listed-company universe: which symbols exist, and on which segment.
 
 Everything else in this project takes symbols as input. This is where that list
-comes from — J-Quants' listed-info endpoint returns every listing when asked
-without a code, which is the only practical way to get "all of TSE Prime"
-without maintaining a hand-curated file that goes stale on every IPO.
+comes from - ``equities/master`` returns every listing when asked without a
+code, which is the only practical way to get "all of TSE Prime" without
+maintaining a hand-curated file that goes stale on every IPO.
 
 Segment matters more than it looks. Prime is ~1,600 names, the whole exchange
-is ~4,000, and a bulk price backfill costs one request per symbol — so picking
+is ~4,000, and a bulk price backfill costs one request per symbol - so picking
 the segment is the difference between a ten-minute job and an hour-long one.
 
-.. warning::
-   Written against the published J-Quants V2 specification. The field names are
-   guarded with fallbacks, but this has not been run against the live API from
-   the environment it was built in. If a fetch returns zero listings, suspect a
-   renamed field before suspecting your key.
+Two things here were learned the expensive way, from a live run:
+
+- **The endpoint is ``/v2/equities/master``, not ``/v2/listed/info``.** The
+  latter is the v1 name, and asking for it returns **403**, not 404 - the body
+  says "The requested endpoint does not exist" but the status code says
+  "forbidden". Reading only the status sends you chasing subscription tiers.
+  That is why :func:`_service_message` exists.
+- **v2 abbreviates its field names** (``Mkt``, ``S33``, ``CoName``) where v1
+  spelled them out (``MarketCode``, ``Sector33Code``, ``Name``). Both are
+  accepted below. A payload matching neither yields an empty universe with no
+  error at all, so :func:`normalize_listings` logs the keys it actually saw.
 """
 
 from __future__ import annotations
@@ -33,12 +39,12 @@ from stock_ai.data.types import SecurityProfile
 
 logger = get_logger(__name__)
 
-_LISTED_INFO_URL = "https://api.jquants.com/v2/listed/info"
+_MASTER_URL = "https://api.jquants.com/v2/equities/master"
 
 #: How far back to retry a listing request that was refused outright.
 #:
 #: Undated, the endpoint answers with *today's* snapshot, and the entry-level
-#: J-Quants plans serve data on a delay rather than serving it late — a request
+#: J-Quants plans serve data on a delay rather than serving it late - a request
 #: inside the embargo is refused, not queued. Asking for a date safely outside
 #: the delay is therefore the difference between "your plan cannot do this" and
 #: "your plan cannot do this *today*", and only one of those is true.
@@ -93,7 +99,7 @@ def _matches_segment(record: dict[str, Any], segment: Segment) -> bool:
     """Whether a listing belongs to ``segment``.
 
     The market **code** decides whenever it is one this table knows. The label
-    is only consulted when the code is missing or unrecognised — otherwise a
+    is only consulted when the code is missing or unrecognised - otherwise a
     payload whose code and label disagree would be rescued by the label and
     land in the wrong segment, which is how an "all of Prime" screen quietly
     picks up Growth names.
@@ -101,11 +107,11 @@ def _matches_segment(record: dict[str, Any], segment: Segment) -> bool:
     if segment is Segment.ALL:
         return True
 
-    code = _text(record, "MktCd", "MarketCode")
+    code = _text(record, "Mkt", "MktCd", "MarketCode")
     if code and code in _KNOWN_CODES:
         return code in _SEGMENT_CODES[segment]
 
-    label = _text(record, "MktCdName", "MarketCodeName", "MarketName")
+    label = _text(record, "MktNm", "MktCdName", "MarketCodeName", "MarketName")
     if label:
         upper = label.upper()
         return any(token.upper() in upper for token in _SEGMENT_NAMES[segment])
@@ -133,14 +139,14 @@ def _is_operating_company(record: dict[str, Any]) -> bool:
     ETFs, REITs, and index products share the exchange and the code format with
     equities, and letting them into the universe poisons everything downstream:
     they have no revenue to grow, no dividend policy to score, and no sector to
-    group by. The tell is the TSE-33 code — funds carry ``9999`` (その他) or a
+    group by. The tell is the TSE-33 code - funds carry ``9999`` (その他) or a
     code outside the industry table.
 
     A record with **no** sector field at all is kept. Rejecting those would turn
     a renamed upstream field into an empty universe, which is the silent failure
     this project keeps trying to avoid; a stray ETF is the cheaper mistake.
     """
-    code = _text(record, "Sec33Cd", "Sector33Code")
+    code = _text(record, "S33", "Sec33Cd", "Sector33Code")
     if code is None:
         return True
     return from_tse33(code) is not Sector.OTHER
@@ -167,24 +173,37 @@ def normalize_listings(
         if not _is_operating_company(record):
             funds += 1
             continue
-        if _text(record, "Sec33Cd", "Sector33Code") is None:
+        if _text(record, "S33", "Sec33Cd", "Sector33Code") is None:
             unclassified += 1
 
         profiles[code] = SecurityProfile(
             symbol=code,
             market="JP",
-            name=_text(record, "Name", "CompanyName", "CompanyNameEnglish"),
+            name=_text(record, "CoName", "Name", "CompanyName", "CoNameEn", "CompanyNameEnglish"),
             sector=str(_sector_of(record)),
-            industry=_text(record, "Sec33Name", "Sector33CodeName", "Sec17Name"),
+            industry=_text(record, "S33Nm", "Sec33Name", "Sector33CodeName", "S17Nm", "Sec17Name"),
         )
 
     if funds:
         logger.info("Excluded %d fund/index listing(s) from the universe", funds)
     if unclassified:
         logger.warning(
-            "%d listing(s) had no sector code and were kept unfiltered — "
+            "%d listing(s) had no sector code and were kept unfiltered - "
             "check the payload if this is most of them.",
             unclassified,
+        )
+    if records and not profiles:
+        # Records arrived and none survived. That is a field-name problem far
+        # more often than a genuinely empty segment, and the keys the payload
+        # actually carries are the one thing that tells them apart. Printing
+        # them turns a silent empty universe into a one-line fix.
+        logger.warning(
+            "J-Quants returned %d listing(s) but none produced a usable profile "
+            "on segment %s. The first record's keys were: %s. If the code or "
+            "market field has been renamed upstream, that list says what to.",
+            len(records),
+            segment.value,
+            sorted(records[0]) if isinstance(records[0], dict) else "(not an object)",
         )
     return [profiles[code] for code in sorted(profiles)]
 
@@ -242,10 +261,12 @@ def _default_fetcher(
             while True:
                 params: dict[str, str] = {}
                 if date is not None:
-                    params["date"] = date.isoformat()
+                    # equities/master takes YYYYMMDD, not the ISO form the rest
+                    # of this project passes around.
+                    params["date"] = date.strftime("%Y%m%d")
                 if pagination_key:
                     params["pagination_key"] = pagination_key
-                response = client.get(_LISTED_INFO_URL, headers=headers, params=params)
+                response = client.get(_MASTER_URL, headers=headers, params=params)
                 if response.status_code >= 400:
                     raise _ListingsRefusedError(
                         response.status_code, _service_message(response), date
@@ -329,7 +350,7 @@ class JQuantsUniverse:
 
         Args:
             segment: Which market segment to keep.
-            limit: Cap the result — useful for a trial run before committing to
+            limit: Cap the result - useful for a trial run before committing to
                 a backfill that will take an hour.
 
         Raises:

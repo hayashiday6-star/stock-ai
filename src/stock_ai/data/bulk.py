@@ -136,7 +136,7 @@ class BulkIngester:
             symbols: The universe to cover.
             dataset: Prices or statements.
             resume: Skip symbols whose data is already current. Turn off only to
-                force a refetch — the skip check is what makes a re-run cheap.
+                force a refetch - the skip check is what makes a re-run cheap.
             lookback_days: Backfill window for a symbol with no prices yet.
             progress: Called before each symbol with ``(index, total, symbol)``.
 
@@ -167,7 +167,7 @@ class BulkIngester:
             if self.throttle_seconds:
                 self._sleep(self.throttle_seconds)
 
-        logger.info("Bulk run finished — %s", report.summary())
+        logger.info("Bulk run finished - %s", report.summary())
         return report
 
     def _ingest_one(self, symbol: str, dataset: Dataset, lookback_days: int) -> int:
@@ -192,7 +192,7 @@ class BulkIngester:
 
         Prices count as current if the latest stored bar is from the last
         calendar day the market could have traded; statements, if any annual
-        report is stored at all — those arrive quarterly, so refetching daily
+        report is stored at all - those arrive quarterly, so refetching daily
         buys nothing.
         """
         with self.database.session() as session:
@@ -207,7 +207,7 @@ def _last_possible_session() -> dt.date:
 
     Weekends are handled but exchange holidays are not: on a holiday this
     returns a date with no bar, so those symbols are re-attempted. Re-attempting
-    is the safe direction — the alternative is silently skipping a real update.
+    is the safe direction - the alternative is silently skipping a real update.
     """
     today = dt.date.today()
     if today.weekday() == 5:  # Saturday

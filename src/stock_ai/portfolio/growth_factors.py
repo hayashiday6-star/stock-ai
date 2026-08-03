@@ -6,7 +6,7 @@ earnings following it, profit retained rather than paid out, and a base small
 enough that growth still moves the market cap.
 
 A word on what this is not. A tenbagger score is a **heuristic, not a
-prediction** — no weighting of trailing fundamentals identifies future
+prediction** - no weighting of trailing fundamentals identifies future
 multi-baggers reliably, and survivorship bias makes any hand-tuned set look
 better in hindsight than it was. The saving grace is that this repository has a
 backtest engine: score a universe, hold the top decile, and compare against
@@ -108,7 +108,7 @@ class ReinvestmentFactor(Factor):
 
 
 class SmallCapFactor(Factor):
-    """Smaller companies score higher — growth still moves a small base.
+    """Smaller companies score higher - growth still moves a small base.
 
     The market cap is converted before comparison: raw figures would rank every
     Japanese listing as enormous simply because yen numbers are ~150x larger,

@@ -76,8 +76,8 @@ def list_symbols(session: Session) -> list[str]:
 def list_securities(session: Session) -> list[tuple[str, str]]:
     """Return ``(symbol, market)`` for every stored security, sorted by symbol.
 
-    Cross-market work needs the listing market alongside the symbol — it is
-    what selects the quote currency — so this is kept separate from the
+    Cross-market work needs the listing market alongside the symbol - it is
+    what selects the quote currency - so this is kept separate from the
     symbols-only :func:`list_symbols`.
     """
     rows = session.execute(select(Security.symbol, Security.market).order_by(Security.symbol)).all()
@@ -316,7 +316,7 @@ class FinancialStatementRepository:
             symbol: The security to read.
             period: Restrict to one fiscal period type; ``None`` returns every
                 period. Defaults to annual, which is what growth and dividend
-                streak calculations compare — mixing quarters into a
+                streak calculations compare - mixing quarters into a
                 year-over-year series would silently corrupt it.
         """
         stmt = (

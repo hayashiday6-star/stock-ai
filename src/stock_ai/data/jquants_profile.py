@@ -26,7 +26,7 @@ logger = get_logger(__name__)
 # A fetcher takes a symbol and returns raw listing records.
 ListingFetcher = Callable[[str], list[dict[str, Any]]]
 
-_LISTED_INFO_URL = "https://api.jquants.com/v2/listed/info"
+_MASTER_URL = "https://api.jquants.com/v2/equities/master"
 
 
 def _text(record: dict[str, Any], *keys: str) -> str | None:
@@ -40,13 +40,13 @@ def _text(record: dict[str, Any], *keys: str) -> str | None:
 
 def _sector_of(record: dict[str, Any]) -> Sector:
     """Resolve a listing record's sector, preferring the finer TSE-33 code."""
-    tse33 = _text(record, "Sec33Cd", "Sector33Code")
+    tse33 = _text(record, "S33", "Sec33Cd", "Sector33Code")
     if tse33 is not None:
         sector = from_tse33(tse33)
         if sector is not Sector.OTHER:
             return sector
 
-    topix17 = _text(record, "Sec17Cd", "Sector17Code")
+    topix17 = _text(record, "S17", "Sec17Cd", "Sector17Code")
     if topix17 is not None:
         return from_topix17(topix17)
     return Sector.OTHER
@@ -73,10 +73,10 @@ def normalize_listing(symbol: str, records: list[dict[str, Any]]) -> SecurityPro
     return SecurityProfile(
         symbol=symbol,
         market="JP",
-        name=_text(record, "Name", "CompanyName", "CompanyNameEnglish"),
+        name=_text(record, "CoName", "Name", "CompanyName", "CoNameEn", "CompanyNameEnglish"),
         sector=str(_sector_of(record)),
         # The Japanese sector label is the provider's own finer classification.
-        industry=_text(record, "Sec33Name", "Sector33CodeName", "Sec17Name"),
+        industry=_text(record, "S33Nm", "Sec33Name", "Sector33CodeName", "S17Nm", "Sec17Name"),
     )
 
 
@@ -88,7 +88,7 @@ def _default_fetcher(api_key: SecretStr | None) -> ListingFetcher:
 
         headers = {"x-api-key": api_key.get_secret_value()} if api_key else {}
         with httpx.Client(timeout=30.0) as client:
-            response = client.get(_LISTED_INFO_URL, headers=headers, params={"code": symbol})
+            response = client.get(_MASTER_URL, headers=headers, params={"code": symbol})
             response.raise_for_status()
             payload = response.json()
         # V2 returns {"data": [...]}; older shapes used "info".

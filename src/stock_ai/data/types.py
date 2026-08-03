@@ -70,7 +70,7 @@ class Disclosure(BaseModel):
         """A stable identity used to avoid alerting on the same item twice.
 
         Derived from the content rather than a provider id, because the sources
-        do not agree on one — and a title plus a date is what actually makes a
+        do not agree on one - and a title plus a date is what actually makes a
         disclosure the same disclosure.
         """
         seed = f"{self.symbol}|{self.published_on or ''}|{self.title}"
@@ -128,7 +128,7 @@ class FinancialReport(BaseModel):
 
     This is the *time series* counterpart to :class:`Fundamentals`. Where a
     snapshot answers "what are the ratios today", a series of reports answers
-    "is revenue growing, has the dividend been raised every year" — questions
+    "is revenue growing, has the dividend been raised every year" - questions
     that need a fiscal-period axis, not a fetch date.
 
     Raw figures are kept rather than only the derived ratios: the same

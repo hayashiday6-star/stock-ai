@@ -56,3 +56,86 @@ def test_paths_are_absolute_and_under_root() -> None:
 def test_exception_hierarchy() -> None:
     for err in (exc.ConfigError, exc.DataError, exc.BrokerError, exc.NotificationError):
         assert issubclass(err, exc.StockAIError)
+
+
+# --- secrets must not reach the console, the log file, or a pasted report ---
+
+
+def test_a_key_in_a_query_string_is_redacted() -> None:
+    """The exact shape that leaked: httpx logs the URL, the URL holds the key."""
+    from stock_ai.core.logging import redact
+
+    key = "edb_8cb0271a2b74ec16409ad03342646bcc"
+    line = (
+        "HTTP Request: GET https://api.edinet-fsa.go.jp/api/v2/documents.json"
+        f"?date=2026-08-03&type=2&Subscription-Key={key} 'HTTP/1.1 200 OK'"
+    )
+    cleaned = redact(line)
+    assert key not in cleaned
+    assert "Subscription-Key=<redacted>" in cleaned
+    # The rest of the line has to survive, or the redaction destroys the
+    # diagnostic value of the log it is protecting.
+    assert "HTTP/1.1 200 OK" in cleaned
+
+
+def test_a_registered_secret_is_redacted_anywhere_it_appears() -> None:
+    """Query-parameter matching cannot catch a key echoed in prose."""
+    from stock_ai.core.logging import redact, register_secret
+
+    key = "sk-registered-secret-value-12345"
+    register_secret(key)
+    assert key not in redact(f"authentication failed using {key}")
+    assert key not in redact(f"headers={{'x-api-key': '{key}'}}")
+
+
+def test_a_short_value_is_never_registered() -> None:
+    """Redacting a common substring would corrupt unrelated messages."""
+    from stock_ai.core.logging import redact, register_secret
+
+    register_secret("dev")
+    assert redact("running in dev mode") == "running in dev mode"
+
+
+def test_an_ordinary_log_line_is_left_alone() -> None:
+    from stock_ai.core.logging import redact
+
+    line = "Fetched 6 J-Quants statement(s) for 7203"
+    assert redact(line) == line
+
+
+def test_the_filter_scrubs_a_record_before_a_handler_sees_it() -> None:
+    """Redaction has to happen on the record, not just in a helper nobody calls."""
+    import logging
+
+    from stock_ai.core.logging import SecretRedactingFilter
+
+    key = "edb_1234567890abcdef1234567890abcdef"
+    record = logging.LogRecord(
+        name="httpx",
+        level=logging.INFO,
+        pathname=__file__,
+        lineno=1,
+        msg="GET %s",
+        args=(f"https://x/y?Subscription-Key={key}",),
+        exc_info=None,
+    )
+    assert SecretRedactingFilter().filter(record) is True
+    assert key not in record.getMessage()
+
+
+def test_a_broken_format_string_still_gets_through() -> None:
+    """Losing a log record to the thing that protects log records is worse."""
+    import logging
+
+    from stock_ai.core.logging import SecretRedactingFilter
+
+    record = logging.LogRecord(
+        name="x",
+        level=logging.INFO,
+        pathname=__file__,
+        lineno=1,
+        msg="%d %d",
+        args=(1,),
+        exc_info=None,
+    )
+    assert SecretRedactingFilter().filter(record) is True

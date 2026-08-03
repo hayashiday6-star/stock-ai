@@ -5,7 +5,7 @@ TOPIX-17 / TSE-33 code instead. A portfolio holding both cannot be broken down
 by sector until those land in the same vocabulary, so this module defines the
 canonical set and the mappings into it.
 
-The mapping is deliberately coarse and unavoidably lossy — TOPIX-17 bundles
+The mapping is deliberately coarse and unavoidably lossy - TOPIX-17 bundles
 telecoms with "services, other", and 電機・精密 spans names a GICS analyst
 would split between Technology and Industrials. It is good enough to answer
 "how concentrated am I", which is what the portfolio breakdown asks, and is not

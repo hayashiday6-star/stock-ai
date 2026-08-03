@@ -3,7 +3,7 @@
 Each condition reads one metric from the context's :class:`Fundamentals`.
 A missing metric (``None``) never passes: what cannot be verified is excluded.
 Add a new condition by subclassing ``_MinThreshold`` or ``_MaxThreshold`` and
-setting ``_metric`` / ``_label`` — no other code changes.
+setting ``_metric`` / ``_label`` - no other code changes.
 """
 
 from __future__ import annotations
@@ -102,8 +102,8 @@ class MinMarketCap(_MinThreshold):
 class _StatementThreshold(Condition):
     """Base for conditions computed from the annual statement series.
 
-    A metric that cannot be computed — no statements loaded, too short a
-    history, a loss-making base year — never passes, matching the rule the
+    A metric that cannot be computed - no statements loaded, too short a
+    history, a loss-making base year - never passes, matching the rule the
     fundamentals conditions follow: what cannot be verified is excluded.
     """
 
@@ -177,7 +177,7 @@ class MinConsecutiveDividendIncreases(Condition):
 class MaxPayoutRatio(Condition):
     """配当性向の上限: the payout ratio is known and at or below ``threshold``.
 
-    An unknown ratio is excluded rather than assumed safe — a dividend whose
+    An unknown ratio is excluded rather than assumed safe - a dividend whose
     sustainability cannot be checked is exactly the one worth checking.
     """
 

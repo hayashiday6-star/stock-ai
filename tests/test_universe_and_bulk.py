@@ -437,9 +437,9 @@ def test_an_undated_403_is_retried_against_a_delayed_snapshot(
     )
 
     assert fetch() == [listing]
-    # First call undated, second dated 90 days back.
+    # First call undated, second dated 90 days back, in the endpoint's format.
     assert "date" not in client.calls[0]
-    assert client.calls[1]["date"] == "2026-05-05"
+    assert client.calls[1]["date"] == "20260505"
 
 
 def test_a_second_403_surfaces_the_services_own_message(
@@ -470,7 +470,7 @@ def test_an_explicit_date_is_not_second_guessed(monkeypatch: pytest.MonkeyPatch)
 
     with pytest.raises(DataError) as excinfo:
         fetch()
-    assert client.calls == [{"date": "2025-01-31"}]
+    assert client.calls == [{"date": "20250131"}]
     assert "too recent" in str(excinfo.value)
 
 
@@ -514,7 +514,7 @@ def test_pagination_carries_the_date_on_every_page(monkeypatch: pytest.MonkeyPat
     )
 
     assert fetch() == [first, second]
-    assert client.calls[2] == {"date": "2026-05-05", "pagination_key": "p2"}
+    assert client.calls[2] == {"date": "20260505", "pagination_key": "p2"}
 
 
 # --- naming symbols when the universe endpoint is unavailable ---------------
@@ -553,3 +553,85 @@ def test_a_symbols_option_with_no_codes_is_rejected(database: Database) -> None:
 
     with pytest.raises(typer.BadParameter):
         _bulk_symbols("prime", " , , ", _NO_SETTINGS, database, None)
+
+
+# --- the endpoint and its v2 field names ------------------------------------
+
+
+def test_the_universe_targets_the_v2_master_endpoint() -> None:
+    """v2 renamed the listings endpoint; the v1 path answers 403, not 404.
+
+    J-Quants replies "The requested endpoint does not exist" with a 403 status,
+    which reads as a permissions problem and sent this project chasing plan
+    tiers for two rounds. Pinning the URL is what stops that recurring.
+    """
+    from stock_ai.data.universe import _MASTER_URL
+
+    assert _MASTER_URL == "https://api.jquants.com/v2/equities/master"
+
+
+def test_the_v2_abbreviated_field_names_are_understood() -> None:
+    """A v2 record uses Mkt/S33/CoName, not MarketCode/Sector33Code/Name."""
+    record = {
+        "Code": "72030",
+        "Mkt": "0111",
+        "MktNm": "プライム",
+        "S33": "3700",
+        "S33Nm": "輸送用機器",
+        "S17": "6",
+        "CoName": "トヨタ自動車",
+        "CoNameEn": "TOYOTA MOTOR CORPORATION",
+    }
+    profiles = normalize_listings([record], Segment.PRIME)
+
+    assert len(profiles) == 1
+    assert profiles[0].symbol == "7203"
+    assert profiles[0].name == "トヨタ自動車"
+    assert profiles[0].industry == "輸送用機器"
+    assert profiles[0].sector != str(Sector.OTHER)
+
+
+def test_the_v1_field_names_still_work() -> None:
+    """The older spellings stay understood; nothing forces a lockstep upgrade."""
+    record = {"Code": "67580", "MktCd": "0111", "Sec33Cd": "3650", "Name": "ソニーG"}
+    profiles = normalize_listings([record], Segment.PRIME)
+
+    assert len(profiles) == 1
+    assert profiles[0].name == "ソニーG"
+
+
+def test_records_that_all_fail_to_parse_are_reported(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """An empty universe from a full payload is a renamed field, not an empty market.
+
+    Without this the failure is silent: zero listings, exit 0, and every
+    downstream step quietly working on nothing.
+    """
+    with caplog.at_level("WARNING"):
+        assert normalize_listings([{"SomethingElse": "x", "Ticker": "7203"}], Segment.ALL) == []
+
+    assert "none produced a usable profile" in caplog.text
+    # The keys are the actionable part - they say what to rename.
+    assert "SomethingElse" in caplog.text
+    assert "Ticker" in caplog.text
+
+
+def test_a_genuinely_empty_payload_is_not_reported_as_a_field_problem(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    with caplog.at_level("WARNING"):
+        assert normalize_listings([], Segment.ALL) == []
+    assert "none produced a usable profile" not in caplog.text
+
+
+def test_the_snapshot_date_is_sent_as_yyyymmdd(monkeypatch: pytest.MonkeyPatch) -> None:
+    """equities/master takes YYYYMMDD; the ISO form is silently wrong."""
+    client, fetch = _fetch_with(
+        [_StubResponse(200, {"data": []})],
+        monkeypatch,
+        as_of=dt.date(2025, 1, 31),
+    )
+
+    fetch()
+    assert client.calls == [{"date": "20250131"}]

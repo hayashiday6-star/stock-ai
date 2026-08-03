@@ -326,14 +326,14 @@ def _page_portfolio(database: Database) -> None:
     col1, col2, col3, col4 = st.columns(4)
     total = analysis.unrealized_return
     col1.metric(f"評価額 ({base})", f"{analysis.total_value:,.0f}")
-    col2.metric("含み損益", "—" if total is None else f"{total:+.2%}")
+    col2.metric("含み損益", "-" if total is None else f"{total:+.2%}")
     col3.metric(
         "年率ボラティリティ",
-        "—" if analysis.annual_volatility is None else f"{analysis.annual_volatility:.2%}",
+        "-" if analysis.annual_volatility is None else f"{analysis.annual_volatility:.2%}",
     )
     col4.metric(
         "実効銘柄数",
-        "—" if analysis.effective_positions is None else f"{analysis.effective_positions:.2f}",
+        "-" if analysis.effective_positions is None else f"{analysis.effective_positions:.2f}",
         help="ヘルフィンダール集中度の逆数。等ウェイト換算で何銘柄ぶんの分散か。",
     )
 
@@ -413,7 +413,7 @@ def _page_watchlist(database: Database) -> None:
         if result.alerts:
             for alert in sorted(result.alerts, key=lambda a: a.importance.rank, reverse=True):
                 level = alert.importance.value.upper()
-                st.markdown(f"**[{level}] {alert.entry.symbol}** — {alert.disclosure.title}")
+                st.markdown(f"**[{level}] {alert.entry.symbol}** - {alert.disclosure.title}")
                 if alert.summary:
                     st.caption(alert.summary)
                 if alert.disclosure.url:
@@ -463,9 +463,9 @@ def _page_factor_test(database: Database) -> None:
         col1, col2, col3 = st.columns(3)
         col1.metric("母集団（等ウェイト）", f"{result.universe_return:+.2%}")
         excess = result.excess_return
-        col2.metric("上位バケットの超過", "—" if excess is None else f"{excess:+.2%}")
+        col2.metric("上位バケットの超過", "-" if excess is None else f"{excess:+.2%}")
         t_stat = result.spread_t_stat
-        col3.metric("上位−下位 t値", "—" if t_stat is None else f"{t_stat:+.2f}")
+        col3.metric("上位−下位 t値", "-" if t_stat is None else f"{t_stat:+.2f}")
 
         if t_stat is None:
             st.warning("銘柄数が少なく、シグナルとノイズを区別できません。")

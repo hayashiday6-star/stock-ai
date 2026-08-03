@@ -264,25 +264,6 @@ class _FakeClient:
         return _FakeResponse({"results": [_record()]})
 
 
-def test_the_api_key_is_sent_both_ways(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Query parameter and header both carry the key.
-
-    Whichever one EDINET's gateway is actually checking, rejecting a request for
-    the other reason costs a silent HTTP 200 with an empty body — the failure
-    that reads as 'nothing was filed'.
-    """
-    import httpx
-
-    monkeypatch.setattr(httpx, "Client", _FakeClient)
-
-    records = _default_day_fetcher(SecretStr("k3y"))(dt.date(2026, 8, 1))
-
-    assert len(records) == 1
-    assert _FakeClient.last["params"]["Subscription-Key"] == "k3y"
-    assert _FakeClient.last["headers"]["Ocp-Apim-Subscription-Key"] == "k3y"
-    assert _FakeClient.last["params"]["date"] == "2026-08-01"
-
-
 def test_no_api_key_sends_neither_carrier(monkeypatch: pytest.MonkeyPatch) -> None:
     import httpx
 
@@ -310,3 +291,58 @@ def test_a_keyless_empty_day_names_the_missing_key(
         assert _default_day_fetcher(None)(dt.date(2026, 8, 1)) == []
 
     assert "EDINET_API_KEY" in caplog.text
+
+
+def test_the_api_key_never_goes_in_the_query_string(monkeypatch: pytest.MonkeyPatch) -> None:
+    """httpx logs the URL it fetched, so a key in the URL is a key in the logs.
+
+    This project's verification script tells people to paste its output when
+    asking for help, and it did exactly that with a live EDINET key.
+    """
+    import httpx
+
+    monkeypatch.setattr(httpx, "Client", _FakeClient)
+
+    _default_day_fetcher(SecretStr("edb_secret"))(dt.date(2026, 8, 1))
+
+    assert "Subscription-Key" not in _FakeClient.last["params"]
+    assert _FakeClient.last["params"] == {"date": "2026-08-01", "type": "2"}
+    assert _FakeClient.last["headers"]["Ocp-Apim-Subscription-Key"] == "edb_secret"
+    assert _FakeClient.last["headers"]["Subscription-Key"] == "edb_secret"
+
+
+def test_an_empty_day_without_metadata_names_the_keys_it_did_get(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A v2 response always carries metadata; its absence means a changed shape."""
+    import httpx
+
+    class _NoMetadata(_FakeClient):
+        def get(self, url: str, params: dict[str, str], headers: dict[str, str]) -> _FakeResponse:
+            return _FakeResponse({"results": [], "unexpectedKey": 1, "another": 2})
+
+    monkeypatch.setattr(httpx, "Client", _NoMetadata)
+
+    with caplog.at_level("WARNING"):
+        assert _default_day_fetcher(SecretStr("k"))(dt.date(2026, 8, 1)) == []
+
+    assert "no 'metadata' block" in caplog.text
+    assert "unexpectedKey" in caplog.text
+
+
+def test_a_day_with_a_zero_count_is_not_an_alarm(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A holiday is not a bug; warning about one trains people to ignore warnings."""
+    import httpx
+
+    class _Holiday(_FakeClient):
+        def get(self, url: str, params: dict[str, str], headers: dict[str, str]) -> _FakeResponse:
+            return _FakeResponse({"results": [], "metadata": {"resultset": {"count": 0}}})
+
+    monkeypatch.setattr(httpx, "Client", _Holiday)
+
+    with caplog.at_level("WARNING"):
+        assert _default_day_fetcher(SecretStr("k"))(dt.date(2026, 8, 1)) == []
+
+    assert caplog.text == ""

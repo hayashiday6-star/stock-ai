@@ -41,13 +41,13 @@ def analyze_sentiment(provider: AIProvider, text: str) -> Sentiment:
 _IMPORTANCE_SYSTEM = (
     "You rate how much a disclosure about a listed company should change an "
     "investor's view. Reply with exactly one word.\n"
-    "high   — materially changes the investment case: guidance revised, "
+    "high   - materially changes the investment case: guidance revised, "
     "results far off expectations, M&A, large financing or dilution, "
     "dividend or buyback change, regulatory or legal action, executive "
     "departure, a pipeline or product decision.\n"
-    "medium — genuine company news with limited immediate impact: routine "
+    "medium - genuine company news with limited immediate impact: routine "
     "results in line, small contracts, personnel below board level.\n"
-    "low    — administrative or promotional: notices of meeting dates, "
+    "low    - administrative or promotional: notices of meeting dates, "
     "logo changes, conference appearances, reprints of old news."
 )
 _IMPORTANCE_LABELS: tuple[str, ...] = ("high", "medium", "low")

@@ -2,12 +2,12 @@
 
 Positions are valued in a single base currency (see
 :mod:`stock_ai.data.fx`), because a JP/US portfolio cannot be weighted at all
-until yen and dollars are on the same scale — a ¥1m position is not ten times a
+until yen and dollars are on the same scale - a JPY 1m position is not ten times a
 $100k one.
 
 On what is deliberately *not* here: there is no expected-return estimate. The
 obvious implementation, annualizing a trailing mean return, is a famously poor
-forecast — its estimation error is large enough to swamp the signal, which is
+forecast - its estimation error is large enough to swamp the signal, which is
 why mean-variance optimizers built on it produce unstable weights. Rather than
 dress that up as a projection, this module reports what actually happened
 (realized volatility, drawdown, correlation) and leaves the forward view to the
@@ -69,7 +69,7 @@ class PortfolioAnalysis:
     """Herfindahl index of the weights: 1/N for N equal positions, 1.0 if all in one."""
     correlations: pd.DataFrame | None = None
     unpriced: list[str] = field(default_factory=list)
-    """Held symbols with no stored price — excluded from every weight below."""
+    """Held symbols with no stored price - excluded from every weight below."""
 
     @property
     def unrealized_return(self) -> float | None:

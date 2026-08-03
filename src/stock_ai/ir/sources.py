@@ -6,7 +6,7 @@ summarization, or notification code.
 
 **Coverage warning.** The only live source implemented here wraps yfinance's
 news, which is thin for US large caps and essentially empty for Japanese small
-caps — exactly the names a watchlist is most useful for. Proper JP coverage
+caps - exactly the names a watchlist is most useful for. Proper JP coverage
 needs a TDnet or EDINET adapter, which is not written: rather than ship an
 unverified HTTP integration, the seam is left explicit. Implement ``fetch`` on
 this protocol and pass it in; nothing else has to change.
@@ -37,7 +37,7 @@ class DisclosureSource(Protocol):
 
 
 class StaticDisclosureSource:
-    """Serve pre-supplied disclosures — for offline development and tests."""
+    """Serve pre-supplied disclosures - for offline development and tests."""
 
     name = "static"
 

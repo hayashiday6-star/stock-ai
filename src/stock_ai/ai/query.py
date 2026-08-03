@@ -89,15 +89,15 @@ _ALLOWED_FIELDS = frozenset(_NUMERIC_FIELDS) | {"min_dividend_streak", "sectors"
 
 _SYSTEM = (
     "You translate a stock-screening request into JSON. Reply with a single "
-    "JSON object and nothing else — no prose, no code fences.\n"
+    "JSON object and nothing else - no prose, no code fences.\n"
     "Allowed keys (omit any that the request does not mention):\n"
     "  min_roe, max_per, max_pbr, min_dividend_yield, min_market_cap,\n"
     "  max_market_cap, min_revenue_growth, min_profit_growth,\n"
-    "  min_dividend_growth, max_payout_ratio  — numbers; express percentages\n"
+    "  min_dividend_growth, max_payout_ratio  - numbers; express percentages\n"
     "    as fractions (20% -> 0.2)\n"
-    "  min_dividend_streak — whole years the dividend was raised\n"
-    "  sectors — list from: " + ", ".join(str(s) for s in Sector) + "\n"
-    "  markets — list from: JP, US\n"
+    "  min_dividend_streak - whole years the dividend was raised\n"
+    "  sectors - list from: " + ", ".join(str(s) for s in Sector) + "\n"
+    "  markets - list from: JP, US\n"
     "Market caps are in USD. Never invent a key that is not listed above."
 )
 
