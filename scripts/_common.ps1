@@ -38,6 +38,61 @@ function Write-Err {
     Write-Host "[FAIL] $Message" -ForegroundColor Red
 }
 
+function Show-Version {
+    <#
+    .SYNOPSIS
+        Print the commit this working copy is on, and warn if it is behind.
+
+    .DESCRIPTION
+        A fix that has been pushed but not pulled looks exactly like a fix that
+        does not work: the same traceback, from the same line number, on code
+        that was changed hours ago. Printing the commit makes "you are running
+        an old version" a line at the top of the output instead of an invisible
+        assumption, and comparing against origin says so outright.
+
+        Everything here is best-effort. No git, no network, or a detached
+        checkout just means less information, never a failed run.
+    #>
+    # Every git call below is allowed to fail. Shadowing this for the duration
+    # of the function keeps a non-zero exit from throwing when the caller runs
+    # under -ErrorActionPreference Stop with native error propagation enabled;
+    # a version banner must never be the thing that stops the run.
+    $PSNativeCommandUseErrorActionPreference = $false
+
+    if (-not (Get-Command git -ErrorAction SilentlyContinue)) { return }
+
+    $commit = (git rev-parse --short HEAD 2>$null)
+    if ($LASTEXITCODE -ne 0 -or -not $commit) { return }
+
+    $when = (git log -1 --format=%cd --date=format:'%Y-%m-%d %H:%M' 2>$null)
+    Write-Host "Version : $commit  ($when)"
+
+    $branch = (git rev-parse --abbrev-ref HEAD 2>$null)
+    if ($LASTEXITCODE -ne 0 -or -not $branch -or $branch -eq 'HEAD') { return }
+
+    # A fetch can hang on a dead network; the timeout keeps a startup check
+    # from becoming the reason the script never starts.
+    $env:GIT_HTTP_LOW_SPEED_LIMIT = '1000'
+    $env:GIT_HTTP_LOW_SPEED_TIME = '10'
+    git fetch --quiet origin $branch 2>$null | Out-Null
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host '          (could not reach origin - version may be stale)'
+        return
+    }
+
+    $behind = (git rev-list --count "HEAD..origin/$branch" 2>$null)
+    if ($LASTEXITCODE -ne 0 -or -not $behind) { return }
+
+    if ([int]$behind -gt 0) {
+        Write-Host ''
+        Write-Warn "This copy is $behind commit(s) BEHIND origin/$branch."
+        Write-Host '  Any fix pushed since then is not in the code about to run.'
+        Write-Host '  Update first:'
+        Write-Host "      git pull origin $branch"
+        Write-Host ''
+    }
+}
+
 function Test-UvInstalled {
     <#
     .SYNOPSIS

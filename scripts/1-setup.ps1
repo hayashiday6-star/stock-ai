@@ -23,6 +23,7 @@ Set-Location (Split-Path -Parent $PSScriptRoot)
 . "$PSScriptRoot\_common.ps1"
 
 Write-Section 'stock-ai setup'
+Show-Version
 
 if (-not (Test-UvInstalled)) { Exit-WithPause 1 }
 

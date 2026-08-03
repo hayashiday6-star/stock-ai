@@ -68,6 +68,7 @@ Set-Location (Split-Path -Parent $PSScriptRoot)
 . "$PSScriptRoot\_common.ps1"
 
 Write-Section "stock-ai data load ($Segment)"
+Show-Version
 
 if (-not (Test-UvInstalled)) { Exit-WithPause 1 }
 

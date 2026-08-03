@@ -35,6 +35,10 @@ try {
     Write-Section 'stock-ai verification'
     Write-Host "Date    : $(Get-Date -Format 'yyyy-MM-dd HH:mm')"
     Write-Host "Symbol  : $Symbol"
+    # The commit goes in the report because the report is what gets pasted, and
+    # a traceback from a version that was fixed hours ago wastes a whole round
+    # trip to identify.
+    Show-Version
     Write-Host ''
     Write-Host 'What to look for is printed after each check.'
 
