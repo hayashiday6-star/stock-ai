@@ -40,6 +40,7 @@ class Settings(BaseSettings):
 
     # --- Market data ---
     jquants_api_key: SecretStr | None = Field(default=None, validation_alias="JQUANTS_API_KEY")
+    edinet_api_key: SecretStr | None = Field(default=None, validation_alias="EDINET_API_KEY")
 
     # --- AI providers (Phase 6) ---
     anthropic_api_key: SecretStr | None = Field(default=None, validation_alias="ANTHROPIC_API_KEY")

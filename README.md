@@ -154,9 +154,36 @@ CAGR, latest-year revenue and profit growth, retained earnings, and smallness
 out on purpose — it measures what the market has already paid for.
 
 Treat the output as a shortlist to research, not a prediction. No weighting of
-trailing fundamentals picks future multi-baggers reliably. The engine to check
-it with is already here: score a universe, hold the top decile, and
-`backtest` it against buy-and-hold before trusting the ranking.
+trailing fundamentals picks future multi-baggers reliably — check it with
+`factor-test` below before trusting the ranking.
+
+## Does the score actually work?
+
+```bash
+uv run stock-ai factor-test 2024-06-28 --preset tenbagger --horizon 252
+```
+
+Ranks the stored universe using **only data available on the formation date**
+(prices truncated there, statements filtered on their disclosure date), holds
+the top bucket for the horizon, and compares against the equal-weight universe:
+
+```
+bucket   n     mean   median  hit rate  vs universe
+top     12   +8.99%   +9.15%       92%      +7.97%
+mid1    12   +3.82%   +4.86%       58%      +2.80%
+bottom  12   -9.75%  -11.50%       25%     -10.77%
+Top-bottom spread t = +4.95 (clears 2σ).
+```
+
+Read the **t-statistic before the excess return**. On a universe of a few dozen
+names, sampling noise alone routinely hands the top bucket a several-percent
+"edge" — in testing, a universe with returns drawn purely at random still
+produced +5.4% for the top bucket, at t = +1.39. Anything inside 2σ is not
+distinguishable from chance, and the report says so.
+
+Two limits it cannot remove: the universe is whatever is in the local database,
+so delisted names are missing (survivorship bias), and a single formation date
+is one draw. This can falsify a score; it cannot prove one works.
 
 The composite score is built from unitless ratios, so it already compares
 across markets. Market cap does not — it arrives in the listing market's
@@ -205,12 +232,28 @@ If the AI provider itself fails, those items are deliberately **not** recorded �
 they stay unseen and are retried, so a few minutes of downtime cannot bury a
 filing permanently. The count is reported so an incomplete pass is visible.
 
-> **Coverage.** The bundled source wraps yfinance news, which is thin for US
-> large caps and essentially empty for Japanese small caps — the very names a
-> watchlist is most useful for. A TDnet or EDINET adapter is the missing piece;
-> rather than ship an unverified HTTP integration, the seam is left explicit.
-> Implement `fetch` on `DisclosureSource` (or pass a callable to
-> `ir.sources.from_callable`) and nothing else has to change.
+### Disclosure feeds
+
+`--source` picks where disclosures come from:
+
+| feed | covers | needs |
+|---|---|---|
+| `edinet` | JP statutory filings (有報・四半期・臨時報告書…) | `EDINET_API_KEY` |
+| `news` | yfinance headlines — decent for US large caps, thin elsewhere | — |
+| `all` (default) | both, de-duplicated | — |
+
+EDINET is indexed by date, not by company, so a pass costs one request per day
+of `--lookback-days` regardless of how many names are watched.
+
+> **TDnet (適時開示) is not covered.** It has no public API, so the only route
+> is scraping an unofficial HTML endpoint — not something to ship unverified.
+> If you have a third-party TDnet feed, implement `fetch` on `DisclosureSource`
+> or pass a callable to `ir.sources.from_callable`; nothing else changes.
+
+> **The EDINET adapter is written to the published v2 spec but has not been run
+> against the live API** (the environment it was built in has no outbound access
+> to it). Check the first real run: a drifted field name would show up as zero
+> disclosures rather than as an error.
 
 ## Daily automation
 
@@ -241,7 +284,9 @@ uv sync --extra dashboard
 uv run streamlit run src/stock_ai/dashboard/app.py
 ```
 
-Sections: Rankings (scores), Backtest (equity curves + metrics), AI Analysis.
+Ten screens: データ取得 / ランキング / 日米統合ランキング / スクリーニング /
+ポートフォリオ / 監視リスト / バックテスト / ファクター検証 / AI分析 / 通知テスト —
+the CLI features above, without the command line.
 
 ## Backtesting
 

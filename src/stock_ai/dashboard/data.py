@@ -11,16 +11,21 @@ import datetime as dt
 
 import pandas as pd
 
+from stock_ai.ai.factory import get_ai_provider
 from stock_ai.backtest.engine import BacktestEngine
+from stock_ai.backtest.factor_test import FactorTestResult, run_factor_test
 from stock_ai.backtest.report import metrics_frame
 from stock_ai.backtest.strategy import BuyAndHold, build_strategy
+from stock_ai.config.settings import get_settings
 from stock_ai.data.base import FundamentalsProvider, PriceProvider
+from stock_ai.data.fx import FxConverter
 from stock_ai.data.jquants_provider import JQuantsPriceProvider
 from stock_ai.data.service import (
     FundamentalsService,
     IngestionService,
     IngestResult,
 )
+from stock_ai.data.types import Importance
 from stock_ai.data.yfinance_provider import (
     YFinanceFundamentalsProvider,
     YFinancePriceProvider,
@@ -28,9 +33,18 @@ from stock_ai.data.yfinance_provider import (
 from stock_ai.database.engine import Database
 from stock_ai.database.repository import (
     FundamentalsRepository,
+    HoldingRepository,
     PriceRepository,
+    WatchlistRepository,
     list_symbols,
 )
+from stock_ai.ir.edinet import EdinetDisclosureSource
+from stock_ai.ir.monitor import MonitorResult, WatchMonitor
+from stock_ai.ir.sources import CompositeDisclosureSource, NewsDisclosureSource
+from stock_ai.news.sources import YFinanceNewsSource
+from stock_ai.portfolio.analysis import PortfolioAnalysis, analyze_portfolio
+from stock_ai.portfolio.growth_factors import tenbagger_weighted_factors
+from stock_ai.portfolio.ranking import rank_securities
 from stock_ai.portfolio.scoring import WeightedScorer, default_weighted_factors
 from stock_ai.screening.base import Condition, ScreeningContext
 from stock_ai.screening.engine import ScreeningEngine
@@ -211,3 +225,177 @@ def backtest_comparison(
     )
     metrics = metrics_frame({strat.name: strat_result, f"{symbol} buy&hold": bench_result})
     return equity, metrics
+
+
+# --- cross-market ranking ---------------------------------------------------
+
+
+def cross_market_table(
+    database: Database,
+    base: str = "USD",
+    rates: dict[str, float] | None = None,
+    preset: str = "default",
+    max_market_cap: float | None = None,
+) -> pd.DataFrame:
+    """Return the JP+US ranking with market cap restated in ``base``.
+
+    ``rates`` pins the FX so a report is reproducible; anything unpinned is
+    fetched live.
+    """
+    fx = FxConverter(base=base, rates=rates)
+    factors = (
+        tenbagger_weighted_factors(fx=fx) if preset == "tenbagger" else default_weighted_factors()
+    )
+    return rank_securities(
+        database,
+        scorer=WeightedScorer(factors),
+        fx=fx,
+        max_market_cap=max_market_cap,
+        load_statements=preset == "tenbagger",
+    )
+
+
+# --- portfolio --------------------------------------------------------------
+
+
+def portfolio_view(
+    database: Database, base: str = "USD", rates: dict[str, float] | None = None
+) -> PortfolioAnalysis:
+    """Return the portfolio analysis in ``base`` currency."""
+    return analyze_portfolio(database, fx=FxConverter(base=base, rates=rates))
+
+
+def positions_frame(analysis: PortfolioAnalysis) -> pd.DataFrame:
+    """Return the positions as a display table."""
+    return pd.DataFrame(
+        [
+            {
+                "銘柄": position.symbol,
+                "市場": position.market,
+                "セクター": str(position.sector),
+                "数量": position.quantity,
+                f"評価額({analysis.base_currency})": round(position.value, 2),
+                "比率": position.weight,
+                "損益": position.unrealized_return,
+            }
+            for position in analysis.positions
+        ],
+        columns=[
+            "銘柄",
+            "市場",
+            "セクター",
+            "数量",
+            f"評価額({analysis.base_currency})",
+            "比率",
+            "損益",
+        ],
+    )
+
+
+def exposure_frame(analysis: PortfolioAnalysis) -> pd.DataFrame:
+    """Return sector weights as a table ready for a bar chart."""
+    return pd.DataFrame(
+        [
+            {"セクター": str(sector), "比率": weight}
+            for sector, weight in analysis.sector_weights.items()
+        ]
+    ).set_index("セクター")
+
+
+def set_position(
+    database: Database, symbol: str, quantity: float, cost: float, market: str = "US"
+) -> None:
+    """Record (or clear) a holding."""
+    with database.session() as session:
+        HoldingRepository(session).set_holding(symbol, quantity, cost, market=market)
+
+
+# --- watchlist --------------------------------------------------------------
+
+
+def watchlist_frame(database: Database) -> pd.DataFrame:
+    """Return the watchlist as a display table."""
+    with database.session() as session:
+        entries = WatchlistRepository(session).list_entries()
+    return pd.DataFrame(
+        [
+            {
+                "銘柄": entry.symbol,
+                "市場": entry.market,
+                "通知しきい値": entry.min_importance.value,
+                "メモ": entry.note or "—",
+            }
+            for entry in entries
+        ],
+        columns=["銘柄", "市場", "通知しきい値", "メモ"],
+    )
+
+
+def add_watch(
+    database: Database,
+    symbol: str,
+    note: str | None,
+    importance: Importance,
+    market: str = "US",
+) -> None:
+    """Add or update a watchlist entry."""
+    with database.session() as session:
+        WatchlistRepository(session).add(
+            symbol, note=note, min_importance=importance, market=market
+        )
+
+
+def remove_watch(database: Database, symbol: str) -> bool:
+    """Remove a watchlist entry, reporting whether it existed."""
+    with database.session() as session:
+        return WatchlistRepository(session).remove(symbol)
+
+
+def run_monitor(
+    database: Database,
+    provider_name: str,
+    feed: str = "all",
+    lookback_days: int = 7,
+) -> MonitorResult:
+    """Run one monitoring pass and return its alerts (no notification sent)."""
+    settings = get_settings()
+    edinet = EdinetDisclosureSource(api_key=settings.edinet_api_key, lookback_days=lookback_days)
+    news = NewsDisclosureSource(YFinanceNewsSource())
+    source: object
+    if feed == "edinet":
+        source = edinet
+    elif feed == "news":
+        source = news
+    else:
+        source = CompositeDisclosureSource(edinet, news)
+
+    monitor = WatchMonitor(
+        database, source=source, provider=get_ai_provider(provider_name, settings)
+    )
+    return monitor.run()
+
+
+# --- factor test ------------------------------------------------------------
+
+
+def factor_test(
+    database: Database,
+    formation: dt.date,
+    preset: str = "tenbagger",
+    horizon_days: int = 252,
+    buckets: int = 3,
+    base: str = "USD",
+    rates: dict[str, float] | None = None,
+) -> FactorTestResult:
+    """Rank as of ``formation`` and measure the forward returns."""
+    fx = FxConverter(base=base, rates=rates)
+    factors = (
+        tenbagger_weighted_factors(fx=fx) if preset == "tenbagger" else default_weighted_factors()
+    )
+    return run_factor_test(
+        database,
+        WeightedScorer(factors),
+        formation=formation,
+        horizon_days=horizon_days,
+        buckets=buckets,
+    )

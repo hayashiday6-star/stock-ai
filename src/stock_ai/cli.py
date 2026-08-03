@@ -20,10 +20,11 @@ from stock_ai.ai.analysis import summarize as ai_summarize
 from stock_ai.ai.factory import get_ai_provider
 from stock_ai.ai.query import parse_query, run_query
 from stock_ai.backtest.engine import BacktestEngine
+from stock_ai.backtest.factor_test import FactorTestResult, run_factor_test
 from stock_ai.backtest.report import metrics_frame
 from stock_ai.backtest.strategy import BuyAndHold, Strategy, build_strategy
 from stock_ai.config.settings import Settings, get_settings
-from stock_ai.core.exceptions import AIError, NotificationError
+from stock_ai.core.exceptions import AIError, BacktestError, NotificationError
 from stock_ai.core.logging import configure_logging
 from stock_ai.core.scheduler import DailyScheduler
 from stock_ai.data.base import PriceProvider
@@ -47,8 +48,9 @@ from stock_ai.database.repository import (
     WatchlistRepository,
     upsert_profile,
 )
+from stock_ai.ir.edinet import EdinetDisclosureSource
 from stock_ai.ir.monitor import WatchMonitor
-from stock_ai.ir.sources import NewsDisclosureSource
+from stock_ai.ir.sources import CompositeDisclosureSource, NewsDisclosureSource
 from stock_ai.news.sources import YFinanceNewsSource
 from stock_ai.notification.factory import get_notifier
 from stock_ai.portfolio.analysis import PortfolioAnalysis, analyze_portfolio
@@ -465,6 +467,113 @@ def backtest(
 
 
 @app.command()
+def factor_test(
+    formation: str = typer.Argument(..., help="Ranking date, YYYY-MM-DD."),
+    preset: str = typer.Option("tenbagger", help="Factor set: default | tenbagger."),
+    horizon: int = typer.Option(252, help="Trading days held after formation."),
+    buckets: int = typer.Option(3, help="Slices to split the ranking into."),
+    base: str = typer.Option("USD", help="Base currency for size comparisons."),
+    fx_rate: list[str] = typer.Option([], "--fx", help="Pin a rate as CUR=VALUE."),
+) -> None:
+    """Test whether a score predicted returns: rank, hold, compare.
+
+    Ranks the stored universe using only data available on FORMATION, holds the
+    top bucket for --horizon bars, and compares against the equal-weight
+    universe. A score that adds nothing will not beat it.
+
+    The universe is whatever is in the local database, which excludes delisted
+    names, so results are optimistic by an unmeasured amount. This can falsify
+    a score; it cannot prove one works.
+    """
+    settings = get_settings()
+    configure_logging(settings.log_level)
+
+    fx = FxConverter(base=base, rates=_parse_fx_rates(fx_rate))
+    factors, _needs_statements = _factor_preset(preset, fx)
+
+    database = Database()
+    database.create_all()
+    try:
+        result = run_factor_test(
+            database,
+            WeightedScorer(factors),
+            formation=_require_date(formation),
+            horizon_days=horizon,
+            buckets=buckets,
+        )
+    except BacktestError as exc:
+        console.print(f"[red]{exc}[/]")
+        raise typer.Exit(code=1) from exc
+
+    _render_factor_test(result, preset)
+
+
+def _render_factor_test(result: FactorTestResult, preset: str) -> None:
+    """Print the bucket table and the verdict."""
+    table = Table(
+        title=f"factor test: {preset} @ {result.formation}, {result.horizon_days} bars held"
+    )
+    table.add_column("bucket", style="cyan")
+    table.add_column("n", justify="right")
+    table.add_column("mean", justify="right")
+    table.add_column("median", justify="right")
+    table.add_column("hit rate", justify="right")
+    table.add_column("vs universe", justify="right")
+    for bucket in result.buckets:
+        excess = bucket.mean_return - result.universe_return
+        table.add_row(
+            bucket.label,
+            str(bucket.size),
+            f"{bucket.mean_return:+.2%}",
+            f"{bucket.median_return:+.2%}",
+            f"{bucket.hit_rate:.0%}",
+            f"[green]{excess:+.2%}[/]" if excess > 0 else f"[red]{excess:+.2%}[/]",
+        )
+    console.print(table)
+
+    console.print(
+        f"universe (equal weight, n={result.scored}): [bold]{result.universe_return:+.2%}[/]"
+    )
+    excess = result.excess_return
+    if excess is None:
+        return
+    verdict = "beat" if excess > 0 else "did not beat"
+    console.print(f"Top bucket {verdict} the universe by [bold]{excess:+.2%}[/].")
+
+    t_stat = result.spread_t_stat
+    if t_stat is None:
+        console.print(
+            "[yellow]Too few names to tell signal from noise[/] — "
+            "an excess return here means nothing yet."
+        )
+    elif result.is_significant:
+        console.print(f"Top-bottom spread t = [green]{t_stat:+.2f}[/] (clears 2σ).")
+    else:
+        console.print(
+            f"[yellow]Top-bottom spread t = {t_stat:+.2f}, inside 2σ[/] — "
+            "not distinguishable from chance. On a small universe an edge this "
+            "size arises routinely at random."
+        )
+    if not result.is_monotonic:
+        console.print(
+            "[yellow]Returns are not monotonic across buckets[/] — the ordering "
+            "carries little information, so treat any edge as noise."
+        )
+    if result.skipped:
+        console.print(
+            f"[dim]{len(result.skipped)} name(s) skipped for want of a score or a forward price.[/]"
+        )
+
+
+def _require_date(value: str) -> dt.date:
+    """Parse a required ISO date argument."""
+    parsed = _parse_date(value)
+    if parsed is None:
+        raise typer.BadParameter("A formation date is required.")
+    return parsed
+
+
+@app.command()
 def score(
     symbols: list[str] = typer.Argument(..., help="Ticker symbols to score."),
 ) -> None:
@@ -706,6 +815,10 @@ def monitor(
     provider: str = typer.Option("dummy", help="AI provider: dummy|claude|openai|gemini."),
     channel: str | None = typer.Option(None, help="Send alerts to console|discord|telegram|line."),
     limit: int = typer.Option(10, help="Disclosures pulled per watched symbol."),
+    source: str = typer.Option(
+        "all", help="Disclosure feed: all | edinet (JP filings) | news (yfinance)."
+    ),
+    lookback_days: int = typer.Option(7, help="Days of EDINET filings to scan."),
 ) -> None:
     """Check the watchlist for disclosures worth reporting.
 
@@ -721,7 +834,7 @@ def monitor(
     notifier = get_notifier(channel, settings) if channel else None
     monitor_service = WatchMonitor(
         database,
-        source=NewsDisclosureSource(YFinanceNewsSource()),
+        source=_disclosure_source(source, settings, lookback_days),
         provider=get_ai_provider(provider, settings),
         notifier=notifier,
     )
@@ -742,6 +855,25 @@ def monitor(
         console.print("[dim]Nothing above threshold.[/]")
 
 
+def _disclosure_source(name: str, settings: Settings, lookback_days: int):
+    """Build the disclosure feed for a source name.
+
+    ``all`` combines EDINET with the news wire and de-duplicates, which is the
+    useful default: EDINET carries the statutory JP filings the news feed
+    misses, and the news feed carries US names EDINET has nothing for.
+    """
+    key = name.lower()
+    edinet = EdinetDisclosureSource(api_key=settings.edinet_api_key, lookback_days=lookback_days)
+    news = NewsDisclosureSource(YFinanceNewsSource())
+    if key == "edinet":
+        return edinet
+    if key == "news":
+        return news
+    if key == "all":
+        return CompositeDisclosureSource(edinet, news)
+    raise typer.BadParameter(f"Unknown source {name!r}; use all, edinet, or news.")
+
+
 @app.command()
 def daily(
     at: str = typer.Option("18:00", help="Local HH:MM the jobs run at."),
@@ -749,6 +881,7 @@ def daily(
     source: str = typer.Option("yfinance", help="Price source: yfinance | jquants."),
     provider: str = typer.Option("dummy", help="AI provider used by the monitor."),
     channel: str | None = typer.Option(None, help="Notification channel for alerts."),
+    feed: str = typer.Option("all", help="Disclosure feed: all | edinet | news."),
     once: bool = typer.Option(False, "--once", help="Run the jobs now and exit."),
 ) -> None:
     """Run the daily pipeline: refresh prices, then check the watchlist.
@@ -779,7 +912,7 @@ def daily(
         "monitor",
         lambda: WatchMonitor(
             database,
-            source=NewsDisclosureSource(YFinanceNewsSource()),
+            source=_disclosure_source(feed, settings, 7),
             provider=get_ai_provider(provider, settings),
             notifier=notifier,
         ).run(notify=notifier is not None),
@@ -998,6 +1131,7 @@ def _secret_status(settings: Settings) -> list[tuple[str, bool]]:
     """Return ``(label, is_set)`` pairs for each secret without exposing values."""
     return [
         ("jquants_api_key", settings.jquants_api_key is not None),
+        ("edinet_api_key", settings.edinet_api_key is not None),
         ("anthropic_api_key", settings.anthropic_api_key is not None),
         ("openai_api_key", settings.openai_api_key is not None),
         ("gemini_api_key", settings.gemini_api_key is not None),
