@@ -18,6 +18,7 @@ the segment is the difference between a ten-minute job and an hour-long one.
 
 from __future__ import annotations
 
+import datetime as dt
 from collections.abc import Callable
 from enum import StrEnum
 from typing import Any
@@ -33,6 +34,15 @@ from stock_ai.data.types import SecurityProfile
 logger = get_logger(__name__)
 
 _LISTED_INFO_URL = "https://api.jquants.com/v2/listed/info"
+
+#: How far back to retry a listing request that was refused outright.
+#:
+#: Undated, the endpoint answers with *today's* snapshot, and the entry-level
+#: J-Quants plans serve data on a delay rather than serving it late — a request
+#: inside the embargo is refused, not queued. Asking for a date safely outside
+#: the delay is therefore the difference between "your plan cannot do this" and
+#: "your plan cannot do this *today*", and only one of those is true.
+_DELAYED_PLAN_DAYS = 90
 
 # A fetcher returns every listing record the plan exposes.
 ListingsFetcher = Callable[[], list[dict[str, Any]]]
@@ -179,29 +189,116 @@ def normalize_listings(
     return [profiles[code] for code in sorted(profiles)]
 
 
-def _default_fetcher(api_key: SecretStr | None) -> ListingsFetcher:
-    """Build a fetcher for the full listing list."""
+def _service_message(response: Any) -> str:
+    """Return J-Quants' own explanation for a failed response, if it gave one.
+
+    The status code alone is not enough to act on: 403 covers both "this
+    endpoint is not in your plan" and "this *date* is not in your plan", and
+    only the body distinguishes them. Discarding it turns a one-line answer into
+    a guessing game.
+    """
+    try:
+        payload = response.json()
+    except Exception:
+        payload = None
+    if isinstance(payload, dict):
+        for key in ("message", "Message", "error", "detail"):
+            value = payload.get(key)
+            if value:
+                return str(value).strip()
+    text = (getattr(response, "text", "") or "").strip()
+    return text[:200] if text else "no message returned"
+
+
+def _delayed_snapshot_date(today: dt.date | None = None) -> dt.date:
+    """A date old enough to sit outside a delayed plan's embargo."""
+    return (today or dt.date.today()) - dt.timedelta(days=_DELAYED_PLAN_DAYS)
+
+
+def _default_fetcher(
+    api_key: SecretStr | None,
+    as_of: dt.date | None = None,
+    clock: Callable[[], dt.date] | None = None,
+) -> ListingsFetcher:
+    """Build a fetcher for the full listing list.
+
+    Args:
+        api_key: J-Quants V2 API key.
+        as_of: Snapshot date to request. ``None`` asks for the current snapshot
+            and falls back to a delayed one if that is refused.
+        clock: Callable returning today's date; injected in tests.
+    """
+    today = clock or dt.date.today
 
     def fetch() -> list[dict[str, Any]]:
         import httpx
 
         headers = {"x-api-key": api_key.get_secret_value()} if api_key else {}
-        records: list[dict[str, Any]] = []
-        pagination_key: str | None = None
-        with httpx.Client(timeout=60.0) as client:
+
+        def collect(client: Any, date: dt.date | None) -> list[dict[str, Any]]:
+            """Page through the endpoint for one snapshot date."""
+            records: list[dict[str, Any]] = []
+            pagination_key: str | None = None
             while True:
-                params = {"pagination_key": pagination_key} if pagination_key else {}
+                params: dict[str, str] = {}
+                if date is not None:
+                    params["date"] = date.isoformat()
+                if pagination_key:
+                    params["pagination_key"] = pagination_key
                 response = client.get(_LISTED_INFO_URL, headers=headers, params=params)
                 if response.status_code >= 400:
-                    raise DataError(f"J-Quants listed/info returned {response.status_code}.")
+                    raise _ListingsRefusedError(
+                        response.status_code, _service_message(response), date
+                    )
                 payload = response.json()
                 records.extend(payload.get("data") or payload.get("info") or [])
                 pagination_key = payload.get("pagination_key")
                 if not pagination_key:
-                    break
-        return records
+                    return records
+
+        with httpx.Client(timeout=60.0) as client:
+            try:
+                return collect(client, as_of)
+            except _ListingsRefusedError as refusal:
+                # Retrying is worth one request: an undated 403 is the shape a
+                # delayed plan produces, and the difference between the two
+                # causes decides whether the user needs a new plan or a flag.
+                if refusal.status != 403 or as_of is not None:
+                    raise refusal.as_data_error() from None
+                retry_date = _delayed_snapshot_date(today())
+                logger.warning(
+                    "J-Quants refused the current listing snapshot (403: %s). "
+                    "Retrying as of %s, in case the plan serves delayed data.",
+                    refusal.message,
+                    retry_date,
+                )
+                try:
+                    records = collect(client, retry_date)
+                except _ListingsRefusedError as second:
+                    raise second.as_data_error() from None
+                logger.info(
+                    "J-Quants served the %s snapshot. The plan is delayed rather "
+                    "than missing this endpoint; pass --as-of to pick the date.",
+                    retry_date,
+                )
+                return records
 
     return fetch
+
+
+class _ListingsRefusedError(Exception):
+    """A listing request the service turned down, with its own explanation."""
+
+    def __init__(self, status: int, message: str, date: dt.date | None) -> None:
+        super().__init__(message)
+        self.status = status
+        self.message = message
+        self.date = date
+
+    def as_data_error(self) -> DataError:
+        """Render the refusal as the error the CLI shows the user."""
+        when = f" for {self.date}" if self.date else ""
+        return DataError(f"J-Quants listed/info returned {self.status}{when}: {self.message}")
 
 
 class JQuantsUniverse:
@@ -210,15 +307,20 @@ class JQuantsUniverse:
     name = "jquants"
 
     def __init__(
-        self, api_key: SecretStr | None = None, fetcher: ListingsFetcher | None = None
+        self,
+        api_key: SecretStr | None = None,
+        fetcher: ListingsFetcher | None = None,
+        as_of: dt.date | None = None,
     ) -> None:
         """Create the universe source.
 
         Args:
             api_key: J-Quants V2 API key.
             fetcher: Callable returning raw listing records; injected in tests.
+            as_of: Snapshot date to request. Leave unset to ask for the current
+                one and fall back to a delayed snapshot if the plan refuses it.
         """
-        self._fetch = fetcher or _default_fetcher(api_key)
+        self._fetch = fetcher or _default_fetcher(api_key, as_of=as_of)
 
     def profiles(
         self, segment: Segment = Segment.PRIME, limit: int | None = None

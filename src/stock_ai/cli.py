@@ -401,6 +401,9 @@ def universe(
     segment: str = typer.Option("prime", help="prime | standard | growth | all."),
     limit: int | None = typer.Option(None, help="Cap the list — use for a trial run."),
     store: bool = typer.Option(True, help="Store the profiles (names and sectors)."),
+    as_of: str | None = typer.Option(
+        None, "--as-of", help="Snapshot date (YYYY-MM-DD) for a delayed J-Quants plan."
+    ),
 ) -> None:
     """List (and store) the JP listed universe for a market segment.
 
@@ -417,19 +420,26 @@ def universe(
             f"segment must be prime, standard, growth, or all; got {segment!r}."
         ) from exc
 
+    snapshot = _parse_date(as_of)
     try:
-        profiles = JQuantsUniverse(api_key=settings.jquants_api_key).profiles(chosen, limit=limit)
+        source = JQuantsUniverse(api_key=settings.jquants_api_key, as_of=snapshot)
+        profiles = source.profiles(chosen, limit=limit)
     except DataError as exc:
         console.print(f"[red]{exc}[/]")
         if "403" in str(exc):
-            # A 403 on this endpoint while other endpoints answer 200 means the
-            # key is fine and the plan is not — worth saying, because "403"
-            # otherwise reads as "wrong key" and sends people to re-issue one.
+            # 403 covers two different problems and the fix differs. Saying so
+            # matters because "403" otherwise reads as "wrong key" and sends
+            # people to re-issue a key that was never the problem — this one
+            # already answers 200 on other endpoints.
             console.print(
-                "[yellow]403 means the key is valid but this endpoint is not in your "
-                "J-Quants plan.[/] Other endpoints may still work. You can skip "
-                "'universe' and name symbols directly:\n"
-                "  uv run stock-ai fetch 7203 6758 --source jquants"
+                "[yellow]403 with a working key means the plan, not the key.[/]\n"
+                "  - The endpoint may not be in your plan at all.\n"
+                "  - Or your plan serves delayed data and today's snapshot is "
+                "inside the embargo. The message above is J-Quants' own wording; "
+                "if it mentions a date or a period, try an older one:\n"
+                "      uv run stock-ai universe --segment growth --as-of 2025-01-31\n"
+                "Either way you can skip 'universe' and name symbols directly:\n"
+                "  uv run stock-ai bulk-fetch --what prices --symbols 7203,6758,9984"
             )
         raise typer.Exit(code=1) from exc
 
@@ -461,6 +471,11 @@ def bulk_fetch(
     segment: str = typer.Option(
         "stored", help="prime | standard | growth | all | stored (symbols already in the DB)."
     ),
+    symbols: str | None = typer.Option(
+        None,
+        "--symbols",
+        help="Comma-separated codes to use instead of a segment, e.g. 7203,6758.",
+    ),
     limit: int | None = typer.Option(None, help="Cap the symbol count."),
     lookback: int = typer.Option(365, help="Backfill days for a symbol with no prices."),
     throttle: float = typer.Option(0.2, help="Seconds to pause between symbols."),
@@ -482,13 +497,16 @@ def bulk_fetch(
 
     database = Database()
     database.create_all()
-    symbols = _bulk_symbols(segment, settings, database, limit)
-    if not symbols:
-        console.print("[yellow]No symbols to process.[/] Run 'universe' first, or pass a segment.")
+    targets = _bulk_symbols(segment, symbols, settings, database, limit)
+    if not targets:
+        console.print(
+            "[yellow]No symbols to process.[/] Run 'universe' first, or name them "
+            "directly with --symbols 7203,6758."
+        )
         raise typer.Exit(code=1)
 
     console.print(
-        f"Fetching [bold]{dataset.value}[/] for {len(symbols)} symbol(s). "
+        f"Fetching [bold]{dataset.value}[/] for {len(targets)} symbol(s). "
         "Interrupting is safe — re-run to resume."
     )
     ingester = BulkIngester(database, api_key=settings.jquants_api_key, throttle_seconds=throttle)
@@ -501,15 +519,15 @@ def bulk_fetch(
         TimeRemainingColumn(),
         console=console,
     ) as progress:
-        task = progress.add_task(dataset.value, total=len(symbols))
+        task = progress.add_task(dataset.value, total=len(targets))
 
         def advance(index: int, total: int, symbol: str) -> None:
             progress.update(task, completed=index - 1, description=f"{dataset.value} {symbol}")
 
         report = ingester.run(
-            symbols, dataset, resume=resume, lookback_days=lookback, progress=advance
+            targets, dataset, resume=resume, lookback_days=lookback, progress=advance
         )
-        progress.update(task, completed=len(symbols))
+        progress.update(task, completed=len(targets))
 
     console.print(report.summary())
     if report.failed:
@@ -525,13 +543,28 @@ def bulk_fetch(
 
 
 def _bulk_symbols(
-    segment: str, settings: Settings, database: Database, limit: int | None
+    segment: str,
+    symbols: str | None,
+    settings: Settings,
+    database: Database,
+    limit: int | None,
 ) -> list[str]:
     """Resolve the symbol list for a bulk run.
+
+    An explicit ``--symbols`` list wins over the segment. That is the escape
+    hatch for a J-Quants plan that refuses the listings endpoint: prices and
+    statements are separate endpoints and may well be available, so being
+    unable to *enumerate* the market must not stop you loading a market.
 
     ``stored`` reuses what is already in the database, which avoids a universe
     request when the list has not changed.
     """
+    if symbols:
+        named = [part.strip() for part in symbols.replace(" ", ",").split(",") if part.strip()]
+        if not named:
+            raise typer.BadParameter("--symbols was given but contained no codes.")
+        return named[:limit] if limit else named
+
     key = segment.lower()
     if key == "stored":
         with database.session() as session:

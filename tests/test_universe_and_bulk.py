@@ -366,3 +366,190 @@ def test_an_empty_symbol_list_does_nothing(database: Database) -> None:
     report = _ingester(database).run([], Dataset.STATEMENTS)
     assert report.attempted == 0
     assert report.rows == 0
+
+
+#: Settings are never consulted on the explicit-symbols path.
+_NO_SETTINGS = None  # type: ignore[assignment]
+
+
+# --- a refused listing request ----------------------------------------------
+
+
+class _StubResponse:
+    def __init__(self, status: int, payload: Any) -> None:
+        self.status_code = status
+        self._payload = payload
+        self.text = str(payload)
+
+    def json(self) -> Any:
+        if isinstance(self._payload, Exception):
+            raise self._payload
+        return self._payload
+
+
+class _RecordingClient:
+    """An httpx.Client stand-in that replays scripted responses."""
+
+    def __init__(self, script: list[_StubResponse]) -> None:
+        self._script = script
+        self.calls: list[dict[str, str]] = []
+
+    def __call__(self, *_args: Any, **_kwargs: Any) -> _RecordingClient:
+        return self
+
+    def __enter__(self) -> _RecordingClient:
+        return self
+
+    def __exit__(self, *_exc: Any) -> None:
+        return None
+
+    def get(self, _url: str, headers: dict[str, str], params: dict[str, str]) -> _StubResponse:
+        self.calls.append(dict(params))
+        return self._script.pop(0)
+
+
+def _fetch_with(script: list[_StubResponse], monkeypatch: pytest.MonkeyPatch, **kwargs: Any):
+    import httpx
+
+    client = _RecordingClient(script)
+    monkeypatch.setattr(httpx, "Client", client)
+    from stock_ai.data.universe import _default_fetcher
+
+    return client, _default_fetcher(None, clock=lambda: dt.date(2026, 8, 3), **kwargs)
+
+
+def test_an_undated_403_is_retried_against_a_delayed_snapshot(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A plan that serves data late refuses today, not the endpoint.
+
+    Giving up on the first 403 reports "not in your plan" for a plan that in
+    fact has the endpoint, which is the difference between paying for an
+    upgrade and passing a date.
+    """
+    listing = {"Code": "72030", "MktCd": "0111", "Name": "T", "Sec33Cd": "3700"}
+    client, fetch = _fetch_with(
+        [
+            _StubResponse(403, {"message": "This API is not available in your subscription."}),
+            _StubResponse(200, {"data": [listing]}),
+        ],
+        monkeypatch,
+    )
+
+    assert fetch() == [listing]
+    # First call undated, second dated 90 days back.
+    assert "date" not in client.calls[0]
+    assert client.calls[1]["date"] == "2026-05-05"
+
+
+def test_a_second_403_surfaces_the_services_own_message(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _, fetch = _fetch_with(
+        [
+            _StubResponse(403, {"message": "first"}),
+            _StubResponse(403, {"message": "endpoint not in plan"}),
+        ],
+        monkeypatch,
+    )
+
+    with pytest.raises(DataError) as excinfo:
+        fetch()
+    # The date is named too: it is what the user would change next.
+    assert "endpoint not in plan" in str(excinfo.value)
+    assert "2026-05-05" in str(excinfo.value)
+
+
+def test_an_explicit_date_is_not_second_guessed(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A user who passed --as-of gets one request and the real answer."""
+    client, fetch = _fetch_with(
+        [_StubResponse(403, {"message": "too recent"})],
+        monkeypatch,
+        as_of=dt.date(2025, 1, 31),
+    )
+
+    with pytest.raises(DataError) as excinfo:
+        fetch()
+    assert client.calls == [{"date": "2025-01-31"}]
+    assert "too recent" in str(excinfo.value)
+
+
+def test_a_non_403_failure_is_not_retried(monkeypatch: pytest.MonkeyPatch) -> None:
+    """500 is the service being unwell; asking for an older date cannot help."""
+    client, fetch = _fetch_with([_StubResponse(500, {"message": "boom"})], monkeypatch)
+
+    with pytest.raises(DataError) as excinfo:
+        fetch()
+    assert len(client.calls) == 1
+    assert "500" in str(excinfo.value)
+
+
+def test_a_body_that_is_not_json_still_produces_a_message(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _, fetch = _fetch_with(
+        [
+            _StubResponse(403, ValueError("not json")),
+            _StubResponse(403, ValueError("not json")),
+        ],
+        monkeypatch,
+    )
+
+    with pytest.raises(DataError) as excinfo:
+        fetch()
+    assert "403" in str(excinfo.value)
+
+
+def test_pagination_carries_the_date_on_every_page(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A dated retry must stay dated, or page two is a different snapshot."""
+    first = {"Code": "72030", "MktCd": "0111", "Sec33Cd": "3700"}
+    second = {"Code": "67580", "MktCd": "0111", "Sec33Cd": "3650"}
+    client, fetch = _fetch_with(
+        [
+            _StubResponse(403, {"message": "delayed"}),
+            _StubResponse(200, {"data": [first], "pagination_key": "p2"}),
+            _StubResponse(200, {"data": [second]}),
+        ],
+        monkeypatch,
+    )
+
+    assert fetch() == [first, second]
+    assert client.calls[2] == {"date": "2026-05-05", "pagination_key": "p2"}
+
+
+# --- naming symbols when the universe endpoint is unavailable ---------------
+
+
+def test_explicit_symbols_bypass_the_universe(database: Database) -> None:
+    """Being unable to *enumerate* a market must not stop you loading one.
+
+    Listings, prices, and statements are separate J-Quants endpoints on separate
+    plan tiers. A 403 on the first says nothing about the other two, so an
+    explicit list has to reach the ingester without a universe request.
+    """
+    from stock_ai.cli import _bulk_symbols
+
+    resolved = _bulk_symbols("prime", "7203, 6758,9984", _NO_SETTINGS, database, None)
+    assert resolved == ["7203", "6758", "9984"]
+
+
+def test_explicit_symbols_accept_spaces_as_separators(database: Database) -> None:
+    from stock_ai.cli import _bulk_symbols
+
+    assert _bulk_symbols("prime", "7203 6758", _NO_SETTINGS, database, None) == ["7203", "6758"]
+
+
+def test_explicit_symbols_honour_the_limit(database: Database) -> None:
+    from stock_ai.cli import _bulk_symbols
+
+    assert _bulk_symbols("prime", "7203,6758,9984", _NO_SETTINGS, database, 2) == ["7203", "6758"]
+
+
+def test_a_symbols_option_with_no_codes_is_rejected(database: Database) -> None:
+    """Silently falling back to the segment would fetch 1,600 names by surprise."""
+    import typer
+
+    from stock_ai.cli import _bulk_symbols
+
+    with pytest.raises(typer.BadParameter):
+        _bulk_symbols("prime", " , , ", _NO_SETTINGS, database, None)
