@@ -589,8 +589,20 @@ def _bulk_symbols(
 
     key = segment.lower()
     if key == "stored":
+        # JP only. Both providers behind BulkIngester are J-Quants, so a US
+        # symbol here spends a request to be told J-Quants has never heard of
+        # it, and then lands in the failure table looking like something worth
+        # investigating. Observed live: AAPL, MSFT, MRVL and IONQ reported as
+        # "No J-Quants statements".
         with database.session() as session:
-            symbols = [symbol for symbol, _market in list_securities(session)]
+            stored = list_securities(session)
+        symbols = [symbol for symbol, market in stored if market.upper() == "JP"]
+        foreign = len(stored) - len(symbols)
+        if foreign:
+            console.print(
+                f"[dim]Skipping {foreign} non-JP symbol(s): this fetches from "
+                "J-Quants. Use 'fundamentals' for US names.[/]"
+            )
     else:
         try:
             chosen = Segment(key)

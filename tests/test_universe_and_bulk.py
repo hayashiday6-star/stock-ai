@@ -816,3 +816,32 @@ def test_a_persistent_rate_limit_stops_the_run_instead_of_burning_it(
     assert report.failed == {}, "a rate limit is not a per-symbol failure"
     # Five attempts on the one symbol, not one attempt on each of twelve.
     assert provider.calls < 12
+
+
+def test_stored_symbols_exclude_non_jp_names(database: Database) -> None:
+    """Bulk fetching is J-Quants only, so a US symbol is a wasted request.
+
+    Observed live: AAPL, MSFT, MRVL and IONQ each spent a request to be told
+    J-Quants has never heard of them, then appeared in the failure table looking
+    like a problem worth chasing.
+    """
+    from stock_ai.cli import _bulk_symbols
+
+    with database.session() as session:
+        get_or_create_security(session, "7203", market="JP")
+        get_or_create_security(session, "6758", market="JP")
+        get_or_create_security(session, "AAPL", market="US")
+        get_or_create_security(session, "MSFT", market="US")
+
+    assert _bulk_symbols("stored", None, _NO_SETTINGS, database, None) == ["6758", "7203"]
+
+
+def test_an_all_jp_database_is_unaffected(database: Database) -> None:
+    """The filter must not quietly drop the market it exists to serve."""
+    from stock_ai.cli import _bulk_symbols
+
+    with database.session() as session:
+        for code in ("1301", "7203", "9984"):
+            get_or_create_security(session, code, market="JP")
+
+    assert _bulk_symbols("stored", None, _NO_SETTINGS, database, None) == ["1301", "7203", "9984"]
