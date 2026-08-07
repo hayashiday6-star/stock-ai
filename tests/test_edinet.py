@@ -293,11 +293,16 @@ def test_a_keyless_empty_day_names_the_missing_key(
     assert "EDINET_API_KEY" in caplog.text
 
 
-def test_the_api_key_never_goes_in_the_query_string(monkeypatch: pytest.MonkeyPatch) -> None:
-    """httpx logs the URL it fetched, so a key in the URL is a key in the logs.
+def test_the_api_key_is_sent_every_way_the_service_might_read_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Header-only produced 401 against the live service; the query form is the
+    published one.
 
-    This project's verification script tells people to paste its output when
-    asking for help, and it did exactly that with a live EDINET key.
+    Sending only headers looked safer - the key stays out of the URL httpx logs
+    - but it broke authentication, and the error text ("invalid subscription
+    key") reads like a wrong key rather than a missing one. The leak it avoided
+    is handled by the log redactor instead.
     """
     import httpx
 
@@ -305,10 +310,47 @@ def test_the_api_key_never_goes_in_the_query_string(monkeypatch: pytest.MonkeyPa
 
     _default_day_fetcher(SecretStr("edb_secret"))(dt.date(2026, 8, 1))
 
-    assert "Subscription-Key" not in _FakeClient.last["params"]
-    assert _FakeClient.last["params"] == {"date": "2026-08-01", "type": "2"}
+    assert _FakeClient.last["params"]["Subscription-Key"] == "edb_secret"
     assert _FakeClient.last["headers"]["Ocp-Apim-Subscription-Key"] == "edb_secret"
-    assert _FakeClient.last["headers"]["Subscription-Key"] == "edb_secret"
+    assert _FakeClient.last["params"]["date"] == "2026-08-01"
+
+
+def test_the_key_in_the_url_is_redacted_from_logs() -> None:
+    """The query parameter is only acceptable because the log never shows it."""
+    from stock_ai.core.logging import redact, register_secret
+
+    key = "edb_live_key_value_1234567890"
+    register_secret(key)
+    line = (
+        "HTTP Request: GET https://api.edinet-fsa.go.jp/api/v2/documents.json"
+        f"?date=2026-08-07&type=2&Subscription-Key={key} 'HTTP/1.1 200 OK'"
+    )
+    cleaned = redact(line)
+    assert key not in cleaned
+    assert "Subscription-Key=<redacted>" in cleaned
+
+
+def test_a_401_says_the_value_is_wrong_not_the_placement(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """With the key sent three ways, "cannot find it" is no longer a candidate."""
+    import logging
+
+    import httpx
+
+    class _Denied(_FakeClient):
+        def get(self, url: str, params: dict[str, str], headers: dict[str, str]) -> _FakeResponse:
+            return _FakeResponse(
+                {"StatusCode": 401, "message": "Access denied due to invalid subscription key."}
+            )
+
+    monkeypatch.setattr(httpx, "Client", _Denied)
+
+    with caplog.at_level(logging.ERROR):
+        assert _default_day_fetcher(SecretStr("k"))(dt.date(2026, 8, 7)) == []
+
+    assert "not where it was put" in caplog.text
+    assert "EDINET_API_KEY" in caplog.text
 
 
 def test_an_empty_day_without_metadata_names_the_keys_it_did_get(

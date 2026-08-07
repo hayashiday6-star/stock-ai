@@ -199,12 +199,22 @@ def _log_empty_day(day: dt.date, payload: Any, has_key: bool) -> None:
         logger.error(
             "EDINET %s rejected the request: StatusCode=%s, message=%s. "
             "The HTTP status was 200, so this is not a network problem - it is "
-            "the API refusing. A 401/403 here means the subscription key was "
-            "not accepted.",
+            "the API refusing.",
             day,
             status,
             message,
         )
+        if str(status) in {"401", "403"}:
+            # The key is now sent three ways, so "cannot find it" is ruled out
+            # and only the value or the subscription is left.
+            logger.error(
+                "The key is sent as a query parameter and in both header forms, "
+                "so this is the value itself, not where it was put. Check that "
+                "EDINET_API_KEY in .env matches the key on your EDINET account "
+                "exactly, and that the subscription is active - a registered but "
+                "unconfirmed account issues a key that never works. Re-enter it "
+                "with: powershell -File scripts/set-key.ps1 EDINET_API_KEY"
+            )
         return
 
     logger.warning(
@@ -225,17 +235,23 @@ def _default_day_fetcher(api_key: SecretStr | None) -> DayFetcher:
         params: dict[str, str] = {"date": day.isoformat(), "type": "2"}
         headers: dict[str, str] = {}
         if api_key is not None:
-            # The key goes in a *header*, never the query string. EDINET v2
-            # documents both forms, but httpx logs the URL it fetched at INFO,
-            # so a key in the query string is a key in the console, in
-            # logs/stock_ai.log, and in the verify-output.txt this project tells
-            # people to paste when asking for help. A header cannot leak that
-            # way. (The log redactor catches it too, but not leaking beats
-            # scrubbing.) Both header spellings are sent because the service sits
-            # behind Azure API Management and the failure mode if the wrong one
-            # is read is HTTP 200 with an empty body - indistinguishable from a
-            # day on which nobody filed anything.
+            # The key is sent as a query parameter *and* in both header
+            # spellings, because only the service knows which one it reads.
+            #
+            # An earlier version sent headers only, to keep the key out of the
+            # URL that httpx logs at INFO. That was the wrong trade. EDINET's
+            # published form is the query parameter, and header-only produced
+            # "401 Access denied due to invalid subscription key" - the standard
+            # Azure APIM wording for a key it cannot find, which reads exactly
+            # like a key that is wrong. Breaking the feature to avoid a leak
+            # that is already handled elsewhere is not a security win.
+            #
+            # The leak is handled: SecretRedactingFilter scrubs both the
+            # ``Subscription-Key=`` parameter shape and the literal key value
+            # (registered from settings) out of every log record, so the URL in
+            # the log reads ``Subscription-Key=<redacted>``.
             secret = api_key.get_secret_value()
+            params["Subscription-Key"] = secret
             headers["Ocp-Apim-Subscription-Key"] = secret
             headers["Subscription-Key"] = secret
 
