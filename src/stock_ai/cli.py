@@ -32,8 +32,10 @@ from stock_ai.ai.query import parse_query, run_query
 from stock_ai.backtest.engine import BacktestEngine
 from stock_ai.backtest.factor_test import (
     FactorTestResult,
+    formation_grid,
     run_factor_test,
     suggest_formation,
+    walk_forward,
 )
 from stock_ai.backtest.report import metrics_frame
 from stock_ai.backtest.strategy import BuyAndHold, Strategy, build_strategy
@@ -740,6 +742,11 @@ def factor_test(
     preset: str = typer.Option("tenbagger", help="Factor set: default | tenbagger."),
     horizon: int = typer.Option(252, help="Trading days held after formation."),
     buckets: int = typer.Option(3, help="Slices to split the ranking into."),
+    walk: bool = typer.Option(
+        False,
+        "--walk-forward",
+        help="Test every feasible formation date and report all of them.",
+    ),
     base: str = typer.Option("USD", help="Base currency for size comparisons."),
     fx_rate: list[str] = typer.Option([], "--fx", help="Pin a rate as CUR=VALUE."),
 ) -> None:
@@ -761,6 +768,11 @@ def factor_test(
 
     database = Database()
     database.create_all()
+
+    if walk:
+        _run_walk_forward(database, WeightedScorer(factors), preset, horizon, buckets)
+        return
+
     try:
         result = run_factor_test(
             database,
@@ -774,6 +786,68 @@ def factor_test(
         raise typer.Exit(code=1) from exc
 
     _render_factor_test(result, preset)
+
+
+def _run_walk_forward(
+    database: Database, scorer: WeightedScorer, preset: str, horizon: int, buckets: int
+) -> None:
+    """Test every feasible formation date and print all of them.
+
+    One significant window is one draw. Reporting every window is what stops a
+    single lucky period from being read as an edge - and what stops the reader
+    from choosing the period after seeing the answers.
+    """
+    dates = formation_grid(database, horizon_days=horizon)
+    if not dates:
+        console.print(
+            "[yellow]No formation date is feasible with the stored data.[/] "
+            f"A {horizon}-bar horizon needs that many trading days of price "
+            "history after the date, and disclosures before it."
+        )
+        raise typer.Exit(code=1)
+
+    console.print(
+        f"Testing [bold]{len(dates)}[/] formation date(s), quarterly, {horizon} bars each."
+    )
+    result = walk_forward(database, scorer, dates, horizon_days=horizon, buckets=buckets)
+    if not result.runs:
+        console.print("[red]No window could be tested.[/]")
+        raise typer.Exit(code=1)
+
+    table = Table(title=f"walk-forward: {preset}, {horizon} bars held")
+    table.add_column("formation", style="cyan")
+    table.add_column("n", justify="right")
+    table.add_column("top", justify="right")
+    table.add_column("universe", justify="right")
+    table.add_column("excess", justify="right")
+    table.add_column("t", justify="right")
+    table.add_column("2σ", justify="center")
+    for run in result.runs:
+        top = run.top
+        t_stat = run.spread_t_stat
+        table.add_row(
+            str(run.formation),
+            str(run.scored),
+            "-" if top is None else f"{top.mean_return:+.2%}",
+            f"{run.universe_return:+.2%}",
+            "-" if run.excess_return is None else f"{run.excess_return:+.2%}",
+            "-" if t_stat is None else f"{t_stat:+.2f}",
+            "[green]yes[/]" if run.is_significant else "[dim]no[/]",
+        )
+    console.print(table)
+
+    median = result.median_t
+    console.print(
+        f"median t = {median:+.2f}" if median is not None else "median t = -",
+        f"| monotonic in {result.monotonic}/{len(result.runs)} windows",
+    )
+    console.print(result.verdict)
+    console.print(
+        "[dim]Windows overlap - two formations a quarter apart share nine months "
+        "of the same forward returns - so these are not independent confirmations. "
+        "Read them as consistency, not as multiplied evidence. Survivorship bias "
+        "is still unhandled in every window.[/]"
+    )
 
 
 def _render_factor_test(result: FactorTestResult, preset: str) -> None:

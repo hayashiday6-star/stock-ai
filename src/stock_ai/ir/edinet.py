@@ -139,6 +139,22 @@ def to_disclosure(symbol: str, record: dict[str, Any]) -> Disclosure:
     )
 
 
+def error_envelope(payload: Any) -> tuple[Any, str] | None:
+    """Return ``(status, message)`` if ``payload`` is an EDINET error body.
+
+    EDINET signals a refused request with **HTTP 200** and a body of
+    ``{"StatusCode": ..., "message": ...}``. Nothing about the transport says
+    anything went wrong, so a reader that only checks the HTTP status treats a
+    rejected key as a day on which nobody filed anything.
+    """
+    if not isinstance(payload, dict):
+        return None
+    for key in ("StatusCode", "statusCode", "statuscode"):
+        if key in payload:
+            return payload[key], str(payload.get("message") or "").strip() or "(no message)"
+    return None
+
+
 def _log_empty_day(day: dt.date, payload: Any, has_key: bool) -> None:
     """Explain why a day came back with no documents, as far as EDINET says."""
     if not has_key:
@@ -173,10 +189,24 @@ def _log_empty_day(day: dt.date, payload: Any, has_key: bool) -> None:
         )
         return
 
-    # No metadata at all is the interesting case: a v2 response always carries
-    # it, so its absence says the body is not the one this adapter was written
-    # against. Naming the keys that *are* there is what turns that into a fix
-    # rather than another round of guessing.
+    envelope = error_envelope(payload)
+    if envelope is not None:
+        status, message = envelope
+        # This is the case that actually happens: HTTP 200 carrying an
+        # application-level error. Logging it at ERROR matters as much as the
+        # text - a rejected request reported at WARNING alongside "Checked 0 new
+        # disclosure(s)" reads like a quiet week.
+        logger.error(
+            "EDINET %s rejected the request: StatusCode=%s, message=%s. "
+            "The HTTP status was 200, so this is not a network problem - it is "
+            "the API refusing. A 401/403 here means the subscription key was "
+            "not accepted.",
+            day,
+            status,
+            message,
+        )
+        return
+
     logger.warning(
         "EDINET %s returned no documents and no 'metadata' block. "
         "Top-level keys were: %s. The response shape has changed, or this is "

@@ -580,3 +580,65 @@ def test_missing_statements_and_late_statements_are_counted_apart() -> None:
     assert advice.universe == 30
     assert advice.coverage <= 20 / 30
     database.dispose()
+
+
+# --- one window is not a walk-forward ---------------------------------------
+
+
+def _wf(t_stats: list[float | None]):
+    """A WalkForwardResult with the given per-window t-statistics."""
+    import datetime as dt
+
+    from stock_ai.backtest.factor_test import BucketResult, FactorTestResult, WalkForwardResult
+
+    # Welch SE for two buckets of n=100 with std=0.5 each, so the spread can be
+    # set to produce exactly the t asked for rather than a multiple of it.
+    std, size = 0.5, 100
+    standard_error = (std**2 / size + std**2 / size) ** 0.5
+
+    runs = []
+    for i, t in enumerate(t_stats):
+        spread = 0.0 if t is None else t * standard_error
+        runs.append(
+            FactorTestResult(
+                formation=dt.date(2024, 1, 1) + dt.timedelta(days=91 * i),
+                horizon_days=252,
+                buckets=[
+                    BucketResult("top", ["a"] * size, spread, spread, 0.5, return_std=std),
+                    BucketResult("bottom", ["b"] * size, 0.0, 0.0, 0.5, return_std=std),
+                ],
+                universe_return=0.0,
+                scored=200,
+            )
+        )
+    return WalkForwardResult(runs=runs)
+
+
+def test_a_single_window_is_never_reported_as_a_pattern() -> None:
+    """ "All 1 windows passed" is the overstatement this tool exists to prevent."""
+    verdict = _wf([5.0]).verdict
+
+    assert "single draw" in verdict
+    assert "All 1" not in verdict
+
+
+def test_every_window_failing_is_stated_plainly() -> None:
+    result = _wf([0.5, -0.3, 1.1, 0.9])
+
+    assert result.significant == 0
+    assert "not demonstrated" in result.verdict
+
+
+def test_a_mixed_record_is_called_a_regime_bet() -> None:
+    """A score that works sometimes is the most dangerous kind to round up."""
+    result = _wf([5.0, 0.2, 4.0, -0.5])
+
+    assert result.significant == 2
+    assert "regime bet" in result.verdict
+
+
+def test_the_median_t_ignores_windows_without_one() -> None:
+    from stock_ai.backtest.factor_test import WalkForwardResult
+
+    assert WalkForwardResult(runs=[]).median_t is None
+    assert _wf([1.0, 3.0]).median_t == pytest.approx(2.0)

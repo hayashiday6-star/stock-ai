@@ -346,3 +346,47 @@ def test_a_day_with_a_zero_count_is_not_an_alarm(
         assert _default_day_fetcher(SecretStr("k"))(dt.date(2026, 8, 1)) == []
 
     assert caplog.text == ""
+
+
+def test_an_error_envelope_is_recognised() -> None:
+    """EDINET refuses with HTTP 200 and {"StatusCode": ..., "message": ...}.
+
+    Observed live: three days in a row returned exactly this, and because the
+    HTTP status was 200 the monitor reported "Checked 0 new disclosure(s)" -
+    a rejected request presented as a quiet week.
+    """
+    from stock_ai.ir.edinet import error_envelope
+
+    assert error_envelope({"StatusCode": 401, "message": "Unauthorized"}) == (401, "Unauthorized")
+    assert error_envelope({"statusCode": 404, "message": "Not Found"}) == (404, "Not Found")
+    assert error_envelope({"StatusCode": 500}) == (500, "(no message)")
+
+
+def test_a_normal_payload_is_not_an_error_envelope() -> None:
+    from stock_ai.ir.edinet import error_envelope
+
+    assert error_envelope({"metadata": {"status": "200"}, "results": []}) is None
+    assert error_envelope([]) is None
+    assert error_envelope(None) is None
+
+
+def test_a_rejected_day_is_logged_at_error_with_the_reason(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """WARNING alongside "0 disclosures" reads as normal; this is not normal."""
+    import logging
+
+    import httpx
+
+    class _Rejected(_FakeClient):
+        def get(self, url: str, params: dict[str, str], headers: dict[str, str]) -> _FakeResponse:
+            return _FakeResponse({"StatusCode": 401, "message": "Access denied"})
+
+    monkeypatch.setattr(httpx, "Client", _Rejected)
+
+    with caplog.at_level(logging.WARNING):
+        assert _default_day_fetcher(SecretStr("k"))(dt.date(2026, 8, 7)) == []
+
+    assert any(record.levelno >= logging.ERROR for record in caplog.records)
+    assert "Access denied" in caplog.text
+    assert "401" in caplog.text

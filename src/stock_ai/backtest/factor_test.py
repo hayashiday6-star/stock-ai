@@ -37,6 +37,7 @@ from __future__ import annotations
 
 import datetime as dt
 import math
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 
 import pandas as pd
@@ -494,3 +495,135 @@ def suggest_formation(
         with_statements=len(first_disclosures),
         universe=universe,
     )
+
+
+@dataclass(frozen=True)
+class WalkForwardResult:
+    """The same score tested at several formation dates.
+
+    One significant t-statistic is one draw. A factor that only works in the
+    window it was measured in is indistinguishable from one that happened to
+    suit a regime, and the only way to tell is to look at every window rather
+    than the best one.
+    """
+
+    runs: list[FactorTestResult]
+
+    @property
+    def significant(self) -> int:
+        """How many windows cleared the two-sigma bar."""
+        return sum(1 for run in self.runs if run.is_significant)
+
+    @property
+    def positive(self) -> int:
+        """How many windows had the top bucket ahead of the universe."""
+        return sum(1 for run in self.runs if (run.excess_return or 0.0) > 0)
+
+    @property
+    def monotonic(self) -> int:
+        """How many windows showed returns decaying across every bucket."""
+        return sum(1 for run in self.runs if run.is_monotonic)
+
+    @property
+    def median_t(self) -> float | None:
+        """Median top-minus-bottom t across windows, or ``None`` if none has one."""
+        values = sorted(run.spread_t_stat for run in self.runs if run.spread_t_stat is not None)
+        if not values:
+            return None
+        middle = len(values) // 2
+        if len(values) % 2:
+            return values[middle]
+        return (values[middle - 1] + values[middle]) / 2
+
+    @property
+    def verdict(self) -> str:
+        """A one-line reading that does not let a single window carry the claim."""
+        if not self.runs:
+            return "No window could be tested."
+        total = len(self.runs)
+        if total == 1:
+            # One window is not a walk-forward. Saying "all windows passed"
+            # about a single draw is exactly the overstatement this whole
+            # function exists to prevent.
+            only = self.runs[0]
+            state = "cleared" if only.is_significant else "did not clear"
+            return (
+                f"Only one window was testable, and it {state} 2 sigma. "
+                "That is a single draw, not a pattern - the same result arises "
+                "from a factor that suits one period. More history is needed "
+                "before this counts as evidence either way."
+            )
+        if self.significant == 0:
+            return f"No window of {total} cleared 2 sigma. The score is not demonstrated."
+        if self.significant == total and self.positive == total:
+            return (
+                f"All {total} windows cleared 2 sigma with a positive spread. "
+                "That is as strong as this test gets - which is still one market, "
+                "one horizon, and survivorship-biased."
+            )
+        return (
+            f"{self.significant} of {total} windows cleared 2 sigma "
+            f"({self.positive} had a positive spread). A score that works only "
+            "sometimes is a regime bet, not an edge."
+        )
+
+
+def walk_forward(
+    database: Database,
+    scorer: WeightedScorer,
+    formations: Sequence[dt.date],
+    horizon_days: int = TRADING_DAYS_PER_YEAR,
+    buckets: int = 3,
+) -> WalkForwardResult:
+    """Run the same factor test at each formation date and keep every result.
+
+    Every window is reported, including the bad ones. That is the whole point:
+    picking the formation date that produced the best spread manufactures the
+    edge it appears to find, and the defence against doing it accidentally is a
+    function that cannot return a single number.
+
+    Overlapping windows are **not independent** - two formations three months
+    apart share nine months of the same forward returns - so the count of
+    significant windows is not a count of independent confirmations. Read it as
+    consistency, not as multiplied evidence.
+    """
+    runs: list[FactorTestResult] = []
+    unusable: list[dt.date] = []
+    for formation in formations:
+        try:
+            runs.append(run_factor_test(database, scorer, formation, horizon_days, buckets))
+        except BacktestError:
+            # Early formations routinely have nothing scoreable yet. One line
+            # about all of them beats one line each.
+            unusable.append(formation)
+    if unusable:
+        logger.info(
+            "Walk-forward: %d of %d formation date(s) had nothing scoreable "
+            "(earliest %s, latest %s).",
+            len(unusable),
+            len(formations),
+            unusable[0],
+            unusable[-1],
+        )
+    return WalkForwardResult(runs=runs)
+
+
+def formation_grid(
+    database: Database, horizon_days: int = TRADING_DAYS_PER_YEAR, step_days: int = 91
+) -> list[dt.date]:
+    """Return evenly spaced formation dates the stored data can support.
+
+    Spans from the first date with disclosures to the last that leaves a full
+    horizon, so the grid is a property of the data rather than a choice about
+    the answer.
+    """
+    advice = suggest_formation(database, horizon_days)
+    if advice.best is None or advice.first_disclosure is None or advice.latest_feasible is None:
+        return []
+
+    dates: list[dt.date] = []
+    candidate = advice.first_disclosure
+    while candidate <= advice.latest_feasible:
+        dates.append(candidate)
+        candidate += dt.timedelta(days=step_days)
+    return dates
