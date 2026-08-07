@@ -145,6 +145,23 @@ def tenbagger_weighted_factors(
     good quarter, with size and reinvestment as supporting evidence. Momentum is
     excluded deliberately: it measures what the market has already paid for.
 
+    .. warning::
+       **Tested on TSE (~1,400 names, 2022-2025) and no edge was found.**
+       Walk-forward over 13 quarterly formation dates with a 252-bar hold:
+       1 window cleared two sigma, median ``t = +0.21``, returns decayed across
+       buckets in 5 of 13. Excess returns sat within a point of zero in every
+       window but one.
+
+       The one significant window (2024-06, ``t = +2.62``) was also the first
+       date tested in isolation, where it read ``t = +2.78`` and looked like
+       evidence. It was one draw out of thirteen. That is the entire reason
+       :func:`~stock_ai.backtest.factor_test.walk_forward` exists.
+
+       Two caveats that do not rescue it but bound the claim: a 252-bar hold is
+       a short test for a thesis about multi-year compounding, and four years of
+       history is a small sample. Neither is an argument for using the score -
+       "not yet disproven over a longer horizon" is not an edge.
+
     Args:
         fx: Converter used to compare market caps across markets.
         ceiling: Market cap, in the converter's base currency, scoring zero on

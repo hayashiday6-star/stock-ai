@@ -139,3 +139,45 @@ def test_a_broken_format_string_still_gets_through() -> None:
         exc_info=None,
     )
     assert SecretRedactingFilter().filter(record) is True
+
+
+# --- a fingerprint that debugs auth without exposing the key ----------------
+
+
+def test_the_secret_summary_never_contains_the_secret() -> None:
+    """The whole point is that this line is safe to paste into a bug report."""
+    from pydantic import SecretStr
+
+    from stock_ai.cli import _secret_summary
+
+    key = "edb_8cb0271a2b74ec16409ad03342646bcc"
+    summary = _secret_summary(SecretStr(key))
+
+    assert key not in summary
+    assert "36 chars" in summary
+    assert "fingerprint" in summary
+
+
+def test_two_different_keys_fingerprint_differently() -> None:
+    """ "set" cannot tell a re-issued key from the old one still in .env."""
+    from pydantic import SecretStr
+
+    from stock_ai.cli import _secret_summary
+
+    assert _secret_summary(SecretStr("old-key-value-aaaa")) != _secret_summary(
+        SecretStr("new-key-value-bbbb")
+    )
+
+
+def test_the_same_key_fingerprints_the_same() -> None:
+    from pydantic import SecretStr
+
+    from stock_ai.cli import _secret_summary
+
+    assert _secret_summary(SecretStr("stable")) == _secret_summary(SecretStr("stable"))
+
+
+def test_an_unset_secret_has_no_fingerprint() -> None:
+    from stock_ai.cli import _secret_summary
+
+    assert "fingerprint" not in _secret_summary(None)

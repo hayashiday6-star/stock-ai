@@ -8,11 +8,13 @@ from __future__ import annotations
 
 import contextlib
 import datetime as dt
+import hashlib
 import sys
 from pathlib import Path
 
 import pandas as pd
 import typer
+from pydantic import SecretStr
 from rich.console import Console
 from rich.progress import (
     BarColumn,
@@ -134,9 +136,14 @@ def info() -> None:
     table.add_row("version", __version__)
     table.add_row("env", settings.env)
     table.add_row("log_level", settings.log_level)
-    for label, is_set in _secret_status(settings):
-        table.add_row(label, "[green]set[/]" if is_set else "[dim]-[/]")
+    for label, value in _secret_status(settings):
+        table.add_row(label, _secret_summary(value))
     console.print(table)
+    console.print(
+        "[dim]The fingerprint is a hash prefix, not the key. It answers one "
+        "question the word 'set' cannot: whether the value in .env actually "
+        "changed after you re-issued a key.[/]"
+    )
 
 
 @app.command()
@@ -890,6 +897,14 @@ def _render_factor_test(result: FactorTestResult, preset: str) -> None:
         )
     elif result.is_significant:
         console.print(f"Top-bottom spread t = [green]{t_stat:+.2f}[/] (clears 2σ).")
+        # A single window clearing the bar is where a score gets believed on
+        # one observation. It happened here: this preset read t = +2.78 at one
+        # date and +0.21 median across thirteen.
+        console.print(
+            "[yellow]One window is one draw.[/] Re-run with --walk-forward "
+            "before treating this as an edge; a score that works in a single "
+            "quarter is a regime bet."
+        )
     else:
         console.print(
             f"[yellow]Top-bottom spread t = {t_stat:+.2f}, inside 2σ[/] - "
@@ -1551,17 +1566,32 @@ def _render_results(results: list[IngestResult]) -> None:
     console.print(table)
 
 
-def _secret_status(settings: Settings) -> list[tuple[str, bool]]:
-    """Return ``(label, is_set)`` pairs for each secret without exposing values."""
+def _secret_summary(value: SecretStr | None) -> str:
+    """Describe a secret without revealing it: length plus a hash prefix.
+
+    "set" is not enough to debug an authentication failure. It cannot tell a
+    freshly pasted key from the old one still sitting in .env, and it cannot
+    tell a full key from one truncated by a bad copy. Length and a one-way
+    fingerprint answer both while staying safe to paste into a bug report.
+    """
+    if value is None:
+        return "[dim]-[/]"
+    secret = value.get_secret_value()
+    digest = hashlib.sha256(secret.encode("utf-8")).hexdigest()[:8]
+    return f"[green]set[/] [dim]({len(secret)} chars, fingerprint {digest})[/]"
+
+
+def _secret_status(settings: Settings) -> list[tuple[str, SecretStr | None]]:
+    """Return ``(label, value)`` pairs for each secret. Values are never printed."""
     return [
-        ("jquants_api_key", settings.jquants_api_key is not None),
-        ("edinet_api_key", settings.edinet_api_key is not None),
-        ("anthropic_api_key", settings.anthropic_api_key is not None),
-        ("openai_api_key", settings.openai_api_key is not None),
-        ("gemini_api_key", settings.gemini_api_key is not None),
-        ("discord_webhook_url", settings.discord_webhook_url is not None),
-        ("line_channel_access_token", settings.line_channel_access_token is not None),
-        ("telegram_bot_token", settings.telegram_bot_token is not None),
+        ("jquants_api_key", settings.jquants_api_key),
+        ("edinet_api_key", settings.edinet_api_key),
+        ("anthropic_api_key", settings.anthropic_api_key),
+        ("openai_api_key", settings.openai_api_key),
+        ("gemini_api_key", settings.gemini_api_key),
+        ("discord_webhook_url", settings.discord_webhook_url),
+        ("line_channel_access_token", settings.line_channel_access_token),
+        ("telegram_bot_token", settings.telegram_bot_token),
     ]
 
 
