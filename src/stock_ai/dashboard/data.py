@@ -48,7 +48,7 @@ from stock_ai.portfolio.ranking import rank_securities
 from stock_ai.portfolio.scoring import WeightedScorer, default_weighted_factors
 from stock_ai.screening.base import Condition, ScreeningContext
 from stock_ai.screening.engine import ScreeningEngine
-from stock_ai.screening.report import build_report, collect_fundamentals
+from stock_ai.screening.report import build_report, collect_fundamentals, company_names
 
 
 def available_symbols(database: Database) -> list[str]:
@@ -159,7 +159,9 @@ def screen_table(
             companies in it.
     """
     passing = ScreeningEngine(database, load_statements=load_statements).screen(condition)
-    return build_report(collect_fundamentals(database, passing))
+    return build_report(
+        collect_fundamentals(database, passing), names=company_names(database, passing)
+    )
 
 
 def load_prices(database: Database, symbol: str) -> pd.DataFrame:

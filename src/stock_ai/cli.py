@@ -101,6 +101,7 @@ from stock_ai.screening.report import (
     SUPPORTED_FORMATS,
     build_report,
     collect_fundamentals,
+    company_names,
     write_report,
 )
 
@@ -684,7 +685,9 @@ def screen(
     database = Database()
     database.create_all()
     passing = ScreeningEngine(database, load_statements=needs_statements).screen(condition)
-    report = build_report(collect_fundamentals(database, passing))
+    report = build_report(
+        collect_fundamentals(database, passing), names=company_names(database, passing)
+    )
 
     console.print(f"Matched [bold]{len(passing)}[/] symbols for [cyan]{condition}[/]")
     if passing and report.empty:

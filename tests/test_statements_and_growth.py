@@ -433,3 +433,119 @@ def test_a_marked_payload_logs_nothing(caplog: pytest.LogCaptureFixture) -> None
         normalize_statements("7203", records)
 
     assert "no period marker" not in caplog.text
+
+
+def test_per_uses_the_annual_eps_not_the_latest_quarter() -> None:
+    """EPS is cumulative from the start of the year, so the newest is partial.
+
+    Dividing a price by a one-quarter EPS quadruples the PER, and every screen
+    with a PER ceiling then rejects companies that are in fact cheap.
+    """
+    import datetime as dt
+
+    from stock_ai.data.jquants_fundamentals import normalize_statement
+
+    records = [
+        {
+            "CurPerType": "FY",
+            "FYEnd": "2025-03-31",
+            "DiscDate": "2025-05-12",
+            "Sales": 1030,
+            "NP": 103,
+            "EPS": 100.0,
+            "BPS": 800.0,
+            "Eq": 8000,
+        },
+        {
+            "CurPerType": "1Q",
+            "FYEnd": "2026-03-31",
+            "DiscDate": "2025-08-05",
+            "Sales": 270,
+            "NP": 27,
+            "EPS": 26.0,
+            "BPS": 820.0,
+            "Eq": 8200,
+        },
+    ]
+    snapshot = normalize_statement("7203", records, dt.date(2026, 8, 8), price=2000.0)
+
+    assert snapshot.per == pytest.approx(20.0)  # not 2000 / 26 = 76.9
+    assert snapshot.revenue == 1030  # the full year, not the quarter
+    assert snapshot.net_income == 103
+
+
+def test_balance_sheet_figures_come_from_the_freshest_disclosure() -> None:
+    """Equity and BPS are point-in-time, so the newest quarter is the best one."""
+    import datetime as dt
+
+    from stock_ai.data.jquants_fundamentals import normalize_statement
+
+    records = [
+        {
+            "CurPerType": "FY",
+            "DiscDate": "2025-05-12",
+            "FYEnd": "2025-03-31",
+            "EPS": 100.0,
+            "NP": 103,
+            "BPS": 800.0,
+            "Eq": 8000,
+        },
+        {
+            "CurPerType": "1Q",
+            "DiscDate": "2025-08-05",
+            "FYEnd": "2026-03-31",
+            "EPS": 26.0,
+            "NP": 27,
+            "BPS": 820.0,
+            "Eq": 8200,
+        },
+    ]
+    snapshot = normalize_statement("7203", records, dt.date(2026, 8, 8), price=2000.0)
+
+    assert snapshot.pbr == pytest.approx(2000.0 / 820.0)
+
+
+def test_no_annual_disclosure_leaves_earnings_ratios_unset() -> None:
+    """A recent listing has no full year yet; a quarter must not stand in for one."""
+    import datetime as dt
+
+    from stock_ai.data.jquants_fundamentals import normalize_statement
+
+    records = [
+        {
+            "CurPerType": "1Q",
+            "DiscDate": "2025-08-05",
+            "FYEnd": "2026-03-31",
+            "EPS": 26.0,
+            "NP": 27,
+            "Sales": 270,
+            "BPS": 820.0,
+            "Eq": 8200,
+        },
+    ]
+    snapshot = normalize_statement("9999", records, dt.date(2026, 8, 8), price=2000.0)
+
+    assert snapshot.per is None
+    assert snapshot.roe is None
+    assert snapshot.revenue is None
+    # The balance sheet is still usable, so PBR survives.
+    assert snapshot.pbr == pytest.approx(2000.0 / 820.0)
+
+
+def test_an_unmarked_payload_still_produces_ratios() -> None:
+    """V1-shaped data has no period marker and was never quarterly.
+
+    Refusing to compute anything there would trade a wrong PER for no PER at
+    all, on payloads that do not have the problem.
+    """
+    import datetime as dt
+
+    from stock_ai.data.jquants_fundamentals import normalize_statement
+
+    records = [
+        {"DisclosedDate": "2024-05-10", "NetSales": 1000, "Profit": 100, "EPS": 100.0},
+    ]
+    snapshot = normalize_statement("7203", records, dt.date(2026, 8, 8), price=2000.0)
+
+    assert snapshot.per == pytest.approx(20.0)
+    assert snapshot.revenue == 1000

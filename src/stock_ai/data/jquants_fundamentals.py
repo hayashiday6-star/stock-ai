@@ -68,6 +68,24 @@ def _first(record: dict[str, Any], *keys: str) -> float | None:
     return None
 
 
+def _latest_annual(records: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """Return the newest record covering a full fiscal year, if there is one.
+
+    When **no** record carries a period marker the payload cannot be split, so
+    the newest is treated as annual - the documented fallback, and what the V1
+    shape needs. Refusing to compute anything there would trade a wrong PER for
+    no PER at all, on payloads that were never quarterly to begin with.
+
+    Once *any* record is marked, the markers are trusted and only ``FY`` rows
+    qualify: a mixed payload is exactly the case where a quarter would otherwise
+    masquerade as a year.
+    """
+    if not any(_has_period_marker(record) for record in records):
+        return _latest(records) if records else None
+    annual = [record for record in records if _period_of(record) is FiscalPeriod.FY]
+    return _latest(annual) if annual else None
+
+
 def normalize_statement(
     symbol: str,
     records: list[dict[str, Any]],
@@ -76,9 +94,20 @@ def normalize_statement(
 ) -> Fundamentals:
     """Build a :class:`Fundamentals` snapshot from ``fins/summary`` records.
 
+    Flow figures (sales, profit, EPS) are taken from the most recent **annual**
+    disclosure; balance-sheet figures (equity, BPS, shares) from the most recent
+    disclosure of any period.
+
+    That split is the whole point. ``Sales``, ``NP`` and ``EPS`` are cumulative
+    from the start of the fiscal year, so the newest disclosure is usually a
+    quarter holding three or six months. Dividing a price by a half-year EPS
+    doubles the PER, and every screen with a PER ceiling then rejects companies
+    that are in fact cheap. Equity and BPS are point-in-time, so for those the
+    freshest disclosure is simply the best one.
+
     Args:
         symbol: The security code.
-        records: J-Quants summary records (newest disclosure wins).
+        records: J-Quants summary records.
         as_of: Snapshot date.
         price: Current share price; enables PER, PBR, dividend yield, market cap.
 
@@ -92,10 +121,16 @@ def normalize_statement(
         raise DataError(f"No J-Quants statements for {symbol!r}.")
 
     latest = _latest(records)
-    revenue = _first(latest, "Sales", "NetSales")
-    net_income = _first(latest, "NP", "Profit")
+    # No annual disclosure yet (a recent listing) means no trustworthy earnings
+    # figure. Reporting a quarter as if it were a year would be worse than
+    # reporting nothing, so the earnings-based ratios stay None.
+    annual = _latest_annual(records)
+
+    revenue = _first(annual, "Sales", "NetSales") if annual else None
+    net_income = _first(annual, "NP", "Profit") if annual else None
+    eps = _first(annual, "EPS") if annual else None
+
     equity = _first(latest, "Eq", "Equity")
-    eps = _first(latest, "EPS")
     bps = _first(latest, "BPS")
     dividend = _first(latest, "DivAnn")
     shares = _first(latest, "ShOutFY")
@@ -105,6 +140,14 @@ def normalize_statement(
     pbr = price / bps if (price is not None and bps) else None
     dividend_yield = dividend / price if (price and dividend is not None) else None
     market_cap = price * shares if (price is not None and shares) else None
+
+    if annual is None:
+        logger.info(
+            "%s has no annual disclosure in the fetched window; PER, ROE, "
+            "revenue and net income are left unset rather than filled from a "
+            "part-year figure.",
+            symbol,
+        )
 
     return Fundamentals(
         symbol=symbol,

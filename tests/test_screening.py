@@ -104,3 +104,38 @@ def test_engine_excludes_symbols_without_fundamentals(db: Database) -> None:
     _store(db, "AAPL", roe=1.4)
     passing = ScreeningEngine(db).screen(MinROE(0.5), symbols=["AAPL", "UNKNOWN"])
     assert passing == ["AAPL"]
+
+
+def test_the_report_can_carry_company_names() -> None:
+    """A four-digit code is not a company to anyone reading the output.
+
+    The one judgement a screen cannot make - "is this list plausible?" - needs
+    the name to be made at all.
+    """
+    import datetime as dt
+
+    from stock_ai.data.types import Fundamentals
+    from stock_ai.screening.report import build_report
+
+    items = [
+        Fundamentals(symbol="7203", as_of=dt.date(2026, 8, 8), per=10.0),
+        Fundamentals(symbol="6758", as_of=dt.date(2026, 8, 8), per=12.0),
+    ]
+    frame = build_report(items, names={"7203": "トヨタ自動車"})
+
+    assert list(frame.columns)[:3] == ["symbol", "name", "as_of"]
+    assert frame.loc[frame["symbol"] == "7203", "name"].iloc[0] == "トヨタ自動車"
+    # A missing name must not drop the row or print "None".
+    assert frame.loc[frame["symbol"] == "6758", "name"].iloc[0] == ""
+
+
+def test_the_report_without_names_is_unchanged() -> None:
+    """Callers that never asked for names must not gain an empty column."""
+    import datetime as dt
+
+    from stock_ai.data.types import Fundamentals
+    from stock_ai.screening.report import build_report
+
+    frame = build_report([Fundamentals(symbol="7203", as_of=dt.date(2026, 8, 8))])
+
+    assert "name" not in frame.columns
