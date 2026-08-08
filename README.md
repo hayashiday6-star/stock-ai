@@ -43,7 +43,13 @@ project folder itself, so it does not matter where Windows opens:
 | `3-データ取得.bat` | Load a 20-symbol trial, so a problem shows up cheaply |
 | `5-分析.bat` | Fill any gaps, screen, then test whether the score holds up |
 | `ダッシュボード起動.bat` | Open the dashboard in a browser |
+| `ダッシュボード起動(スマホ).bat` | Same, reachable from a phone on the same Wi-Fi |
 | `PowerShellを開く.bat` | A terminal already in this folder, for one-off commands |
+
+The phone launcher is separate on purpose. The dashboard has **no login**:
+serving it to the network means anyone on that network can read the database,
+start data fetches, and spend whatever an AI key is attached to. Home Wi-Fi,
+not a cafe.
 
 That last one exists because a new PowerShell window starts in
 `C:\WINDOWS\system32`, where `uv` and `git` cannot see the project and every
