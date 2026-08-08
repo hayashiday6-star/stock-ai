@@ -187,3 +187,76 @@ def test_stored_counts_on_an_empty_database() -> None:
         "with_fundamentals": 0,
     }
     database.dispose()
+
+
+def test_the_growth_screen_needs_the_statement_series_attached() -> None:
+    """Without it the growth criteria pass nothing, silently.
+
+    On screen "no growing companies matched" and "the series was never loaded"
+    are the same empty table, so the flag has to follow the criteria.
+    """
+    import datetime as dt
+
+    from stock_ai.dashboard.data import screen_table
+    from stock_ai.data.types import FinancialReport, Fundamentals
+    from stock_ai.database.engine import Database
+    from stock_ai.database.repository import (
+        FinancialStatementRepository,
+        FundamentalsRepository,
+        get_or_create_security,
+    )
+    from stock_ai.screening.base import All
+    from stock_ai.screening.conditions import MaxPER, MinProfitGrowth, MinRevenueGrowth
+
+    database = Database("sqlite:///:memory:")
+    database.create_all()
+    with database.session() as session:
+        for symbol, rate in (("GROWER", 1.30), ("FLAT", 1.00)):
+            get_or_create_security(session, symbol, market="JP")
+            FundamentalsRepository(session).upsert_fundamentals(
+                Fundamentals(symbol=symbol, as_of=dt.date(2026, 8, 7), per=12.0), market="JP"
+            )
+            FinancialStatementRepository(session).upsert_reports(
+                symbol,
+                [
+                    FinancialReport(
+                        symbol=symbol,
+                        fiscal_year=2023 + k,
+                        disclosed_on=dt.date(2023 + k, 5, 10),
+                        revenue=1e10 * rate**k,
+                        net_income=5e8 * rate**k,
+                        equity=8e9,
+                        eps=100.0,
+                    )
+                    for k in range(3)
+                ],
+                market="JP",
+            )
+
+    growth = All(MaxPER(20.0), MinRevenueGrowth(0.1, years=1), MinProfitGrowth(0.1, years=1))
+
+    with_series = screen_table(database, growth, load_statements=True)
+    assert with_series["symbol"].tolist() == ["GROWER"]
+
+    # The old behaviour, kept as a test so the regression is visible if it returns.
+    assert screen_table(database, growth, load_statements=False).empty
+
+    # A valuation-only screen must not pay for the series it does not read.
+    assert sorted(screen_table(database, MaxPER(20.0))["symbol"].tolist()) == ["FLAT", "GROWER"]
+    database.dispose()
+
+
+def test_the_condition_builder_ands_only_the_enabled_parts() -> None:
+    from stock_ai.dashboard.app import _build_condition
+    from stock_ai.screening.conditions import MaxPER, MinROE
+
+    assert _build_condition([]) is None
+    assert _build_condition([(False, MaxPER(20.0))]) is None
+
+    single = _build_condition([(True, MaxPER(20.0)), (False, MinROE(0.1))])
+    assert "PER" in str(single)
+    assert "ROE" not in str(single)
+
+    both = _build_condition([(True, MaxPER(20.0)), (True, MinROE(0.1))])
+    assert "PER" in str(both)
+    assert "ROE" in str(both)

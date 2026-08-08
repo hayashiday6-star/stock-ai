@@ -145,9 +145,20 @@ def results_frame(results: list[IngestResult]) -> pd.DataFrame:
     )
 
 
-def screen_table(database: Database, condition: Condition) -> pd.DataFrame:
-    """Return the fundamentals report for symbols passing ``condition``."""
-    passing = ScreeningEngine(database).screen(condition)
+def screen_table(
+    database: Database, condition: Condition, load_statements: bool = False
+) -> pd.DataFrame:
+    """Return the fundamentals report for symbols passing ``condition``.
+
+    Args:
+        database: Source of fundamentals and, optionally, the statement series.
+        condition: The screen to apply.
+        load_statements: Required by the growth and dividend-streak conditions.
+            Without it they see an empty series and correctly pass nothing -
+            which on screen is indistinguishable from a market with no growing
+            companies in it.
+    """
+    passing = ScreeningEngine(database, load_statements=load_statements).screen(condition)
     return build_report(collect_fundamentals(database, passing))
 
 

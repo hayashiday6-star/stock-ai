@@ -31,9 +31,14 @@ from stock_ai.database.engine import Database
 from stock_ai.notification.factory import get_notifier
 from stock_ai.screening.base import All, Condition
 from stock_ai.screening.conditions import (
+    MaxPayoutRatio,
     MaxPBR,
     MaxPER,
+    MinConsecutiveDividendIncreases,
+    MinDividendGrowth,
     MinDividendYield,
+    MinProfitGrowth,
+    MinRevenueGrowth,
     MinROE,
 )
 
@@ -157,25 +162,14 @@ def _page_ranking(database: Database) -> None:
         st.bar_chart(table.set_index("symbol")["score"])
 
 
-def _build_condition(
-    use_roe: bool,
-    roe: float,
-    use_per: bool,
-    per: float,
-    use_pbr: bool,
-    pbr: float,
-    use_div: bool,
-    div: float,
-) -> Condition | None:
-    conditions: list[Condition] = []
-    if use_roe:
-        conditions.append(MinROE(roe))
-    if use_per:
-        conditions.append(MaxPER(per))
-    if use_pbr:
-        conditions.append(MaxPBR(pbr))
-    if use_div:
-        conditions.append(MinDividendYield(div))
+def _build_condition(parts: list[tuple[bool, Condition]]) -> Condition | None:
+    """Combine the enabled conditions with AND, or ``None`` if none are on.
+
+    Takes pairs rather than a parameter per control: the screen has grown from
+    four criteria to nine, and a positional signature that long is where the
+    wrong threshold gets passed to the wrong condition.
+    """
+    conditions = [condition for enabled, condition in parts if enabled]
     if not conditions:
         return None
     return conditions[0] if len(conditions) == 1 else All(*conditions)
@@ -185,6 +179,7 @@ def _page_screen(database: Database) -> None:
     st.header("🔍 スクリーニング")
     st.caption("条件を有効にして、合致する銘柄を絞り込みます（すべて AND 条件）。")
 
+    st.subheader("割安さ（バリュエーション）")
     col1, col2 = st.columns(2)
     with col1:
         use_roe = st.checkbox("ROE 下限", value=True)
@@ -197,14 +192,65 @@ def _page_screen(database: Database) -> None:
         use_div = st.checkbox("配当利回り 下限", value=False)
         div = st.number_input("配当利回り >=", value=0.02, step=0.01, format="%.2f")
 
+    st.subheader("成長性・配当の継続性")
+    st.caption(
+        "これらは保存済みの財務時系列（statements）を読みます。"
+        "取得していない銘柄は、条件を満たさないものとして除外されます。"
+    )
+    years = st.slider("成長率を何期分さかのぼって比較するか", 1, 5, 1)
+    col3, col4 = st.columns(2)
+    with col3:
+        use_rev = st.checkbox("増収率 下限", value=False)
+        rev = st.number_input("増収率 >=", value=0.10, step=0.05, format="%.2f")
+        use_profit = st.checkbox("増益率 下限", value=False)
+        profit = st.number_input("増益率 >=", value=0.10, step=0.05, format="%.2f")
+        use_payout = st.checkbox("配当性向 上限", value=False)
+        payout = st.number_input("配当性向 <=", value=0.60, step=0.05, format="%.2f")
+    with col4:
+        use_divgrow = st.checkbox("増配率 下限", value=False)
+        divgrow = st.number_input(
+            "増配率 >=",
+            value=0.0,
+            step=0.05,
+            format="%.2f",
+            help="0 より大きくすると「実際に増配した」銘柄のみになります。",
+        )
+        use_streak = st.checkbox("連続増配年数 下限", value=False)
+        streak = st.number_input("連続増配 >= (年)", value=3, step=1, min_value=1)
+
+    growth_parts = [
+        (use_rev, MinRevenueGrowth(rev, years=years)),
+        (use_profit, MinProfitGrowth(profit, years=years)),
+        (use_divgrow, MinDividendGrowth(divgrow, years=years)),
+        (use_streak, MinConsecutiveDividendIncreases(int(streak))),
+        (use_payout, MaxPayoutRatio(payout)),
+    ]
+    needs_statements = any(enabled for enabled, _ in growth_parts)
+
     if st.button("🔎 スクリーニング実行", type="primary"):
-        condition = _build_condition(use_roe, roe, use_per, per, use_pbr, pbr, use_div, div)
+        condition = _build_condition(
+            [
+                (use_roe, MinROE(roe)),
+                (use_per, MaxPER(per)),
+                (use_pbr, MaxPBR(pbr)),
+                (use_div, MinDividendYield(div)),
+                *growth_parts,
+            ]
+        )
         if condition is None:
             st.warning("条件を1つ以上有効にしてください。")
             return
         st.caption(f"条件: {condition}")
-        report = data.screen_table(database, condition)
+        # The statement series is only loaded when something reads it: attaching
+        # it costs a query per symbol, and at 1,500 symbols that is the
+        # difference between an instant screen and a slow one.
+        report = data.screen_table(database, condition, load_statements=needs_statements)
         st.success(f"{len(report)} 銘柄が合致しました。")
+        if report.empty:
+            st.info(
+                "0 件は答えのひとつです（条件が厳しすぎるだけかもしれません）。"
+                "条件を1つずつ外して、どれが効いているか確かめてください。"
+            )
         st.dataframe(report, width="stretch")
         if not report.empty:
             st.download_button(
