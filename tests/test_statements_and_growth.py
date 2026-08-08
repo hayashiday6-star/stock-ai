@@ -350,3 +350,86 @@ def test_max_market_cap_selects_small_caps(database: Database) -> None:
     _seed(database, "BIG", _GROWING, market_cap=5e11)
     _seed(database, "SMALL", _GROWING, market_cap=3e9)
     assert ScreeningEngine(database).screen(MaxMarketCap(1e10)) == ["SMALL"]
+
+
+# --- the period marker decides whether growth is real -----------------------
+
+
+def test_the_v2_period_field_is_read() -> None:
+    """V2 calls it ``CurPerType``; the older spellings do not appear in it.
+
+    Missing it files every quarterly row as annual. ``Sales`` and ``NP`` are
+    cumulative from the start of the fiscal year, so a 3Q row holds nine months,
+    and comparing that against a twelve-month row invents growth.
+    """
+    from stock_ai.data.jquants_fundamentals import normalize_statements
+    from stock_ai.data.types import FiscalPeriod
+
+    records = [
+        {"CurPerType": "FY", "FYEnd": "2024-03-31", "DiscDate": "2024-05-10", "Sales": 1000},
+        {"CurPerType": "1Q", "FYEnd": "2025-03-31", "DiscDate": "2024-08-05", "Sales": 260},
+        {"CurPerType": "2Q", "FYEnd": "2025-03-31", "DiscDate": "2024-11-05", "Sales": 530},
+        {"CurPerType": "3Q", "FYEnd": "2025-03-31", "DiscDate": "2025-02-05", "Sales": 800},
+        {"CurPerType": "FY", "FYEnd": "2025-03-31", "DiscDate": "2025-05-12", "Sales": 1030},
+    ]
+    reports = normalize_statements("7203", records)
+
+    periods = [report.period for report in reports]
+    assert periods.count(FiscalPeriod.FY) == 2
+    assert FiscalPeriod.Q1 in periods
+    assert FiscalPeriod.Q3 in periods
+
+
+def test_growth_uses_only_the_annual_rows() -> None:
+    """1030 / 1000 - 1 = 3%, not 1030 / 800 - 1 = 29%."""
+    from stock_ai.data.jquants_fundamentals import normalize_statements
+    from stock_ai.data.types import FiscalPeriod
+    from stock_ai.fundamental.growth import revenue_growth
+
+    records = [
+        {"CurPerType": "FY", "FYEnd": "2024-03-31", "DiscDate": "2024-05-10", "Sales": 1000},
+        {"CurPerType": "3Q", "FYEnd": "2025-03-31", "DiscDate": "2025-02-05", "Sales": 800},
+        {"CurPerType": "FY", "FYEnd": "2025-03-31", "DiscDate": "2025-05-12", "Sales": 1030},
+    ]
+    annual = [r for r in normalize_statements("7203", records) if r.period is FiscalPeriod.FY]
+
+    assert revenue_growth(annual) == pytest.approx(0.03)
+
+
+def test_a_payload_with_no_period_marker_is_reported(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Every row defaulting to annual is the signature of a renamed field.
+
+    It corrupts silently, so it has to be loud - this is the third field-rename
+    in this API that showed up as wrong numbers rather than an error.
+    """
+    import logging
+
+    from stock_ai.data.jquants_fundamentals import normalize_statements
+
+    records = [
+        {"FYEnd": "2024-03-31", "DiscDate": "2024-05-10", "Sales": 1000},
+        {"FYEnd": "2025-03-31", "DiscDate": "2025-05-12", "Sales": 1030},
+    ]
+    with caplog.at_level(logging.WARNING):
+        normalize_statements("7203", records)
+
+    assert "no period marker" in caplog.text
+    assert "CurPerType" in caplog.text
+    assert any(record.levelno >= logging.ERROR for record in caplog.records)
+
+
+def test_a_marked_payload_logs_nothing(caplog: pytest.LogCaptureFixture) -> None:
+    """The warning must not fire on healthy data, or it trains people to ignore it."""
+    import logging
+
+    from stock_ai.data.jquants_fundamentals import normalize_statements
+
+    records = [
+        {"CurPerType": "FY", "FYEnd": "2024-03-31", "DiscDate": "2024-05-10", "Sales": 1000},
+    ]
+    with caplog.at_level(logging.WARNING):
+        normalize_statements("7203", records)
+
+    assert "no period marker" not in caplog.text

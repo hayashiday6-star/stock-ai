@@ -162,16 +162,34 @@ def _parse_date(value: str | None) -> dt.date | None:
         return None
 
 
+#: Field names that may carry the period marker, newest spelling first.
+_PERIOD_FIELDS = ("CurPerType", "Period", "TypeOfCurrentPeriod", "PeriodType")
+
+
 def _period_of(record: dict[str, Any]) -> FiscalPeriod:
     """Map a record's period marker onto :class:`FiscalPeriod`.
 
-    Anything unrecognised is treated as a full year: J-Quants annual rows are
-    the ones that carry no distinguishing quarter marker in some payloads.
+    V2 calls this ``CurPerType``. Reading only the older spellings made every
+    record look annual, and that is not a cosmetic mistake: ``Sales`` and ``NP``
+    are **cumulative from the start of the fiscal year**, so a 3Q row holds nine
+    months. Filed under FY alongside a real twelve-month row, the next
+    year-over-year comparison invents about a third of a year's growth out of
+    nothing - which is exactly what a screen showing three quarters of the
+    market growing 10%+ looks like.
+
+    Anything unrecognised is still treated as a full year, because some payloads
+    genuinely omit the marker on annual rows. :func:`normalize_statements`
+    counts those and warns, so a future rename is loud rather than silent.
     """
-    marker = _text(record, "Period", "TypeOfCurrentPeriod", "PeriodType")
+    marker = _text(record, *_PERIOD_FIELDS)
     if marker is None:
         return FiscalPeriod.FY
     return _PERIOD_ALIASES.get(marker.strip().upper(), FiscalPeriod.FY)
+
+
+def _has_period_marker(record: dict[str, Any]) -> bool:
+    """Whether the record said which period it covers at all."""
+    return _text(record, *_PERIOD_FIELDS) is not None
 
 
 def _fiscal_year_of(record: dict[str, Any]) -> int | None:
@@ -215,6 +233,7 @@ def normalize_statements(symbol: str, records: list[dict[str, Any]]) -> list[Fin
     """
     by_period: dict[tuple[int, FiscalPeriod], tuple[str, FinancialReport]] = {}
     skipped = 0
+    unmarked = 0
 
     for record in records:
         fiscal_year = _fiscal_year_of(record)
@@ -223,6 +242,8 @@ def normalize_statements(symbol: str, records: list[dict[str, Any]]) -> list[Fin
             continue
 
         period = _period_of(record)
+        if not _has_period_marker(record):
+            unmarked += 1
         disclosed_text = _text(record, "DiscDate", "DisclosedDate") or ""
         report = FinancialReport(
             symbol=symbol,
@@ -247,6 +268,20 @@ def normalize_statements(symbol: str, records: list[dict[str, Any]]) -> list[Fin
 
     if skipped:
         logger.warning("Dropped %d %s statement(s) with no resolvable fiscal year", skipped, symbol)
+    if unmarked and records:
+        # Every record defaulting to annual is the signature of a renamed field,
+        # and it corrupts quietly: quarterly figures are cumulative, so filing
+        # nine months as a full year manufactures growth on the next comparison.
+        level = logger.error if unmarked == len(records) else logger.warning
+        level(
+            "%d of %d %s statement(s) carried no period marker in any of %s "
+            "and were filed as annual. Quarterly rows are cumulative, so this "
+            "invents year-over-year growth. Check the payload's field names.",
+            unmarked,
+            len(records),
+            symbol,
+            ", ".join(_PERIOD_FIELDS),
+        )
 
     ordered = sorted(by_period.items(), key=lambda kv: (kv[0][0], _PERIOD_ORDER[kv[0][1]]))
     return [report for _key, (_disclosed, report) in ordered]
