@@ -108,3 +108,82 @@ def test_screen_table(db: Database) -> None:
 
     report = data.screen_table(db, MinROE(0.1))  # AAPL roe 0.30 passes
     assert "AAPL" in list(report["symbol"])
+
+
+# --- "nothing changed" vs "nothing was ever loaded" -------------------------
+
+
+def test_stored_counts_reports_each_data_type_separately() -> None:
+    """An empty screen has two causes that look identical without this.
+
+    A screen finding no cheap stocks and a screen with no valuation figures to
+    read both render as an empty table. The sidebar counts tell them apart.
+    """
+    import datetime as dt
+
+    import numpy as np
+    import pandas as pd
+
+    from stock_ai.dashboard.data import stored_counts
+    from stock_ai.data.types import FinancialReport, Fundamentals
+    from stock_ai.database.engine import Database
+    from stock_ai.database.repository import (
+        FinancialStatementRepository,
+        FundamentalsRepository,
+        PriceRepository,
+        get_or_create_security,
+    )
+
+    database = Database("sqlite:///:memory:")
+    database.create_all()
+    index = pd.bdate_range(dt.date(2024, 1, 1), periods=10, name="date")
+    close = np.full(10, 100.0)
+    frame = pd.DataFrame(
+        {
+            "open": close,
+            "high": close,
+            "low": close,
+            "close": close,
+            "adj_close": close,
+            "volume": 1,
+        },
+        index=index,
+    )
+    with database.session() as session:
+        for i in range(5):
+            get_or_create_security(session, f"{1300 + i:04d}", market="JP")
+        for i in range(3):
+            PriceRepository(session).upsert_prices(f"{1300 + i:04d}", frame, market="JP")
+        for i in range(2):
+            FinancialStatementRepository(session).upsert_reports(
+                f"{1300 + i:04d}",
+                [FinancialReport(symbol=f"{1300 + i:04d}", fiscal_year=2024, revenue=1.0)],
+                market="JP",
+            )
+        FundamentalsRepository(session).upsert_fundamentals(
+            Fundamentals(symbol="1300", as_of=dt.date(2026, 8, 7), per=10.0), market="JP"
+        )
+
+    assert stored_counts(database) == {
+        "securities": 5,
+        "with_prices": 3,
+        "with_statements": 2,
+        "with_fundamentals": 1,
+    }
+    database.dispose()
+
+
+def test_stored_counts_on_an_empty_database() -> None:
+    from stock_ai.dashboard.data import stored_counts
+    from stock_ai.database.engine import Database
+
+    database = Database("sqlite:///:memory:")
+    database.create_all()
+
+    assert stored_counts(database) == {
+        "securities": 0,
+        "with_prices": 0,
+        "with_statements": 0,
+        "with_fundamentals": 0,
+    }
+    database.dispose()

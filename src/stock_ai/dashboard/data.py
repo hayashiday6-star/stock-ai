@@ -399,3 +399,33 @@ def factor_test(
         horizon_days=horizon_days,
         buckets=buckets,
     )
+
+
+def stored_counts(database: Database) -> dict[str, int]:
+    """Count what is actually in the database, per data type.
+
+    The dashboard shows this because "nothing changed" and "nothing was ever
+    loaded" look identical on screen. A screen that finds no cheap stocks and a
+    screen that has no valuation figures to read both render as an empty table.
+    """
+    from sqlalchemy import func, select
+
+    from stock_ai.database.models import (
+        FinancialStatement,
+        FundamentalSnapshot,
+        PriceBar,
+        Security,
+    )
+
+    def distinct_securities(model: type) -> int:
+        return int(
+            session.execute(select(func.count(func.distinct(model.security_id)))).scalar_one() or 0
+        )
+
+    with database.session() as session:
+        return {
+            "securities": int(session.execute(select(func.count(Security.id))).scalar_one() or 0),
+            "with_prices": distinct_securities(PriceBar),
+            "with_statements": distinct_securities(FinancialStatement),
+            "with_fundamentals": distinct_securities(FundamentalSnapshot),
+        }

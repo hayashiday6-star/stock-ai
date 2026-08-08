@@ -16,6 +16,7 @@ AI分析・通知までをブラウザ画面から操作できます。
 from __future__ import annotations
 
 import datetime as dt
+from pathlib import Path
 
 import streamlit as st
 
@@ -49,6 +50,47 @@ def _parse_symbols(text: str) -> list[str]:
     """カンマ・空白・改行区切りの銘柄入力を大文字リストに整形する。"""
     raw = text.replace(",", " ").replace("\n", " ")
     return [token.strip().upper() for token in raw.split(" ") if token.strip()]
+
+
+def _running_version() -> str:
+    """このダッシュボードが動かしているコミットを返す。
+
+    「変更したのに画面が変わらない」を切り分けるために出す。原因は
+    (a) pull していない (b) 起動したまま pull した (c) 保存済みデータが古い、
+    の3つで、対処が全部違う。(a) と (b) はこの1行で判別できる。
+    """
+    import subprocess
+
+    root = Path(__file__).resolve().parents[3]
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"],
+            cwd=root,
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return "不明"
+    return result.stdout.strip() or "不明"
+
+
+def _sidebar_status(database: Database) -> None:
+    """バージョンと、保存済みデータの中身を出す。"""
+    st.sidebar.divider()
+    st.sidebar.caption(f"コード: `{_running_version()}`")
+
+    counts = data.stored_counts(database)
+    st.sidebar.caption(
+        f"銘柄 {counts['securities']:,} / 株価あり {counts['with_prices']:,} / "
+        f"財務あり {counts['with_statements']:,} / 指標あり {counts['with_fundamentals']:,}"
+    )
+    if counts["securities"] and not counts["with_fundamentals"]:
+        st.sidebar.warning(
+            "指標(PER/PBR等)が0件です。`bulk-fetch --what statements --segment stored` "
+            "を実行すると埋まります。"
+        )
 
 
 # --- 各画面 ---------------------------------------------------------------
@@ -522,6 +564,7 @@ def main() -> None:
     choice = st.sidebar.radio("メニュー", list(pages.keys()))
     st.sidebar.divider()
     st.sidebar.caption("使い方: まず「データ取得」→ その後 各画面で分析します。")
+    _sidebar_status(database)
     pages[choice]()
 
 
