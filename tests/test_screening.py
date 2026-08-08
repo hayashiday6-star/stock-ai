@@ -65,7 +65,8 @@ def test_or_and_not_composition() -> None:
 
 def test_describe_is_readable() -> None:
     cond = MinROE(0.1) & MaxPBR(2.0)
-    assert cond.describe() == "(ROE >= 0.1 AND PBR <= 2.0)"
+    # The lower bound is explicit so an absent loss-maker reads as deliberate.
+    assert cond.describe() == "(ROE >= 0.1 AND 0 < PBR <= 2.0)"
 
 
 @pytest.fixture
@@ -139,3 +140,59 @@ def test_the_report_without_names_is_unchanged() -> None:
     frame = build_report([Fundamentals(symbol="7203", as_of=dt.date(2026, 8, 8))])
 
     assert "name" not in frame.columns
+
+
+# --- a negative ratio is not a cheap one ------------------------------------
+
+
+def _fundamentals_context(**values: float | None):
+    """A screening context carrying just the named fundamentals."""
+    import datetime as dt
+
+    from stock_ai.data.types import Fundamentals
+    from stock_ai.screening.base import ScreeningContext
+
+    return ScreeningContext(
+        symbol="X",
+        fundamentals=Fundamentals(symbol="X", as_of=dt.date(2026, 8, 8), **values),
+    )
+
+
+def test_a_loss_making_company_fails_a_per_ceiling() -> None:
+    """-40 <= 25 is true, and that is how a "cheap" screen returns every loser.
+
+    Observed live: three quarters of TSE cleared a 25x ceiling. The arithmetic
+    was right, which is why it went unnoticed.
+    """
+    from stock_ai.screening.conditions import MaxPER
+
+    assert MaxPER(25.0).evaluate(_fundamentals_context(per=12.0)) is True
+    assert MaxPER(25.0).evaluate(_fundamentals_context(per=-40.0)) is False
+    assert MaxPER(25.0).evaluate(_fundamentals_context(per=0.0)) is False
+
+
+def test_negative_book_value_fails_a_pbr_ceiling() -> None:
+    """Liabilities exceeding assets is not the cheapest balance sheet on offer."""
+    from stock_ai.screening.conditions import MaxPBR
+
+    assert MaxPBR(2.0).evaluate(_fundamentals_context(pbr=1.2)) is True
+    assert MaxPBR(2.0).evaluate(_fundamentals_context(pbr=-3.0)) is False
+
+
+def test_a_nonsensical_market_cap_fails_a_small_cap_screen() -> None:
+    """ "Smallest on the exchange" is exactly where a data fault would rank."""
+    from stock_ai.screening.conditions import MaxMarketCap
+
+    assert MaxMarketCap(5e9).evaluate(_fundamentals_context(market_cap=1e9)) is True
+    assert MaxMarketCap(5e9).evaluate(_fundamentals_context(market_cap=0.0)) is False
+
+
+def test_the_screen_and_the_score_now_agree_on_negative_per() -> None:
+    """They disagreed: scoring excluded a negative P/E, screening accepted it."""
+    from stock_ai.portfolio.factors import ValueFactor
+    from stock_ai.screening.conditions import MaxPER
+
+    context = _fundamentals_context(per=-40.0)
+
+    assert ValueFactor().score(context) is None
+    assert MaxPER(1000.0).evaluate(context) is False

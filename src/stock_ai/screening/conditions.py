@@ -49,15 +49,33 @@ class _MinThreshold(_FundamentalThreshold):
 
 
 class _MaxThreshold(_FundamentalThreshold):
-    """Passes when the metric is present and ``<= threshold``."""
+    """Passes when the metric is present and ``<= threshold``.
+
+    Subclasses set :attr:`_positive_only` when a non-positive value makes the
+    ratio meaningless rather than attractive.
+    """
+
+    #: Whether a value of zero or less disqualifies rather than passes.
+    _positive_only: bool = False
 
     def evaluate(self, context: ScreeningContext) -> bool:
         """Return ``True`` if the metric is at most the threshold."""
         value = self._metric_value(context)
-        return value is not None and value <= self.threshold
+        if value is None:
+            return False
+        if self._positive_only and value <= 0:
+            return False
+        return value <= self.threshold
 
     def describe(self) -> str:
-        """Describe as ``LABEL <= threshold``."""
+        """Describe as ``LABEL <= threshold``, or ``0 < LABEL <= threshold``.
+
+        The lower bound is spelled out rather than left implicit: a reader
+        seeing a loss-making company absent from a "cheap" screen should be able
+        to tell that it was excluded on purpose.
+        """
+        if self._positive_only:
+            return f"0 < {self._label} <= {self.threshold}"
         return f"{self._label} <= {self.threshold}"
 
 
@@ -69,17 +87,34 @@ class MinROE(_MinThreshold):
 
 
 class MaxPER(_MaxThreshold):
-    """Price/earnings at or below the threshold."""
+    """Price/earnings at or below the threshold, and positive.
+
+    A loss-making company has a negative P/E, and ``-40 <= 25`` is true. Without
+    the positivity requirement a "cheap stocks" screen returns every company
+    losing money - the opposite of what it was asked for, and the failure is
+    invisible because the arithmetic is correct. Observed live: three quarters
+    of TSE passed a 25x ceiling.
+
+    The scoring layer already excluded non-positive P/E; the screen did not,
+    which is how the two disagreed for so long.
+    """
 
     _metric = "per"
     _label = "PER"
+    _positive_only = True
 
 
 class MaxPBR(_MaxThreshold):
-    """Price/book at or below the threshold."""
+    """Price/book at or below the threshold, and positive.
+
+    Negative book value means liabilities exceed assets. The resulting negative
+    P/B clears any ceiling, which would file an insolvent balance sheet as the
+    cheapest one on the exchange.
+    """
 
     _metric = "pbr"
     _label = "PBR"
+    _positive_only = True
 
 
 class MinDividendYield(_MinThreshold):
@@ -196,7 +231,13 @@ class MaxPayoutRatio(Condition):
 
 
 class MaxMarketCap(_MaxThreshold):
-    """Market capitalisation at or below the threshold (小型株の絞り込み)."""
+    """Market capitalisation at or below the threshold (小型株の絞り込み).
+
+    Positive by construction, but required explicitly: a zero or negative cap is
+    a data fault, and "smallest company on the exchange" is precisely where such
+    a fault would rank.
+    """
 
     _metric = "market_cap"
     _label = "MarketCap"
+    _positive_only = True
