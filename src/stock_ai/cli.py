@@ -710,6 +710,71 @@ def screen(
 
 
 @app.command()
+def metrics() -> None:
+    """Show the distribution of every stored fundamental metric.
+
+    For answering "is this number plausible?" without another round trip. A
+    screen returning three quarters of the market is either a market of bargains
+    or a broken metric, and the median and the quartiles say which in one look.
+    """
+    settings = get_settings()
+    configure_logging(settings.log_level)
+
+    database = Database()
+    database.create_all()
+    with database.session() as session:
+        symbols = [symbol for symbol, _market in list_securities(session)]
+        repo = FundamentalsRepository(session)
+        snapshots = [snap for sym in symbols if (snap := repo.get_latest(sym)) is not None]
+
+    if not snapshots:
+        console.print("[yellow]No fundamentals stored.[/] Run 'bulk-fetch' first.")
+        raise typer.Exit(code=1)
+
+    frame = pd.DataFrame([snap.model_dump() for snap in snapshots])
+    table = Table(title=f"stored fundamentals ({len(snapshots)} symbols)")
+    table.add_column("metric", style="cyan")
+    table.add_column("present", justify="right")
+    table.add_column("<= 0", justify="right")
+    for label in ("min", "25%", "median", "75%", "max"):
+        table.add_column(label, justify="right")
+
+    for column in ("per", "pbr", "roe", "dividend_yield", "market_cap", "revenue", "net_income"):
+        series = pd.to_numeric(frame.get(column), errors="coerce").dropna()
+        if series.empty:
+            table.add_row(column, "0", "-", *(["-"] * 5))
+            continue
+        quantiles = series.quantile([0.0, 0.25, 0.5, 0.75, 1.0])
+        table.add_row(
+            column,
+            str(len(series)),
+            str(int((series <= 0).sum())),
+            *[_compact(value) for value in quantiles],
+        )
+    console.print(table)
+    console.print(
+        "[dim]'<= 0' matters for PER and PBR: a loss-making company has a "
+        "negative P/E, and a negative number clears any ceiling.[/]"
+    )
+
+
+def _compact(value: float) -> str:
+    """Render a number readably across the range these metrics span."""
+    if value is None or not isinstance(value, int | float):
+        return "-"
+    magnitude = abs(value)
+    if magnitude >= 1e12:
+        return f"{value / 1e12:.2f}T"
+    if magnitude >= 1e9:
+        return f"{value / 1e9:.2f}B"
+    if magnitude >= 1e6:
+        return f"{value / 1e6:.2f}M"
+    if magnitude >= 100:
+        return f"{value:,.0f}"
+    return f"{value:.4g}"
+
+
+@app.command()
 def backtest(
     symbol: str = typer.Argument(..., help="Ticker to backtest (must be fetched)."),
     strategy: str = typer.Option("sma", help="Strategy: hold|sma|sma200|macd|rsi."),
