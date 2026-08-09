@@ -116,3 +116,36 @@ def test_inspect_reports_an_empty_payload(monkeypatch: pytest.MonkeyPatch) -> No
 
     assert result.exit_code == 1
     assert "No statements returned" in result.output
+
+
+def test_inspect_shows_the_fields_that_disambiguate_a_row(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """DocType, the non-consolidated series, and the dividend spellings.
+
+    A forecast revision and a results announcement share DiscDate and
+    CurPerType; only DocType separates them. Leaving these out of the table is
+    how a diagnostic tool fails to diagnose.
+    """
+    from stock_ai import cli
+    from stock_ai.data import jquants_fundamentals
+
+    records = [
+        {
+            "DiscDate": "2026-05-08",
+            "DocType": "FYFinancialStatements_Consolidated_JP",
+            "CurPerType": "FY",
+            "NP": -326865000000,
+            "EPS": -54.7,
+            "ROE": -3.7,
+            "NCNP": 500000000000,
+            "DivTotalAnn": 25.0,
+            "FNP": 900000000000,
+        },
+    ]
+    monkeypatch.setattr(jquants_fundamentals, "_default_fetcher", lambda _key: lambda _s: records)
+
+    output = runner.invoke(cli.app, ["inspect", "6758"]).output
+
+    for field in ("DocType", "ROE", "NCNP", "DivTotalAnn", "FNP"):
+        assert field in output, f"{field} must be visible in the table"

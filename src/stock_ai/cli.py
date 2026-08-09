@@ -808,19 +808,49 @@ def inspect(
     # everything else - a renamed field shows up as a blank in the first block
     # and an unfamiliar name in the second.
     key_fields = [
+        # Identity of the row. A forecast revision and a results announcement
+        # share DiscDate and CurPerType; only DocType separates them, and only
+        # one of the two reports what actually happened.
         "DiscDate",
+        "DocType",
         "CurPerType",
-        "FYEnd",
-        "TypeOfDoc",
-        "TypeOfDocument",
+        "CurFYSt",
+        "CurFYEn",
+        # Consolidated figures - what this project reads.
         "Sales",
         "OP",
+        "OdP",
         "NP",
         "EPS",
         "BPS",
         "Eq",
-        "DivAnn",
+        "TA",
         "ShOutFY",
+        "ROE",
+        # Non-consolidated equivalents, shown alongside so a mix-up is visible.
+        "NCSales",
+        "NCNP",
+        "NCEPS",
+        "NCBPS",
+        "NCEq",
+        "NCROE",
+        # Dividends come in several spellings, and the forecast ones must not be
+        # mistaken for declared ones.
+        "DivAnn",
+        "DivTotalAnn",
+        "DivFY",
+        "Div1Q",
+        "Div2Q",
+        "Div3Q",
+        "DivUnit",
+        "PayoutRatioAnn",
+        "FDivAnn",
+        "NxFDivAnn",
+        # Forecasts, listed so they read as separate from the actuals above.
+        "FSales",
+        "FOP",
+        "FNP",
+        "FEPS",
     ]
     table = Table(title=f"{symbol}: key fields")
     table.add_column("field", style="cyan")
