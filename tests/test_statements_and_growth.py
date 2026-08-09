@@ -549,3 +549,59 @@ def test_an_unmarked_payload_still_produces_ratios() -> None:
 
     assert snapshot.per == pytest.approx(20.0)
     assert snapshot.revenue == 1000
+
+
+def test_point_in_time_fields_fall_back_to_an_older_disclosure() -> None:
+    """A quarterly filing often omits BPS and the annual dividend.
+
+    Reading only the newest record then loses both, even though last year's
+    report carries them. Observed live: PBR present for 32% of the screen and
+    dividend yield for 13%, entirely from this.
+    """
+    import datetime as dt
+
+    from stock_ai.data.jquants_fundamentals import normalize_statement
+
+    records = [
+        {
+            "CurPerType": "FY",
+            "DiscDate": "2025-05-12",
+            "FYEnd": "2025-03-31",
+            "EPS": 100.0,
+            "NP": 103,
+            "Sales": 1030,
+            "BPS": 800.0,
+            "Eq": 8000,
+            "DivAnn": 20.0,
+        },
+        # The newest filing: a quarter with no BPS and no dividend line.
+        {"CurPerType": "1Q", "DiscDate": "2025-08-05", "FYEnd": "2026-03-31", "NP": 27},
+    ]
+    snapshot = normalize_statement("7203", records, dt.date(2026, 8, 9), price=2000.0)
+
+    assert snapshot.pbr == pytest.approx(2000.0 / 800.0)
+    assert snapshot.dividend_yield == pytest.approx(20.0 / 2000.0)
+    # Earnings still come from the annual row, not the quarter.
+    assert snapshot.per == pytest.approx(20.0)
+
+
+def test_a_newer_point_in_time_value_still_wins() -> None:
+    """Falling back must not mean preferring stale data when fresh data exists."""
+    import datetime as dt
+
+    from stock_ai.data.jquants_fundamentals import normalize_statement
+
+    records = [
+        {
+            "CurPerType": "FY",
+            "DiscDate": "2025-05-12",
+            "FYEnd": "2025-03-31",
+            "EPS": 100.0,
+            "NP": 103,
+            "BPS": 800.0,
+        },
+        {"CurPerType": "1Q", "DiscDate": "2025-08-05", "FYEnd": "2026-03-31", "BPS": 900.0},
+    ]
+    snapshot = normalize_statement("7203", records, dt.date(2026, 8, 9), price=2000.0)
+
+    assert snapshot.pbr == pytest.approx(2000.0 / 900.0)

@@ -68,6 +68,32 @@ def _first(record: dict[str, Any], *keys: str) -> float | None:
     return None
 
 
+def _newest_value(records: list[dict[str, Any]], *keys: str) -> float | None:
+    """Return ``keys`` from the newest record that actually carries a value.
+
+    Taking a field from the newest record *only* throws away data that is
+    plainly available: a quarterly disclosure often omits BPS and the annual
+    dividend, so a company whose latest filing is a quarter loses both even
+    though last year's report has them. Observed live: PBR was present for 31%
+    of TSE and dividend yield for 12%, purely from this.
+
+    Walking back is safe for balance-sheet and per-share fields, which describe
+    a point in time rather than a period. It is **not** safe for cumulative flow
+    figures, which is why sales, profit and EPS go through
+    :func:`_latest_annual` instead.
+    """
+    for record in sorted(records, key=_disclosure_key, reverse=True):
+        value = _first(record, *keys)
+        if value is not None:
+            return value
+    return None
+
+
+def _disclosure_key(record: dict[str, Any]) -> str:
+    """Sort key placing the most recently disclosed record last."""
+    return str(record.get("DiscDate") or record.get("DisclosedDate") or "")
+
+
 def _latest_annual(records: list[dict[str, Any]]) -> dict[str, Any] | None:
     """Return the newest record covering a full fiscal year, if there is one.
 
@@ -120,20 +146,22 @@ def normalize_statement(
     if not records:
         raise DataError(f"No J-Quants statements for {symbol!r}.")
 
-    latest = _latest(records)
     # No annual disclosure yet (a recent listing) means no trustworthy earnings
     # figure. Reporting a quarter as if it were a year would be worse than
     # reporting nothing, so the earnings-based ratios stay None.
     annual = _latest_annual(records)
 
-    revenue = _first(annual, "Sales", "NetSales") if annual else None
-    net_income = _first(annual, "NP", "Profit") if annual else None
-    eps = _first(annual, "EPS") if annual else None
+    annual_records = [annual] if annual else []
+    revenue = _newest_value(annual_records, "Sales", "NetSales")
+    net_income = _newest_value(annual_records, "NP", "Profit")
+    eps = _newest_value(annual_records, "EPS")
 
-    equity = _first(latest, "Eq", "Equity")
-    bps = _first(latest, "BPS")
-    dividend = _first(latest, "DivAnn")
-    shares = _first(latest, "ShOutFY")
+    # Point-in-time fields: the newest record that has them, not merely the
+    # newest record.
+    equity = _newest_value(records, "Eq", "Equity")
+    bps = _newest_value(records, "BPS")
+    dividend = _newest_value(records, "DivAnn")
+    shares = _newest_value(records, "ShOutFY")
 
     roe = net_income / equity if (net_income is not None and equity) else None
     per = price / eps if (price is not None and eps) else None

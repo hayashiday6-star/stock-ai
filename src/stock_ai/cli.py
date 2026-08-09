@@ -775,6 +775,69 @@ def _compact(value: float) -> str:
 
 
 @app.command()
+def inspect(
+    symbol: str = typer.Argument(..., help="JP security code, e.g. 6758"),
+    limit: int = typer.Option(8, help="Newest N disclosures to print."),
+) -> None:
+    """Print the raw J-Quants statement records for one symbol.
+
+    Every wrong number in this project so far has come from a field that was
+    named something other than expected, or that meant something other than
+    expected. Guessing which costs a round trip each time; this shows the
+    payload as it arrives, so the answer is one command away.
+    """
+    settings = get_settings()
+    configure_logging(settings.log_level)
+
+    from stock_ai.data.jquants_fundamentals import _default_fetcher
+
+    try:
+        records = _default_fetcher(settings.jquants_api_key)(symbol)
+    except DataError as exc:
+        console.print(f"[red]{exc}[/]")
+        raise typer.Exit(code=1) from exc
+
+    if not records:
+        console.print(f"[yellow]No statements returned for {symbol}.[/]")
+        raise typer.Exit(code=1)
+
+    newest = sorted(records, key=lambda r: str(r.get("DiscDate") or ""), reverse=True)[:limit]
+    console.print(f"{len(records)} record(s); showing the newest {len(newest)}.")
+
+    # The fields the snapshot and the growth series are built from, first, then
+    # everything else - a renamed field shows up as a blank in the first block
+    # and an unfamiliar name in the second.
+    key_fields = [
+        "DiscDate",
+        "CurPerType",
+        "FYEnd",
+        "TypeOfDoc",
+        "TypeOfDocument",
+        "Sales",
+        "OP",
+        "NP",
+        "EPS",
+        "BPS",
+        "Eq",
+        "DivAnn",
+        "ShOutFY",
+    ]
+    table = Table(title=f"{symbol}: key fields")
+    table.add_column("field", style="cyan")
+    for index in range(len(newest)):
+        table.add_column(f"#{index + 1}", justify="right", overflow="fold")
+    for field in key_fields:
+        values = [str(record.get(field, "")) for record in newest]
+        if any(values):
+            table.add_row(field, *values)
+    console.print(table)
+
+    seen = {key for record in newest for key in record}
+    extra = sorted(seen - set(key_fields))
+    console.print(f"[dim]Other fields present: {', '.join(extra) if extra else '(none)'}[/]")
+
+
+@app.command()
 def backtest(
     symbol: str = typer.Argument(..., help="Ticker to backtest (must be fetched)."),
     strategy: str = typer.Option("sma", help="Strategy: hold|sma|sma200|macd|rsi."),

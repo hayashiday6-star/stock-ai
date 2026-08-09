@@ -79,3 +79,40 @@ def test_metrics_on_an_empty_database_says_so(monkeypatch: pytest.MonkeyPatch) -
     assert result.exit_code == 1
     assert "No fundamentals stored" in result.output
     database.dispose()
+
+
+def test_inspect_prints_the_raw_payload(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Shows the fields as they arrive, including ones we do not read.
+
+    Every wrong number so far traced to a field named or meaning something other
+    than expected. A renamed field shows as a blank among the known names and an
+    unfamiliar entry in the "other fields" line.
+    """
+    from stock_ai import cli
+    from stock_ai.data import jquants_fundamentals
+
+    records = [
+        {"DiscDate": "2025-05-12", "CurPerType": "FY", "Sales": 1000, "NP": 100, "EPS": 50.0},
+        {"DiscDate": "2025-08-05", "CurPerType": "1Q", "Sales": 260, "NP": 26, "SomethingNew": 1},
+    ]
+    monkeypatch.setattr(jquants_fundamentals, "_default_fetcher", lambda _key: lambda _s: records)
+
+    result = runner.invoke(cli.app, ["inspect", "6758"])
+
+    assert result.exit_code == 0
+    assert "CurPerType" in result.output
+    assert "2 record(s)" in result.output
+    # A field we never read must still be visible - that is the point.
+    assert "SomethingNew" in result.output
+
+
+def test_inspect_reports_an_empty_payload(monkeypatch: pytest.MonkeyPatch) -> None:
+    from stock_ai import cli
+    from stock_ai.data import jquants_fundamentals
+
+    monkeypatch.setattr(jquants_fundamentals, "_default_fetcher", lambda _key: lambda _s: [])
+
+    result = runner.invoke(cli.app, ["inspect", "9999"])
+
+    assert result.exit_code == 1
+    assert "No statements returned" in result.output
