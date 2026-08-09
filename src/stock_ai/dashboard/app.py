@@ -57,13 +57,8 @@ def _parse_symbols(text: str) -> list[str]:
     return [token.strip().upper() for token in raw.split(" ") if token.strip()]
 
 
-def _running_version() -> str:
-    """このダッシュボードが動かしているコミットを返す。
-
-    「変更したのに画面が変わらない」を切り分けるために出す。原因は
-    (a) pull していない (b) 起動したまま pull した (c) 保存済みデータが古い、
-    の3つで、対処が全部違う。(a) と (b) はこの1行で判別できる。
-    """
+def _repo_commit() -> str:
+    """Return the commit currently checked out on disk, or "不明"."""
     import subprocess
 
     root = Path(__file__).resolve().parents[3]
@@ -81,10 +76,27 @@ def _running_version() -> str:
     return result.stdout.strip() or "不明"
 
 
+#: The commit as it was when this process imported the module - which is the
+#: code actually running. Reading it fresh on every render was a mistake: after
+#: a git pull the sidebar showed the new commit while Python went on executing
+#: the modules it had already imported, so the version line confirmed an update
+#: that had not taken effect. Streamlit reloads the app file, not imported
+#: modules, so a pull genuinely requires restarting the process.
+_LOADED_COMMIT = _repo_commit()
+
+
 def _sidebar_status(database: Database) -> None:
     """バージョンと、保存済みデータの中身を出す。"""
     st.sidebar.divider()
-    st.sidebar.caption(f"コード: `{_running_version()}`")
+    on_disk = _repo_commit()
+    st.sidebar.caption(f"コード: `{_LOADED_COMMIT}`")
+    if on_disk != _LOADED_COMMIT and "不明" not in (on_disk, _LOADED_COMMIT):
+        st.sidebar.error(
+            f"ディスク上は `{on_disk}` に更新されていますが、動いているのは "
+            f"`{_LOADED_COMMIT}` です。**ダッシュボードを再起動してください** "
+            "(黒いウィンドウで Ctrl+C → .bat を再実行)。Streamlit は画面の"
+            "ファイルだけを読み直し、読み込み済みのモジュールは差し替えません。"
+        )
 
     counts = data.stored_counts(database)
     st.sidebar.caption(

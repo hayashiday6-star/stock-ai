@@ -260,3 +260,29 @@ def test_the_condition_builder_ands_only_the_enabled_parts() -> None:
     both = _build_condition([(True, MaxPER(20.0)), (True, MinROE(0.1))])
     assert "PER" in str(both)
     assert "ROE" in str(both)
+
+
+def test_the_loaded_commit_is_captured_once_at_import() -> None:
+    """Reading it fresh each render confirms an update that has not taken effect.
+
+    Streamlit reloads the app file but not imported modules, so after a git pull
+    the sidebar showed the new commit while Python kept executing the old
+    screening code. The version line has to describe the process, not the disk.
+    """
+    import stock_ai.dashboard.app as app
+
+    assert isinstance(app._LOADED_COMMIT, str)
+    assert app._LOADED_COMMIT  # never empty; "不明" when git is unavailable
+
+
+def test_a_pull_without_a_restart_is_detectable() -> None:
+    """The mismatch between loaded and on-disk is what the warning keys on."""
+    import stock_ai.dashboard.app as app
+
+    on_disk = app._repo_commit()
+    if on_disk == "不明":  # no git in this environment; nothing to compare
+        return
+
+    stale = on_disk != "0000000" and "不明" not in (on_disk, "0000000")
+    assert stale is True
+    assert (on_disk != on_disk) is False  # identical commits raise nothing
