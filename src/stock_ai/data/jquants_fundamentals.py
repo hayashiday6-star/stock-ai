@@ -94,6 +94,39 @@ def _disclosure_key(record: dict[str, Any]) -> str:
     return str(record.get("DiscDate") or record.get("DisclosedDate") or "")
 
 
+def _earnings_are_consistent(symbol: str, record: dict[str, Any]) -> bool:
+    """Whether a record's profit figure agrees with the rest of the same row.
+
+    A payout ratio is dividends divided by profit, so a **positive** payout
+    ratio alongside a **negative** profit is not a judgement call - the row
+    contradicts itself. Observed live on 6758 (FY to 2026-03):
+    ``NP = -0.327兆``, ``DivTotalAnn = 0.149兆``, ``PayoutRatioAnn = 0.145``.
+    That ratio implies a profit of +1.02兆. The same arithmetic reconciles
+    exactly on the previous year's row, so the check is sound and the row is
+    not.
+
+    When they disagree neither figure is picked. Choosing one would be a guess
+    presented as data, and this project's rule is that a wrong number costs more
+    than a missing one: missing is excluded from screens and scores, wrong is
+    ranked.
+    """
+    net_income = _first(record, "NP", "Profit")
+    payout = _first(record, "PayoutRatioAnn")
+    if net_income is None or payout is None:
+        return True
+    if net_income < 0 < payout:
+        logger.warning(
+            "%s: the annual row disagrees with itself - net income %.3g but "
+            "payout ratio %.3f, which requires a positive profit. Earnings "
+            "figures (PER, ROE, net income) are left unset for this symbol.",
+            symbol,
+            net_income,
+            payout,
+        )
+        return False
+    return True
+
+
 def _latest_annual(records: list[dict[str, Any]]) -> dict[str, Any] | None:
     """Return the newest record covering a full fiscal year, if there is one.
 
@@ -152,9 +185,11 @@ def normalize_statement(
     annual = _latest_annual(records)
 
     annual_records = [annual] if annual else []
+    trustworthy = annual is None or _earnings_are_consistent(symbol, annual)
+
     revenue = _newest_value(annual_records, "Sales", "NetSales")
-    net_income = _newest_value(annual_records, "NP", "Profit")
-    eps = _newest_value(annual_records, "EPS")
+    net_income = _newest_value(annual_records, "NP", "Profit") if trustworthy else None
+    eps = _newest_value(annual_records, "EPS") if trustworthy else None
 
     # Point-in-time fields: the newest record that has them, not merely the
     # newest record.
@@ -163,7 +198,13 @@ def normalize_statement(
     dividend = _newest_value(records, "DivAnn")
     shares = _newest_value(records, "ShOutFY")
 
-    roe = net_income / equity if (net_income is not None and equity) else None
+    # The exchange publishes its own ROE. Prefer it: it is computed against
+    # equity attributable to owners, where ``Eq`` includes non-controlling
+    # interests, so the two differ even when both are right.
+    published_roe = _newest_value(annual_records, "ROE") if trustworthy else None
+    roe = published_roe
+    if roe is None and trustworthy and net_income is not None and equity:
+        roe = net_income / equity
     per = price / eps if (price is not None and eps) else None
     pbr = price / bps if (price is not None and bps) else None
     dividend_yield = dividend / price if (price and dividend is not None) else None

@@ -605,3 +605,95 @@ def test_a_newer_point_in_time_value_still_wins() -> None:
     snapshot = normalize_statement("7203", records, dt.date(2026, 8, 9), price=2000.0)
 
     assert snapshot.pbr == pytest.approx(2000.0 / 900.0)
+
+
+# --- a row that contradicts itself ------------------------------------------
+
+_SONY_FY2026 = {
+    "DocType": "FYFinancialStatements_Consolidated_IFRS",
+    "CurPerType": "FY",
+    "DiscDate": "2026-05-08",
+    "CurFYEn": "2026-03-31",
+    "Sales": 12479620000000,
+    "OP": 1447507000000,
+    "NP": -326865000000,
+    "EPS": -54.7,
+    "BPS": 1374.32,
+    "Eq": 8513589000000,
+    "DivAnn": 25.0,
+    "DivTotalAnn": 148560000000,
+    "PayoutRatioAnn": 0.145,
+}
+
+
+def test_a_self_contradicting_row_yields_no_earnings_figures() -> None:
+    """A positive payout ratio requires a positive profit; this row has both signs.
+
+    Taken verbatim from 6758's FY-to-2026-03 disclosure. The ratio implies a
+    profit of +1.02兆 against a reported -0.327兆, and the same arithmetic
+    reconciles exactly on the previous year - so the check is sound and the row
+    is not. Picking one figure would be a guess presented as data.
+    """
+    import datetime as dt
+
+    from stock_ai.data.jquants_fundamentals import normalize_statement
+
+    snapshot = normalize_statement("6758", [_SONY_FY2026], dt.date(2026, 8, 9), price=3600.0)
+
+    assert snapshot.per is None
+    assert snapshot.roe is None
+    assert snapshot.net_income is None
+    # The balance sheet and the dividend are untouched by the contradiction.
+    assert snapshot.pbr == pytest.approx(3600.0 / 1374.32)
+    assert snapshot.dividend_yield == pytest.approx(25.0 / 3600.0)
+
+
+def test_an_ordinary_loss_is_still_recorded() -> None:
+    """Only the contradiction disqualifies a row, not the loss itself."""
+    import datetime as dt
+
+    from stock_ai.data.jquants_fundamentals import normalize_statement
+
+    honest = {**_SONY_FY2026, "PayoutRatioAnn": None, "DivTotalAnn": None}
+    snapshot = normalize_statement("9999", [honest], dt.date(2026, 8, 9), price=3600.0)
+
+    assert snapshot.net_income == -326865000000
+    assert snapshot.per is not None and snapshot.per < 0
+
+
+def test_the_published_roe_is_preferred_over_a_derived_one() -> None:
+    """The exchange computes ROE against equity attributable to owners.
+
+    ``Eq`` includes non-controlling interests, so NP/Eq and the published figure
+    differ even when both are correct - 0.134 against 0.145 on this row.
+    """
+    import datetime as dt
+
+    from stock_ai.data.jquants_fundamentals import normalize_statement
+
+    record = {
+        "DocType": "FYFinancialStatements_Consolidated_IFRS",
+        "CurPerType": "FY",
+        "DiscDate": "2025-05-14",
+        "NP": 1141600000000,
+        "EPS": 188.71,
+        "Eq": 8510151000000,
+        "ROE": 0.145,
+        "PayoutRatioAnn": 0.106,
+        "DivTotalAnn": 120597000000,
+    }
+    snapshot = normalize_statement("6758", [record], dt.date(2025, 8, 9), price=3600.0)
+
+    assert snapshot.roe == pytest.approx(0.145)
+    assert snapshot.roe != pytest.approx(1141600000000 / 8510151000000, abs=1e-4)
+
+
+def test_roe_falls_back_to_the_derived_value_when_unpublished() -> None:
+    import datetime as dt
+
+    from stock_ai.data.jquants_fundamentals import normalize_statement
+
+    record = {"CurPerType": "FY", "DiscDate": "2025-05-14", "NP": 1000.0, "Eq": 10000.0}
+    snapshot = normalize_statement("7203", [record], dt.date(2025, 8, 9))
+
+    assert snapshot.roe == pytest.approx(0.1)
