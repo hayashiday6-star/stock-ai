@@ -777,7 +777,7 @@ def _compact(value: float) -> str:
 @app.command()
 def inspect(
     symbol: str = typer.Argument(..., help="JP security code, e.g. 6758"),
-    limit: int = typer.Option(8, help="Newest N disclosures to print."),
+    limit: int = typer.Option(6, help="Newest N disclosures to print."),
 ) -> None:
     """Print the raw J-Quants statement records for one symbol.
 
