@@ -146,21 +146,36 @@ def tenbagger_weighted_factors(
     excluded deliberately: it measures what the market has already paid for.
 
     .. warning::
-       **Tested on TSE (~1,400 names, 2022-2025) and no edge was found.**
-       Walk-forward over 13 quarterly formation dates with a 252-bar hold:
-       1 window cleared two sigma, median ``t = +0.21``, returns decayed across
-       buckets in 5 of 13. Excess returns sat within a point of zero in every
-       window but one.
+       **Tested on TSE and no edge was found. Do not rank on this score.**
 
-       The one significant window (2024-06, ``t = +2.62``) was also the first
-       date tested in isolation, where it read ``t = +2.78`` and looked like
-       evidence. It was one draw out of thirteen. That is the entire reason
-       :func:`~stock_ai.backtest.factor_test.walk_forward` exists.
+       Walk-forward over 12 quarterly formation dates, 2022-2025, 252-bar hold,
+       1,253-1,492 names scored per window:
 
-       Two caveats that do not rescue it but bound the claim: a 252-bar hold is
-       a short test for a thesis about multi-year compounding, and four years of
-       history is a small sample. Neither is an argument for using the score -
-       "not yet disproven over a longer horizon" is not an edge.
+       - 3 of 12 windows cleared two sigma
+       - median ``t = +0.52``
+       - returns decayed across buckets in 3 of 12
+       - 5 of 12 had a positive excess at all - a coin flip
+
+       An earlier run reached the same conclusion on data corrupted by the
+       ``CurPerType`` bug, where quarterly figures were filed as annual and only
+       119 names could be scored. That verdict was withdrawn as untrustworthy;
+       this one replaces it, on clean data with ten times the coverage.
+
+       The strongest window is instructive rather than encouraging. Formation
+       2024-08-06 (``t = +4.25``, excess ``+7.64%``) begins the day after the
+       Nikkei's largest single-day fall in the sample. A small-cap growth tilt
+       formed at a crash low measures the rebound, not stock selection. The two
+       other significant windows are one quarter apart and share nine months of
+       forward returns, so they are closer to one episode than two.
+
+       Caveats that bound the claim without rescuing it: a 252-bar hold is short
+       for a thesis about multi-year compounding, four years is a small sample,
+       and survivorship bias is unhandled throughout. None of these is an
+       argument for using the score - "not yet disproven over a longer horizon"
+       is not an edge.
+
+       The factors remain useful as *screening* criteria (find companies growing
+       revenue), which is a different claim from ranking by them.
 
     Args:
         fx: Converter used to compare market caps across markets.
