@@ -697,3 +697,46 @@ def test_roe_falls_back_to_the_derived_value_when_unpublished() -> None:
     snapshot = normalize_statement("7203", [record], dt.date(2025, 8, 9))
 
     assert snapshot.roe == pytest.approx(0.1)
+
+
+def test_both_providers_reject_the_same_impossible_yield() -> None:
+    """A guard on one side of a cross-market comparison is not a guard.
+
+    yfinance clamped its yields and J-Quants did not, so a Japanese name with a
+    broken figure outranked every real US payer. Observed live: a stored yield
+    of 73.76%.
+    """
+    import datetime as dt
+
+    from stock_ai.data.jquants_fundamentals import normalize_statement
+    from stock_ai.data.yfinance_provider import YFinanceFundamentalsProvider
+
+    jp_record = {
+        "CurPerType": "FY",
+        "DiscDate": "2026-05-08",
+        "EPS": 100.0,
+        "NP": 1e9,
+        "Eq": 1e10,
+        "BPS": 800.0,
+    }
+    impossible = normalize_statement(
+        "9999", [{**jp_record, "DivAnn": 737.6}], dt.date(2026, 8, 9), price=1000.0
+    )
+    ordinary = normalize_statement(
+        "7203", [{**jp_record, "DivAnn": 28.0}], dt.date(2026, 8, 9), price=1000.0
+    )
+
+    assert impossible.dividend_yield is None
+    assert ordinary.dividend_yield == pytest.approx(0.028)
+    # Only the yield is dropped; the rest of the snapshot survives.
+    assert impossible.pbr == pytest.approx(1.25)
+
+    def us(rate: float) -> float | None:
+        provider = YFinanceFundamentalsProvider(
+            info_fetcher=lambda _s: {"dividendRate": rate, "currentPrice": 1000.0},
+            clock=lambda: dt.date(2026, 8, 9),
+        )
+        return provider.fetch_fundamentals("X").dividend_yield
+
+    assert us(737.6) is None
+    assert us(28.0) == pytest.approx(0.028)

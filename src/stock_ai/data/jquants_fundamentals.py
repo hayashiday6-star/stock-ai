@@ -23,6 +23,7 @@ from pydantic import SecretStr
 from stock_ai.core.exceptions import DataError
 from stock_ai.core.logging import get_logger
 from stock_ai.data.http import raise_for_status
+from stock_ai.data.sanity import plausible_dividend_yield
 from stock_ai.data.types import FinancialReport, FiscalPeriod, Fundamentals
 
 logger = get_logger(__name__)
@@ -207,7 +208,9 @@ def normalize_statement(
         roe = net_income / equity
     per = price / eps if (price is not None and eps) else None
     pbr = price / bps if (price is not None and bps) else None
-    dividend_yield = dividend / price if (price and dividend is not None) else None
+    dividend_yield = plausible_dividend_yield(
+        dividend / price if (price and dividend is not None) else None, symbol
+    )
     market_cap = price * shares if (price is not None and shares) else None
 
     if annual is None:
