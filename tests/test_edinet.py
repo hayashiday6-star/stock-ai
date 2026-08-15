@@ -446,8 +446,7 @@ def _accepting(*placements: str) -> Any:
 
         in_query = "Subscription-Key" in params
         in_ocp = "Ocp-Apim-Subscription-Key" in headers
-        in_plain = "Subscription-Key" in headers
-        if in_query and in_ocp and in_plain:
+        if in_query and in_ocp:
             name = CURRENT_PLACEMENT
         elif in_query:
             name = BROWSER_PLACEMENT
@@ -576,3 +575,29 @@ def test_a_network_failure_is_not_reported_as_a_bad_key() -> None:
 
     assert "network" in text.lower()
     assert "set-key" not in text
+
+
+def test_the_key_is_not_sent_in_the_header_the_gateway_ignores() -> None:
+    """Measured 401 on a valid key: this spelling buys nothing but leaks more."""
+    import httpx
+
+    seen: dict[str, Any] = {}
+
+    class _Recording(_FakeClient):
+        def get(self, url: str, params: dict[str, str], headers: dict[str, str]) -> _FakeResponse:
+            seen["headers"] = headers
+            return _FakeResponse({"metadata": {"resultset": {"count": 0}}, "results": []})
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(httpx, "Client", _Recording)
+        _default_day_fetcher(SecretStr("k"))(dt.date(2026, 8, 7))
+
+    assert "Ocp-Apim-Subscription-Key" in seen["headers"]
+    assert "Subscription-Key" not in seen["headers"]
+
+
+def test_the_probe_still_tests_the_placement_the_client_dropped() -> None:
+    """A placement that fails is evidence; removing it would lose the diagnosis."""
+    from stock_ai.ir.edinet import UNREAD_HEADER_PLACEMENT, key_placements
+
+    assert UNREAD_HEADER_PLACEMENT in key_placements("k")

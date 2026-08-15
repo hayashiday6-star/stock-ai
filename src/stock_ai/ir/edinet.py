@@ -228,11 +228,16 @@ def _log_empty_day(day: dt.date, payload: Any, has_key: bool) -> None:
 
 
 #: The placement this client uses for real requests.
-CURRENT_PLACEMENT = "クエリ + ヘッダ2種 (現行)"
+CURRENT_PLACEMENT = "クエリ + Ocp-Apim ヘッダ (現行)"
 
 #: The placement that matches what a browser sends, and therefore the one a
 #: successful browser test actually proves.
 BROWSER_PLACEMENT = "クエリのみ (ブラウザと同じ)"
+
+#: The header spelling the gateway does not read. Kept in the probe because a
+#: placement that fails is evidence, and dropped from the real request because
+#: sending a key somewhere it is ignored is one more place for it to leak.
+UNREAD_HEADER_PLACEMENT = "Subscription-Key ヘッダのみ"
 
 
 def key_placements(secret: str) -> dict[str, tuple[dict[str, str], dict[str, str]]]:
@@ -245,14 +250,30 @@ def key_placements(secret: str) -> dict[str, tuple[dict[str, str], dict[str, str
     single failed request. Trying every placement against the live service is
     what separates "wrong key" from "right key, wrong envelope" - and pasting
     the URL into a browser only ever tests :data:`BROWSER_PLACEMENT`.
+
+    Measured against the live service on 2026-08-15 with a valid key:
+
+    ==================================  ======
+    Placement                           Result
+    ==================================  ======
+    ``Subscription-Key`` query          200
+    ``Ocp-Apim-Subscription-Key`` head  200
+    ``Subscription-Key`` header         **401**
+    ==================================  ======
+
+    So the gateway reads the query parameter and the standard APIM header, and
+    ignores the custom header spelling entirely. That last row is the one worth
+    keeping: it is a request carrying a *valid* key that still comes back
+    ``invalid subscription key``, which is the whole reason a single 401 could
+    never be read as "your key is wrong".
     """
     return {
         BROWSER_PLACEMENT: ({"Subscription-Key": secret}, {}),
         "Ocp-Apim-Subscription-Key ヘッダのみ": ({}, {"Ocp-Apim-Subscription-Key": secret}),
-        "Subscription-Key ヘッダのみ": ({}, {"Subscription-Key": secret}),
+        UNREAD_HEADER_PLACEMENT: ({}, {"Subscription-Key": secret}),
         CURRENT_PLACEMENT: (
             {"Subscription-Key": secret},
-            {"Ocp-Apim-Subscription-Key": secret, "Subscription-Key": secret},
+            {"Ocp-Apim-Subscription-Key": secret},
         ),
     }
 
@@ -358,16 +379,19 @@ def _default_day_fetcher(api_key: SecretStr | None) -> DayFetcher:
         params: dict[str, str] = {"date": day.isoformat(), "type": "2"}
         headers: dict[str, str] = {}
         if api_key is not None:
-            # The key is sent as a query parameter *and* in both header
-            # spellings, because only the service knows which one it reads.
+            # Both of these are confirmed to work against the live service; see
+            # the table in key_placements. The custom ``Subscription-Key``
+            # header is not sent, because the same run showed the gateway
+            # ignores it - a key put where nothing reads it buys nothing and is
+            # one more place for it to leak.
             #
             # An earlier version sent headers only, to keep the key out of the
-            # URL that httpx logs at INFO. That was the wrong trade. EDINET's
-            # published form is the query parameter, and header-only produced
-            # "401 Access denied due to invalid subscription key" - the standard
-            # Azure APIM wording for a key it cannot find, which reads exactly
-            # like a key that is wrong. Breaking the feature to avoid a leak
-            # that is already handled elsewhere is not a security win.
+            # URL that httpx logs at INFO. That was the wrong trade, and it
+            # failed for a reason worth remembering: the only header it sent was
+            # the spelling the gateway ignores, so it produced "401 Access
+            # denied due to invalid subscription key" with a perfectly valid
+            # key. Breaking the feature to avoid a leak that is already handled
+            # elsewhere is not a security win.
             #
             # The leak is handled: SecretRedactingFilter scrubs both the
             # ``Subscription-Key=`` parameter shape and the literal key value
