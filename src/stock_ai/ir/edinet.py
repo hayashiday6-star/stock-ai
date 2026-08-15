@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import datetime as dt
 from collections.abc import Callable
+from dataclasses import dataclass
 from typing import Any
 
 from pydantic import SecretStr
@@ -226,6 +227,128 @@ def _log_empty_day(day: dt.date, payload: Any, has_key: bool) -> None:
     )
 
 
+#: The placement this client uses for real requests.
+CURRENT_PLACEMENT = "クエリ + ヘッダ2種 (現行)"
+
+#: The placement that matches what a browser sends, and therefore the one a
+#: successful browser test actually proves.
+BROWSER_PLACEMENT = "クエリのみ (ブラウザと同じ)"
+
+
+def key_placements(secret: str) -> dict[str, tuple[dict[str, str], dict[str, str]]]:
+    """Return each way of presenting ``secret``, as ``(params, headers)``.
+
+    These are data rather than one hard-coded request because an Azure API
+    Management gateway answers ``401 Access denied due to invalid subscription
+    key`` both when the key is wrong *and* when it is somewhere the gateway does
+    not look. The wording is identical, so the two are indistinguishable from a
+    single failed request. Trying every placement against the live service is
+    what separates "wrong key" from "right key, wrong envelope" - and pasting
+    the URL into a browser only ever tests :data:`BROWSER_PLACEMENT`.
+    """
+    return {
+        BROWSER_PLACEMENT: ({"Subscription-Key": secret}, {}),
+        "Ocp-Apim-Subscription-Key ヘッダのみ": ({}, {"Ocp-Apim-Subscription-Key": secret}),
+        "Subscription-Key ヘッダのみ": ({}, {"Subscription-Key": secret}),
+        CURRENT_PLACEMENT: (
+            {"Subscription-Key": secret},
+            {"Ocp-Apim-Subscription-Key": secret, "Subscription-Key": secret},
+        ),
+    }
+
+
+@dataclass(frozen=True)
+class ProbeResult:
+    """What one key placement got back from EDINET."""
+
+    placement: str
+    #: ``None`` when the request never completed (DNS, TLS, timeout).
+    http_status: int | None
+    #: The application-level status, which is what actually decides acceptance.
+    api_status: str
+    message: str
+    documents: int | None
+
+    @property
+    def accepted(self) -> bool:
+        """Whether EDINET served the request rather than refusing it.
+
+        A day with no filings is still an accepted request: the useful question
+        is whether the gateway let us through, not whether anyone filed.
+        """
+        return self.http_status == 200 and self.documents is not None
+
+
+def _document_count(payload: Any) -> int | None:
+    """Return how many documents a payload reports, or ``None`` if it refused."""
+    if not isinstance(payload, dict) or error_envelope(payload) is not None:
+        return None
+    results = payload.get("results")
+    if isinstance(results, list):
+        return len(results)
+    metadata = payload.get("metadata")
+    if isinstance(metadata, dict):
+        resultset = metadata.get("resultset")
+        count = resultset.get("count") if isinstance(resultset, dict) else None
+        if isinstance(count, int):
+            return count
+        # An accepted request always carries metadata, even on a quiet day.
+        return 0
+    return None
+
+
+def probe_key_placements(
+    api_key: SecretStr,
+    day: dt.date,
+    requester: Callable[[dict[str, str], dict[str, str]], tuple[int, Any]] | None = None,
+) -> list[ProbeResult]:
+    """Try every key placement against EDINET and report what each one did.
+
+    Args:
+        api_key: The key to test. It is never returned or logged.
+        day: The date to request. Any date works; a weekday returns more.
+        requester: Performs one request, returning ``(http_status, payload)``.
+            Injected in tests so the probe can be exercised without network.
+
+    Returns:
+        One :class:`ProbeResult` per placement, in the order they were tried.
+    """
+    secret = api_key.get_secret_value()
+    send = requester or _http_requester(day)
+    results: list[ProbeResult] = []
+    for placement, (extra_params, headers) in key_placements(secret).items():
+        params = {"date": day.isoformat(), "type": "2", **extra_params}
+        try:
+            status, payload = send(params, headers)
+        except Exception as exc:  # a transport failure is a result, not a crash
+            results.append(ProbeResult(placement, None, "-", f"{type(exc).__name__}: {exc}", None))
+            continue
+        envelope = error_envelope(payload)
+        api_status = str(envelope[0]) if envelope else str(status)
+        message = envelope[1] if envelope else "OK"
+        results.append(
+            ProbeResult(placement, status, api_status, message, _document_count(payload))
+        )
+    return results
+
+
+def _http_requester(day: dt.date) -> Callable[[dict[str, str], dict[str, str]], tuple[int, Any]]:
+    """Return a callable that performs one probe request over HTTP."""
+
+    def send(params: dict[str, str], headers: dict[str, str]) -> tuple[int, Any]:
+        import httpx
+
+        with httpx.Client(timeout=30.0) as client:
+            response = client.get(_DOCUMENTS_URL, params=params, headers=headers)
+        try:
+            return response.status_code, response.json()
+        except ValueError:
+            return response.status_code, response.text[:200]
+
+    del day  # the date travels in params; kept for a clearer call site
+    return send
+
+
 def _default_day_fetcher(api_key: SecretStr | None) -> DayFetcher:
     """Build a fetcher for one day's document list."""
 
@@ -250,10 +373,11 @@ def _default_day_fetcher(api_key: SecretStr | None) -> DayFetcher:
             # ``Subscription-Key=`` parameter shape and the literal key value
             # (registered from settings) out of every log record, so the URL in
             # the log reads ``Subscription-Key=<redacted>``.
-            secret = api_key.get_secret_value()
-            params["Subscription-Key"] = secret
-            headers["Ocp-Apim-Subscription-Key"] = secret
-            headers["Subscription-Key"] = secret
+            extra_params, extra_headers = key_placements(api_key.get_secret_value())[
+                CURRENT_PLACEMENT
+            ]
+            params.update(extra_params)
+            headers.update(extra_headers)
 
         with httpx.Client(timeout=30.0) as client:
             response = client.get(_DOCUMENTS_URL, params=params, headers=headers)

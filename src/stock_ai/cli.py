@@ -69,7 +69,12 @@ from stock_ai.database.repository import (
     list_securities,
     upsert_profile,
 )
-from stock_ai.ir.edinet import EdinetDisclosureSource
+from stock_ai.ir.edinet import (
+    CURRENT_PLACEMENT,
+    EdinetDisclosureSource,
+    ProbeResult,
+    probe_key_placements,
+)
 from stock_ai.ir.monitor import WatchMonitor
 from stock_ai.ir.sources import CompositeDisclosureSource, NewsDisclosureSource
 from stock_ai.news.sources import YFinanceNewsSource
@@ -1444,6 +1449,94 @@ def monitor(
         console.print(result.format())
     else:
         console.print("[dim]Nothing above threshold.[/]")
+
+
+@app.command(name="edinet-check")
+def edinet_check(
+    date: str | None = typer.Option(None, help="Day to request, YYYY-MM-DD. Defaults to today."),
+) -> None:
+    """Diagnose an EDINET key by trying every way of sending it.
+
+    A refused EDINET request says ``invalid subscription key`` whether the key
+    is wrong or merely in a place the gateway does not read, so one failure
+    cannot tell those apart - and a successful browser test only proves the
+    query-parameter form. This sends the same key four ways and reports each,
+    which turns "401" into a specific next step.
+    """
+    settings = get_settings()
+    configure_logging(settings.log_level)
+
+    api_key = settings.edinet_api_key
+    if api_key is None:
+        console.print("[red]EDINET_API_KEY is not set.[/]")
+        console.print("Set it with: [cyan]powershell -File scripts/set-key.ps1 EDINET_API_KEY[/]")
+        raise typer.Exit(1)
+
+    day = _parse_date(date) or dt.date.today()
+    console.print(f"Key in .env: {_secret_summary(api_key)}")
+    console.print(f"Requesting [cyan]{day.isoformat()}[/] four different ways.\n")
+
+    results = probe_key_placements(api_key, day)
+
+    table = Table(title=f"EDINET key placements ({day.isoformat()})")
+    table.add_column("Placement", style="cyan")
+    table.add_column("HTTP", justify="right")
+    table.add_column("API status", justify="right")
+    table.add_column("Documents", justify="right")
+    table.add_column("Message")
+    for result in results:
+        mark = "[green]OK[/]" if result.accepted else "[red]NG[/]"
+        table.add_row(
+            f"{mark} {result.placement}",
+            str(result.http_status if result.http_status is not None else "-"),
+            result.api_status,
+            str(result.documents) if result.documents is not None else "-",
+            result.message,
+        )
+    console.print(table)
+    _print_edinet_verdict(results)
+
+
+def _print_edinet_verdict(results: list[ProbeResult]) -> None:
+    """Say what the probe means, so the table does not need interpreting."""
+    working = [r for r in results if r.accepted]
+    current = next((r for r in results if r.placement == CURRENT_PLACEMENT), None)
+
+    if all(r.http_status is None for r in results):
+        # A request that never arrived says nothing about the key. Reporting
+        # this as "your key is wrong" is the misdiagnosis this command exists
+        # to prevent, so it has to be ruled out before anything else.
+        console.print(
+            "\n[yellow]No request reached EDINET at all.[/] Every attempt failed "
+            "in transport, so this says nothing about your key - it is a network, "
+            "proxy, or firewall problem. Check your connection and try again."
+        )
+        return
+
+    if not working:
+        console.print(
+            "\n[red]Every placement was refused.[/] The key itself is the "
+            "problem, not how it is sent. Re-enter it with "
+            "[cyan]powershell -File scripts/set-key.ps1 EDINET_API_KEY[/] and "
+            "check the fingerprint above changes - if it does not, .env was not "
+            "updated and the old key is still in place."
+        )
+        return
+
+    if current is not None and current.accepted:
+        console.print(
+            "\n[green]The key works and the client already sends it correctly.[/] "
+            "Run the watchlist monitor - any remaining empty result is a quiet "
+            "week, not an authentication failure."
+        )
+        return
+
+    names = ", ".join(r.placement for r in working)
+    console.print(
+        f"\n[yellow]The key is valid but the client sends it the wrong way.[/] "
+        f"Accepted: {names}. This is a bug in the client, not in your key - "
+        "report this table and it will be fixed."
+    )
 
 
 def _disclosure_source(name: str, settings: Settings, lookback_days: int):

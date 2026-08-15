@@ -432,3 +432,147 @@ def test_a_rejected_day_is_logged_at_error_with_the_reason(
     assert any(record.levelno >= logging.ERROR for record in caplog.records)
     assert "Access denied" in caplog.text
     assert "401" in caplog.text
+
+
+def _accepting(*placements: str) -> Any:
+    """Return a requester that accepts only requests carrying a named placement.
+
+    The probe's whole job is telling placements apart, so the fake has to react
+    to *where* the key is rather than to whether one was sent at all.
+    """
+
+    def send(params: dict[str, str], headers: dict[str, str]) -> tuple[int, Any]:
+        from stock_ai.ir.edinet import BROWSER_PLACEMENT, CURRENT_PLACEMENT
+
+        in_query = "Subscription-Key" in params
+        in_ocp = "Ocp-Apim-Subscription-Key" in headers
+        in_plain = "Subscription-Key" in headers
+        if in_query and in_ocp and in_plain:
+            name = CURRENT_PLACEMENT
+        elif in_query:
+            name = BROWSER_PLACEMENT
+        elif in_ocp:
+            name = "Ocp-Apim-Subscription-Key ヘッダのみ"
+        else:
+            name = "Subscription-Key ヘッダのみ"
+        if name in placements:
+            return 200, {"metadata": {"resultset": {"count": 3}}, "results": [{}, {}, {}]}
+        return 200, {"StatusCode": 401, "message": "Access denied due to invalid subscription key."}
+
+    return send
+
+
+def test_the_probe_tries_every_placement() -> None:
+    from stock_ai.ir.edinet import key_placements, probe_key_placements
+
+    results = probe_key_placements(SecretStr("k"), dt.date(2026, 8, 7), _accepting())
+
+    assert [r.placement for r in results] == list(key_placements("k"))
+    assert not any(r.accepted for r in results)
+    assert all(r.api_status == "401" for r in results)
+
+
+def test_a_key_valid_only_in_the_browser_form_is_distinguished() -> None:
+    """The case a browser test can confirm and a single failed run cannot."""
+    from stock_ai.ir.edinet import BROWSER_PLACEMENT, CURRENT_PLACEMENT, probe_key_placements
+
+    results = probe_key_placements(
+        SecretStr("k"), dt.date(2026, 8, 7), _accepting(BROWSER_PLACEMENT)
+    )
+    accepted = {r.placement for r in results if r.accepted}
+
+    assert accepted == {BROWSER_PLACEMENT}
+    assert CURRENT_PLACEMENT not in accepted
+
+
+def test_an_accepted_quiet_day_is_not_reported_as_a_failure() -> None:
+    """Zero filings on a holiday is an accepted request, not a refused one."""
+    from stock_ai.ir.edinet import probe_key_placements
+
+    def quiet(params: dict[str, str], headers: dict[str, str]) -> tuple[int, Any]:
+        return 200, {"metadata": {"resultset": {"count": 0}}, "results": []}
+
+    results = probe_key_placements(SecretStr("k"), dt.date(2026, 8, 9), quiet)
+
+    assert all(r.accepted for r in results)
+    assert all(r.documents == 0 for r in results)
+
+
+def test_a_transport_failure_is_a_result_rather_than_a_crash() -> None:
+    """One dead placement must not stop the probe from testing the others."""
+    from stock_ai.ir.edinet import BROWSER_PLACEMENT, probe_key_placements
+
+    calls = {"n": 0}
+
+    def flaky(params: dict[str, str], headers: dict[str, str]) -> tuple[int, Any]:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise TimeoutError("connection timed out")
+        return 200, {"metadata": {"resultset": {"count": 1}}, "results": [{}]}
+
+    results = probe_key_placements(SecretStr("k"), dt.date(2026, 8, 7), flaky)
+
+    assert len(results) == 4
+    first = results[0]
+    assert first.placement == BROWSER_PLACEMENT
+    assert first.http_status is None
+    assert not first.accepted
+    assert "timed out" in first.message
+    assert all(r.accepted for r in results[1:])
+
+
+def test_the_probe_never_returns_the_key() -> None:
+    from stock_ai.ir.edinet import probe_key_placements
+
+    results = probe_key_placements(SecretStr("s3cret"), dt.date(2026, 8, 7), _accepting())
+
+    assert not any("s3cret" in f"{r.placement}{r.message}{r.api_status}" for r in results)
+
+
+def test_the_client_sends_the_placement_it_claims_to() -> None:
+    """Guards the probe against drifting away from what the client really does."""
+    import httpx
+
+    seen: dict[str, Any] = {}
+
+    class _Recording(_FakeClient):
+        def get(self, url: str, params: dict[str, str], headers: dict[str, str]) -> _FakeResponse:
+            seen["params"] = params
+            seen["headers"] = headers
+            return _FakeResponse({"metadata": {"resultset": {"count": 0}}, "results": []})
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(httpx, "Client", _Recording)
+        _default_day_fetcher(SecretStr("k"))(dt.date(2026, 8, 7))
+
+    from stock_ai.ir.edinet import CURRENT_PLACEMENT, key_placements
+
+    expected_params, expected_headers = key_placements("k")[CURRENT_PLACEMENT]
+    assert seen["headers"] == expected_headers
+    assert expected_params.items() <= seen["params"].items()
+
+
+def test_a_network_failure_is_not_reported_as_a_bad_key() -> None:
+    """The misdiagnosis this command exists to prevent, applied to itself.
+
+    Every placement failing in transport says nothing about the key. Telling
+    someone to re-issue a working key because their wifi dropped sends them to
+    the one place the answer is not.
+    """
+    from stock_ai.cli import _print_edinet_verdict
+    from stock_ai.ir.edinet import probe_key_placements
+
+    def unreachable(params: dict[str, str], headers: dict[str, str]) -> tuple[int, Any]:
+        raise OSError("Network is unreachable")
+
+    results = probe_key_placements(SecretStr("k"), dt.date(2026, 8, 7), unreachable)
+    assert all(r.http_status is None for r in results)
+
+    from stock_ai.cli import console
+
+    with console.capture() as captured:
+        _print_edinet_verdict(results)
+    text = captured.get()
+
+    assert "network" in text.lower()
+    assert "set-key" not in text
