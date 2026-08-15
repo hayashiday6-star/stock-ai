@@ -20,6 +20,38 @@ Built phase by phase; all ten phases are in place.
 - [x] **Phase 9** — Automated trading (paper broker; IBKR skeleton, opt-in)
 - [x] **Phase 10** — Streamlit dashboard
 
+## What is verified, and what is only implemented
+
+"All ten phases in place" says the code exists. It does not say the code has
+met reality, and on this project the gap between those two mattered: ten real
+bugs surfaced only when real data arrived, and every one of them produced
+plausible wrong numbers rather than an error. So the table separates them.
+
+| Area | State |
+|---|---|
+| JP prices & financials (J-Quants v2) | **Verified** — 1,556 TSE symbols loaded; PER median 14.94, PBR 1.26, ROE 9.1%, dividend 2.82%, all consistent with TSE norms; Toyota PER 10.0 / ¥43.25tn cross-checked |
+| JP screening | **Verified** — run on the full universe, results reviewed by name |
+| Factor / walk-forward validation | **Verified** — 12 windows, 1,253–1,492 names scored per window |
+| EDINET disclosures | **Partly** — authentication verified 2026-08-15; filing *parsing* not yet exercised against a day with filings |
+| US prices (yfinance) | **Partly** — the path works and real-data bugs were found and fixed through it, but no full US universe has been loaded here |
+| Cross-market ranking (JP + US) | **Not validated at scale** — implemented and unit-tested; never run with both universes fully loaded |
+| Backtest engine | **Not validated on real data** — unit-tested only; the walk-forward work used the factor-test path, not `backtest` |
+| AI scoring / chat / notifications | **Not validated** — require provider keys not exercised here |
+| Automated trading | **Paper broker only.** The IBKR path is a skeleton, opt-in, and has never placed an order. Do not point it at a funded account |
+
+Two conclusions this system produced about itself, both negative and both
+worth knowing before use:
+
+- **The tenbagger score has no demonstrated edge.** Tested properly, it failed.
+  Use it to screen, not to rank. See
+  [Does the score actually work?](#does-the-score-actually-work)
+- **Expected returns are not implemented**, deliberately — annualising a past
+  mean produces a number whose estimation error exceeds its signal, and
+  printing it would dress an unknown as a forecast.
+
+Nothing here should be read as investment advice, and no screen output is a
+recommendation.
+
 ## Requirements
 
 - Windows 11
@@ -238,26 +270,54 @@ CAGR, latest-year revenue and profit growth, retained earnings, and smallness
 out on purpose — it measures what the market has already paid for.
 
 Treat the output as a shortlist to research, not a prediction. No weighting of
-trailing fundamentals picks future multi-baggers reliably — check it with
-`factor-test` below before trusting the ranking.
+trailing fundamentals picks future multi-baggers reliably — and this particular
+weighting **was tested on the TSE universe and showed no edge**, so use it to
+find growing companies, not to decide position sizes. The measurement is in
+[Does the score actually work?](#does-the-score-actually-work) below.
 
 ## Does the score actually work?
 
+**It was tested on the real TSE universe, and no edge was found.** The answer
+is below; the tools that produced it are described after.
+
+```
+12 quarterly formations, 2022–2025, 252-bar hold
+1,253–1,492 names scored per window
+
+3 of 12 windows cleared 2σ
+median t = +0.52
+monotonic across buckets in 3 of 12
+5 of 12 had a positive excess at all — a coin flip
+```
+
+The pass/fail bands were **declared before the numbers were seen** (13+/16
+consistent, 8–12 a regime bet, 7 or fewer not demonstrated; scaled to 12
+windows ≈ 10 / 6–9 / 5 or fewer). 3 of 12 falls below every band.
+
+The strongest window argues against the score rather than for it. Formation
+2024-08-06 (`t = +4.25`, excess `+7.64%`) begins the day after the Nikkei's
+largest single-day fall of the period — a small-cap growth tilt formed at a
+crash low measures the rebound, not stock selection. *(That the 2024-08-05
+crash was the largest of the sample is market history, not something measured
+from the local database; the t-statistic and excess return are measured.)*
+Two of the three significant windows are one quarter apart and share nine
+months of forward returns, so they are closer to one episode than two.
+
+So `--preset tenbagger` is a **screening** preset — useful for finding
+companies that are actually growing — and not a ranking to allocate on. Those
+are different claims, and only the first survived testing.
+
+### The tools that produced that answer
+
 ```bash
 uv run stock-ai factor-test 2024-06-28 --preset tenbagger --horizon 252
+uv run stock-ai factor-test 2022-06-30 --preset tenbagger --walk-forward 12
 ```
 
-Ranks the stored universe using **only data available on the formation date**
-(prices truncated there, statements filtered on their disclosure date), holds
-the top bucket for the horizon, and compares against the equal-weight universe:
-
-```
-bucket   n     mean   median  hit rate  vs universe
-top     12   +8.99%   +9.15%       92%      +7.97%
-mid1    12   +3.82%   +4.86%       58%      +2.80%
-bottom  12   -9.75%  -11.50%       25%     -10.77%
-Top-bottom spread t = +4.95 (clears 2σ).
-```
+`factor-test` ranks the stored universe using **only data available on the
+formation date** (prices truncated there, statements filtered on their
+disclosure date), holds the top bucket for the horizon, and compares against
+the equal-weight universe.
 
 Read the **t-statistic before the excess return**. On a universe of a few dozen
 names, sampling noise alone routinely hands the top bucket a several-percent
@@ -265,9 +325,17 @@ names, sampling noise alone routinely hands the top bucket a several-percent
 produced +5.4% for the top bucket, at t = +1.39. Anything inside 2σ is not
 distinguishable from chance, and the report says so.
 
-Two limits it cannot remove: the universe is whatever is in the local database,
-so delisted names are missing (survivorship bias), and a single formation date
-is one draw. This can falsify a score; it cannot prove one works.
+**`--walk-forward` is the one that matters.** A single formation date is one
+observation: the first date tried here, 2024-06, came back at `t = +2.78` and
+looked like evidence. Across twelve windows it was one draw in twelve. The
+function deliberately cannot return a single summary number, because that is
+the shape that invites picking the flattering window.
+
+Two limits neither form can remove: the universe is whatever is in the local
+database, so delisted names are missing (survivorship bias), and 252 bars is a
+short horizon for a thesis about multi-year compounding. Neither is a reason to
+use a score that failed — "not yet disproven over a longer horizon" is not an
+edge.
 
 The composite score is built from unitless ratios, so it already compares
 across markets. Market cap does not — it arrives in the listing market's
@@ -334,10 +402,32 @@ of `--lookback-days` regardless of how many names are watched.
 > If you have a third-party TDnet feed, implement `fetch` on `DisclosureSource`
 > or pass a callable to `ir.sources.from_callable`; nothing else changes.
 
-> **The EDINET adapter is written to the published v2 spec but has not been run
-> against the live API** (the environment it was built in has no outbound access
-> to it). Check the first real run: a drifted field name would show up as zero
-> disclosures rather than as an error.
+**Verified against the live API on 2026-08-15: authentication only.** The key
+is accepted and days are served. What is **not** yet confirmed against real
+filings is the parsing — `secCode`, `docTypeCode`, `submitDateTime` — because
+the day tested was a Saturday during Obon and returned zero filings. A drifted
+field name would show up as zero disclosures rather than as an error, so check
+a weekday before trusting an empty result:
+
+```bash
+uv run stock-ai edinet-check --date 2026-08-14   # Documents > 0 = parsing path exercised
+```
+
+`monitor` also logs `N filings scanned, M carried a securities code`, which
+separates "nobody filed" from "the field we match on is gone".
+
+If EDINET refuses the key, run `edinet-check` rather than guessing. The gateway
+answers `invalid subscription key` both when the key is wrong and when it is
+somewhere the gateway does not read, so one failure cannot tell those apart —
+measured on 2026-08-15 with a **valid** key:
+
+| how the key is sent | result |
+|---|---|
+| `Subscription-Key` query parameter | 200 |
+| `Ocp-Apim-Subscription-Key` header | 200 |
+| `Subscription-Key` header | **401** |
+
+Pasting the URL into a browser only ever tests the first row.
 
 ## Daily automation
 

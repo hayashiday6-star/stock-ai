@@ -17,11 +17,19 @@ Two things shape this adapter:
   finds nothing, so codes are compared on their first four digits.
 
 .. warning::
-   Written against the published EDINET API v2 specification and exercised
-   against recorded response shapes, but **not** verified against the live
-   service (this environment has no outbound access to it). Check the first
-   real run: a field name that has drifted would show up as zero disclosures
-   rather than as an error.
+   **Authentication is verified against the live service (2026-08-15); the
+   parsing below is not.** The day tested was a Saturday during Obon and
+   returned zero filings, so the request path is confirmed while the mapping
+   from a real ``results`` entry - ``secCode``, ``docTypeCode``,
+   ``submitDateTime`` - has still only been exercised against recorded
+   response shapes.
+
+   That distinction is the whole risk here. A drifted field name does not
+   raise; it reports zero disclosures, which is indistinguishable from a
+   quiet week. :func:`EdinetDisclosureSource.fetch` logs how many filings it
+   scanned and how many carried a securities code precisely so the two can be
+   told apart. Run ``stock-ai edinet-check`` on a weekday to confirm filings
+   arrive at all.
 """
 
 from __future__ import annotations

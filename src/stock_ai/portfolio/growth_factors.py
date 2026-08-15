@@ -163,10 +163,16 @@ def tenbagger_weighted_factors(
 
        The strongest window is instructive rather than encouraging. Formation
        2024-08-06 (``t = +4.25``, excess ``+7.64%``) begins the day after the
-       Nikkei's largest single-day fall in the sample. A small-cap growth tilt
+       Nikkei's largest single-day fall of the period. A small-cap growth tilt
        formed at a crash low measures the rebound, not stock selection. The two
        other significant windows are one quarter apart and share nine months of
        forward returns, so they are closer to one episode than two.
+
+       Provenance, since the two are not equally solid: the t-statistics and
+       excess returns are measured by this repository. That the 2024-08-05
+       fall was the largest of the sample is market history - no index series
+       is stored locally, so it was not computed here. It is the reading of
+       that window, not the window itself, that rests on it.
 
        Caveats that bound the claim without rescuing it: a 252-bar hold is short
        for a thesis about multi-year compounding, four years is a small sample,
