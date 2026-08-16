@@ -81,3 +81,10 @@ def test_missing_close_column_raises() -> None:
     frame = pd.DataFrame({"open": [1, 2, 3]})
     with pytest.raises(DataError):
         sma(frame)
+
+
+def test_rsi_on_a_flat_series_is_neutral_not_nan() -> None:
+    """With no gains and no losses RSI is 50 by convention, not 0/0."""
+    result = rsi(_prices([100.0] * 20), window=14)
+    assert result.iloc[-1] == pytest.approx(50.0)
+    assert pd.isna(result.iloc[0])  # the leading diff() NaN is preserved

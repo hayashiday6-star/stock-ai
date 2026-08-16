@@ -132,3 +132,29 @@ def test_profit_factor_and_win_rate() -> None:
     assert win_rate(returns) == pytest.approx(2 / 3)
     assert profit_factor([0.1, 0.2]) == np.inf  # no losers
     assert win_rate([]) == 0.0
+
+
+def test_trade_return_is_net_of_commission() -> None:
+    """Trade stats must pay the same commission the equity curve does.
+
+    A round trip at an unchanged price is a loser once both legs are charged;
+    reporting it as flat would overstate win rate and profit factor.
+    """
+    prices = _prices(opens=[10, 10, 10], closes=[10, 10, 10])
+    signals = pd.Series([True, True, False], index=prices.index)
+
+    trade = BacktestEngine(commission=0.01).run(prices, signals).trades[0]
+    assert trade.entry_price == pytest.approx(10)  # fills stay raw
+    assert trade.exit_price == pytest.approx(10)
+    assert trade.return_pct == pytest.approx(0.99 / 1.01 - 1.0)
+    assert trade.return_pct < 0
+
+    free = BacktestEngine(commission=0.0).run(prices, signals).trades[0]
+    assert free.return_pct == pytest.approx(0.0)
+
+
+def test_commissioned_flat_round_trip_is_not_counted_as_a_win() -> None:
+    prices = _prices(opens=[10, 10, 10], closes=[10, 10, 10])
+    signals = pd.Series([True, True, False], index=prices.index)
+    result = BacktestEngine(commission=0.01).run(prices, signals)
+    assert result.metrics.win_rate == 0.0

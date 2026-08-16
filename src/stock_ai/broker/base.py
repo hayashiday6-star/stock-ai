@@ -2,7 +2,7 @@
 
 Trading code depends only on :class:`Broker`, so the concrete backend (a paper
 simulator now, Interactive Brokers later) is swappable. Real-money execution is
-never the default — see :class:`~stock_ai.broker.paper.PaperBroker`.
+never the default - see :class:`~stock_ai.broker.paper.PaperBroker`.
 """
 
 from __future__ import annotations

@@ -3,24 +3,27 @@
 The HTTP call is isolated behind an injectable ``fetcher`` so the provider is
 unit-testable without the network. The default fetcher targets the J-Quants V2
 API (``x-api-key`` auth); its exact endpoint/params should be checked against the
-current J-Quants docs before live use — the tested contract here is the
+current J-Quants docs before live use - the tested contract here is the
 normalization and provider logic, exercised via an injected fetcher.
 
 Note: J-Quants subscriptions are a *rolling* 5-year window, so always pass a
-dynamically computed date range — a hard-coded start date will eventually 400.
+dynamically computed date range - a hard-coded start date will eventually 400.
 """
 
 from __future__ import annotations
 
+import contextlib
 import datetime as dt
+import re
 from collections.abc import Callable
 from typing import Any
 
 import pandas as pd
 from pydantic import SecretStr
 
-from stock_ai.core.exceptions import DataError
+from stock_ai.core.exceptions import DataError, RateLimitError
 from stock_ai.core.logging import get_logger
+from stock_ai.data.http import raise_for_status
 from stock_ai.data.schema import (
     ADJ_CLOSE,
     CLOSE,
@@ -94,10 +97,40 @@ def normalize_jquants(records: list[dict[str, Any]]) -> pd.DataFrame:
     return df.set_index(DATE)
 
 
+#: J-Quants rejects an out-of-plan range with a 400 that names the range it
+#: *would* serve, e.g. ``Your subscription covers the following dates:
+#: 2021-08-16 ~ .`` The open right-hand side means "up to today".
+_SUBSCRIPTION_WINDOW = re.compile(
+    r"subscription covers the following dates:\s*(\d{4}-\d{2}-\d{2})\s*~\s*(\d{4}-\d{2}-\d{2})?"
+)
+
+
+def subscription_window(message: str) -> tuple[dt.date, dt.date | None] | None:
+    """Return the date range a plan covers, if the error message names one.
+
+    The provider answers an over-wide request by stating exactly what it would
+    have served. Reading that back is the difference between "the whole symbol
+    failed" and "we now know the plan starts on 2021-08-16" - and it needs no
+    configuration, because the answer arrives with the refusal.
+    """
+    match = _SUBSCRIPTION_WINDOW.search(message)
+    if match is None:
+        return None
+    try:
+        start = dt.date.fromisoformat(match.group(1))
+    except ValueError:  # pragma: no cover - the regex already fixes the shape
+        return None
+    end: dt.date | None = None
+    if match.group(2):
+        with contextlib.suppress(ValueError):
+            end = dt.date.fromisoformat(match.group(2))
+    return start, end
+
+
 def _default_fetcher(api_key: SecretStr | None) -> JQuantsFetcher:
     """Build a fetcher that calls the J-Quants V2 daily-quotes endpoint."""
 
-    def fetch(symbol: str, start: dt.date, end: dt.date) -> list[dict[str, Any]]:
+    def request(symbol: str, start: dt.date, end: dt.date) -> list[dict[str, Any]]:
         import httpx
 
         headers = {"x-api-key": api_key.get_secret_value()} if api_key else {}
@@ -110,7 +143,7 @@ def _default_fetcher(api_key: SecretStr | None) -> JQuantsFetcher:
                 if pagination_key:
                     query["pagination_key"] = pagination_key
                 response = client.get(_DAILY_QUOTES_URL, headers=headers, params=query)
-                response.raise_for_status()
+                raise_for_status(response, f"prices for {symbol}")
                 payload = response.json()
                 # V2 returns {"data": [...]}; older shapes used "daily_quotes".
                 records.extend(payload.get("data") or payload.get("daily_quotes") or [])
@@ -118,6 +151,58 @@ def _default_fetcher(api_key: SecretStr | None) -> JQuantsFetcher:
                 if not pagination_key:
                     break
         return records
+
+    # The plan's covered range, once the provider has told us what it is. It is
+    # a property of the subscription, not of a symbol, so learning it on the
+    # first refusal and applying it to the rest is the whole point: without
+    # this, every symbol in a 1,564-name backfill pays its own rejected request
+    # before the useful one. That doubles the request count on exactly the run
+    # that is already the heaviest, and the rate limiter aborts it partway - on
+    # the first real attempt only 38 symbols were extended before the run ended.
+    learned: dict[str, tuple[dt.date, dt.date | None]] = {}
+
+    def clamp(start: dt.date, end: dt.date) -> tuple[dt.date, dt.date]:
+        """Narrow a range to the plan's window, if we have been told one."""
+        window = learned.get("window")
+        if window is None:
+            return start, end
+        covered_start, covered_end = window
+        return max(start, covered_start), (min(end, covered_end) if covered_end else end)
+
+    def fetch(symbol: str, start: dt.date, end: dt.date) -> list[dict[str, Any]]:
+        """Fetch a range, narrowing it to what the subscription actually covers.
+
+        Asking for more history than the plan covers fails the whole symbol,
+        which is wrong twice over: the years that *are* covered were available
+        all along, and a universe-wide backfill fails every name for the same
+        reason. The refusal states the covered range, so it is taken, applied,
+        and remembered for the remaining symbols.
+        """
+        start, end = clamp(start, end)
+        if start >= end:
+            return []  # the plan's window and the wanted window do not overlap
+        try:
+            return request(symbol, start, end)
+        except RateLimitError:
+            raise
+        except DataError as exc:
+            window = subscription_window(str(exc))
+            if window is None:
+                raise
+            learned["window"] = window
+            covered_start, _covered_end = window
+            narrowed_start, narrowed_end = clamp(start, end)
+            if narrowed_start >= narrowed_end or (narrowed_start, narrowed_end) == (start, end):
+                raise
+            logger.warning(
+                "The J-Quants plan covers %s onward, not %s. Fetching the covered "
+                "part for %s and every symbol after it; earlier history needs a "
+                "different plan.",
+                covered_start,
+                start,
+                symbol,
+            )
+            return request(symbol, narrowed_start, narrowed_end)
 
     return fetch
 

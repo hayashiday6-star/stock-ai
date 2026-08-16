@@ -11,7 +11,7 @@ from __future__ import annotations
 import datetime as dt
 
 import pandas as pd
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session
 
@@ -25,8 +25,25 @@ from stock_ai.data.schema import (
     OPEN,
     VOLUME,
 )
-from stock_ai.data.types import Fundamentals
-from stock_ai.database.models import FundamentalSnapshot, PriceBar, Security
+from stock_ai.data.types import (
+    Disclosure,
+    FinancialReport,
+    FiscalPeriod,
+    Fundamentals,
+    HoldingRecord,
+    Importance,
+    SecurityProfile,
+    WatchEntry,
+)
+from stock_ai.database.models import (
+    FinancialStatement,
+    FundamentalSnapshot,
+    Holding,
+    PriceBar,
+    Security,
+    SeenDisclosure,
+    WatchlistItem,
+)
 
 _UPSERT_COLUMNS = [OPEN, HIGH, LOW, CLOSE, ADJ_CLOSE, VOLUME]
 _FUNDAMENTAL_COLUMNS = [
@@ -38,11 +55,90 @@ _FUNDAMENTAL_COLUMNS = [
     "dividend_yield",
     "market_cap",
 ]
+_STATEMENT_COLUMNS = [
+    "disclosed_on",
+    "revenue",
+    "operating_income",
+    "net_income",
+    "equity",
+    "eps",
+    "bps",
+    "dividend_per_share",
+    "shares_outstanding",
+]
 
 
 def list_symbols(session: Session) -> list[str]:
     """Return all stored security symbols, sorted alphabetically."""
     return list(session.execute(select(Security.symbol).order_by(Security.symbol)).scalars().all())
+
+
+def list_securities(session: Session) -> list[tuple[str, str]]:
+    """Return ``(symbol, market)`` for every stored security, sorted by symbol.
+
+    Cross-market work needs the listing market alongside the symbol - it is
+    what selects the quote currency - so this is kept separate from the
+    symbols-only :func:`list_symbols`.
+    """
+    rows = session.execute(select(Security.symbol, Security.market).order_by(Security.symbol)).all()
+    return [(symbol, market) for symbol, market in rows]
+
+
+def price_history_spans(session: Session) -> list[tuple[str, str, dt.date, dt.date, int]]:
+    """Return ``(symbol, market, earliest, latest, bars)`` for every stored series.
+
+    One grouped query rather than three per symbol: on a 1,500-name universe
+    the per-symbol form is thousands of round trips to answer a question asked
+    after every backfill.
+    """
+    rows = session.execute(
+        select(
+            Security.symbol,
+            Security.market,
+            func.min(PriceBar.date),
+            func.max(PriceBar.date),
+            func.count(PriceBar.id),
+        )
+        .join(PriceBar, PriceBar.security_id == Security.id)
+        .group_by(Security.symbol, Security.market)
+        .order_by(Security.symbol)
+    ).all()
+    return [
+        (symbol, market, earliest, latest, int(bars))
+        for symbol, market, earliest, latest, bars in rows
+    ]
+
+
+def upsert_profile(session: Session, profile: SecurityProfile) -> None:
+    """Store descriptive attributes for a security, creating it if needed.
+
+    Only fields the profile actually carries are written: a provider that omits
+    the industry must not blank one another provider already supplied.
+    """
+    security = get_or_create_security(
+        session, profile.symbol, market=profile.market, name=profile.name
+    )
+    for field in ("name", "sector", "industry"):
+        value = getattr(profile, field)
+        if value is not None:
+            setattr(security, field, value)
+    session.flush()
+
+
+def get_profile(session: Session, symbol: str) -> SecurityProfile | None:
+    """Return the stored profile for ``symbol``, or ``None`` if unknown."""
+    security = session.execute(
+        select(Security).where(Security.symbol == symbol)
+    ).scalar_one_or_none()
+    if security is None:
+        return None
+    return SecurityProfile(
+        symbol=security.symbol,
+        market=security.market,
+        name=security.name,
+        sector=security.sector,
+        industry=security.industry,
+    )
 
 
 def get_or_create_security(
@@ -148,6 +244,21 @@ class PriceRepository:
             .limit(1)
         ).scalar_one_or_none()
 
+    def earliest_date(self, symbol: str) -> dt.date | None:
+        """Return the oldest stored bar date for ``symbol``, or ``None``.
+
+        Needed to tell "already up to date" from "up to date at the front and
+        missing ten years at the back", which look identical from
+        :meth:`latest_date` alone.
+        """
+        return self.session.execute(
+            select(PriceBar.date)
+            .join(Security)
+            .where(Security.symbol == symbol)
+            .order_by(PriceBar.date.asc())
+            .limit(1)
+        ).scalar_one_or_none()
+
 
 class FundamentalsRepository:
     """Persist and query fundamentals snapshots keyed by symbol and date."""
@@ -171,14 +282,22 @@ class FundamentalsRepository:
         )
         self.session.execute(stmt)
 
-    def get_latest(self, symbol: str) -> Fundamentals | None:
-        """Return the most recent stored snapshot for ``symbol``, or ``None``."""
+    def get_latest(self, symbol: str, as_of: dt.date | None = None) -> Fundamentals | None:
+        """Return the newest stored snapshot for ``symbol``, or ``None``.
+
+        Args:
+            symbol: The security.
+            as_of: Ignore snapshots taken after this date. Pass the formation
+                date in any historical test - a snapshot is stamped with the day
+                it was *fetched*, so the newest one is by definition today's, and
+                scoring a 2024 formation on today's market cap is look-ahead of
+                the most flattering kind.
+        """
+        query = select(FundamentalSnapshot).join(Security).where(Security.symbol == symbol)
+        if as_of is not None:
+            query = query.where(FundamentalSnapshot.as_of <= as_of)
         row = self.session.execute(
-            select(FundamentalSnapshot)
-            .join(Security)
-            .where(Security.symbol == symbol)
-            .order_by(FundamentalSnapshot.as_of.desc())
-            .limit(1)
+            query.order_by(FundamentalSnapshot.as_of.desc()).limit(1)
         ).scalar_one_or_none()
         if row is None:
             return None
@@ -187,3 +306,273 @@ class FundamentalsRepository:
             as_of=row.as_of,
             **{col: getattr(row, col) for col in _FUNDAMENTAL_COLUMNS},
         )
+
+
+class FinancialStatementRepository:
+    """Persist and query the fiscal-period statement series for a security.
+
+    Unlike :class:`FundamentalsRepository`, which keeps one snapshot per fetch
+    date, this stores one row per *fiscal period*. That axis is what makes
+    growth, dividend streaks, and payout history answerable.
+    """
+
+    def __init__(self, session: Session) -> None:
+        """Bind the repository to an active session."""
+        self.session = session
+
+    def upsert_reports(
+        self, symbol: str, reports: list[FinancialReport], market: str = "US"
+    ) -> int:
+        """Insert or update ``reports`` for ``symbol``, keyed by fiscal period.
+
+        A restated disclosure for a period already stored overwrites it, so
+        re-ingesting the same history is idempotent.
+
+        Returns:
+            The number of rows written.
+        """
+        if not reports:
+            return 0
+
+        security = get_or_create_security(self.session, symbol, market=market)
+        # Later entries win if a payload repeats a period, matching the upsert.
+        by_period = {(r.fiscal_year, str(r.period)): r for r in reports}
+        records = [
+            {
+                "security_id": security.id,
+                "fiscal_year": report.fiscal_year,
+                "period": str(report.period),
+                **{col: getattr(report, col) for col in _STATEMENT_COLUMNS},
+            }
+            for report in by_period.values()
+        ]
+
+        stmt = sqlite_insert(FinancialStatement).values(records)
+        stmt = stmt.on_conflict_do_update(
+            index_elements=["security_id", "fiscal_year", "period"],
+            set_={col: getattr(stmt.excluded, col) for col in _STATEMENT_COLUMNS},
+        )
+        self.session.execute(stmt)
+        return len(records)
+
+    def get_reports(
+        self, symbol: str, period: FiscalPeriod | None = FiscalPeriod.FY
+    ) -> list[FinancialReport]:
+        """Return ``symbol``'s statements oldest first.
+
+        Args:
+            symbol: The security to read.
+            period: Restrict to one fiscal period type; ``None`` returns every
+                period. Defaults to annual, which is what growth and dividend
+                streak calculations compare - mixing quarters into a
+                year-over-year series would silently corrupt it.
+        """
+        stmt = (
+            select(FinancialStatement)
+            .join(Security)
+            .where(Security.symbol == symbol)
+            .order_by(FinancialStatement.fiscal_year, FinancialStatement.period)
+        )
+        if period is not None:
+            stmt = stmt.where(FinancialStatement.period == str(period))
+
+        return [
+            FinancialReport(
+                symbol=symbol,
+                fiscal_year=row.fiscal_year,
+                period=FiscalPeriod(row.period),
+                **{col: getattr(row, col) for col in _STATEMENT_COLUMNS},
+            )
+            for row in self.session.execute(stmt).scalars().all()
+        ]
+
+    def latest_fiscal_year(self, symbol: str) -> int | None:
+        """Return the most recent stored annual fiscal year, or ``None``."""
+        return self.session.execute(
+            select(FinancialStatement.fiscal_year)
+            .join(Security)
+            .where(
+                Security.symbol == symbol,
+                FinancialStatement.period == str(FiscalPeriod.FY),
+            )
+            .order_by(FinancialStatement.fiscal_year.desc())
+            .limit(1)
+        ).scalar_one_or_none()
+
+
+class HoldingRepository:
+    """Persist and query the user's actual positions."""
+
+    def __init__(self, session: Session) -> None:
+        """Bind the repository to an active session."""
+        self.session = session
+
+    def set_holding(
+        self, symbol: str, quantity: float, average_cost: float, market: str = "US"
+    ) -> None:
+        """Set ``symbol``'s position outright, replacing any existing one.
+
+        A non-positive quantity removes the holding, so closing a position is
+        expressible without a separate call.
+        """
+        if quantity <= 0:
+            self.remove_holding(symbol)
+            return
+
+        security = get_or_create_security(self.session, symbol, market=market)
+        stmt = sqlite_insert(Holding).values(
+            [
+                {
+                    "security_id": security.id,
+                    "quantity": quantity,
+                    "average_cost": average_cost,
+                }
+            ]
+        )
+        stmt = stmt.on_conflict_do_update(
+            index_elements=["security_id"],
+            set_={
+                "quantity": stmt.excluded.quantity,
+                "average_cost": stmt.excluded.average_cost,
+            },
+        )
+        self.session.execute(stmt)
+
+    def add_shares(self, symbol: str, quantity: float, price: float, market: str = "US") -> None:
+        """Add ``quantity`` shares bought at ``price``, blending the cost basis."""
+        existing = self.get_holding(symbol)
+        if existing is None:
+            self.set_holding(symbol, quantity, price, market=market)
+            return
+
+        total = existing.quantity + quantity
+        if total <= 0:
+            self.remove_holding(symbol)
+            return
+        blended = (existing.average_cost * existing.quantity + price * quantity) / total
+        self.set_holding(symbol, total, blended, market=market)
+
+    def remove_holding(self, symbol: str) -> None:
+        """Delete ``symbol``'s position if one is stored."""
+        row = self._row(symbol)
+        if row is not None:
+            self.session.delete(row)
+
+    def get_holding(self, symbol: str) -> HoldingRecord | None:
+        """Return ``symbol``'s position, or ``None`` if it is not held."""
+        row = self._row(symbol)
+        if row is None:
+            return None
+        return HoldingRecord(
+            symbol=symbol,
+            market=row.security.market,
+            quantity=row.quantity,
+            average_cost=row.average_cost,
+        )
+
+    def list_holdings(self) -> list[HoldingRecord]:
+        """Return every stored position, sorted by symbol."""
+        rows = (
+            self.session.execute(select(Holding).join(Security).order_by(Security.symbol))
+            .scalars()
+            .all()
+        )
+        return [
+            HoldingRecord(
+                symbol=row.security.symbol,
+                market=row.security.market,
+                quantity=row.quantity,
+                average_cost=row.average_cost,
+            )
+            for row in rows
+        ]
+
+    def _row(self, symbol: str) -> Holding | None:
+        """Return the ORM row for ``symbol``, or ``None``."""
+        return self.session.execute(
+            select(Holding).join(Security).where(Security.symbol == symbol)
+        ).scalar_one_or_none()
+
+
+class WatchlistRepository:
+    """Persist the watchlist and the disclosures already reported for it."""
+
+    def __init__(self, session: Session) -> None:
+        """Bind the repository to an active session."""
+        self.session = session
+
+    def add(
+        self,
+        symbol: str,
+        note: str | None = None,
+        min_importance: Importance = Importance.MEDIUM,
+        market: str = "US",
+    ) -> None:
+        """Add ``symbol`` to the watchlist, updating it if already present."""
+        security = get_or_create_security(self.session, symbol, market=market)
+        stmt = sqlite_insert(WatchlistItem).values(
+            [
+                {
+                    "security_id": security.id,
+                    "note": note,
+                    "min_importance": str(min_importance),
+                }
+            ]
+        )
+        stmt = stmt.on_conflict_do_update(
+            index_elements=["security_id"],
+            set_={"note": stmt.excluded.note, "min_importance": stmt.excluded.min_importance},
+        )
+        self.session.execute(stmt)
+
+    def remove(self, symbol: str) -> bool:
+        """Drop ``symbol`` from the watchlist; ``True`` if it was there."""
+        row = self.session.execute(
+            select(WatchlistItem).join(Security).where(Security.symbol == symbol)
+        ).scalar_one_or_none()
+        if row is None:
+            return False
+        self.session.delete(row)
+        return True
+
+    def list_entries(self) -> list[WatchEntry]:
+        """Return every watchlist entry, sorted by symbol."""
+        rows = (
+            self.session.execute(select(WatchlistItem).join(Security).order_by(Security.symbol))
+            .scalars()
+            .all()
+        )
+        return [
+            WatchEntry(
+                symbol=row.security.symbol,
+                market=row.security.market,
+                note=row.note,
+                min_importance=Importance(row.min_importance),
+            )
+            for row in rows
+        ]
+
+    def is_seen(self, uid: str) -> bool:
+        """Whether a disclosure with ``uid`` has already been reported."""
+        return (
+            self.session.execute(
+                select(SeenDisclosure.id).where(SeenDisclosure.uid == uid).limit(1)
+            ).scalar_one_or_none()
+            is not None
+        )
+
+    def mark_seen(self, disclosure: Disclosure, importance: Importance, market: str = "US") -> None:
+        """Record ``disclosure`` as reported so later runs skip it."""
+        security = get_or_create_security(self.session, disclosure.symbol, market=market)
+        stmt = sqlite_insert(SeenDisclosure).values(
+            [
+                {
+                    "uid": disclosure.uid,
+                    "security_id": security.id,
+                    "title": disclosure.title[:512],
+                    "importance": str(importance),
+                }
+            ]
+        )
+        # Two runs racing on the same item must not raise; first write wins.
+        self.session.execute(stmt.on_conflict_do_nothing(index_elements=["uid"]))

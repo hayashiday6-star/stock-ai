@@ -112,8 +112,8 @@ class MACDCross(Strategy):
 class RSIReversion(Strategy):
     """Mean reversion: enter when RSI drops below ``buy_below``, exit above ``exit_above``.
 
-    The signal is stateful — once long, it stays long until RSI recovers past
-    ``exit_above`` — so it holds through the middle band rather than flip-flopping.
+    The signal is stateful - once long, it stays long until RSI recovers past
+    ``exit_above`` - so it holds through the middle band rather than flip-flopping.
     """
 
     def __init__(self, period: int = 14, buy_below: float = 30.0, exit_above: float = 55.0) -> None:
@@ -148,13 +148,22 @@ class RSIReversion(Strategy):
         return pd.Series(flags, index=prices.index, name="signal", dtype=bool)
 
 
-def build_strategy(name: str, fast: int = 20, slow: int = 50) -> Strategy:
+def build_strategy(name: str, fast: int = 20, slow: int = 50, window: int = 200) -> Strategy:
     """Construct a strategy from its short name.
+
+    ``sma200`` takes its length from ``window``, not from ``slow``. It used to
+    read ``slow if slow > 2 else 200``, and since every caller passes the
+    crossover default of 50, that guard could essentially never fire: asking
+    for ``sma200`` ran a **50**-day trend filter. Nothing failed - a 50-day
+    filter produces perfectly ordinary-looking returns - so the only thing that
+    gave it away was the result table printing ``above_sma_50`` for a strategy
+    the user had spelled ``sma200``.
 
     Args:
         name: ``hold`` | ``sma`` | ``sma200`` | ``macd`` | ``rsi``.
         fast: Fast SMA window (``sma`` only).
-        slow: Slow SMA window (``sma`` and ``sma200`` window).
+        slow: Slow SMA window (``sma`` only).
+        window: Trend window (``sma200`` only).
 
     Returns:
         The configured :class:`Strategy`.
@@ -168,7 +177,7 @@ def build_strategy(name: str, fast: int = 20, slow: int = 50) -> Strategy:
     if key == "sma":
         return SMACrossover(fast=fast, slow=slow)
     if key == "sma200":
-        return AboveSMA(window=slow if slow > 2 else 200)
+        return AboveSMA(window=window)
     if key == "macd":
         return MACDCross()
     if key == "rsi":

@@ -9,6 +9,7 @@ import pytest
 from stock_ai.data.schema import CLOSE, HIGH, LOW, OPEN, VOLUME
 from stock_ai.technical.base import ADX, MACD, RSI, SMA, Stochastic, apply
 from stock_ai.technical.indicators import (
+    adx,
     atr,
     on_balance_volume,
     stochastic,
@@ -97,3 +98,37 @@ def test_apply_bollinger_and_stochastic_prefixes() -> None:
     table = apply(frame, [Stochastic(k=5)])
     assert {"stoch_k", "stoch_d"}.issubset(table.columns)
     assert not np.isnan(table["stoch_k"].iloc[-1])
+
+
+# --- flat markets must not produce NaN -------------------------------------
+
+
+def _flat(periods: int = 20, price: float = 100.0) -> pd.DataFrame:
+    """A halted / limit-locked stock: every OHLC value identical."""
+    idx = pd.date_range("2024-01-01", periods=periods, freq="D", name="date")
+    return pd.DataFrame(
+        {
+            "open": price,
+            "high": price,
+            "low": price,
+            "close": price,
+            "adj_close": price,
+            "volume": 0,
+        },
+        index=idx,
+    )
+
+
+def test_stochastic_on_a_zero_width_range_is_mid_band() -> None:
+    """A flat window gives 0/0; %K is 50, not NaN."""
+    result = stochastic(_flat(), k=5, d=3)
+    assert result["stoch_k"].iloc[-1] == pytest.approx(50.0)
+    assert result["stoch_d"].iloc[-1] == pytest.approx(50.0)
+
+
+def test_adx_on_a_flat_series_is_zero_not_nan() -> None:
+    """No directional movement means DI/ADX of 0, not 0/0."""
+    last = adx(_flat(), window=5).iloc[-1]
+    assert last["plus_di"] == pytest.approx(0.0)
+    assert last["minus_di"] == pytest.approx(0.0)
+    assert last["adx"] == pytest.approx(0.0)

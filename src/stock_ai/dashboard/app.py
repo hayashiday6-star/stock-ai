@@ -16,6 +16,7 @@ AI分析・通知までをブラウザ画面から操作できます。
 from __future__ import annotations
 
 import datetime as dt
+from pathlib import Path
 
 import streamlit as st
 
@@ -23,15 +24,21 @@ from stock_ai.ai.analysis import analyze_sentiment
 from stock_ai.ai.analysis import summarize as ai_summarize
 from stock_ai.ai.factory import get_ai_provider
 from stock_ai.config.settings import get_settings
-from stock_ai.core.exceptions import NotificationError
+from stock_ai.core.exceptions import BacktestError, NotificationError
 from stock_ai.dashboard import data
+from stock_ai.data.types import Importance
 from stock_ai.database.engine import Database
 from stock_ai.notification.factory import get_notifier
 from stock_ai.screening.base import All, Condition
 from stock_ai.screening.conditions import (
+    MaxPayoutRatio,
     MaxPBR,
     MaxPER,
+    MinConsecutiveDividendIncreases,
+    MinDividendGrowth,
     MinDividendYield,
+    MinProfitGrowth,
+    MinRevenueGrowth,
     MinROE,
 )
 
@@ -48,6 +55,59 @@ def _parse_symbols(text: str) -> list[str]:
     """カンマ・空白・改行区切りの銘柄入力を大文字リストに整形する。"""
     raw = text.replace(",", " ").replace("\n", " ")
     return [token.strip().upper() for token in raw.split(" ") if token.strip()]
+
+
+def _repo_commit() -> str:
+    """Return the commit currently checked out on disk, or "不明"."""
+    import subprocess
+
+    root = Path(__file__).resolve().parents[3]
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"],
+            cwd=root,
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return "不明"
+    return result.stdout.strip() or "不明"
+
+
+#: The commit as it was when this process imported the module - which is the
+#: code actually running. Reading it fresh on every render was a mistake: after
+#: a git pull the sidebar showed the new commit while Python went on executing
+#: the modules it had already imported, so the version line confirmed an update
+#: that had not taken effect. Streamlit reloads the app file, not imported
+#: modules, so a pull genuinely requires restarting the process.
+_LOADED_COMMIT = _repo_commit()
+
+
+def _sidebar_status(database: Database) -> None:
+    """バージョンと、保存済みデータの中身を出す。"""
+    st.sidebar.divider()
+    on_disk = _repo_commit()
+    st.sidebar.caption(f"コード: `{_LOADED_COMMIT}`")
+    if on_disk != _LOADED_COMMIT and "不明" not in (on_disk, _LOADED_COMMIT):
+        st.sidebar.error(
+            f"ディスク上は `{on_disk}` に更新されていますが、動いているのは "
+            f"`{_LOADED_COMMIT}` です。**ダッシュボードを再起動してください** "
+            "(黒いウィンドウで Ctrl+C → .bat を再実行)。Streamlit は画面の"
+            "ファイルだけを読み直し、読み込み済みのモジュールは差し替えません。"
+        )
+
+    counts = data.stored_counts(database)
+    st.sidebar.caption(
+        f"銘柄 {counts['securities']:,} / 株価あり {counts['with_prices']:,} / "
+        f"財務あり {counts['with_statements']:,} / 指標あり {counts['with_fundamentals']:,}"
+    )
+    if counts["securities"] and not counts["with_fundamentals"]:
+        st.sidebar.warning(
+            "指標(PER/PBR等)が0件です。`bulk-fetch --what statements --segment stored` "
+            "を実行すると埋まります。"
+        )
 
 
 # --- 各画面 ---------------------------------------------------------------
@@ -74,21 +134,21 @@ def _page_data(database: Database) -> None:
 
     c1, c2 = st.columns(2)
     with c1:
-        if st.button("📈 株価を取得", type="primary", use_container_width=True):
+        if st.button("📈 株価を取得", type="primary", width="stretch"):
             if not symbols:
                 st.warning("銘柄コードを入力してください。")
             else:
                 with st.spinner("株価を取得中..."):
                     results = data.ingest_prices(database, symbols, source, start, end)
-                st.dataframe(data.results_frame(results), use_container_width=True)
+                st.dataframe(data.results_frame(results), width="stretch")
     with c2:
-        if st.button("🧾 財務を取得", use_container_width=True):
+        if st.button("🧾 財務を取得", width="stretch"):
             if not symbols:
                 st.warning("銘柄コードを入力してください。")
             else:
                 with st.spinner("財務データを取得中..."):
                     results = data.ingest_fundamentals(database, symbols, source)
-                st.dataframe(data.results_frame(results), use_container_width=True)
+                st.dataframe(data.results_frame(results), width="stretch")
         if source == "jquants":
             st.caption("日本株の財務は売上・利益・ROEのみ（PER/PBRは株価が必要なため未取得）。")
 
@@ -98,7 +158,7 @@ def _page_data(database: Database) -> None:
     if overview.empty:
         st.info("まだデータがありません。上のボタンで取得してください。")
     else:
-        st.dataframe(overview, use_container_width=True)
+        st.dataframe(overview, width="stretch")
 
 
 def _page_ranking(database: Database) -> None:
@@ -109,30 +169,19 @@ def _page_ranking(database: Database) -> None:
         st.info("先に「データ取得」で株価・財務を取り込んでください。")
         return
     table = data.score_table(database, symbols)
-    st.dataframe(table, use_container_width=True)
+    st.dataframe(table, width="stretch")
     if "score" in table.columns and not table.empty:
         st.bar_chart(table.set_index("symbol")["score"])
 
 
-def _build_condition(
-    use_roe: bool,
-    roe: float,
-    use_per: bool,
-    per: float,
-    use_pbr: bool,
-    pbr: float,
-    use_div: bool,
-    div: float,
-) -> Condition | None:
-    conditions: list[Condition] = []
-    if use_roe:
-        conditions.append(MinROE(roe))
-    if use_per:
-        conditions.append(MaxPER(per))
-    if use_pbr:
-        conditions.append(MaxPBR(pbr))
-    if use_div:
-        conditions.append(MinDividendYield(div))
+def _build_condition(parts: list[tuple[bool, Condition]]) -> Condition | None:
+    """Combine the enabled conditions with AND, or ``None`` if none are on.
+
+    Takes pairs rather than a parameter per control: the screen has grown from
+    four criteria to nine, and a positional signature that long is where the
+    wrong threshold gets passed to the wrong condition.
+    """
+    conditions = [condition for enabled, condition in parts if enabled]
     if not conditions:
         return None
     return conditions[0] if len(conditions) == 1 else All(*conditions)
@@ -142,6 +191,7 @@ def _page_screen(database: Database) -> None:
     st.header("🔍 スクリーニング")
     st.caption("条件を有効にして、合致する銘柄を絞り込みます（すべて AND 条件）。")
 
+    st.subheader("割安さ（バリュエーション）")
     col1, col2 = st.columns(2)
     with col1:
         use_roe = st.checkbox("ROE 下限", value=True)
@@ -154,15 +204,66 @@ def _page_screen(database: Database) -> None:
         use_div = st.checkbox("配当利回り 下限", value=False)
         div = st.number_input("配当利回り >=", value=0.02, step=0.01, format="%.2f")
 
+    st.subheader("成長性・配当の継続性")
+    st.caption(
+        "これらは保存済みの財務時系列（statements）を読みます。"
+        "取得していない銘柄は、条件を満たさないものとして除外されます。"
+    )
+    years = st.slider("成長率を何期分さかのぼって比較するか", 1, 5, 1)
+    col3, col4 = st.columns(2)
+    with col3:
+        use_rev = st.checkbox("増収率 下限", value=False)
+        rev = st.number_input("増収率 >=", value=0.10, step=0.05, format="%.2f")
+        use_profit = st.checkbox("増益率 下限", value=False)
+        profit = st.number_input("増益率 >=", value=0.10, step=0.05, format="%.2f")
+        use_payout = st.checkbox("配当性向 上限", value=False)
+        payout = st.number_input("配当性向 <=", value=0.60, step=0.05, format="%.2f")
+    with col4:
+        use_divgrow = st.checkbox("増配率 下限", value=False)
+        divgrow = st.number_input(
+            "増配率 >=",
+            value=0.0,
+            step=0.05,
+            format="%.2f",
+            help="0 より大きくすると「実際に増配した」銘柄のみになります。",
+        )
+        use_streak = st.checkbox("連続増配年数 下限", value=False)
+        streak = st.number_input("連続増配 >= (年)", value=3, step=1, min_value=1)
+
+    growth_parts = [
+        (use_rev, MinRevenueGrowth(rev, years=years)),
+        (use_profit, MinProfitGrowth(profit, years=years)),
+        (use_divgrow, MinDividendGrowth(divgrow, years=years)),
+        (use_streak, MinConsecutiveDividendIncreases(int(streak))),
+        (use_payout, MaxPayoutRatio(payout)),
+    ]
+    needs_statements = any(enabled for enabled, _ in growth_parts)
+
     if st.button("🔎 スクリーニング実行", type="primary"):
-        condition = _build_condition(use_roe, roe, use_per, per, use_pbr, pbr, use_div, div)
+        condition = _build_condition(
+            [
+                (use_roe, MinROE(roe)),
+                (use_per, MaxPER(per)),
+                (use_pbr, MaxPBR(pbr)),
+                (use_div, MinDividendYield(div)),
+                *growth_parts,
+            ]
+        )
         if condition is None:
             st.warning("条件を1つ以上有効にしてください。")
             return
         st.caption(f"条件: {condition}")
-        report = data.screen_table(database, condition)
+        # The statement series is only loaded when something reads it: attaching
+        # it costs a query per symbol, and at 1,500 symbols that is the
+        # difference between an instant screen and a slow one.
+        report = data.screen_table(database, condition, load_statements=needs_statements)
         st.success(f"{len(report)} 銘柄が合致しました。")
-        st.dataframe(report, use_container_width=True)
+        if report.empty:
+            st.info(
+                "0 件は答えのひとつです（条件が厳しすぎるだけかもしれません）。"
+                "条件を1つずつ外して、どれが効いているか確かめてください。"
+            )
+        st.dataframe(report, width="stretch")
         if not report.empty:
             st.download_button(
                 "CSVをダウンロード",
@@ -188,22 +289,28 @@ def _page_backtest(database: Database) -> None:
     }
     strategy_label = st.selectbox("戦略", list(strategy_labels.keys()))
     strategy = strategy_labels[strategy_label]
-    col1, col2 = st.columns(2)
-    with col1:
-        fast = st.number_input("短期移動平均（日）", min_value=2, value=20)
-    with col2:
-        slow = st.number_input("長期移動平均・トレンド（日）", min_value=3, value=50)
-    if strategy == "sma" and fast >= slow:
-        st.warning("短期は長期より小さくしてください。")
-        return
+    # The windows shown must belong to the strategy selected. One shared "長期"
+    # box defaulting to 50 is what let sma200 quietly run a 50-day filter.
+    fast, slow, window = 20, 50, 200
+    if strategy == "sma":
+        col1, col2 = st.columns(2)
+        with col1:
+            fast = int(st.number_input("短期移動平均（日）", min_value=2, value=20))
+        with col2:
+            slow = int(st.number_input("長期移動平均（日）", min_value=3, value=50))
+        if fast >= slow:
+            st.warning("短期は長期より小さくしてください。")
+            return
+    elif strategy == "sma200":
+        window = int(st.number_input("トレンド（日）", min_value=3, value=200))
     if st.button("▶️ バックテスト実行", type="primary"):
         equity, metrics = data.backtest_comparison(
-            database, symbol, int(fast), int(slow), strategy=strategy
+            database, symbol, fast, slow, strategy=strategy, window=window
         )
         st.subheader("資産推移")
         st.line_chart(equity)
         st.subheader("成績")
-        st.dataframe(metrics, use_container_width=True)
+        st.dataframe(metrics, width="stretch")
 
 
 def _page_ai() -> None:
@@ -227,6 +334,261 @@ def _page_ai() -> None:
             st.metric("判定", sentiment)
         except Exception as exc:  # surface provider/config errors to the user
             st.error(f"分析に失敗しました: {exc}")
+
+
+def _fx_rates(text: str) -> dict[str, float]:
+    """Parse "JPY=0.0066" style input into a rate map.
+
+    Pinning the rate keeps a report reproducible; leaving it blank fetches live
+    rates, which makes the same screen give slightly different numbers each run.
+    """
+    rates: dict[str, float] = {}
+    for token in text.replace(",", " ").split():
+        currency, _, value = token.partition("=")
+        try:
+            rates[currency.strip().upper()] = float(value)
+        except ValueError:
+            st.warning(f"為替レート '{token}' を読めませんでした（例: JPY=0.0066）。")
+    return rates
+
+
+def _page_cross_market(database: Database) -> None:
+    st.header("🌏 日米統合ランキング")
+    st.caption(
+        "スコアは無次元の比率で構成されるため元から市場をまたいで比較できます。"
+        "時価総額だけは通貨建てなので、基準通貨に換算して表示します。"
+    )
+
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        preset = st.selectbox(
+            "ファクター",
+            ["default", "tenbagger"],
+            format_func=lambda k: "標準" if k == "default" else "テンバガー候補（小型成長）",
+        )
+    with col2:
+        base = st.selectbox("基準通貨", ["USD", "JPY"])
+    with col3:
+        fx_text = st.text_input("為替を固定（任意）", value="JPY=0.0066", help="例: JPY=0.0066")
+
+    cap_limit = st.number_input(
+        "時価総額の上限（基準通貨、0 で無制限）", min_value=0.0, value=0.0, step=1e8, format="%.0f"
+    )
+    if preset == "tenbagger":
+        st.info(
+            "テンバガー候補は財務時系列を読みます（CLI の `statements` で取得）。"
+            "予測ではなくヒューリスティックなので、下の「ファクター検証」で"
+            "有効性を確かめてから使ってください。"
+        )
+
+    if st.button("🌏 ランキングを作成", type="primary"):
+        with st.spinner("集計中..."):
+            frame = data.cross_market_table(
+                database,
+                base=base,
+                rates=_fx_rates(fx_text),
+                preset=preset,
+                max_market_cap=cap_limit or None,
+            )
+        if frame.empty:
+            st.warning("該当なし。まず「データ取得」で銘柄を取り込んでください。")
+            return
+        st.dataframe(frame, width="stretch")
+
+
+def _page_portfolio(database: Database) -> None:
+    st.header("💼 ポートフォリオ")
+    st.caption("保有を登録すると、セクター比率と実現リスクを算出します。")
+
+    with st.expander("保有を登録・更新する", expanded=False):
+        col1, col2, col3, col4 = st.columns(4)
+        with col1:
+            symbol = st.text_input("銘柄", value="AAPL")
+        with col2:
+            quantity = st.number_input("数量（0 で削除）", min_value=0.0, value=100.0)
+        with col3:
+            cost = st.number_input("取得単価", min_value=0.0, value=120.0)
+        with col4:
+            market = st.selectbox("市場", ["US", "JP"])
+        if st.button("💾 登録"):
+            data.set_position(database, symbol.strip().upper(), quantity, cost, market=market)
+            st.success(f"{symbol.upper()} を更新しました。")
+
+    col1, col2 = st.columns(2)
+    with col1:
+        base = st.selectbox("基準通貨", ["USD", "JPY"], key="pf_base")
+    with col2:
+        fx_text = st.text_input("為替を固定（任意）", value="JPY=0.0066", key="pf_fx")
+
+    analysis = data.portfolio_view(database, base=base, rates=_fx_rates(fx_text))
+    if not analysis.positions:
+        st.info(
+            "価格のある保有がありません。上で登録し、「データ取得」で株価を取り込んでください。"
+        )
+        return
+
+    st.dataframe(data.positions_frame(analysis), width="stretch")
+
+    col1, col2, col3, col4 = st.columns(4)
+    total = analysis.unrealized_return
+    col1.metric(f"評価額 ({base})", f"{analysis.total_value:,.0f}")
+    col2.metric("含み損益", "-" if total is None else f"{total:+.2%}")
+    col3.metric(
+        "年率ボラティリティ",
+        "-" if analysis.annual_volatility is None else f"{analysis.annual_volatility:.2%}",
+    )
+    col4.metric(
+        "実効銘柄数",
+        "-" if analysis.effective_positions is None else f"{analysis.effective_positions:.2f}",
+        help="ヘルフィンダール集中度の逆数。等ウェイト換算で何銘柄ぶんの分散か。",
+    )
+
+    st.subheader("セクター比率")
+    st.bar_chart(data.exposure_frame(analysis))
+
+    if analysis.correlations is not None:
+        st.subheader("相関")
+        st.dataframe(analysis.correlations.round(2), width="stretch")
+    if analysis.unpriced:
+        st.warning("株価が未取得のため比率から除外: " + ", ".join(analysis.unpriced))
+    st.caption(
+        "期待リターンは意図的に出していません。過去平均の年率化は推定誤差が"
+        "シグナルを上回るため、実績値のみを表示しています。"
+    )
+
+
+def _page_watchlist(database: Database) -> None:
+    st.header("👀 監視リスト")
+    st.caption("登録銘柄の開示・ニュースをAIが判定し、重要なものだけを抽出します。")
+
+    with st.expander("銘柄を追加する", expanded=False):
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            symbol = st.text_input("銘柄", value="4593.T", key="w_sym")
+        with col2:
+            importance = st.selectbox("通知しきい値", ["high", "medium", "low"], index=1)
+        with col3:
+            market = st.selectbox("市場", ["JP", "US"], key="w_mkt")
+        note = st.text_input("メモ（任意）", value="", key="w_note")
+        col_add, col_del = st.columns(2)
+        if col_add.button("➕ 追加"):
+            data.add_watch(
+                database,
+                symbol.strip().upper(),
+                note or None,
+                Importance(importance),
+                market=market,
+            )
+            st.success(f"{symbol.upper()} を監視に追加しました。")
+        if col_del.button("🗑 削除"):
+            removed = data.remove_watch(database, symbol.strip().upper())
+            st.success("削除しました。") if removed else st.info("登録がありません。")
+
+    frame = data.watchlist_frame(database)
+    if frame.empty:
+        st.info("監視リストが空です。上で銘柄を追加してください。")
+        return
+    st.dataframe(frame, width="stretch")
+
+    st.subheader("開示チェック")
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        provider = st.selectbox("AIプロバイダ", ["dummy", "claude", "openai", "gemini"], key="w_ai")
+    with col2:
+        feed = st.selectbox(
+            "開示ソース",
+            ["all", "edinet", "news"],
+            format_func=lambda k: {
+                "all": "両方",
+                "edinet": "EDINET（日本の法定開示）",
+                "news": "ニュース",
+            }[k],
+        )
+    with col3:
+        lookback = st.number_input("EDINETを遡る日数", min_value=1, max_value=30, value=7)
+
+    if st.button("🔎 チェックする", type="primary"):
+        with st.spinner("開示を取得して判定中..."):
+            result = data.run_monitor(database, provider, feed=feed, lookback_days=int(lookback))
+        st.write(f"新規 {result.checked} 件を判定、既報 {result.skipped} 件をスキップ。")
+        if result.unjudged:
+            st.warning(
+                f"{result.unjudged} 件はAIプロバイダの失敗により判定できませんでした。"
+                "既読にはしていないので次回再試行されます。"
+            )
+        if result.alerts:
+            for alert in sorted(result.alerts, key=lambda a: a.importance.rank, reverse=True):
+                level = alert.importance.value.upper()
+                st.markdown(f"**[{level}] {alert.entry.symbol}** - {alert.disclosure.title}")
+                if alert.summary:
+                    st.caption(alert.summary)
+                if alert.disclosure.url:
+                    st.caption(alert.disclosure.url)
+        else:
+            st.info("しきい値を超える開示はありませんでした。")
+    st.caption(
+        "ニュースソースは日本の小型株でほぼ空です。日本株は EDINET（要 EDINET_API_KEY）"
+        "を使ってください。適時開示（TDnet）は別途アダプタが必要です。"
+    )
+
+
+def _page_factor_test(database: Database) -> None:
+    st.header("🧪 ファクター検証")
+    st.caption(
+        "指定日にランキングを作り、その後の実リターンを等ウェイトの母集団と比較します。"
+        "スコアに情報がなければ母集団に勝てません。"
+    )
+
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        formation = st.date_input("形成日", value=dt.date.today() - dt.timedelta(days=400))
+    with col2:
+        horizon = st.number_input("保有営業日数", min_value=20, max_value=1000, value=252)
+    with col3:
+        preset = st.selectbox(
+            "ファクター",
+            ["tenbagger", "default"],
+            format_func=lambda k: "テンバガー候補" if k == "tenbagger" else "標準",
+            key="ft_preset",
+        )
+
+    if st.button("🧪 検証する", type="primary"):
+        try:
+            with st.spinner("ランキングと将来リターンを計算中..."):
+                result = data.factor_test(
+                    database,
+                    formation=formation,
+                    preset=preset,
+                    horizon_days=int(horizon),
+                )
+        except BacktestError as exc:
+            st.error(str(exc))
+            return
+
+        st.dataframe(result.to_frame(), width="stretch")
+        col1, col2, col3 = st.columns(3)
+        col1.metric("母集団（等ウェイト）", f"{result.universe_return:+.2%}")
+        excess = result.excess_return
+        col2.metric("上位バケットの超過", "-" if excess is None else f"{excess:+.2%}")
+        t_stat = result.spread_t_stat
+        col3.metric("上位−下位 t値", "-" if t_stat is None else f"{t_stat:+.2f}")
+
+        if t_stat is None:
+            st.warning("銘柄数が少なく、シグナルとノイズを区別できません。")
+        elif not result.is_significant:
+            st.warning(
+                f"t = {t_stat:+.2f} は 2σ の内側で、偶然と区別がつきません。"
+                "銘柄数が少ないと数%の超過は普通に発生します。"
+            )
+        else:
+            st.success(f"t = {t_stat:+.2f}（2σ を超えています）。")
+        if not result.is_monotonic:
+            st.warning("バケット間でリターンが単調に減衰していません。順序の情報量は乏しいです。")
+        st.caption(
+            "母集団はローカルDBにある銘柄のみで、上場廃止銘柄を含みません"
+            "（生存者バイアス）。スコアを否定する材料にはなりますが、"
+            "有効性の証明にはなりません。"
+        )
 
 
 def _page_notify() -> None:
@@ -254,14 +616,19 @@ def main() -> None:
     pages = {
         "📥 データ取得": lambda: _page_data(database),
         "🏆 ランキング": lambda: _page_ranking(database),
+        "🌏 日米統合ランキング": lambda: _page_cross_market(database),
         "🔍 スクリーニング": lambda: _page_screen(database),
+        "💼 ポートフォリオ": lambda: _page_portfolio(database),
+        "👀 監視リスト": lambda: _page_watchlist(database),
         "📊 バックテスト": lambda: _page_backtest(database),
+        "🧪 ファクター検証": lambda: _page_factor_test(database),
         "🤖 AI分析": _page_ai,
         "🔔 通知テスト": _page_notify,
     }
     choice = st.sidebar.radio("メニュー", list(pages.keys()))
     st.sidebar.divider()
     st.sidebar.caption("使い方: まず「データ取得」→ その後 各画面で分析します。")
+    _sidebar_status(database)
     pages[choice]()
 
 

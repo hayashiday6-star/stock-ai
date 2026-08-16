@@ -133,3 +133,102 @@ def test_score_cli(db: Database, monkeypatch: pytest.MonkeyPatch) -> None:
     assert result.exit_code == 0
     assert "AAPL" in result.stdout
     assert "roe=" in result.stdout
+
+
+# --- non-finite input must never score ------------------------------------
+
+
+def test_nan_metric_is_not_computable_rather_than_full_marks() -> None:
+    """A NaN metric must read as missing, not as a perfect sub-score.
+
+    ``min``/``max`` treat NaN as unordered and hand back the bound, so a naive
+    clamp silently awarded 1.0 and floated broken data to the top of the rank.
+    """
+    nan = float("nan")
+    assert ROEFactor().score(_ctx(roe=nan)) is None
+    assert ValueFactor().score(_ctx(per=nan)) is None  # per <= 0 does not catch NaN
+
+
+def test_nan_price_does_not_score_momentum() -> None:
+    prices = _prices([100.0, float("nan")])
+    assert MomentumFactor().score(_ctx(prices=prices)) is None
+
+
+def test_scorer_drops_nan_factor_instead_of_inflating_the_score() -> None:
+    """A NaN ROE must be renormalized away, not counted as a perfect 25%."""
+    scorer = WeightedScorer([(ROEFactor(), 0.5), (ValueFactor(), 0.5)])
+    result = scorer.score(_ctx(roe=float("nan"), per=20.0))
+    assert "roe" not in result.breakdown
+    assert result.score == pytest.approx(50.0)  # value_per alone: 1 - 20/40
+
+
+def test_a_score_reports_how_much_of_it_could_be_measured() -> None:
+    from stock_ai.portfolio.scoring import ScoreResult
+
+    class _Fixed(Factor):
+        def __init__(self, name: str, value: float | None) -> None:
+            self._name, self._value = name, value
+
+        @property
+        def name(self) -> str:
+            return self._name
+
+        def score(self, context: ScreeningContext) -> float | None:
+            return self._value
+
+    context = ScreeningContext(symbol="X", fundamentals=None, prices=pd.DataFrame())
+    scorer = WeightedScorer([(_Fixed("a", 1.0), 0.5), (_Fixed("b", None), 0.5)])
+    result = scorer.score(context)
+
+    assert isinstance(result, ScoreResult)
+    assert result.score == pytest.approx(100.0)
+    assert result.coverage == pytest.approx(0.5)
+
+
+def test_a_fully_measured_score_has_full_coverage() -> None:
+    class _Fixed(Factor):
+        @property
+        def name(self) -> str:
+            return "a"
+
+        def score(self, context: ScreeningContext) -> float | None:
+            return 0.5
+
+    context = ScreeningContext(symbol="X", fundamentals=None, prices=pd.DataFrame())
+    result = WeightedScorer([(_Fixed(), 1.0)]).score(context)
+
+    assert result.coverage == pytest.approx(1.0)
+
+
+def test_a_score_with_nothing_measurable_has_zero_coverage() -> None:
+    class _Missing(Factor):
+        @property
+        def name(self) -> str:
+            return "a"
+
+        def score(self, context: ScreeningContext) -> float | None:
+            return None
+
+    context = ScreeningContext(symbol="X", fundamentals=None, prices=pd.DataFrame())
+    result = WeightedScorer([(_Missing(), 1.0)]).score(context)
+
+    assert result.score == 0.0
+    assert result.coverage == 0.0
+
+
+def test_the_score_command_shows_coverage_next_to_the_score(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Without it, ``score`` reproduces the ranking defect one symbol at a time.
+
+    The fixture's AAPL has roe and per but no margin, yield or full history, so
+    it is exactly the sparse case: a high score printed with nothing on screen
+    to say it was averaged over a fraction of the evidence.
+    """
+    monkeypatch.setattr(cli, "Database", lambda: db)
+    monkeypatch.setenv("COLUMNS", "200")
+    result = runner.invoke(cli.app, ["score", "AAPL"])
+
+    assert result.exit_code == 0
+    assert "Cov" in result.stdout
+    assert "factor weight" in result.stdout  # the caveat fires on sparse data

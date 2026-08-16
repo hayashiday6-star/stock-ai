@@ -1,4 +1,4 @@
-"""Interactive Brokers adapter — intentionally a non-executing skeleton.
+"""Interactive Brokers adapter - intentionally a non-executing skeleton.
 
 Live order routing to a real account is a deliberate, operator-gated step: it
 requires ``ib_insync``, a running TWS/Gateway session, and explicit account
@@ -25,13 +25,13 @@ class IBKRBroker:
     name = "ibkr"
 
     def place_order(self, order: Order) -> Fill:
-        """Raise — live order placement is intentionally not implemented."""
+        """Raise - live order placement is intentionally not implemented."""
         raise BrokerError(_NOT_ENABLED)
 
     def positions(self) -> list[Position]:
-        """Raise — live account access is intentionally not implemented."""
+        """Raise - live account access is intentionally not implemented."""
         raise BrokerError(_NOT_ENABLED)
 
     def cash(self) -> float:
-        """Raise — live account access is intentionally not implemented."""
+        """Raise - live account access is intentionally not implemented."""
         raise BrokerError(_NOT_ENABLED)

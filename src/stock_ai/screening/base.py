@@ -8,11 +8,11 @@ engine or existing conditions needing to change (open/closed principle).
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import pandas as pd
 
-from stock_ai.data.types import Fundamentals
+from stock_ai.data.types import FinancialReport, Fundamentals
 
 
 @dataclass(frozen=True)
@@ -20,8 +20,16 @@ class ScreeningContext:
     """Everything a condition may inspect for one candidate symbol."""
 
     symbol: str
+    market: str = "US"
+    """Listing market - selects the quote currency for absolute figures."""
     fundamentals: Fundamentals | None = None
     prices: pd.DataFrame | None = None
+    statements: list[FinancialReport] = field(default_factory=list)
+    """Annual reports, oldest first - the series growth and streak rules read.
+
+    Empty when the caller did not load statements, which conditions must treat
+    the same as "unknown": what cannot be verified does not pass.
+    """
 
 
 class Condition(ABC):

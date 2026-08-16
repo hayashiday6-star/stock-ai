@@ -13,7 +13,7 @@ from stock_ai.core.exceptions import DataError
 from stock_ai.data.service import FundamentalsService
 from stock_ai.data.yfinance_provider import YFinanceFundamentalsProvider
 from stock_ai.database.engine import Database
-from stock_ai.database.repository import FundamentalsRepository
+from stock_ai.database.repository import FundamentalsRepository, get_or_create_security
 
 runner = CliRunner()
 
@@ -113,3 +113,129 @@ def test_fundamentals_cli(db: Database, monkeypatch: pytest.MonkeyPatch) -> None
 
     with db.session() as s:
         assert FundamentalsRepository(s).get_latest("AAPL") is not None
+
+
+# --- dividend yield must be a fraction on both providers --------------------
+
+
+def test_dividend_yield_prefers_rate_over_price() -> None:
+    """The unambiguous path: annual DPS / price, matching the J-Quants side."""
+    provider = YFinanceFundamentalsProvider(
+        info_fetcher=lambda _s: {"dividendRate": 2.0, "currentPrice": 100.0, "dividendYield": 99.0},
+        clock=lambda: dt.date(2024, 6, 30),
+    )
+    assert provider.fetch_fundamentals("X").dividend_yield == pytest.approx(0.02)
+
+
+def test_dividend_yield_falls_back_to_previous_close() -> None:
+    provider = YFinanceFundamentalsProvider(
+        info_fetcher=lambda _s: {"dividendRate": 3.0, "previousClose": 150.0},
+        clock=lambda: dt.date(2024, 6, 30),
+    )
+    assert provider.fetch_fundamentals("X").dividend_yield == pytest.approx(0.02)
+
+
+def test_percentage_dividend_yield_is_rescaled_to_a_fraction() -> None:
+    """The fallback field is a percentage, so 2.3 means 2.3%."""
+    provider = YFinanceFundamentalsProvider(
+        info_fetcher=lambda _s: {"dividendYield": 2.3},
+        clock=lambda: dt.date(2024, 6, 30),
+    )
+    assert provider.fetch_fundamentals("X").dividend_yield == pytest.approx(0.023)
+
+
+def test_absent_dividend_stays_none() -> None:
+    provider = YFinanceFundamentalsProvider(
+        info_fetcher=lambda _s: {"trailingPE": 15.0},
+        clock=lambda: dt.date(2024, 6, 30),
+    )
+    assert provider.fetch_fundamentals("X").dividend_yield is None
+
+
+def test_a_sub_one_percent_yield_is_still_a_percentage() -> None:
+    """Observed live: yfinance returned 0.78 for MSFT, meaning 0.78%.
+
+    The earlier rescale only fired above 1.0, so this was stored as 78% —
+    enough to hand a mega-cap a perfect dividend score.
+    """
+    provider = YFinanceFundamentalsProvider(
+        info_fetcher=lambda _s: {"dividendYield": 0.78},
+        clock=lambda: dt.date(2024, 6, 30),
+    )
+    assert provider.fetch_fundamentals("MSFT").dividend_yield == pytest.approx(0.0078)
+
+
+def test_a_multi_percent_yield_converts_the_same_way() -> None:
+    provider = YFinanceFundamentalsProvider(
+        info_fetcher=lambda _s: {"dividendYield": 3.4},
+        clock=lambda: dt.date(2024, 6, 30),
+    )
+    assert provider.fetch_fundamentals("X").dividend_yield == pytest.approx(0.034)
+
+
+def test_an_implausible_yield_is_dropped_rather_than_stored() -> None:
+    """A yield that cannot be right is worse than one that is missing.
+
+    Missing is excluded from scoring; wrong is scored.
+    """
+    provider = YFinanceFundamentalsProvider(
+        info_fetcher=lambda _s: {"dividendRate": 80.0, "currentPrice": 100.0},
+        clock=lambda: dt.date(2024, 6, 30),
+    )
+    assert provider.fetch_fundamentals("X").dividend_yield is None
+
+
+def test_a_negative_yield_is_dropped() -> None:
+    provider = YFinanceFundamentalsProvider(
+        info_fetcher=lambda _s: {"dividendYield": -5.0},
+        clock=lambda: dt.date(2024, 6, 30),
+    )
+    assert provider.fetch_fundamentals("X").dividend_yield is None
+
+
+# --- refreshing what is already stored --------------------------------------
+
+
+def test_fundamentals_without_symbols_refreshes_stored_us_names(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A corrected parser is worthless until it is run back over the old rows.
+
+    Nothing re-reads a stored snapshot, so the no-argument form has to reach
+    every US symbol in the database — not just the ones a user still remembers
+    fetching.
+    """
+    with db.session() as s:
+        get_or_create_security(s, "AAPL", market="US")
+        get_or_create_security(s, "MSFT", market="US")
+        get_or_create_security(s, "7203", market="JP")
+
+    asked: list[str] = []
+
+    def fetcher(symbol: str) -> dict[str, object]:
+        asked.append(symbol)
+        return _RAW_INFO
+
+    monkeypatch.setattr(cli, "Database", lambda: db)
+    monkeypatch.setattr(
+        cli,
+        "YFinanceFundamentalsProvider",
+        lambda: YFinanceFundamentalsProvider(info_fetcher=fetcher, clock=lambda: _FIXED_DAY),
+    )
+
+    result = runner.invoke(cli.app, ["fundamentals"])
+    assert result.exit_code == 0
+    # The JP name is left alone: yfinance is the US provider, and asking it for
+    # 7203 would spend a request to store nothing.
+    assert asked == ["AAPL", "MSFT"]
+
+
+def test_fundamentals_without_symbols_and_an_empty_db_explains_itself(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(cli, "Database", lambda: db)
+    monkeypatch.setattr(cli, "YFinanceFundamentalsProvider", lambda: _provider(_RAW_INFO))
+
+    result = runner.invoke(cli.app, ["fundamentals"])
+    assert result.exit_code == 1
+    assert "No US symbols stored" in result.output

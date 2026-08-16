@@ -138,3 +138,147 @@ def test_fetch_cli_exits_nonzero_on_failure(db: Database, monkeypatch: pytest.Mo
         cli.app, ["fetch", "NOPE", "--start", "2024-01-02", "--end", "2024-01-03"]
     )
     assert result.exit_code == 1
+
+
+# --- backfilling history ----------------------------------------------------
+
+
+def _stored_symbol(database: Database, symbol: str, dates: list[str]) -> None:
+    with database.session() as session:
+        PriceRepository(session).upsert_prices(symbol, _frame(dates), market="JP")
+
+
+def test_a_lookback_reaching_past_the_oldest_bar_backfills_history() -> None:
+    """A request for more history must not be answered incrementally.
+
+    Observed live: a universe already holding four years was asked for 5,000
+    days. Every symbol resolved to "the day after the latest bar", every symbol
+    reported success, and not one extra year arrived. Nothing raised, so the
+    run looked exactly like a run that had worked.
+    """
+    database = Database("sqlite:///:memory:")
+    database.create_all()
+    _stored_symbol(database, "7203", ["2024-01-01", "2024-01-02", "2024-01-03"])
+
+    provider = FakeProvider({"7203": _frame(["2020-01-01", "2024-01-04"])})
+    service = IngestionService(provider, database, default_lookback_days=3000, backfill=True)
+    result = service.ingest_symbol("7203", end=dt.date(2024, 1, 10), market="JP")
+
+    assert result.ok
+    _symbol, start, _end = provider.calls[0]
+    assert start < dt.date(2024, 1, 1)  # reaches behind the oldest stored bar
+    database.dispose()
+
+
+def test_backfill_is_opt_in_so_a_nightly_run_stays_incremental() -> None:
+    """Inferring the backfill would re-fetch a year for every new symbol nightly."""
+    database = Database("sqlite:///:memory:")
+    database.create_all()
+    _stored_symbol(database, "7203", ["2024-01-01", "2024-01-02", "2024-01-03"])
+
+    provider = FakeProvider({"7203": _frame(["2024-01-04"])})
+    service = IngestionService(provider, database, default_lookback_days=365)
+    service.ingest_symbol("7203", end=dt.date(2024, 1, 10), market="JP")
+
+    _symbol, start, _end = provider.calls[0]
+    assert start == dt.date(2024, 1, 4)  # the day after the latest stored bar
+    database.dispose()
+
+
+def test_backfilling_keeps_the_bars_already_stored() -> None:
+    """The overlap is deduplicated by the upsert, not dropped."""
+    database = Database("sqlite:///:memory:")
+    database.create_all()
+    _stored_symbol(database, "7203", ["2024-01-02", "2024-01-03"])
+
+    provider = FakeProvider({"7203": _frame(["2020-01-01", "2024-01-02", "2024-01-03"])})
+    service = IngestionService(provider, database, default_lookback_days=3000, backfill=True)
+    service.ingest_symbol("7203", end=dt.date(2024, 1, 10), market="JP")
+
+    with database.session() as session:
+        repo = PriceRepository(session)
+        assert repo.earliest_date("7203") == dt.date(2020, 1, 1)
+        assert repo.latest_date("7203") == dt.date(2024, 1, 3)
+        assert len(repo.get_prices("7203")) == 3
+    database.dispose()
+
+
+# --- history reporting ------------------------------------------------------
+
+
+def test_history_spans_reports_the_range_of_each_series() -> None:
+    from stock_ai.database.repository import price_history_spans
+
+    database = Database("sqlite:///:memory:")
+    database.create_all()
+    _stored_symbol(database, "7203", ["2020-01-01", "2022-06-01", "2024-01-03"])
+    _stored_symbol(database, "6758", ["2023-01-01", "2023-01-02"])
+
+    with database.session() as session:
+        spans = {row[0]: row for row in price_history_spans(session)}
+
+    assert spans["7203"][2] == dt.date(2020, 1, 1)
+    assert spans["7203"][3] == dt.date(2024, 1, 3)
+    assert spans["7203"][4] == 3
+    assert spans["6758"][4] == 2
+    database.dispose()
+
+
+def test_a_symbol_without_bars_is_not_reported_as_zero_length() -> None:
+    """A security row with no prices has no span, and must not fake one."""
+    from stock_ai.database.repository import get_or_create_security, price_history_spans
+
+    database = Database("sqlite:///:memory:")
+    database.create_all()
+    with database.session() as session:
+        get_or_create_security(session, "EMPTY", market="JP")
+    with database.session() as session:
+        assert price_history_spans(session) == []
+    database.dispose()
+
+
+def test_the_history_command_does_not_blame_a_shared_floor_on_the_provider() -> None:
+    """A shared floor is ambiguous, and saying otherwise closes the question wrongly.
+
+    The first real run reported a floor of 2022-06-27 as "the provider's history
+    limit". It was exactly 1,500 days before the day the universe was first
+    loaded with ``--lookback 1500`` - our own boundary, not the provider's.
+    """
+    database = Database("sqlite:///:memory:")
+    database.create_all()
+    for symbol in ("1001", "1002", "1003", "1004"):
+        _stored_symbol(database, symbol, ["2021-04-01", "2024-01-02"])
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(cli, "Database", lambda: database)
+        patch.setenv("COLUMNS", "200")
+        result = runner.invoke(cli.app, ["history"])
+
+    assert result.exit_code == 0
+    assert "2021-04-01" in result.stdout
+    assert "either the provider" in result.stdout
+    assert "--lookback" in result.stdout
+    database.dispose()
+
+
+def test_a_floor_a_whole_number_of_years_back_reads_as_a_rolling_plan() -> None:
+    """A subscription window rolls; a --lookback boundary lands on an odd date.
+
+    Observed live: after the plan window was honoured, 1,508 of 1,564 symbols
+    started on 2021-08-16 - exactly five years before the day it was read.
+    """
+    from stock_ai.cli import _shared_floor_reading
+
+    today = dt.date(2026, 8, 16)
+    rolling = _shared_floor_reading(dt.date(2021, 8, 16), today)
+    assert "5 year(s) before today" in rolling
+    assert "different plan" in rolling
+
+
+def test_an_arbitrary_floor_still_asks_for_the_check() -> None:
+    """2022-06-27 was 1,500 days before a load, not a round number of years."""
+    from stock_ai.cli import _shared_floor_reading
+
+    reading = _shared_floor_reading(dt.date(2022, 6, 27), dt.date(2026, 8, 16))
+    assert "either the provider" in reading
+    assert "--backfill" in reading

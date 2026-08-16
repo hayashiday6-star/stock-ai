@@ -61,7 +61,11 @@ def rsi(prices: pd.DataFrame, window: int = 14) -> pd.Series:
     avg_loss = loss.ewm(alpha=1 / window, adjust=False).mean()
 
     rs = avg_gain / avg_loss
-    return (100.0 - 100.0 / (1.0 + rs)).rename(f"rsi_{window}")
+    result = 100.0 - 100.0 / (1.0 + rs)
+    # A perfectly flat stretch (a halted or limit-locked name) gives 0/0. There
+    # is no directional pressure either way, so RSI is 50 by convention rather
+    # than NaN. The leading NaN from ``diff()`` is untouched: NaN == 0 is False.
+    return result.mask((avg_gain == 0.0) & (avg_loss == 0.0), 50.0).rename(f"rsi_{window}")
 
 
 def macd(
@@ -137,10 +141,13 @@ def adx(prices: pd.DataFrame, window: int = 14) -> pd.DataFrame:
         index=prices.index,
     )
 
+    # A flat stretch drives ATR (and both DIs) to zero. Guard each division so
+    # "no movement" reads as 0 rather than 0/0 = NaN.
     atr_ = _wilder(_true_range(prices), window)
-    plus_di = 100.0 * _wilder(plus_dm, window) / atr_
-    minus_di = 100.0 * _wilder(minus_dm, window) / atr_
-    dx = 100.0 * (plus_di - minus_di).abs() / (plus_di + minus_di)
+    plus_di = (100.0 * _wilder(plus_dm, window) / atr_).mask(atr_ == 0.0, 0.0)
+    minus_di = (100.0 * _wilder(minus_dm, window) / atr_).mask(atr_ == 0.0, 0.0)
+    di_sum = plus_di + minus_di
+    dx = (100.0 * (plus_di - minus_di).abs() / di_sum).mask(di_sum == 0.0, 0.0)
     return pd.DataFrame({"adx": _wilder(dx, window), "plus_di": plus_di, "minus_di": minus_di})
 
 
@@ -155,7 +162,10 @@ def stochastic(prices: pd.DataFrame, k: int = 14, d: int = 3) -> pd.DataFrame:
     close = _series(prices, CLOSE)
     lowest = low.rolling(k).min()
     highest = high.rolling(k).max()
-    percent_k = 100.0 * (close - lowest) / (highest - lowest)
+    span = highest - lowest
+    # A zero-width range (flat window) would give 0/0; the close sits exactly
+    # mid-range there, so %K is 50 rather than NaN.
+    percent_k = (100.0 * (close - lowest) / span).mask(span == 0.0, 50.0)
     return pd.DataFrame({"stoch_k": percent_k, "stoch_d": percent_k.rolling(d).mean()})
 
 

@@ -14,6 +14,13 @@
 *.json  text eol=lf
 *.lock  text eol=lf
 
+# Windows batch files are the exception to the LF rule: cmd.exe parses them
+# line by line and mishandles LF-only input in places that matter (labels,
+# multi-line blocks). These are launched by double-click on Windows and nowhere
+# else, so they are checked out with CRLF regardless of platform.
+*.bat   text eol=crlf
+*.cmd   text eol=crlf
+
 # Binary (never touch)
 *.png   binary
 *.jpg   binary

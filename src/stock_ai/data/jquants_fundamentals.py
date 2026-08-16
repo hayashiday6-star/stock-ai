@@ -14,6 +14,7 @@ The HTTP call is injectable, so the provider is unit-testable without network.
 from __future__ import annotations
 
 import datetime as dt
+import math
 from collections.abc import Callable
 from typing import Any
 
@@ -21,7 +22,9 @@ from pydantic import SecretStr
 
 from stock_ai.core.exceptions import DataError
 from stock_ai.core.logging import get_logger
-from stock_ai.data.types import Fundamentals
+from stock_ai.data.http import raise_for_status
+from stock_ai.data.sanity import plausible_dividend_yield
+from stock_ai.data.types import FinancialReport, FiscalPeriod, Fundamentals
 
 logger = get_logger(__name__)
 
@@ -34,13 +37,19 @@ _STATEMENTS_URL = "https://api.jquants.com/v2/fins/summary"
 
 
 def _to_float(value: Any) -> float | None:
-    """Parse a J-Quants numeric field (strings, blanks) to ``float`` or ``None``."""
+    """Parse a J-Quants numeric field (strings, blanks) to ``float`` or ``None``.
+
+    Non-finite results map to ``None`` as well: ``float("nan")`` parses happily,
+    and a ``NaN`` that escapes here poisons every ratio derived from it
+    downstream (scoring treats non-finite input as missing, not as a score).
+    """
     if value in (None, ""):
         return None
     try:
-        return float(value)
+        number = float(value)
     except (TypeError, ValueError):
         return None
+    return number if math.isfinite(number) else None
 
 
 def _latest(records: list[dict[str, Any]]) -> dict[str, Any]:
@@ -60,6 +69,83 @@ def _first(record: dict[str, Any], *keys: str) -> float | None:
     return None
 
 
+def _newest_value(records: list[dict[str, Any]], *keys: str) -> float | None:
+    """Return ``keys`` from the newest record that actually carries a value.
+
+    Taking a field from the newest record *only* throws away data that is
+    plainly available: a quarterly disclosure often omits BPS and the annual
+    dividend, so a company whose latest filing is a quarter loses both even
+    though last year's report has them. Observed live: PBR was present for 31%
+    of TSE and dividend yield for 12%, purely from this.
+
+    Walking back is safe for balance-sheet and per-share fields, which describe
+    a point in time rather than a period. It is **not** safe for cumulative flow
+    figures, which is why sales, profit and EPS go through
+    :func:`_latest_annual` instead.
+    """
+    for record in sorted(records, key=_disclosure_key, reverse=True):
+        value = _first(record, *keys)
+        if value is not None:
+            return value
+    return None
+
+
+def _disclosure_key(record: dict[str, Any]) -> str:
+    """Sort key placing the most recently disclosed record last."""
+    return str(record.get("DiscDate") or record.get("DisclosedDate") or "")
+
+
+def _earnings_are_consistent(symbol: str, record: dict[str, Any]) -> bool:
+    """Whether a record's profit figure agrees with the rest of the same row.
+
+    A payout ratio is dividends divided by profit, so a **positive** payout
+    ratio alongside a **negative** profit is not a judgement call - the row
+    contradicts itself. Observed live on 6758 (FY to 2026-03):
+    ``NP = -0.327兆``, ``DivTotalAnn = 0.149兆``, ``PayoutRatioAnn = 0.145``.
+    That ratio implies a profit of +1.02兆. The same arithmetic reconciles
+    exactly on the previous year's row, so the check is sound and the row is
+    not.
+
+    When they disagree neither figure is picked. Choosing one would be a guess
+    presented as data, and this project's rule is that a wrong number costs more
+    than a missing one: missing is excluded from screens and scores, wrong is
+    ranked.
+    """
+    net_income = _first(record, "NP", "Profit")
+    payout = _first(record, "PayoutRatioAnn")
+    if net_income is None or payout is None:
+        return True
+    if net_income < 0 < payout:
+        logger.warning(
+            "%s: the annual row disagrees with itself - net income %.3g but "
+            "payout ratio %.3f, which requires a positive profit. Earnings "
+            "figures (PER, ROE, net income) are left unset for this symbol.",
+            symbol,
+            net_income,
+            payout,
+        )
+        return False
+    return True
+
+
+def _latest_annual(records: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """Return the newest record covering a full fiscal year, if there is one.
+
+    When **no** record carries a period marker the payload cannot be split, so
+    the newest is treated as annual - the documented fallback, and what the V1
+    shape needs. Refusing to compute anything there would trade a wrong PER for
+    no PER at all, on payloads that were never quarterly to begin with.
+
+    Once *any* record is marked, the markers are trusted and only ``FY`` rows
+    qualify: a mixed payload is exactly the case where a quarter would otherwise
+    masquerade as a year.
+    """
+    if not any(_has_period_marker(record) for record in records):
+        return _latest(records) if records else None
+    annual = [record for record in records if _period_of(record) is FiscalPeriod.FY]
+    return _latest(annual) if annual else None
+
+
 def normalize_statement(
     symbol: str,
     records: list[dict[str, Any]],
@@ -68,9 +154,20 @@ def normalize_statement(
 ) -> Fundamentals:
     """Build a :class:`Fundamentals` snapshot from ``fins/summary`` records.
 
+    Flow figures (sales, profit, EPS) are taken from the most recent **annual**
+    disclosure; balance-sheet figures (equity, BPS, shares) from the most recent
+    disclosure of any period.
+
+    That split is the whole point. ``Sales``, ``NP`` and ``EPS`` are cumulative
+    from the start of the fiscal year, so the newest disclosure is usually a
+    quarter holding three or six months. Dividing a price by a half-year EPS
+    doubles the PER, and every screen with a PER ceiling then rejects companies
+    that are in fact cheap. Equity and BPS are point-in-time, so for those the
+    freshest disclosure is simply the best one.
+
     Args:
         symbol: The security code.
-        records: J-Quants summary records (newest disclosure wins).
+        records: J-Quants summary records.
         as_of: Snapshot date.
         price: Current share price; enables PER, PBR, dividend yield, market cap.
 
@@ -83,20 +180,46 @@ def normalize_statement(
     if not records:
         raise DataError(f"No J-Quants statements for {symbol!r}.")
 
-    latest = _latest(records)
-    revenue = _first(latest, "Sales", "NetSales")
-    net_income = _first(latest, "NP", "Profit")
-    equity = _first(latest, "Eq", "Equity")
-    eps = _first(latest, "EPS")
-    bps = _first(latest, "BPS")
-    dividend = _first(latest, "DivAnn")
-    shares = _first(latest, "ShOutFY")
+    # No annual disclosure yet (a recent listing) means no trustworthy earnings
+    # figure. Reporting a quarter as if it were a year would be worse than
+    # reporting nothing, so the earnings-based ratios stay None.
+    annual = _latest_annual(records)
 
-    roe = net_income / equity if (net_income is not None and equity) else None
+    annual_records = [annual] if annual else []
+    trustworthy = annual is None or _earnings_are_consistent(symbol, annual)
+
+    revenue = _newest_value(annual_records, "Sales", "NetSales")
+    net_income = _newest_value(annual_records, "NP", "Profit") if trustworthy else None
+    eps = _newest_value(annual_records, "EPS") if trustworthy else None
+
+    # Point-in-time fields: the newest record that has them, not merely the
+    # newest record.
+    equity = _newest_value(records, "Eq", "Equity")
+    bps = _newest_value(records, "BPS")
+    dividend = _newest_value(records, "DivAnn")
+    shares = _newest_value(records, "ShOutFY")
+
+    # The exchange publishes its own ROE. Prefer it: it is computed against
+    # equity attributable to owners, where ``Eq`` includes non-controlling
+    # interests, so the two differ even when both are right.
+    published_roe = _newest_value(annual_records, "ROE") if trustworthy else None
+    roe = published_roe
+    if roe is None and trustworthy and net_income is not None and equity:
+        roe = net_income / equity
     per = price / eps if (price is not None and eps) else None
     pbr = price / bps if (price is not None and bps) else None
-    dividend_yield = dividend / price if (price and dividend is not None) else None
+    dividend_yield = plausible_dividend_yield(
+        dividend / price if (price and dividend is not None) else None, symbol
+    )
     market_cap = price * shares if (price is not None and shares) else None
+
+    if annual is None:
+        logger.info(
+            "%s has no annual disclosure in the fetched window; PER, ROE, "
+            "revenue and net income are left unset rather than filled from a "
+            "part-year figure.",
+            symbol,
+        )
 
     return Fundamentals(
         symbol=symbol,
@@ -109,6 +232,174 @@ def normalize_statement(
         revenue=revenue,
         net_income=net_income,
     )
+
+
+# V2 abbreviates period markers; V1-style spellings are kept as fallbacks.
+_PERIOD_ALIASES: dict[str, FiscalPeriod] = {
+    "1Q": FiscalPeriod.Q1,
+    "Q1": FiscalPeriod.Q1,
+    "2Q": FiscalPeriod.Q2,
+    "Q2": FiscalPeriod.Q2,
+    "HY": FiscalPeriod.Q2,  # a half-year report closes the second quarter
+    "3Q": FiscalPeriod.Q3,
+    "Q3": FiscalPeriod.Q3,
+    "FY": FiscalPeriod.FY,
+    "4Q": FiscalPeriod.FY,
+}
+
+
+# Chronological order within a fiscal year; alphabetical would put FY first.
+_PERIOD_ORDER: dict[FiscalPeriod, int] = {
+    FiscalPeriod.Q1: 1,
+    FiscalPeriod.Q2: 2,
+    FiscalPeriod.Q3: 3,
+    FiscalPeriod.FY: 4,
+}
+
+
+def _text(record: dict[str, Any], *keys: str) -> str | None:
+    """Return the first non-empty string among ``keys``."""
+    for key in keys:
+        value = record.get(key)
+        if value not in (None, ""):
+            return str(value)
+    return None
+
+
+def _parse_date(value: str | None) -> dt.date | None:
+    """Parse an ISO-ish J-Quants date, tolerating slashes and stray time parts."""
+    if not value:
+        return None
+    text = value.replace("/", "-")[:10]
+    try:
+        return dt.date.fromisoformat(text)
+    except ValueError:
+        return None
+
+
+#: Field names that may carry the period marker, newest spelling first.
+_PERIOD_FIELDS = ("CurPerType", "Period", "TypeOfCurrentPeriod", "PeriodType")
+
+
+def _period_of(record: dict[str, Any]) -> FiscalPeriod:
+    """Map a record's period marker onto :class:`FiscalPeriod`.
+
+    V2 calls this ``CurPerType``. Reading only the older spellings made every
+    record look annual, and that is not a cosmetic mistake: ``Sales`` and ``NP``
+    are **cumulative from the start of the fiscal year**, so a 3Q row holds nine
+    months. Filed under FY alongside a real twelve-month row, the next
+    year-over-year comparison invents about a third of a year's growth out of
+    nothing - which is exactly what a screen showing three quarters of the
+    market growing 10%+ looks like.
+
+    Anything unrecognised is still treated as a full year, because some payloads
+    genuinely omit the marker on annual rows. :func:`normalize_statements`
+    counts those and warns, so a future rename is loud rather than silent.
+    """
+    marker = _text(record, *_PERIOD_FIELDS)
+    if marker is None:
+        return FiscalPeriod.FY
+    return _PERIOD_ALIASES.get(marker.strip().upper(), FiscalPeriod.FY)
+
+
+def _has_period_marker(record: dict[str, Any]) -> bool:
+    """Whether the record said which period it covers at all."""
+    return _text(record, *_PERIOD_FIELDS) is not None
+
+
+def _fiscal_year_of(record: dict[str, Any]) -> int | None:
+    """Determine the fiscal year a record belongs to.
+
+    Prefers an explicit fiscal-year field, then the fiscal-year-end date, and
+    finally the disclosure date - a disclosure names the year it reports on far
+    more reliably than the year it was published, so it is the last resort.
+    """
+    explicit = _to_float(_text(record, "FY", "FiscalYear"))
+    if explicit is not None and 1900 <= explicit <= 2999:
+        return int(explicit)
+
+    for key in ("FYEnd", "CurrentFiscalYearEndDate", "FiscalYearEnd", "PeriodEnd"):
+        parsed = _parse_date(_text(record, key))
+        if parsed is not None:
+            return parsed.year
+
+    disclosed = _parse_date(_text(record, "DiscDate", "DisclosedDate"))
+    return disclosed.year if disclosed else None
+
+
+def normalize_statements(symbol: str, records: list[dict[str, Any]]) -> list[FinancialReport]:
+    """Turn raw ``fins/summary`` records into a fiscal-period report series.
+
+    Every record is kept, not just the newest: the payload already carries the
+    company's disclosure history, and that history is exactly what growth rates
+    and dividend streaks are computed from.
+
+    Records whose fiscal year cannot be determined are dropped - placing them
+    on the wrong year would corrupt a year-over-year comparison, which is worse
+    than omitting them.
+
+    Args:
+        symbol: The security code.
+        records: J-Quants summary records.
+
+    Returns:
+        Reports sorted oldest first. Restatements of the same period collapse
+        to the latest disclosure.
+    """
+    by_period: dict[tuple[int, FiscalPeriod], tuple[str, FinancialReport]] = {}
+    skipped = 0
+    unmarked = 0
+
+    for record in records:
+        fiscal_year = _fiscal_year_of(record)
+        if fiscal_year is None:
+            skipped += 1
+            continue
+
+        period = _period_of(record)
+        if not _has_period_marker(record):
+            unmarked += 1
+        disclosed_text = _text(record, "DiscDate", "DisclosedDate") or ""
+        report = FinancialReport(
+            symbol=symbol,
+            fiscal_year=fiscal_year,
+            period=period,
+            disclosed_on=_parse_date(disclosed_text),
+            revenue=_first(record, "Sales", "NetSales"),
+            operating_income=_first(record, "OP", "OperatingProfit"),
+            net_income=_first(record, "NP", "Profit"),
+            equity=_first(record, "Eq", "Equity"),
+            eps=_first(record, "EPS"),
+            bps=_first(record, "BPS"),
+            dividend_per_share=_first(record, "DivAnn"),
+            shares_outstanding=_first(record, "ShOutFY"),
+        )
+
+        key = (fiscal_year, period)
+        previous = by_period.get(key)
+        # A restatement supersedes the earlier disclosure of the same period.
+        if previous is None or disclosed_text >= previous[0]:
+            by_period[key] = (disclosed_text, report)
+
+    if skipped:
+        logger.warning("Dropped %d %s statement(s) with no resolvable fiscal year", skipped, symbol)
+    if unmarked and records:
+        # Every record defaulting to annual is the signature of a renamed field,
+        # and it corrupts quietly: quarterly figures are cumulative, so filing
+        # nine months as a full year manufactures growth on the next comparison.
+        level = logger.error if unmarked == len(records) else logger.warning
+        level(
+            "%d of %d %s statement(s) carried no period marker in any of %s "
+            "and were filed as annual. Quarterly rows are cumulative, so this "
+            "invents year-over-year growth. Check the payload's field names.",
+            unmarked,
+            len(records),
+            symbol,
+            ", ".join(_PERIOD_FIELDS),
+        )
+
+    ordered = sorted(by_period.items(), key=lambda kv: (kv[0][0], _PERIOD_ORDER[kv[0][1]]))
+    return [report for _key, (_disclosed, report) in ordered]
 
 
 def _default_fetcher(api_key: SecretStr | None) -> StatementFetcher:
@@ -126,7 +417,7 @@ def _default_fetcher(api_key: SecretStr | None) -> StatementFetcher:
                 if pagination_key:
                     params["pagination_key"] = pagination_key
                 response = client.get(_STATEMENTS_URL, headers=headers, params=params)
-                response.raise_for_status()
+                raise_for_status(response, f"statements for {symbol}")
                 payload = response.json()
                 # V2 returns {"data": [...]}; older shapes used "statements".
                 records.extend(payload.get("data") or payload.get("statements") or [])
@@ -170,8 +461,45 @@ class JQuantsFundamentalsProvider:
         if self._price_source is not None:
             try:
                 price = self._price_source(symbol)
-            except Exception as exc:  # price is optional — never fail the fetch
+            except Exception as exc:  # price is optional - never fail the fetch
                 logger.warning("Price lookup failed for %s: %s", symbol, exc)
         snapshot = normalize_statement(symbol, records, self._today(), price)
         logger.info("Fetched J-Quants fundamentals for %s", symbol)
         return snapshot
+
+    def fetch_snapshot_and_statements(
+        self, symbol: str
+    ) -> tuple[Fundamentals, list[FinancialReport]]:
+        """Return both products of a single ``fins/summary`` request.
+
+        The snapshot and the series come from the same records, so fetching them
+        separately spends two requests on one answer. At TSE Prime scale that is
+        1,600 avoidable calls, which is the difference between a bulk load
+        finishing and a rate limit stopping it.
+
+        This exists because storing only the series left every valuation screen
+        silently empty on JP names: ``screen --max-per`` reads the snapshot
+        table, and nothing was writing to it outside the US path.
+        """
+        records = self._fetch(symbol)
+        price: float | None = None
+        if self._price_source is not None:
+            try:
+                price = self._price_source(symbol)
+            except Exception as exc:  # price is optional - never fail the fetch
+                logger.warning("Price lookup failed for %s: %s", symbol, exc)
+        snapshot = normalize_statement(symbol, records, self._today(), price)
+        reports = normalize_statements(symbol, records)
+        logger.info("Fetched J-Quants snapshot and %d statement(s) for %s", len(reports), symbol)
+        return snapshot, reports
+
+    def fetch_statements(self, symbol: str) -> list[FinancialReport]:
+        """Fetch ``symbol``'s full disclosed statement history, oldest first.
+
+        The same request behind :meth:`fetch_fundamentals` already returns every
+        disclosure the plan covers; this keeps them all instead of collapsing to
+        the latest one.
+        """
+        reports = normalize_statements(symbol, self._fetch(symbol))
+        logger.info("Fetched %d J-Quants statement(s) for %s", len(reports), symbol)
+        return reports

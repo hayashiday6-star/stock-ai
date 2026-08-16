@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import datetime as dt
 
-from sqlalchemy import Date, DateTime, ForeignKey, String, UniqueConstraint, func
+from sqlalchemy import Date, DateTime, ForeignKey, Integer, String, UniqueConstraint, func
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
@@ -25,6 +25,10 @@ class Security(Base):
     symbol: Mapped[str] = mapped_column(String(32), unique=True, index=True)
     name: Mapped[str | None] = mapped_column(String(128), default=None)
     market: Mapped[str] = mapped_column(String(8), default="US")
+    sector: Mapped[str | None] = mapped_column(String(64), default=None, index=True)
+    """Broad classification, normalized across markets - see :mod:`stock_ai.data.sectors`."""
+    industry: Mapped[str | None] = mapped_column(String(128), default=None)
+    """The provider's finer-grained label, kept verbatim for reference."""
     created_at: Mapped[dt.datetime] = mapped_column(DateTime, server_default=func.now())
 
     bars: Mapped[list[PriceBar]] = relationship(
@@ -75,5 +79,107 @@ class FundamentalSnapshot(Base):
     net_income: Mapped[float | None] = mapped_column(default=None)
     dividend_yield: Mapped[float | None] = mapped_column(default=None)
     market_cap: Mapped[float | None] = mapped_column(default=None)
+
+    security: Mapped[Security] = relationship()
+
+
+class Holding(Base):
+    """A position the user actually owns, as opposed to a simulated one.
+
+    Separate from the broker's in-memory ``Position``: that models a running
+    simulation, this is the durable record the portfolio breakdown reads. One
+    row per security, so adding to a position updates quantity and cost basis
+    rather than appending a lot.
+    """
+
+    __tablename__ = "holdings"
+    __table_args__ = (UniqueConstraint("security_id", name="uq_holdings_security"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    security_id: Mapped[int] = mapped_column(
+        ForeignKey("securities.id", ondelete="CASCADE"), index=True, unique=True
+    )
+    quantity: Mapped[float]
+    average_cost: Mapped[float]
+    """Cost basis per share, in the listing market's currency."""
+    updated_at: Mapped[dt.datetime] = mapped_column(
+        DateTime, server_default=func.now(), onupdate=func.now()
+    )
+
+    security: Mapped[Security] = relationship()
+
+
+class WatchlistItem(Base):
+    """A security the user wants disclosures monitored for."""
+
+    __tablename__ = "watchlist"
+    __table_args__ = (UniqueConstraint("security_id", name="uq_watchlist_security"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    security_id: Mapped[int] = mapped_column(
+        ForeignKey("securities.id", ondelete="CASCADE"), index=True, unique=True
+    )
+    note: Mapped[str | None] = mapped_column(String(256), default=None)
+    """Why this name is being watched - shown alongside its alerts."""
+    min_importance: Mapped[str] = mapped_column(String(8), default="medium")
+    """Alert threshold for this entry; quieter names can be set to ``high``."""
+    added_at: Mapped[dt.datetime] = mapped_column(DateTime, server_default=func.now())
+
+    security: Mapped[Security] = relationship()
+
+
+class SeenDisclosure(Base):
+    """A disclosure already reported, so a rerun does not alert on it again.
+
+    Monitoring is meant to run on a schedule, and a source returns the same
+    recent items every time. Without this the first run's news would be
+    re-delivered every day until it aged out of the feed.
+    """
+
+    __tablename__ = "seen_disclosures"
+    __table_args__ = (UniqueConstraint("uid", name="uq_seen_disclosure_uid"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    uid: Mapped[str] = mapped_column(String(32), unique=True, index=True)
+    security_id: Mapped[int] = mapped_column(
+        ForeignKey("securities.id", ondelete="CASCADE"), index=True
+    )
+    title: Mapped[str] = mapped_column(String(512))
+    importance: Mapped[str] = mapped_column(String(8), default="unknown")
+    seen_at: Mapped[dt.datetime] = mapped_column(DateTime, server_default=func.now())
+
+
+class FinancialStatement(Base):
+    """One disclosed set of results for a fiscal period of a :class:`Security`.
+
+    Keyed by *fiscal period*, not by fetch date: that is what makes year-over-
+    year growth, dividend streaks, and payout history expressible at all. The
+    ``(security_id, fiscal_year, period)`` constraint makes re-ingesting a
+    restated disclosure an update rather than a duplicate row.
+    """
+
+    __tablename__ = "financial_statements"
+    __table_args__ = (
+        UniqueConstraint(
+            "security_id", "fiscal_year", "period", name="uq_statements_security_year_period"
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    security_id: Mapped[int] = mapped_column(
+        ForeignKey("securities.id", ondelete="CASCADE"), index=True
+    )
+    fiscal_year: Mapped[int] = mapped_column(Integer, index=True)
+    period: Mapped[str] = mapped_column(String(4), default="FY")
+    disclosed_on: Mapped[dt.date | None] = mapped_column(Date, default=None)
+
+    revenue: Mapped[float | None] = mapped_column(default=None)
+    operating_income: Mapped[float | None] = mapped_column(default=None)
+    net_income: Mapped[float | None] = mapped_column(default=None)
+    equity: Mapped[float | None] = mapped_column(default=None)
+    eps: Mapped[float | None] = mapped_column(default=None)
+    bps: Mapped[float | None] = mapped_column(default=None)
+    dividend_per_share: Mapped[float | None] = mapped_column(default=None)
+    shares_outstanding: Mapped[float | None] = mapped_column(default=None)
 
     security: Mapped[Security] = relationship()

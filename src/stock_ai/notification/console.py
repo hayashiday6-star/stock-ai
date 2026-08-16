@@ -1,4 +1,4 @@
-"""A notifier that prints to the console — the safe offline default."""
+"""A notifier that prints to the console - the safe offline default."""
 
 from __future__ import annotations
 
