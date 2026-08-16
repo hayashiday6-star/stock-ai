@@ -21,7 +21,7 @@ from typing import Any
 import pandas as pd
 from pydantic import SecretStr
 
-from stock_ai.core.exceptions import DataError, RateLimitError
+from stock_ai.core.exceptions import DataError, NoDataError, RateLimitError
 from stock_ai.core.logging import get_logger
 from stock_ai.data.http import raise_for_status
 from stock_ai.data.schema import (
@@ -72,10 +72,13 @@ def normalize_jquants(records: list[dict[str, Any]]) -> pd.DataFrame:
         A canonical OHLCV DataFrame (see :mod:`stock_ai.data.schema`).
 
     Raises:
-        DataError: If records are empty or required fields are missing.
+        NoDataError: If the response carried no records.
+        DataError: If required fields are missing.
     """
     if not records:
-        raise DataError("J-Quants returned no records.")
+        # Not necessarily a fault: an incremental fetch that starts after the
+        # last stored bar is an empty range until the session closes.
+        raise NoDataError("J-Quants returned no records.")
 
     df = pd.DataFrame(records)
     # Rename only the fields present, so duplicate targets can't collide.

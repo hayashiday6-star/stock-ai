@@ -10,7 +10,7 @@ from __future__ import annotations
 import datetime as dt
 from dataclasses import dataclass
 
-from stock_ai.core.exceptions import StockAIError
+from stock_ai.core.exceptions import NoDataError, StockAIError
 from stock_ai.core.logging import get_logger
 from stock_ai.data.base import FundamentalsProvider, PriceProvider
 from stock_ai.database.engine import Database
@@ -82,12 +82,28 @@ class IngestionService:
         try:
             with self.database.session() as session:
                 repo = PriceRepository(session)
+                had_bars = repo.latest_date(symbol) is not None
                 resolved_start = start or self._resolve_start(repo, symbol, end)
                 if resolved_start > end:
                     logger.info("%s already up to date (%s)", symbol, end)
                     return IngestResult(symbol, 0, ok=True)
 
-                prices = self.provider.fetch_prices(symbol, resolved_start, end)
+                try:
+                    prices = self.provider.fetch_prices(symbol, resolved_start, end)
+                except NoDataError:
+                    # An empty answer means two different things, and only the
+                    # caller knows which. For a symbol that already has bars it
+                    # means "nothing new yet" - the normal state of every run
+                    # before the session closes, and all day at a weekend.
+                    # Calling that a failure makes the scheduled job report an
+                    # error nearly every morning, and an alarm that fires daily
+                    # is one nobody reads. For a symbol with no bars at all it
+                    # is a real finding: the provider does not know the ticker.
+                    if not had_bars:
+                        raise
+                    logger.info("%s: no new bars for %s..%s", symbol, resolved_start, end)
+                    return IngestResult(symbol, 0, ok=True)
+
                 rows = repo.upsert_prices(symbol, prices, market=market)
                 logger.info("Ingested %d bars for %s", rows, symbol)
                 return IngestResult(symbol, rows, ok=True)

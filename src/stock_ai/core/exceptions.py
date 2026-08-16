@@ -35,6 +35,23 @@ class RateLimitError(DataError):
         self.retry_after = retry_after
 
 
+class NoDataError(DataError):
+    """The provider answered, and had nothing for the range asked for.
+
+    Distinct from a plain :class:`DataError` because it is usually not a
+    failure at all. A daily refresh asks for "everything after the last stored
+    bar", which before the market closes is an empty range by definition - and
+    on a weekend or a holiday it stays empty all day. Reporting that as a
+    failed job means the scheduled task reports failure nearly every morning,
+    and an alarm that fires every day is one nobody reads.
+
+    It is still a real problem when a symbol has *no* stored bars and the
+    provider returns nothing for a wide backfill window: that is a ticker the
+    provider does not know. Only the caller can tell those apart, which is why
+    this carries no verdict of its own.
+    """
+
+
 class ScreeningError(StockAIError):
     """A screening condition or the screening pipeline failed."""
 

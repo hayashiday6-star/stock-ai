@@ -359,3 +359,71 @@ def test_daily_does_not_send_us_tickers_to_jquants(
     assert routed["AAPL"] == "yfinance"
     assert routed["7203"] == "jquants"
     database.dispose()
+
+
+# --- empty responses --------------------------------------------------------
+
+
+class _Empty:
+    """A provider that has nothing for the range asked for."""
+
+    def fetch_prices(self, symbol: str, start: dt.date, end: dt.date) -> pd.DataFrame:
+        from stock_ai.core.exceptions import NoDataError
+
+        raise NoDataError(f"nothing for {symbol} in {start}..{end}")
+
+
+def test_no_new_bars_for_a_stored_symbol_is_not_a_failure() -> None:
+    """The daily job asked for today's bar at 08:38, before the session closed.
+
+    Observed live: ``prices (JP)`` reported "J-Quants returned no records" and
+    the scheduled task exited non-zero. That is the normal state every morning
+    and all weekend - reporting it as an error trains the reader to ignore the
+    one morning it means something.
+    """
+    database = Database("sqlite:///:memory:")
+    database.create_all()
+    _stored_symbol(database, "7203", ["2026-08-14"])
+
+    result = IngestionService(_Empty(), database).ingest_symbol(
+        "7203", end=dt.date(2026, 8, 17), market="JP"
+    )
+
+    assert result.ok
+    assert result.rows == 0
+    database.dispose()
+
+
+def test_no_data_at_all_for_an_unknown_symbol_is_still_a_failure() -> None:
+    """A ticker the provider does not know must not be silently accepted."""
+    database = Database("sqlite:///:memory:")
+    database.create_all()
+
+    result = IngestionService(_Empty(), database).ingest_symbol(
+        "NOSUCH", end=dt.date(2026, 8, 17), market="US"
+    )
+
+    assert not result.ok
+    assert result.error
+    database.dispose()
+
+
+def test_an_ordinary_failure_is_still_reported_for_a_stored_symbol() -> None:
+    """Only emptiness is forgiven; a real error must survive the change."""
+    from stock_ai.core.exceptions import DataError
+
+    database = Database("sqlite:///:memory:")
+    database.create_all()
+    _stored_symbol(database, "7203", ["2026-08-14"])
+
+    class _Broken:
+        def fetch_prices(self, symbol: str, start: dt.date, end: dt.date) -> pd.DataFrame:
+            raise DataError("HTTP 500 while fetching prices for 7203.")
+
+    result = IngestionService(_Broken(), database).ingest_symbol(
+        "7203", end=dt.date(2026, 8, 17), market="JP"
+    )
+
+    assert not result.ok
+    assert "500" in (result.error or "")
+    database.dispose()
