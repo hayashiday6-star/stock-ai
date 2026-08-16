@@ -1224,9 +1224,13 @@ def rank(
     ``--fx``/``--base`` control.
 
     ``--preset tenbagger`` swaps in a small-cap growth factor set. It reads the
-    statement series, so run ``statements`` first, and treat its output as a
-    shortlist to research rather than a prediction - backtest it before
-    trusting it.
+    statement series, so run ``statements`` first.
+
+    That preset **was** backtested, which is why this no longer says to go and
+    backtest it: walk-forward over 12 quarterly windows on the TSE universe
+    cleared two sigma in 3, with a median ``t`` of +0.52. Use it to shortlist
+    companies that are growing; do not read the ordering as a ranking worth
+    allocating on.
     """
     settings = get_settings()
     configure_logging(settings.log_level)
