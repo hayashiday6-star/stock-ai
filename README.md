@@ -32,12 +32,22 @@ plausible wrong numbers rather than an error. So the table separates them.
 | JP prices & financials (J-Quants v2) | **Verified** — 1,556 TSE symbols loaded; PER median 14.94, PBR 1.26, ROE 9.1%, dividend 2.82%, all consistent with TSE norms; Toyota PER 10.0 / ¥43.25tn cross-checked |
 | JP screening | **Verified** — run on the full universe, results reviewed by name |
 | Factor / walk-forward validation | **Verified** — 12 windows, 1,253–1,492 names scored per window |
-| EDINET disclosures | **Partly** — authentication verified 2026-08-15; filing *parsing* not yet exercised against a day with filings |
-| US prices (yfinance) | **Partly** — the path works and real-data bugs were found and fixed through it, but no full US universe has been loaded here |
-| Cross-market ranking (JP + US) | **Not validated at scale** — implemented and unit-tested; never run with both universes fully loaded |
-| Backtest engine | **Not validated on real data** — unit-tested only; the walk-forward work used the factor-test path, not `backtest` |
+| EDINET disclosures | **Verified** — key accepted and 648 filings returned for 2026-08-14 |
+| US prices & fundamentals (yfinance) | **Verified on 10 large caps** (1,030 bars each) — not a full US universe |
+| Cross-market ranking (JP + US) | **Verified** — 1,564 securities ranked on one scale, JPY converted at a live rate |
+| Backtest engine | **Verified** — and the run found a real bug: `--strategy sma200` was running a 50-day filter |
 | AI scoring / chat / notifications | **Not validated** — require provider keys not exercised here |
 | Automated trading | **Paper broker only.** The IBKR path is a skeleton, opt-in, and has never placed an order. Do not point it at a funded account |
+
+One known gap in the data, not the code: **a company that pays no dividend is
+recorded as "dividend unknown", not "dividend zero".** yfinance simply omits
+the field for a non-payer, and an absent field is indistinguishable from a
+fetch that returned less than it should have. The consequence is visible in a
+ranking — Amazon shows `div = -` and 85% coverage — and it cuts the wrong way
+twice: a definite non-payer is marked under-measured, and it escapes the
+dividend factor entirely while a company yielding 0.3% carries that drag. The
+safe reading is that **the dividend factor ranks payers against payers**, and
+a non-payer's score is built from the rest.
 
 Two conclusions this system produced about itself, both negative and both
 worth knowing before use:

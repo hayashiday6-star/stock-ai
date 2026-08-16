@@ -113,7 +113,23 @@ class DividendFactor(Factor):
         return "dividend"
 
     def score(self, context: ScreeningContext) -> float | None:
-        """Score the dividend yield relative to the target."""
+        """Score the dividend yield relative to the target.
+
+        .. note::
+           A missing yield is scored as unknown, **not** as zero, and the two
+           are not the same thing for a company that genuinely pays nothing.
+           The distinction cannot be recovered here: yfinance omits the field
+           for a non-payer, and an absent field looks identical to a partial
+           fetch. Recording a real non-payer as ``0.0`` would be a guess, and
+           a wrong guess stored as fact outranks a wrong guess left blank -
+           blanks are excluded from screens, values are scored.
+
+           So this returns ``None`` and the scorer renormalizes, which has a
+           consequence worth stating plainly: a non-payer escapes this factor
+           while a company yielding 0.3% carries its drag. Read a composite
+           score's ``coverage`` alongside it - a non-payer shows 85% rather
+           than 100% for exactly this reason.
+        """
         if context.fundamentals is None or context.fundamentals.dividend_yield is None:
             return None
         return _clamp01(context.fundamentals.dividend_yield / self.target)
