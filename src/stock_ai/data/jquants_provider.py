@@ -152,15 +152,35 @@ def _default_fetcher(api_key: SecretStr | None) -> JQuantsFetcher:
                     break
         return records
 
-    def fetch(symbol: str, start: dt.date, end: dt.date) -> list[dict[str, Any]]:
-        """Fetch a range, narrowing once if the plan does not reach that far.
+    # The plan's covered range, once the provider has told us what it is. It is
+    # a property of the subscription, not of a symbol, so learning it on the
+    # first refusal and applying it to the rest is the whole point: without
+    # this, every symbol in a 1,564-name backfill pays its own rejected request
+    # before the useful one. That doubles the request count on exactly the run
+    # that is already the heaviest, and the rate limiter aborts it partway - on
+    # the first real attempt only 38 symbols were extended before the run ended.
+    learned: dict[str, tuple[dt.date, dt.date | None]] = {}
 
-        Asking for more history than the subscription covers fails the whole
-        symbol, which is the wrong outcome twice over: the years that *are*
-        covered were available all along, and a backfill across a universe
-        would fail every name for the same reason. Since the refusal states
-        the covered range, the only sane response is to take it and retry.
+    def clamp(start: dt.date, end: dt.date) -> tuple[dt.date, dt.date]:
+        """Narrow a range to the plan's window, if we have been told one."""
+        window = learned.get("window")
+        if window is None:
+            return start, end
+        covered_start, covered_end = window
+        return max(start, covered_start), (min(end, covered_end) if covered_end else end)
+
+    def fetch(symbol: str, start: dt.date, end: dt.date) -> list[dict[str, Any]]:
+        """Fetch a range, narrowing it to what the subscription actually covers.
+
+        Asking for more history than the plan covers fails the whole symbol,
+        which is wrong twice over: the years that *are* covered were available
+        all along, and a universe-wide backfill fails every name for the same
+        reason. The refusal states the covered range, so it is taken, applied,
+        and remembered for the remaining symbols.
         """
+        start, end = clamp(start, end)
+        if start >= end:
+            return []  # the plan's window and the wanted window do not overlap
         try:
             return request(symbol, start, end)
         except RateLimitError:
@@ -169,17 +189,18 @@ def _default_fetcher(api_key: SecretStr | None) -> JQuantsFetcher:
             window = subscription_window(str(exc))
             if window is None:
                 raise
-            covered_start, covered_end = window
-            narrowed_start = max(start, covered_start)
-            narrowed_end = min(end, covered_end) if covered_end else end
+            learned["window"] = window
+            covered_start, _covered_end = window
+            narrowed_start, narrowed_end = clamp(start, end)
             if narrowed_start >= narrowed_end or (narrowed_start, narrowed_end) == (start, end):
                 raise
             logger.warning(
-                "%s: the plan covers %s onward, not %s. Fetching the covered part; "
-                "earlier history needs a different J-Quants plan.",
-                symbol,
+                "The J-Quants plan covers %s onward, not %s. Fetching the covered "
+                "part for %s and every symbol after it; earlier history needs a "
+                "different plan.",
                 covered_start,
                 start,
+                symbol,
             )
             return request(symbol, narrowed_start, narrowed_end)
 

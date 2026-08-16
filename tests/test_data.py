@@ -356,3 +356,107 @@ def test_a_narrowing_that_would_change_nothing_re_raises(
         _default_fetcher(None)("7203", dt.date(2021, 8, 16), dt.date(2026, 8, 16))
 
     assert calls["n"] == 1  # no pointless second attempt
+
+
+def test_the_plan_window_is_learned_once_not_per_symbol(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A rejected request per symbol doubles the cost of the heaviest run.
+
+    The window belongs to the subscription, not the symbol. Re-discovering it
+    1,564 times spends the rate-limit budget on refusals - on the first real
+    backfill the run aborted with only 38 of 1,564 symbols extended.
+    """
+    import datetime as dt
+
+    import httpx
+
+    from stock_ai.data.jquants_provider import _default_fetcher
+
+    asked: list[tuple[str, str]] = []
+    body = '{"message": "Your subscription covers the following dates: 2021-08-16 ~ ."}'
+
+    class _Response:
+        def __init__(self, status_code: int, payload: dict, text: str = "") -> None:
+            self.status_code = status_code
+            self._payload = payload
+            self.text = text
+            self.headers: dict[str, str] = {}
+
+        def json(self) -> dict:
+            return self._payload
+
+    class _Client:
+        def __init__(self, **kwargs: object) -> None:
+            pass
+
+        def __enter__(self) -> _Client:
+            return self
+
+        def __exit__(self, *exc: object) -> None:
+            return None
+
+        def get(self, url: str, headers: dict, params: dict) -> _Response:
+            asked.append((params["code"], params["from"]))
+            if params["from"] < "2021-08-16":
+                return _Response(400, {}, body)
+            return _Response(200, {"data": [{"Date": "2021-08-16", "C": 100.0}]})
+
+    monkeypatch.setattr(httpx, "Client", _Client)
+    fetcher = _default_fetcher(None)
+    start, end = dt.date(2012, 12, 7), dt.date(2026, 8, 16)
+    for symbol in ("7203", "6758", "9984"):
+        assert fetcher(symbol, start, end)
+
+    rejected = [code for code, frm in asked if frm < "2021-08-16"]
+    assert rejected == ["7203"]  # only the first symbol pays the discovery cost
+    assert len(asked) == 4  # 1 refusal + 3 successful fetches, not 6
+
+
+def test_a_window_that_does_not_overlap_costs_no_request(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Once the plan is known, an impossible range must not be sent at all."""
+    import datetime as dt
+
+    import httpx
+
+    from stock_ai.data.jquants_provider import _default_fetcher
+
+    calls: list[str] = []
+    body = '{"message": "Your subscription covers the following dates: 2021-08-16 ~ ."}'
+
+    class _Response:
+        def __init__(self, status_code: int, payload: dict, text: str = "") -> None:
+            self.status_code = status_code
+            self._payload = payload
+            self.text = text
+            self.headers: dict[str, str] = {}
+
+        def json(self) -> dict:
+            return self._payload
+
+    class _Client:
+        def __init__(self, **kwargs: object) -> None:
+            pass
+
+        def __enter__(self) -> _Client:
+            return self
+
+        def __exit__(self, *exc: object) -> None:
+            return None
+
+        def get(self, url: str, headers: dict, params: dict) -> _Response:
+            calls.append(params["from"])
+            if params["from"] < "2021-08-16":
+                return _Response(400, {}, body)
+            return _Response(200, {"data": [{"Date": "2021-08-16", "C": 100.0}]})
+
+    monkeypatch.setattr(httpx, "Client", _Client)
+    fetcher = _default_fetcher(None)
+    fetcher("7203", dt.date(2012, 1, 1), dt.date(2026, 8, 16))  # learns the window
+    before = len(calls)
+
+    # Entirely before the plan starts: nothing to ask for.
+    assert fetcher("6758", dt.date(2010, 1, 1), dt.date(2011, 1, 1)) == []
+    assert len(calls) == before
