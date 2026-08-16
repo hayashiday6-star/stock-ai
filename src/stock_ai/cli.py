@@ -60,6 +60,7 @@ from stock_ai.data.fx import FxConverter
 from stock_ai.data.jquants_fundamentals import JQuantsFundamentalsProvider
 from stock_ai.data.jquants_profile import JQuantsProfileProvider
 from stock_ai.data.jquants_provider import JQuantsPriceProvider
+from stock_ai.data.markets import split_by_market
 from stock_ai.data.service import FundamentalsService, IngestionService, IngestResult
 from stock_ai.data.types import Importance
 from stock_ai.data.universe import JQuantsUniverse, Segment
@@ -1935,13 +1936,23 @@ def daily(
 
     targets = list(symbols) if symbols else None
     if targets:
-        price_provider, market = _price_source(source, settings)
-        scheduler.add(
-            "prices",
-            lambda: _log_ingest(
-                IngestionService(price_provider, database).ingest_many(targets, market=market)
-            ),
-        )
+        # One --source cannot serve a mixed list: yfinance has no 7203 and
+        # J-Quants has no AAPL. Routing by the ticker itself is what stops a
+        # single flag being applied to symbols the provider cannot answer for.
+        for market, group in split_by_market(targets).items():
+            resolved = "jquants" if market == "JP" else "yfinance"
+            if resolved != source.lower():
+                console.print(
+                    f"[yellow]{', '.join(group)} are {market} listings; "
+                    f"fetching them from {resolved} rather than {source}.[/]"
+                )
+            price_provider, provider_market = _price_source(resolved, settings)
+            scheduler.add(
+                f"prices ({market})",
+                lambda p=price_provider, g=group, m=provider_market: _log_ingest(
+                    IngestionService(p, database).ingest_many(g, market=m)
+                ),
+            )
 
     notifier = get_notifier(channel, settings) if channel else None
     scheduler.add(

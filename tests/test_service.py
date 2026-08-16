@@ -282,3 +282,80 @@ def test_an_arbitrary_floor_still_asks_for_the_check() -> None:
     reading = _shared_floor_reading(dt.date(2022, 6, 27), dt.date(2026, 8, 16))
     assert "either the provider" in reading
     assert "--backfill" in reading
+
+
+# --- market routing ---------------------------------------------------------
+
+
+def test_a_japanese_code_routes_to_jp_whatever_the_suffix() -> None:
+    from stock_ai.data.markets import market_for_symbol
+
+    assert market_for_symbol("7203") == "JP"
+    assert market_for_symbol("7203.T") == "JP"
+    assert market_for_symbol("6758.JP") == "JP"
+    assert market_for_symbol(" 4593 ") == "JP"
+
+
+def test_anything_that_is_not_four_digits_is_us() -> None:
+    from stock_ai.data.markets import market_for_symbol
+
+    assert market_for_symbol("AAPL") == "US"
+    assert market_for_symbol("BRK.B") == "US"
+    assert market_for_symbol("720") == "US"
+    assert market_for_symbol("7203A") == "US"
+
+
+def test_a_mixed_list_splits_and_keeps_its_order() -> None:
+    """One --source cannot serve both markets; the list has to be split first."""
+    from stock_ai.data.markets import split_by_market
+
+    grouped = split_by_market(["AAPL", "7203", "MSFT", "6758"])
+
+    assert grouped == {"US": ["AAPL", "MSFT"], "JP": ["7203", "6758"]}
+
+
+def test_a_single_market_list_yields_one_group() -> None:
+    from stock_ai.data.markets import split_by_market
+
+    assert split_by_market(["AAPL", "MSFT"]) == {"US": ["AAPL", "MSFT"]}
+    assert split_by_market([]) == {}
+
+
+def test_daily_does_not_send_us_tickers_to_jquants(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: object
+) -> None:
+    """Bug (7) at a different entry point: one flag applied to both markets.
+
+    ``daily AAPL MSFT 7203 --source jquants`` used to hand every symbol to
+    J-Quants, which cannot price AAPL. Nothing about the command says so - the
+    US names simply land among the failures.
+    """
+    database = Database("sqlite:///:memory:")
+    database.create_all()
+    seen: list[tuple[str, tuple[str, ...]]] = []
+
+    class _Recorder:
+        def __init__(self, name: str) -> None:
+            self.name = name
+
+        def fetch_prices(self, symbol: str, start: dt.date, end: dt.date) -> pd.DataFrame:
+            seen.append((self.name, (symbol,)))
+            return _frame(["2024-01-02"])
+
+    def fake_source(source: str, settings: object) -> tuple[object, str]:
+        return _Recorder(source), "JP" if source == "jquants" else "US"
+
+    monkeypatch.setattr(cli, "Database", lambda: database)
+    monkeypatch.setattr(cli, "_price_source", fake_source)
+    monkeypatch.setenv("COLUMNS", "200")
+
+    result = runner.invoke(
+        cli.app,
+        ["daily", "AAPL", "7203", "--source", "jquants", "--once", "--provider", "dummy"],
+    )
+
+    assert result.exit_code in (0, 1)  # the monitor half may fail without keys
+    routed = {symbol: provider for provider, (symbol,) in seen}
+    assert routed["AAPL"] == "yfinance"
+    assert routed["7203"] == "jquants"
+    database.dispose()

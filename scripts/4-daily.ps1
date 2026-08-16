@@ -19,6 +19,13 @@
 .PARAMETER Channel
     Notification channel for alerts. Omit to print them instead.
 
+.PARAMETER Feed
+    Disclosure feed the monitor reads: all | edinet | news.
+
+.PARAMETER Source
+    Price source for symbols that are not Japanese listings. Four-digit codes
+    are routed to J-Quants regardless, so a mixed list needs no extra flag.
+
 .PARAMETER Register
     Create (or replace) the scheduled task instead of running the job now.
 
@@ -27,13 +34,18 @@
 
 .EXAMPLE
     .\scripts\4-daily.ps1 -Provider claude -Channel discord
-    .\scripts\4-daily.ps1 -Register -At 18:00 -Provider claude -Channel discord
+    .\scripts\4-daily.ps1 -Register -At 18:00 -Provider claude -Channel discord -Feed edinet
+    .\scripts\4-daily.ps1 -Register -Symbols 7203,6758,AAPL -Feed edinet -Channel discord
 #>
 [CmdletBinding()]
 param(
     [string[]]$Symbols = @(),
     [string]$Provider = 'claude',
     [string]$Channel,
+    [ValidateSet('all', 'edinet', 'news')]
+    [string]$Feed = 'all',
+    [ValidateSet('yfinance', 'jquants')]
+    [string]$Source = 'yfinance',
     [switch]$Register,
     [ValidatePattern('^([01]\d|2[0-3]):[0-5]\d$')]
     [string]$At = '18:00'
@@ -58,6 +70,7 @@ if ($Register) {
         '-Provider', $Provider
     )
     if ($Channel) { $arguments += @('-Channel', $Channel) }
+    $arguments += @('-Feed', $Feed, '-Source', $Source)
     if ($Symbols.Count -gt 0) { $arguments += @('-Symbols', ($Symbols -join ',')) }
 
     try {
@@ -99,7 +112,7 @@ try {
 
     if (-not (Test-UvInstalled)) { return }
 
-    $arguments = @('daily', '--once', '--provider', $Provider)
+    $arguments = @('daily', '--once', '--provider', $Provider, '--feed', $Feed, '--source', $Source)
     if ($Channel) { $arguments += @('--channel', $Channel) }
     # A comma-joined -Symbols survives Task Scheduler's argument flattening.
     foreach ($symbol in ($Symbols -split ',' | Where-Object { $_ })) {
