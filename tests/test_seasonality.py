@@ -53,9 +53,7 @@ def _seasonal_series(years: int, month: int, boost: float, seed: int = 0) -> pd.
 def _random_series(years: int, seed: int) -> pd.DataFrame:
     index = _daily_index(years)
     rng = np.random.default_rng(seed)
-    closes = pd.Series(
-        100.0 * np.exp(np.cumsum(rng.normal(0.0, 0.004, len(index)))), index=index
-    )
+    closes = pd.Series(100.0 * np.exp(np.cumsum(rng.normal(0.0, 0.004, len(index)))), index=index)
     return _prices(closes)
 
 
