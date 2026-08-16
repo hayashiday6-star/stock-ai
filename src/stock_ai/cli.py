@@ -1284,16 +1284,28 @@ def history() -> None:
         table.add_row(label, f"{value:.1f}")
     console.print(table)
 
-    # A provider that caps history caps it at the same date for everyone, so a
-    # single date shared by much of the universe is the plan's floor showing
-    # through - not a coincidence, and not something more requests will move.
+    # A shared floor has two explanations and this command cannot tell them
+    # apart, so it must not pick one. An earlier version announced "the
+    # provider's history limit"; the first real run made that claim against a
+    # floor of 2022-06-27, which was exactly 1,500 days before the day the
+    # universe was first loaded with --lookback 1500. It was our own boundary,
+    # and calling it the provider's would have closed the question wrongly.
     counts = Counter(earliest_dates)
     common_date, common_count = counts.most_common(1)[0]
     if common_count >= max(3, len(spans) // 10):
         console.print(
             f"[yellow]{common_count} of {len(spans)} symbols start on exactly "
-            f"{common_date}.[/] A shared floor like that is the provider's history "
-            "limit, not a gap to re-fetch - asking for more will not move it."
+            f"{common_date}.[/] That is either the provider's history limit or the "
+            "boundary of whatever --lookback first loaded them - a shared floor "
+            "looks identical either way."
+        )
+        console.print(
+            "[dim]To tell them apart, backfill a single symbol and watch the log:\n"
+            "  [cyan]stock-ai bulk-fetch --what prices --symbols 7203 "
+            "--lookback 5000 --backfill[/]\n"
+            "  'extending history back from X to Y' means the request was made, so "
+            "the floor is the provider's. No such line means the flag never took "
+            "effect, and the floor is ours.[/]"
         )
 
     thin = sum(1 for value in years if value < 8)

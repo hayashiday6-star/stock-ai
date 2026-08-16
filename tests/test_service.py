@@ -237,8 +237,13 @@ def test_a_symbol_without_bars_is_not_reported_as_zero_length() -> None:
     database.dispose()
 
 
-def test_the_history_command_flags_a_shared_earliest_date() -> None:
-    """A floor shared by the universe is a provider cap, not a re-fetchable gap."""
+def test_the_history_command_does_not_blame_a_shared_floor_on_the_provider() -> None:
+    """A shared floor is ambiguous, and saying otherwise closes the question wrongly.
+
+    The first real run reported a floor of 2022-06-27 as "the provider's history
+    limit". It was exactly 1,500 days before the day the universe was first
+    loaded with ``--lookback 1500`` - our own boundary, not the provider's.
+    """
     database = Database("sqlite:///:memory:")
     database.create_all()
     for symbol in ("1001", "1002", "1003", "1004"):
@@ -251,5 +256,6 @@ def test_the_history_command_flags_a_shared_earliest_date() -> None:
 
     assert result.exit_code == 0
     assert "2021-04-01" in result.stdout
-    assert "history limit" in result.stdout
+    assert "either the provider" in result.stdout
+    assert "--lookback first loaded them" in result.stdout
     database.dispose()
