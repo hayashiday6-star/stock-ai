@@ -10,6 +10,7 @@ import contextlib
 import datetime as dt
 import hashlib
 import sys
+from collections import Counter
 from pathlib import Path
 
 import pandas as pd
@@ -75,6 +76,7 @@ from stock_ai.database.repository import (
     PriceRepository,
     WatchlistRepository,
     list_securities,
+    price_history_spans,
     upsert_profile,
 )
 from stock_ai.ir.edinet import (
@@ -1240,6 +1242,66 @@ def score(
             "[dim]Cov is how much of the factor weight could be measured. A high "
             "score at low coverage is an average over few factors, not a better "
             "company.[/]"
+        )
+
+
+@app.command()
+def history() -> None:
+    """Show how far back the stored prices reach, across the whole universe.
+
+    The question after any backfill is not "did the command succeed" - it
+    reports success either way - but "how many years actually arrived, and for
+    how many names". A spot check on one symbol cannot answer the second half:
+    a provider plan that caps history caps it per request, so a large name can
+    look complete while most of the universe stops at the same wall.
+    """
+    settings = get_settings()
+    configure_logging(settings.log_level)
+
+    database = Database()
+    database.create_all()
+    with database.session() as session:
+        spans = price_history_spans(session)
+
+    if not spans:
+        console.print("[yellow]No stored prices; run 'fetch' or 'bulk-fetch' first.[/]")
+        return
+
+    today = dt.date.today()
+    years = sorted((today - earliest).days / 365.25 for _s, _m, earliest, _l, _b in spans)
+    earliest_dates = [earliest for _s, _m, earliest, _l, _b in spans]
+
+    table = Table(title=f"stored price history ({len(spans)} symbols)")
+    table.add_column("percentile", style="cyan")
+    table.add_column("years of history", justify="right")
+    for label, value in (
+        ("shortest", years[0]),
+        ("25%", years[len(years) // 4]),
+        ("median", years[len(years) // 2]),
+        ("75%", years[3 * len(years) // 4]),
+        ("longest", years[-1]),
+    ):
+        table.add_row(label, f"{value:.1f}")
+    console.print(table)
+
+    # A provider that caps history caps it at the same date for everyone, so a
+    # single date shared by much of the universe is the plan's floor showing
+    # through - not a coincidence, and not something more requests will move.
+    counts = Counter(earliest_dates)
+    common_date, common_count = counts.most_common(1)[0]
+    if common_count >= max(3, len(spans) // 10):
+        console.print(
+            f"[yellow]{common_count} of {len(spans)} symbols start on exactly "
+            f"{common_date}.[/] A shared floor like that is the provider's history "
+            "limit, not a gap to re-fetch - asking for more will not move it."
+        )
+
+    thin = sum(1 for value in years if value < 8)
+    if thin:
+        console.print(
+            f"[dim]{thin} symbol(s) hold under 8 years. A calendar month gives one "
+            "observation per year, so seasonality on those rests on very few "
+            "points - see 'seasonality-scan'.[/]"
         )
 
 

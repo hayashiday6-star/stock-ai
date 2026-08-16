@@ -201,3 +201,55 @@ def test_backfilling_keeps_the_bars_already_stored() -> None:
         assert repo.latest_date("7203") == dt.date(2024, 1, 3)
         assert len(repo.get_prices("7203")) == 3
     database.dispose()
+
+
+# --- history reporting ------------------------------------------------------
+
+
+def test_history_spans_reports_the_range_of_each_series() -> None:
+    from stock_ai.database.repository import price_history_spans
+
+    database = Database("sqlite:///:memory:")
+    database.create_all()
+    _stored_symbol(database, "7203", ["2020-01-01", "2022-06-01", "2024-01-03"])
+    _stored_symbol(database, "6758", ["2023-01-01", "2023-01-02"])
+
+    with database.session() as session:
+        spans = {row[0]: row for row in price_history_spans(session)}
+
+    assert spans["7203"][2] == dt.date(2020, 1, 1)
+    assert spans["7203"][3] == dt.date(2024, 1, 3)
+    assert spans["7203"][4] == 3
+    assert spans["6758"][4] == 2
+    database.dispose()
+
+
+def test_a_symbol_without_bars_is_not_reported_as_zero_length() -> None:
+    """A security row with no prices has no span, and must not fake one."""
+    from stock_ai.database.repository import get_or_create_security, price_history_spans
+
+    database = Database("sqlite:///:memory:")
+    database.create_all()
+    with database.session() as session:
+        get_or_create_security(session, "EMPTY", market="JP")
+    with database.session() as session:
+        assert price_history_spans(session) == []
+    database.dispose()
+
+
+def test_the_history_command_flags_a_shared_earliest_date() -> None:
+    """A floor shared by the universe is a provider cap, not a re-fetchable gap."""
+    database = Database("sqlite:///:memory:")
+    database.create_all()
+    for symbol in ("1001", "1002", "1003", "1004"):
+        _stored_symbol(database, symbol, ["2021-04-01", "2024-01-02"])
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(cli, "Database", lambda: database)
+        patch.setenv("COLUMNS", "200")
+        result = runner.invoke(cli.app, ["history"])
+
+    assert result.exit_code == 0
+    assert "2021-04-01" in result.stdout
+    assert "history limit" in result.stdout
+    database.dispose()

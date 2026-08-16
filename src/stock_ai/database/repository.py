@@ -11,7 +11,7 @@ from __future__ import annotations
 import datetime as dt
 
 import pandas as pd
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session
 
@@ -82,6 +82,31 @@ def list_securities(session: Session) -> list[tuple[str, str]]:
     """
     rows = session.execute(select(Security.symbol, Security.market).order_by(Security.symbol)).all()
     return [(symbol, market) for symbol, market in rows]
+
+
+def price_history_spans(session: Session) -> list[tuple[str, str, dt.date, dt.date, int]]:
+    """Return ``(symbol, market, earliest, latest, bars)`` for every stored series.
+
+    One grouped query rather than three per symbol: on a 1,500-name universe
+    the per-symbol form is thousands of round trips to answer a question asked
+    after every backfill.
+    """
+    rows = session.execute(
+        select(
+            Security.symbol,
+            Security.market,
+            func.min(PriceBar.date),
+            func.max(PriceBar.date),
+            func.count(PriceBar.id),
+        )
+        .join(PriceBar, PriceBar.security_id == Security.id)
+        .group_by(Security.symbol, Security.market)
+        .order_by(Security.symbol)
+    ).all()
+    return [
+        (symbol, market, earliest, latest, int(bars))
+        for symbol, market, earliest, latest, bars in rows
+    ]
 
 
 def upsert_profile(session: Session, profile: SecurityProfile) -> None:
