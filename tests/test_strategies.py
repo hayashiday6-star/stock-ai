@@ -74,3 +74,24 @@ def test_build_strategy_names() -> None:
 def test_build_strategy_unknown_raises() -> None:
     with pytest.raises(ValueError, match="Unknown strategy"):
         build_strategy("bogus")
+
+
+def test_sma200_uses_two_hundred_days_not_the_crossover_slow_window() -> None:
+    """The number is in the name; ``--slow`` belongs to the crossover strategy.
+
+    This read ``slow if slow > 2 else 200``, and every caller passes the
+    crossover default of 50, so the guard could never fire: asking for sma200
+    ran a 50-day filter. Nothing raised - a 50-day trend filter returns
+    perfectly ordinary numbers - so only the printed strategy name gave it away.
+    """
+    from stock_ai.backtest.strategy import build_strategy
+
+    assert build_strategy("sma200").name == "above_sma_200"
+    assert build_strategy("sma200", fast=20, slow=50).name == "above_sma_200"
+    assert build_strategy("sma200", slow=10, window=100).name == "above_sma_100"
+
+
+def test_the_crossover_still_reads_fast_and_slow() -> None:
+    from stock_ai.backtest.strategy import build_strategy
+
+    assert build_strategy("sma", fast=5, slow=30, window=200).name == "sma_crossover_5_30"

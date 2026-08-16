@@ -44,7 +44,7 @@ from stock_ai.ir.sources import CompositeDisclosureSource, NewsDisclosureSource
 from stock_ai.news.sources import YFinanceNewsSource
 from stock_ai.portfolio.analysis import PortfolioAnalysis, analyze_portfolio
 from stock_ai.portfolio.growth_factors import tenbagger_weighted_factors
-from stock_ai.portfolio.ranking import rank_securities
+from stock_ai.portfolio.ranking import DEFAULT_MIN_COVERAGE, rank_securities
 from stock_ai.portfolio.scoring import WeightedScorer, default_weighted_factors
 from stock_ai.screening.base import Condition, ScreeningContext
 from stock_ai.screening.engine import ScreeningEngine
@@ -212,6 +212,7 @@ def backtest_comparison(
     slow: int = 50,
     capital: float = 100_000.0,
     strategy: str = "sma",
+    window: int = 200,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Return ``(equity_curves, metrics)`` for a strategy vs buy-and-hold.
 
@@ -219,16 +220,17 @@ def backtest_comparison(
         database: Source of stored prices.
         symbol: Ticker to backtest.
         fast: Fast SMA window (``sma`` strategy).
-        slow: Slow SMA / trend window.
+        slow: Slow SMA window (``sma`` strategy).
         capital: Initial capital.
         strategy: Strategy name (``sma``/``sma200``/``macd``/``rsi``/``hold``).
+        window: Trend window (``sma200`` strategy).
 
     Returns:
         A tuple of the two equity curves (as one DataFrame) and the metrics table.
     """
     prices = load_prices(database, symbol)
     engine = BacktestEngine(capital)
-    strat = build_strategy(strategy, fast=fast, slow=slow)
+    strat = build_strategy(strategy, fast=fast, slow=slow, window=window)
 
     strat_result = engine.run(prices, strat.generate_signals(prices))
     bench_result = engine.run(prices, BuyAndHold().generate_signals(prices))
@@ -249,11 +251,13 @@ def cross_market_table(
     rates: dict[str, float] | None = None,
     preset: str = "default",
     max_market_cap: float | None = None,
+    min_coverage: float = DEFAULT_MIN_COVERAGE,
 ) -> pd.DataFrame:
     """Return the JP+US ranking with market cap restated in ``base``.
 
     ``rates`` pins the FX so a report is reproducible; anything unpinned is
-    fetched live.
+    fetched live. ``min_coverage`` keeps thinly-measured names out of the head
+    of the ranking; pass ``0`` to see them.
     """
     fx = FxConverter(base=base, rates=rates)
     factors = (
@@ -265,6 +269,7 @@ def cross_market_table(
         fx=fx,
         max_market_cap=max_market_cap,
         load_statements=preset == "tenbagger",
+        min_coverage=min_coverage,
     )
 
 

@@ -160,3 +160,57 @@ def test_scorer_drops_nan_factor_instead_of_inflating_the_score() -> None:
     result = scorer.score(_ctx(roe=float("nan"), per=20.0))
     assert "roe" not in result.breakdown
     assert result.score == pytest.approx(50.0)  # value_per alone: 1 - 20/40
+
+
+def test_a_score_reports_how_much_of_it_could_be_measured() -> None:
+    from stock_ai.portfolio.scoring import ScoreResult
+
+    class _Fixed(Factor):
+        def __init__(self, name: str, value: float | None) -> None:
+            self._name, self._value = name, value
+
+        @property
+        def name(self) -> str:
+            return self._name
+
+        def score(self, context: ScreeningContext) -> float | None:
+            return self._value
+
+    context = ScreeningContext(symbol="X", fundamentals=None, prices=pd.DataFrame())
+    scorer = WeightedScorer([(_Fixed("a", 1.0), 0.5), (_Fixed("b", None), 0.5)])
+    result = scorer.score(context)
+
+    assert isinstance(result, ScoreResult)
+    assert result.score == pytest.approx(100.0)
+    assert result.coverage == pytest.approx(0.5)
+
+
+def test_a_fully_measured_score_has_full_coverage() -> None:
+    class _Fixed(Factor):
+        @property
+        def name(self) -> str:
+            return "a"
+
+        def score(self, context: ScreeningContext) -> float | None:
+            return 0.5
+
+    context = ScreeningContext(symbol="X", fundamentals=None, prices=pd.DataFrame())
+    result = WeightedScorer([(_Fixed(), 1.0)]).score(context)
+
+    assert result.coverage == pytest.approx(1.0)
+
+
+def test_a_score_with_nothing_measurable_has_zero_coverage() -> None:
+    class _Missing(Factor):
+        @property
+        def name(self) -> str:
+            return "a"
+
+        def score(self, context: ScreeningContext) -> float | None:
+            return None
+
+    context = ScreeningContext(symbol="X", fundamentals=None, prices=pd.DataFrame())
+    result = WeightedScorer([(_Missing(), 1.0)]).score(context)
+
+    assert result.score == 0.0
+    assert result.coverage == 0.0

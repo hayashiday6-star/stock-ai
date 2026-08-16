@@ -81,7 +81,7 @@ from stock_ai.news.sources import YFinanceNewsSource
 from stock_ai.notification.factory import get_notifier
 from stock_ai.portfolio.analysis import PortfolioAnalysis, analyze_portfolio
 from stock_ai.portfolio.growth_factors import tenbagger_weighted_factors
-from stock_ai.portfolio.ranking import rank_securities
+from stock_ai.portfolio.ranking import DEFAULT_MIN_COVERAGE, rank_securities
 from stock_ai.portfolio.scoring import (
     WeightedFactor,
     WeightedScorer,
@@ -878,6 +878,7 @@ def backtest(
     strategy: str = typer.Option("sma", help="Strategy: hold|sma|sma200|macd|rsi."),
     fast: int = typer.Option(20, help="Fast SMA window (sma strategy)."),
     slow: int = typer.Option(50, help="Slow SMA window (sma strategy)."),
+    window: int = typer.Option(200, help="Trend window (sma200 strategy)."),
     benchmark: str | None = typer.Option(
         None, help="Benchmark symbol; default is buy-and-hold of SYMBOL."
     ),
@@ -894,7 +895,13 @@ def backtest(
     engine = BacktestEngine(capital, commission, slippage)
 
     prices = _load_prices(database, symbol)
-    strat = _build_strategy(strategy, fast, slow)
+    if strategy.lower() == "sma200" and slow != 50:
+        # --slow used to drive this strategy, so someone who worked around the
+        # bug by passing --slow 200 must not silently get 200 again by accident.
+        console.print(
+            f"[yellow]--slow does not affect sma200; use --window (currently {window}).[/]"
+        )
+    strat = _build_strategy(strategy, fast, slow, window)
     strat_result = engine.run(prices, strat.generate_signals(prices))
 
     if benchmark is not None:
@@ -1215,6 +1222,10 @@ def rank(
     preset: str = typer.Option(
         "default", help="Factor set: default | tenbagger (small-cap growth)."
     ),
+    min_coverage: float = typer.Option(
+        DEFAULT_MIN_COVERAGE,
+        help="Least share of the factor weight a name must be measured on. 0 ranks everything.",
+    ),
     top: int = typer.Option(20, help="Show only the top N rows."),
 ) -> None:
     """Rank JP and US securities together on one score.
@@ -1249,6 +1260,7 @@ def rank(
             min_market_cap=min_market_cap,
             max_market_cap=max_market_cap,
             load_statements=needs_statements,
+            min_coverage=min_coverage,
         )
     except DataError as exc:
         console.print(f"[red]{exc}[/]")
@@ -1256,6 +1268,12 @@ def rank(
 
     if frame.empty:
         console.print("[yellow]No securities matched; run 'fetch' and 'fundamentals' first.[/]")
+        if min_coverage > 0:
+            console.print(
+                f"[dim]Names measured on less than {min_coverage:.0%} of the factor weight "
+                "were excluded. Run 'fundamentals' for the missing symbols, or pass "
+                "--min-coverage 0 to rank them anyway.[/]"
+            )
         return
     _render_ranking(frame.head(top), base.upper())
 
@@ -1284,7 +1302,7 @@ def _parse_fx_rates(pairs: list[str]) -> dict[str, float]:
     return rates
 
 
-_META_COLUMNS = ("symbol", "market", "score", "market_cap")
+_META_COLUMNS = ("symbol", "market", "score", "coverage", "market_cap")
 
 # Factor names are self-explanatory but too wide for a table that also carries
 # the meta columns; Rich would truncate them to an unreadable "divide…".
@@ -1312,6 +1330,20 @@ def _format_cap(value: object) -> str:
     return f"{amount:.0f}"
 
 
+def _format_coverage(value: object) -> str:
+    """Render how much of the factor weight a score was measured on.
+
+    Shown in colour because it changes what the score next to it means: a 100
+    scored on a third of the evidence is not the same claim as a 100 scored on
+    all of it, and the number alone does not say which one it is.
+    """
+    if value is None or pd.isna(value):
+        return "[dim]-[/]"
+    fraction = float(value)
+    style = "green" if fraction >= 0.8 else "yellow" if fraction >= 0.5 else "red"
+    return f"[{style}]{fraction:.0%}[/]"
+
+
 def _render_ranking(frame: pd.DataFrame, base: str) -> None:
     """Print a cross-market ranking, market cap stated in ``base``."""
     factor_columns = [c for c in frame.columns if c not in _META_COLUMNS]
@@ -1320,6 +1352,7 @@ def _render_ranking(frame: pd.DataFrame, base: str) -> None:
     table.add_column("symbol", style="cyan", no_wrap=True)
     table.add_column("mkt", no_wrap=True)
     table.add_column("score", justify="right", no_wrap=True)
+    table.add_column("cov", justify="right", no_wrap=True)
     table.add_column(f"cap ({base})", justify="right", no_wrap=True)
     for column in factor_columns:
         table.add_column(_FACTOR_ABBREVIATIONS.get(column, column), justify="right")
@@ -1329,6 +1362,7 @@ def _render_ranking(frame: pd.DataFrame, base: str) -> None:
             str(row["symbol"]),
             str(row["market"]),
             f"{row['score']:.1f}",
+            _format_coverage(row.get("coverage")),
             _format_cap(row["market_cap"]),
             *("-" if pd.isna(row[c]) else f"{float(row[c]):.2f}" for c in factor_columns),
         )
@@ -1720,10 +1754,10 @@ def _load_prices(database: Database, symbol: str) -> pd.DataFrame:
     return prices
 
 
-def _build_strategy(name: str, fast: int, slow: int) -> Strategy:
+def _build_strategy(name: str, fast: int, slow: int, window: int = 200) -> Strategy:
     """Construct a strategy from its short name (see ``build_strategy``)."""
     try:
-        return build_strategy(name, fast=fast, slow=slow)
+        return build_strategy(name, fast=fast, slow=slow, window=window)
     except ValueError as exc:
         raise typer.BadParameter(str(exc)) from exc
 

@@ -289,17 +289,23 @@ def _page_backtest(database: Database) -> None:
     }
     strategy_label = st.selectbox("戦略", list(strategy_labels.keys()))
     strategy = strategy_labels[strategy_label]
-    col1, col2 = st.columns(2)
-    with col1:
-        fast = st.number_input("短期移動平均（日）", min_value=2, value=20)
-    with col2:
-        slow = st.number_input("長期移動平均・トレンド（日）", min_value=3, value=50)
-    if strategy == "sma" and fast >= slow:
-        st.warning("短期は長期より小さくしてください。")
-        return
+    # The windows shown must belong to the strategy selected. One shared "長期"
+    # box defaulting to 50 is what let sma200 quietly run a 50-day filter.
+    fast, slow, window = 20, 50, 200
+    if strategy == "sma":
+        col1, col2 = st.columns(2)
+        with col1:
+            fast = int(st.number_input("短期移動平均（日）", min_value=2, value=20))
+        with col2:
+            slow = int(st.number_input("長期移動平均（日）", min_value=3, value=50))
+        if fast >= slow:
+            st.warning("短期は長期より小さくしてください。")
+            return
+    elif strategy == "sma200":
+        window = int(st.number_input("トレンド（日）", min_value=3, value=200))
     if st.button("▶️ バックテスト実行", type="primary"):
         equity, metrics = data.backtest_comparison(
-            database, symbol, int(fast), int(slow), strategy=strategy
+            database, symbol, fast, slow, strategy=strategy, window=window
         )
         st.subheader("資産推移")
         st.line_chart(equity)

@@ -27,7 +27,12 @@ from stock_ai.screening.base import ScreeningContext
 
 logger = get_logger(__name__)
 
-_BASE_COLUMNS = ["symbol", "market", "score", "market_cap"]
+_BASE_COLUMNS = ["symbol", "market", "score", "coverage", "market_cap"]
+
+#: Least share of the factor weight a name must be measured on to be ranked.
+#: Below this the score says more about what is missing than about the company;
+#: see the module docstring of :mod:`stock_ai.portfolio.scoring`.
+DEFAULT_MIN_COVERAGE = 0.5
 
 
 def rank_securities(
@@ -38,6 +43,7 @@ def rank_securities(
     min_market_cap: float | None = None,
     max_market_cap: float | None = None,
     load_statements: bool = False,
+    min_coverage: float = DEFAULT_MIN_COVERAGE,
 ) -> pd.DataFrame:
     """Rank securities across markets, highest composite score first.
 
@@ -52,11 +58,14 @@ def rank_securities(
         load_statements: Attach each name's annual statement series, which
             the growth factors need. Off by default because it costs a
             query per symbol and the default factor set does not use it.
+        min_coverage: Least share of the factor weight a name must be measured
+            on to appear. Defaults to :data:`DEFAULT_MIN_COVERAGE`; pass ``0``
+            to rank everything and see the thinly-measured names too.
 
     Returns:
-        A frame of ``symbol, market, score, market_cap`` plus one column per
-        factor, sorted by score descending. ``market_cap`` is stated in the
-        base currency; it is ``None`` where the figure is unknown.
+        A frame of ``symbol, market, score, coverage, market_cap`` plus one
+        column per factor, sorted by score descending. ``market_cap`` is stated
+        in the base currency; it is ``None`` where the figure is unknown.
     """
     scorer = scorer or WeightedScorer(default_weighted_factors())
     fx = fx or FxConverter()
@@ -87,6 +96,7 @@ def rank_securities(
 
     frame = _to_frame(rows)
     frame = _apply_size_bounds(frame, min_market_cap, max_market_cap)
+    frame = _apply_coverage_floor(frame, min_coverage)
     logger.info("Ranked %d securities (base currency %s)", len(frame), fx.base)
     return frame
 
@@ -97,9 +107,36 @@ def _row(result: ScoreResult, market: str, market_cap: float | None) -> dict[str
         "symbol": result.symbol,
         "market": market,
         "score": round(result.score, 1),
+        "coverage": round(result.coverage, 2),
         "market_cap": market_cap,
         **{name: round(value, 3) for name, value in result.breakdown.items()},
     }
+
+
+def _apply_coverage_floor(frame: pd.DataFrame, minimum: float) -> pd.DataFrame:
+    """Drop names scored on too little evidence, and say how many went.
+
+    Renormalizing over the factors that applied means a thinly-measured name is
+    graded on an easier exam, and sorting descending puts it on top. Filtering
+    is therefore not a nicety: without it the head of the ranking is selected
+    for missing data. The count is logged because silently removing rows would
+    trade one invisible distortion for another.
+    """
+    if minimum <= 0 or frame.empty:
+        return frame
+
+    coverage = pd.to_numeric(frame["coverage"], errors="coerce")
+    keep = coverage.notna() & (coverage >= minimum)
+    dropped = int((~keep).sum())
+    if dropped:
+        logger.info(
+            "Excluded %d of %d securities scored on less than %.0f%% of the factor "
+            "weight; pass min_coverage=0 to include them.",
+            dropped,
+            len(frame),
+            minimum * 100,
+        )
+    return frame[keep].reset_index(drop=True)
 
 
 def _to_frame(rows: list[dict[str, object]]) -> pd.DataFrame:

@@ -184,7 +184,7 @@ def test_ranking_can_be_restricted_to_named_symbols(database: Database) -> None:
 def test_empty_database_ranks_to_an_empty_frame(database: Database) -> None:
     frame = rank_securities(database, fx=static_converter("USD"))
     assert frame.empty
-    assert list(frame.columns) == ["symbol", "market", "score", "market_cap"]
+    assert list(frame.columns) == ["symbol", "market", "score", "coverage", "market_cap"]
 
 
 # --- failure messages must name the fix -------------------------------------
@@ -209,3 +209,65 @@ def test_a_data_error_from_the_fetcher_passes_through_unwrapped() -> None:
     """static_converter's refusal already reads well; do not re-wrap it."""
     with pytest.raises(DataError, match="No FX rate configured"):
         static_converter("USD").convert(1.0, "EUR")
+
+
+# --- coverage ---------------------------------------------------------------
+
+
+def _seed_prices_only(db: Database, symbol: str, market: str, bars: int = 200) -> None:
+    """Store a rising price series and no fundamentals at all.
+
+    This is the shape a US symbol has after ``fetch`` but before
+    ``fundamentals``, and the shape that exposed the ranking defect.
+    """
+    index = pd.date_range("2024-01-01", periods=bars, freq="B", name="date")
+    close = np.arange(bars, dtype=float) + 100.0
+    frame = pd.DataFrame(
+        {
+            "open": close,
+            "high": close,
+            "low": close,
+            "close": close,
+            "adj_close": close,
+            "volume": 1_000,
+        },
+        index=index,
+    )
+    with db.session() as session:
+        PriceRepository(session).upsert_prices(symbol, frame, market=market)
+
+
+def test_a_thinly_measured_name_does_not_outrank_a_fully_measured_one(
+    database: Database,
+) -> None:
+    """The defect: renormalizing grades a sparse name on an easier exam.
+
+    A name with only momentum is scored out of momentum alone, so a perfect
+    trend hands it ~100 while a fully-measured company has to be excellent five
+    times over to match. Sorting descending then puts the least-known names on
+    top - observed live, the top four of 1,564 rows all scored 99.9-100.0 with
+    three of five factors missing.
+    """
+    _seed(database, "7203", "JP", market_cap=1e12)
+    _seed_prices_only(database, "SPARSE", "US")
+
+    unfiltered = rank_securities(database, fx=static_converter("USD", JPY=_JPY_USD), min_coverage=0)
+    sparse = unfiltered.set_index("symbol").loc["SPARSE"]
+    measured = unfiltered.set_index("symbol").loc["7203"]
+
+    # The distortion is real, and is exactly why the floor exists.
+    assert sparse["score"] > measured["score"]
+    assert sparse["coverage"] < 0.5
+    assert measured["coverage"] >= 0.5
+
+    ranked = rank_securities(database, fx=static_converter("USD", JPY=_JPY_USD))
+    assert "SPARSE" not in set(ranked["symbol"])
+    assert "7203" in set(ranked["symbol"])
+
+
+def test_the_coverage_floor_can_be_switched_off(database: Database) -> None:
+    """Excluding rows silently would trade one distortion for another."""
+    _seed_prices_only(database, "SPARSE", "US")
+
+    assert rank_securities(database, min_coverage=0).empty is False
+    assert rank_securities(database).empty is True
