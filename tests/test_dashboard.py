@@ -67,7 +67,7 @@ def test_score_table_empty() -> None:
     empty = Database("sqlite:///:memory:")
     empty.create_all()
     table = data.score_table(empty, [])
-    assert list(table.columns) == ["symbol", "score"]
+    assert list(table.columns) == ["symbol", "score", "coverage"]
     assert table.empty
     empty.dispose()
 

@@ -1208,11 +1208,26 @@ def score(
     table = Table(title="scores")
     table.add_column("Symbol", style="cyan")
     table.add_column("Score", justify="right")
+    table.add_column("Cov", justify="right")
     table.add_column("Factors")
     for result in results:
         factors = ", ".join(f"{k}={v:.2f}" for k, v in sorted(result.breakdown.items()))
-        table.add_row(result.symbol, f"{result.score:.1f}", factors or "[dim]-[/]")
+        table.add_row(
+            result.symbol,
+            f"{result.score:.1f}",
+            _format_coverage(result.coverage),
+            factors or "[dim]-[/]",
+        )
     console.print(table)
+    if any(r.coverage < 0.8 for r in results):
+        # Without this the command reproduces the ranking defect one symbol at
+        # a time: a name measured on two factors shows the same "100.0" as one
+        # measured on five, and nothing on screen says which is which.
+        console.print(
+            "[dim]Cov is how much of the factor weight could be measured. A high "
+            "score at low coverage is an average over few factors, not a better "
+            "company.[/]"
+        )
 
 
 @app.command()
@@ -1339,9 +1354,12 @@ def seasonality_scan(
         console.print("[yellow]No stored prices; run 'fetch' or 'bulk-fetch' first.[/]")
         return
 
+    # Measured: ~90s for 1,556 symbols at 20 permutations. A minute and a half
+    # of silence reads as a hang, so say the number rather than "a moment".
+    estimate = max(1, round(len(prices_by_symbol) * (1 + permutations) * 0.0027))
     console.print(
         f"Scanning {len(prices_by_symbol)} symbols, then {permutations} shuffled re-runs "
-        "to build the null. This takes a moment."
+        f"to build the null. Expect roughly {estimate}s; there is no progress bar."
     )
     scan = scan_seasonality(
         prices_by_symbol, month=month, min_years=min_years, permutations=permutations

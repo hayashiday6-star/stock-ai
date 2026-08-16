@@ -196,12 +196,15 @@ def score_table(database: Database, symbols: list[str]) -> pd.DataFrame:
                 {
                     "symbol": result.symbol,
                     "score": round(result.score, 1),
+                    # Next to the score, always: a 100 averaged over two
+                    # factors is not the same claim as a 100 over five.
+                    "coverage": round(result.coverage, 2),
                     **{k: round(v, 3) for k, v in result.breakdown.items()},
                 }
             )
 
     if not rows:
-        return pd.DataFrame(columns=["symbol", "score"])
+        return pd.DataFrame(columns=["symbol", "score", "coverage"])
     return pd.DataFrame(rows).sort_values("score", ascending=False).reset_index(drop=True)
 
 

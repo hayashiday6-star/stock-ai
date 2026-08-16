@@ -214,3 +214,21 @@ def test_a_score_with_nothing_measurable_has_zero_coverage() -> None:
 
     assert result.score == 0.0
     assert result.coverage == 0.0
+
+
+def test_the_score_command_shows_coverage_next_to_the_score(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Without it, ``score`` reproduces the ranking defect one symbol at a time.
+
+    The fixture's AAPL has roe and per but no margin, yield or full history, so
+    it is exactly the sparse case: a high score printed with nothing on screen
+    to say it was averaged over a fraction of the evidence.
+    """
+    monkeypatch.setattr(cli, "Database", lambda: db)
+    monkeypatch.setenv("COLUMNS", "200")
+    result = runner.invoke(cli.app, ["score", "AAPL"])
+
+    assert result.exit_code == 0
+    assert "Cov" in result.stdout
+    assert "factor weight" in result.stdout  # the caveat fires on sparse data
