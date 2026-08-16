@@ -39,6 +39,7 @@ class IngestionService:
         provider: PriceProvider,
         database: Database,
         default_lookback_days: int = _DEFAULT_LOOKBACK_DAYS,
+        backfill: bool = False,
     ) -> None:
         """Wire the service to a provider and a database.
 
@@ -47,10 +48,14 @@ class IngestionService:
             database: Persistence target.
             default_lookback_days: Backfill window used when a symbol has no
                 stored data yet.
+            backfill: Also extend symbols that **already** have data, when the
+                lookback reaches further back than their oldest stored bar.
+                Off by default so a nightly refresh stays incremental.
         """
         self.provider = provider
         self.database = database
         self.default_lookback_days = default_lookback_days
+        self.backfill = backfill
 
     def ingest_symbol(
         self,
@@ -104,10 +109,38 @@ class IngestionService:
         return [self.ingest_symbol(sym, start, end, market) for sym in symbols]
 
     def _resolve_start(self, repo: PriceRepository, symbol: str, end: dt.date) -> dt.date:
-        """Return the incremental start date for ``symbol``."""
+        """Return the start date for ``symbol``: incremental, or a backfill.
+
+        Incremental by default - the day after the latest stored bar - because
+        a daily refresh must not re-download years it already holds, and on a
+        1,500-symbol universe that difference is the whole rate-limit budget.
+
+        ``backfill`` overrides it. Without that switch, ``--lookback`` applies
+        only to symbols with no prices at all, so asking a universe that
+        already holds four years for 5,000 days resolves every symbol to
+        "already up to date": the run reports success and not one extra year
+        arrives. Nothing raises, which is exactly why it goes unnoticed.
+
+        Extending history is therefore opt-in rather than inferred. Inferring
+        it from "the window is longer than what is stored" would also re-fetch
+        a full year for every newly-added symbol on every nightly run, which
+        turns a cheap job into a rate-limited one.
+        """
+        wanted = end - dt.timedelta(days=self.default_lookback_days)
         latest = repo.latest_date(symbol)
         if latest is None:
-            return end - dt.timedelta(days=self.default_lookback_days)
+            return wanted
+
+        if self.backfill:
+            earliest = repo.earliest_date(symbol)
+            if earliest is not None and wanted < earliest:
+                logger.info(
+                    "%s: extending history back from %s to %s (stored bars are kept)",
+                    symbol,
+                    earliest,
+                    wanted,
+                )
+                return wanted
         return latest + dt.timedelta(days=1)
 
 

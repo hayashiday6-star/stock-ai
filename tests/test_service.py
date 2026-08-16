@@ -138,3 +138,66 @@ def test_fetch_cli_exits_nonzero_on_failure(db: Database, monkeypatch: pytest.Mo
         cli.app, ["fetch", "NOPE", "--start", "2024-01-02", "--end", "2024-01-03"]
     )
     assert result.exit_code == 1
+
+
+# --- backfilling history ----------------------------------------------------
+
+
+def _stored_symbol(database: Database, symbol: str, dates: list[str]) -> None:
+    with database.session() as session:
+        PriceRepository(session).upsert_prices(symbol, _frame(dates), market="JP")
+
+
+def test_a_lookback_reaching_past_the_oldest_bar_backfills_history() -> None:
+    """A request for more history must not be answered incrementally.
+
+    Observed live: a universe already holding four years was asked for 5,000
+    days. Every symbol resolved to "the day after the latest bar", every symbol
+    reported success, and not one extra year arrived. Nothing raised, so the
+    run looked exactly like a run that had worked.
+    """
+    database = Database("sqlite:///:memory:")
+    database.create_all()
+    _stored_symbol(database, "7203", ["2024-01-01", "2024-01-02", "2024-01-03"])
+
+    provider = FakeProvider({"7203": _frame(["2020-01-01", "2024-01-04"])})
+    service = IngestionService(provider, database, default_lookback_days=3000, backfill=True)
+    result = service.ingest_symbol("7203", end=dt.date(2024, 1, 10), market="JP")
+
+    assert result.ok
+    _symbol, start, _end = provider.calls[0]
+    assert start < dt.date(2024, 1, 1)  # reaches behind the oldest stored bar
+    database.dispose()
+
+
+def test_backfill_is_opt_in_so_a_nightly_run_stays_incremental() -> None:
+    """Inferring the backfill would re-fetch a year for every new symbol nightly."""
+    database = Database("sqlite:///:memory:")
+    database.create_all()
+    _stored_symbol(database, "7203", ["2024-01-01", "2024-01-02", "2024-01-03"])
+
+    provider = FakeProvider({"7203": _frame(["2024-01-04"])})
+    service = IngestionService(provider, database, default_lookback_days=365)
+    service.ingest_symbol("7203", end=dt.date(2024, 1, 10), market="JP")
+
+    _symbol, start, _end = provider.calls[0]
+    assert start == dt.date(2024, 1, 4)  # the day after the latest stored bar
+    database.dispose()
+
+
+def test_backfilling_keeps_the_bars_already_stored() -> None:
+    """The overlap is deduplicated by the upsert, not dropped."""
+    database = Database("sqlite:///:memory:")
+    database.create_all()
+    _stored_symbol(database, "7203", ["2024-01-02", "2024-01-03"])
+
+    provider = FakeProvider({"7203": _frame(["2020-01-01", "2024-01-02", "2024-01-03"])})
+    service = IngestionService(provider, database, default_lookback_days=3000, backfill=True)
+    service.ingest_symbol("7203", end=dt.date(2024, 1, 10), market="JP")
+
+    with database.session() as session:
+        repo = PriceRepository(session)
+        assert repo.earliest_date("7203") == dt.date(2020, 1, 1)
+        assert repo.latest_date("7203") == dt.date(2024, 1, 3)
+        assert len(repo.get_prices("7203")) == 3
+    database.dispose()

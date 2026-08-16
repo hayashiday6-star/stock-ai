@@ -219,6 +219,21 @@ class PriceRepository:
             .limit(1)
         ).scalar_one_or_none()
 
+    def earliest_date(self, symbol: str) -> dt.date | None:
+        """Return the oldest stored bar date for ``symbol``, or ``None``.
+
+        Needed to tell "already up to date" from "up to date at the front and
+        missing ten years at the back", which look identical from
+        :meth:`latest_date` alone.
+        """
+        return self.session.execute(
+            select(PriceBar.date)
+            .join(Security)
+            .where(Security.symbol == symbol)
+            .order_by(PriceBar.date.asc())
+            .limit(1)
+        ).scalar_one_or_none()
+
 
 class FundamentalsRepository:
     """Persist and query fundamentals snapshots keyed by symbol and date."""

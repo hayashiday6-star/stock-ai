@@ -512,6 +512,12 @@ def bulk_fetch(
     lookback: int = typer.Option(365, help="Backfill days for a symbol with no prices."),
     throttle: float = typer.Option(0.2, help="Seconds to pause between symbols."),
     resume: bool = typer.Option(True, help="Skip symbols that are already current."),
+    backfill: bool = typer.Option(
+        False,
+        "--backfill",
+        help="Extend symbols that already have prices back to --lookback. "
+        "Without this, --lookback only applies to symbols with no prices at all.",
+    ),
 ) -> None:
     """Backfill prices or statements across a whole universe.
 
@@ -541,6 +547,8 @@ def bulk_fetch(
         f"Fetching [bold]{dataset.value}[/] for {len(targets)} symbol(s). "
         "Interrupting is safe - re-run to resume."
     )
+    if dataset is Dataset.PRICES and not backfill:
+        _warn_if_lookback_will_not_reach(database, targets, lookback)
     ingester = BulkIngester(database, api_key=settings.jquants_api_key, throttle_seconds=throttle)
 
     with Progress(
@@ -557,7 +565,12 @@ def bulk_fetch(
             progress.update(task, completed=index - 1, description=f"{dataset.value} {symbol}")
 
         report = ingester.run(
-            targets, dataset, resume=resume, lookback_days=lookback, progress=advance
+            targets,
+            dataset,
+            resume=resume,
+            lookback_days=lookback,
+            progress=advance,
+            backfill=backfill,
         )
         progress.update(task, completed=len(targets))
 
@@ -1932,6 +1945,33 @@ def sentiment(
     configure_logging(settings.log_level)
     ai = get_ai_provider(provider, settings)
     console.print(analyze_sentiment(ai, text))
+
+
+def _warn_if_lookback_will_not_reach(database: Database, symbols: list[str], lookback: int) -> None:
+    """Say so when ``--lookback`` asks for history the run will not fetch.
+
+    ``--lookback`` applies only to symbols with no prices at all, so asking a
+    universe that already holds four years for 5,000 days quietly does nothing:
+    every symbol is current, the run reports success, and no extra history
+    arrives. There is no error to notice, so the only defence is saying it
+    before the run rather than after.
+    """
+    wanted = dt.date.today() - dt.timedelta(days=lookback)
+    with database.session() as session:
+        repo = PriceRepository(session)
+        short = sum(
+            1
+            for symbol in symbols
+            if (earliest := repo.earliest_date(symbol)) is not None and earliest > wanted
+        )
+    if not short:
+        return
+    console.print(
+        f"[yellow]{short} of {len(symbols)} symbol(s) already hold prices that start "
+        f"after {wanted}.[/] --lookback only applies to symbols with no prices at "
+        "all, so their history will [bold]not[/] be extended by this run. Add "
+        "[cyan]--backfill[/] to reach further back."
+    )
 
 
 def _load_prices(database: Database, symbol: str) -> pd.DataFrame:

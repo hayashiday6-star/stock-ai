@@ -160,6 +160,7 @@ class BulkIngester:
         resume: bool = True,
         lookback_days: int = 365,
         progress: ProgressCallback | None = None,
+        backfill: bool = False,
     ) -> BulkReport:
         """Ingest ``dataset`` for every symbol.
 
@@ -170,6 +171,10 @@ class BulkIngester:
                 force a refetch - the skip check is what makes a re-run cheap.
             lookback_days: Backfill window for a symbol with no prices yet.
             progress: Called before each symbol with ``(index, total, symbol)``.
+            backfill: Extend symbols that already hold data back to
+                ``lookback_days``. Implies no resume skipping: a symbol current
+                at the front is exactly the one whose history is short at the
+                back, so skipping it would make the flag do nothing.
 
         Returns:
             A :class:`BulkReport`; individual failures are collected, not raised.
@@ -181,12 +186,12 @@ class BulkIngester:
             if progress is not None:
                 progress(index, total, symbol)
 
-            if resume and self._is_current(symbol, dataset):
+            if resume and not backfill and self._is_current(symbol, dataset):
                 report.skipped.append(symbol)
                 continue
 
             try:
-                rows = self._fetch_with_backoff(symbol, dataset, lookback_days, report)
+                rows = self._fetch_with_backoff(symbol, dataset, lookback_days, report, backfill)
             except _RateLimitExhaustedError as exc:
                 # Nothing left to do but stop. Continuing would spend the rest
                 # of the universe collecting the same refusal in seconds, which
@@ -209,7 +214,12 @@ class BulkIngester:
         return report
 
     def _fetch_with_backoff(
-        self, symbol: str, dataset: Dataset, lookback_days: int, report: BulkReport
+        self,
+        symbol: str,
+        dataset: Dataset,
+        lookback_days: int,
+        report: BulkReport,
+        backfill: bool = False,
     ) -> int:
         """Ingest one symbol, waiting out any rate limit rather than failing it.
 
@@ -223,7 +233,7 @@ class BulkIngester:
         """
         for attempt in range(self.max_rate_limit_retries + 1):
             try:
-                return self._ingest_one(symbol, dataset, lookback_days)
+                return self._ingest_one(symbol, dataset, lookback_days, backfill)
             except RateLimitError as exc:
                 report.rate_limited += 1
                 if attempt == self.max_rate_limit_retries:
@@ -248,11 +258,16 @@ class BulkIngester:
                 self._sleep(wait)
         raise AssertionError("unreachable")  # pragma: no cover
 
-    def _ingest_one(self, symbol: str, dataset: Dataset, lookback_days: int) -> int:
+    def _ingest_one(
+        self, symbol: str, dataset: Dataset, lookback_days: int, backfill: bool = False
+    ) -> int:
         """Ingest one symbol, returning the rows written."""
         if dataset is Dataset.PRICES:
             service = IngestionService(
-                self._prices, self.database, default_lookback_days=lookback_days
+                self._prices,
+                self.database,
+                default_lookback_days=lookback_days,
+                backfill=backfill,
             )
             result = service.ingest_symbol(symbol, market="JP")
             if not result.ok:
