@@ -257,5 +257,28 @@ def test_the_history_command_does_not_blame_a_shared_floor_on_the_provider() -> 
     assert result.exit_code == 0
     assert "2021-04-01" in result.stdout
     assert "either the provider" in result.stdout
-    assert "--lookback first loaded them" in result.stdout
+    assert "--lookback" in result.stdout
     database.dispose()
+
+
+def test_a_floor_a_whole_number_of_years_back_reads_as_a_rolling_plan() -> None:
+    """A subscription window rolls; a --lookback boundary lands on an odd date.
+
+    Observed live: after the plan window was honoured, 1,508 of 1,564 symbols
+    started on 2021-08-16 - exactly five years before the day it was read.
+    """
+    from stock_ai.cli import _shared_floor_reading
+
+    today = dt.date(2026, 8, 16)
+    rolling = _shared_floor_reading(dt.date(2021, 8, 16), today)
+    assert "5 year(s) before today" in rolling
+    assert "different plan" in rolling
+
+
+def test_an_arbitrary_floor_still_asks_for_the_check() -> None:
+    """2022-06-27 was 1,500 days before a load, not a round number of years."""
+    from stock_ai.cli import _shared_floor_reading
+
+    reading = _shared_floor_reading(dt.date(2022, 6, 27), dt.date(2026, 8, 16))
+    assert "either the provider" in reading
+    assert "--backfill" in reading

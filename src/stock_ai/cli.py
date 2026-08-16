@@ -1294,19 +1294,57 @@ def history() -> None:
     common_date, common_count = counts.most_common(1)[0]
     if common_count >= max(3, len(spans) // 10):
         console.print(
-            f"[yellow]{common_count} of {len(spans)} symbols start on exactly "
-            f"{common_date}.[/] That is either the provider's history limit or the "
-            "boundary of whatever --lookback first loaded them - a shared floor "
-            "looks identical either way."
+            f"[yellow]{common_count} of {len(spans)} symbols start on exactly {common_date}.[/]"
         )
+        console.print(_shared_floor_reading(common_date, today))
+
+    thin = sum(1 for value in years if value < 8)
+    if thin:
         console.print(
-            "[dim]To tell them apart, backfill a single symbol and watch the log:\n"
-            "  [cyan]stock-ai bulk-fetch --what prices --symbols 7203 "
-            "--lookback 5000 --backfill[/]\n"
-            "  'extending history back from X to Y' means the request was made, so "
-            "the floor is the provider's. No such line means the flag never took "
-            "effect, and the floor is ours.[/]"
+            f"[dim]{thin} symbol(s) hold under 8 years. A calendar month gives one "
+            "observation per year, so seasonality on those rests on very few "
+            "points - see 'seasonality-scan'.[/]"
         )
+
+
+#: How close to a whole number of years a shared floor must sit before it reads
+#: as a rolling subscription window. A few days of slack covers weekends and
+#: the drift between a run and the day it is read back.
+_ROLLING_WINDOW_SLACK_DAYS = 10
+
+
+def _shared_floor_reading(floor: dt.date, today: dt.date) -> str:
+    """Explain a floor shared by most of the universe, without overclaiming.
+
+    A shared floor has two causes that look identical in the data: a provider
+    that will not serve earlier, or a ``--lookback`` that never asked for
+    earlier. An earlier version simply asserted the first, against a floor that
+    turned out to be exactly 1,500 days before the day the universe was loaded
+    with ``--lookback 1500`` - our own boundary, announced as the provider's.
+
+    One signature does separate them. A subscription window rolls, so it lands
+    a whole number of years before *today*; a ``--lookback`` boundary lands an
+    arbitrary number of days before whenever the load happened to run. That is
+    evidence, not proof, so the check that settles it is still printed.
+    """
+    span_days = (today - floor).days
+    years = span_days / 365.25
+    if abs(span_days - round(years) * 365.25) <= _ROLLING_WINDOW_SLACK_DAYS and years >= 1:
+        return (
+            f"[dim]That is almost exactly {round(years)} year(s) before today, which is "
+            "the shape of a rolling subscription window rather than a --lookback "
+            "boundary. Reaching further back needs a different plan, not another "
+            "fetch.[/]"
+        )
+    return (
+        "[dim]That is either the provider's history limit or the boundary of "
+        "whatever --lookback first loaded them. To tell them apart, backfill one "
+        "symbol and watch the log:\n"
+        "  [cyan]stock-ai bulk-fetch --what prices --symbols 7203 "
+        "--lookback 5000 --backfill[/]\n"
+        "  A 'plan covers X onward' warning means the provider set the floor; "
+        "no such line means --lookback did.[/]"
+    )
 
     thin = sum(1 for value in years if value < 8)
     if thin:

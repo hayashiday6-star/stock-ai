@@ -29,7 +29,7 @@ plausible wrong numbers rather than an error. So the table separates them.
 
 | Area | State |
 |---|---|
-| JP prices & financials (J-Quants v2) | **Verified** — 1,556 TSE symbols loaded; PER median 14.94, PBR 1.26, ROE 9.1%, dividend 2.82%, all consistent with TSE norms; Toyota PER 10.0 / ¥43.25tn cross-checked |
+| JP prices & financials (J-Quants v2) | **Verified** — 1,564 TSE symbols, 5.0 years of history (the plan's full rolling window); PER median 14.94, PBR 1.26, ROE 9.1%, dividend 2.82%, all consistent with TSE norms; Toyota PER 10.0 / ¥43.25tn cross-checked |
 | JP screening | **Verified** — run on the full universe, results reviewed by name |
 | Factor / walk-forward validation | **Verified** — 12 windows, 1,253–1,492 names scored per window |
 | EDINET disclosures | **Verified** — key accepted and 648 filings returned for 2026-08-14 |
@@ -353,6 +353,12 @@ currency — so it is converted to `--base` (default USD) before being shown or
 filtered on.
 
 ## Calendar-month seasonality
+
+`stock-ai history` reports how far back the stored prices reach and flags a
+floor shared by the universe. J-Quants subscriptions are a **rolling window**
+(measured: 5.0 years), so `--lookback` beyond it is narrowed automatically
+rather than failing the symbol — but the window itself only moves with the
+plan, not with another fetch.
 
 ```bash
 uv run stock-ai seasonality 7203                    # one name, month by month
