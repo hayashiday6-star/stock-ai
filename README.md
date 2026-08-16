@@ -352,6 +352,33 @@ across markets. Market cap does not — it arrives in the listing market's
 currency — so it is converted to `--base` (default USD) before being shown or
 filtered on.
 
+## Calendar-month seasonality
+
+```bash
+uv run stock-ai seasonality 7203                    # one name, month by month
+uv run stock-ai seasonality 7203 --split-year 2024  # found before / measured after
+uv run stock-ai seasonality-scan --month 9          # every stored symbol
+```
+
+**Read the verdict, not the table.** Searching a universe for "always rises in
+September" is tens of thousands of hypotheses, and a calendar month gives one
+observation per year — so the sample is tiny exactly where the search is
+widest. Measured on 300 random walks with no seasonality in them at all:
+
+| History | Cleared \|t\| ≥ 2 | Strongest "pattern" |
+|---|---|---|
+| 4 years (n=3) | **15.4%** | +11.97% mean, t = +17.47, up 100% of years |
+| 10 years (n=9) | **11.0%** | −5.61% mean, t = −6.41, up 0% of years |
+
+Those came out of a random number generator. A screen that ranked by mean
+return would have presented the first row as a discovery.
+
+So `seasonality-scan` re-runs itself with each symbol's month labels shuffled
+and reports both numbers. If the real scan finds 555 and the shuffled one finds
+554, there is nothing there — and that is the normal result. `--split-year`
+is the only part that can support a claim rather than deflate one: pick the
+months on the early years, then measure them on the years held back.
+
 ## Ask in plain language
 
 ```bash

@@ -40,6 +40,14 @@ from stock_ai.backtest.factor_test import (
     walk_forward,
 )
 from stock_ai.backtest.report import metrics_frame
+from stock_ai.backtest.seasonality import (
+    DEFAULT_MIN_YEARS,
+    holdout_check,
+    month_name,
+    monthly_returns,
+    scan_seasonality,
+    symbol_patterns,
+)
 from stock_ai.backtest.strategy import BuyAndHold, Strategy, build_strategy
 from stock_ai.config.settings import Settings, get_settings
 from stock_ai.core.exceptions import AIError, BacktestError, DataError, NotificationError
@@ -1205,6 +1213,169 @@ def score(
         factors = ", ".join(f"{k}={v:.2f}" for k, v in sorted(result.breakdown.items()))
         table.add_row(result.symbol, f"{result.score:.1f}", factors or "[dim]-[/]")
     console.print(table)
+
+
+@app.command()
+def seasonality(
+    symbol: str = typer.Argument(..., help="Ticker to examine (must be fetched)."),
+    min_years: int = typer.Option(
+        DEFAULT_MIN_YEARS, help="Years a month needs before it is reported."
+    ),
+    split_year: int | None = typer.Option(
+        None, help="Hold back this year onward and re-check the months found before it."
+    ),
+) -> None:
+    """Show SYMBOL's month-by-month record, with the years behind each figure.
+
+    ``n`` is the column to read first. A calendar month yields one observation
+    per year, so four years of history means four numbers - and the mean of
+    four returns is not a tendency, however clean the percentage looks.
+    """
+    settings = get_settings()
+    configure_logging(settings.log_level)
+
+    database = Database()
+    database.create_all()
+    prices = _load_prices(database, symbol)
+    patterns = symbol_patterns(symbol, monthly_returns(prices), min_years)
+
+    if not patterns:
+        console.print(
+            f"[yellow]No month has {min_years} years of history for {symbol}.[/] "
+            "Fetch a longer series: [cyan]fetch "
+            f"{symbol} --lookback 5000[/] backfills about 13 years."
+        )
+        return
+
+    table = Table(title=f"{symbol} monthly record")
+    table.add_column("month", style="cyan", no_wrap=True)
+    table.add_column("n", justify="right")
+    table.add_column("mean", justify="right")
+    table.add_column("t", justify="right")
+    table.add_column("up years", justify="right")
+    for pattern in patterns:
+        t_style = "yellow" if pattern.clears_threshold else "dim"
+        table.add_row(
+            month_name(pattern.month),
+            str(pattern.years),
+            f"{pattern.mean_return:+.2%}",
+            f"[{t_style}]{pattern.t_stat:+.2f}[/]",
+            f"{pattern.hit_rate:.0%}",
+        )
+    console.print(table)
+    console.print(
+        "[dim]One symbol tested across 12 months is 12 chances for noise to "
+        "clear two sigma. Use 'seasonality-scan' to see how many a universe "
+        "produces with the calendar shuffled out.[/]"
+    )
+
+    if split_year is not None:
+        _print_holdouts(symbol, prices, split_year)
+
+
+def _print_holdouts(symbol: str, prices: pd.DataFrame, split_year: int) -> None:
+    """Re-check every month on years held back from the years that chose it."""
+    results = [
+        result
+        for month in range(1, 13)
+        if (result := holdout_check(symbol, prices, month, split_year)) is not None
+    ]
+    if not results:
+        console.print(f"[yellow]Not enough history on both sides of {split_year}.[/]")
+        return
+
+    table = Table(title=f"{symbol}: found before {split_year}, measured from {split_year}")
+    table.add_column("month", style="cyan", no_wrap=True)
+    table.add_column("before: mean", justify="right")
+    table.add_column("t", justify="right")
+    table.add_column("after: mean", justify="right")
+    table.add_column("n", justify="right")
+    table.add_column("held", justify="right")
+    for result in results:
+        table.add_row(
+            month_name(result.pattern.month),
+            f"{result.pattern.mean_return:+.2%}",
+            f"{result.pattern.t_stat:+.2f}",
+            f"{result.holdout_mean:+.2%}",
+            str(result.holdout_years),
+            "[green]yes[/]" if result.repeated else "[red]no[/]",
+        )
+    console.print(table)
+    repeated = sum(1 for r in results if r.repeated)
+    console.print(
+        f"[dim]{repeated} of {len(results)} months kept their sign. Roughly half "
+        "would by chance alone - that is the number to beat, not zero.[/]"
+    )
+
+
+@app.command(name="seasonality-scan")
+def seasonality_scan(
+    month: int | None = typer.Option(None, help="Restrict the report to one month (1-12)."),
+    min_years: int = typer.Option(DEFAULT_MIN_YEARS, help="Years a month needs to be tested."),
+    permutations: int = typer.Option(20, help="Shuffled re-runs behind the null."),
+    top: int = typer.Option(20, help="Show only the strongest N rows."),
+) -> None:
+    """Scan every stored symbol for calendar-month patterns.
+
+    Testing a universe against twelve months is tens of thousands of
+    hypotheses, so the count of "significant" months means nothing on its own.
+    The same scan is therefore re-run with each symbol's month labels shuffled,
+    which says how many hits appear when no seasonality exists by construction.
+    Read the verdict before the table.
+    """
+    settings = get_settings()
+    configure_logging(settings.log_level)
+    if month is not None and not 1 <= month <= 12:
+        raise typer.BadParameter("--month must be between 1 and 12.")
+
+    database = Database()
+    database.create_all()
+    with database.session() as session:
+        repo = PriceRepository(session)
+        prices_by_symbol = {
+            symbol: repo.get_prices(symbol) for symbol, _market in list_securities(session)
+        }
+    if not prices_by_symbol:
+        console.print("[yellow]No stored prices; run 'fetch' or 'bulk-fetch' first.[/]")
+        return
+
+    console.print(
+        f"Scanning {len(prices_by_symbol)} symbols, then {permutations} shuffled re-runs "
+        "to build the null. This takes a moment."
+    )
+    scan = scan_seasonality(
+        prices_by_symbol, month=month, min_years=min_years, permutations=permutations
+    )
+
+    hits = scan.hits
+    if hits:
+        table = Table(title="strongest calendar-month records")
+        table.add_column("symbol", style="cyan", no_wrap=True)
+        table.add_column("month", no_wrap=True)
+        table.add_column("n", justify="right")
+        table.add_column("mean", justify="right")
+        table.add_column("t", justify="right")
+        table.add_column("up years", justify="right")
+        for pattern in hits[:top]:
+            table.add_row(
+                pattern.symbol,
+                month_name(pattern.month),
+                str(pattern.years),
+                f"{pattern.mean_return:+.2%}",
+                f"{pattern.t_stat:+.2f}",
+                f"{pattern.hit_rate:.0%}",
+            )
+        console.print(table)
+
+    console.print(f"\n[bold]{scan.verdict}[/]")
+    if scan.patterns and scan.patterns[0].years < 8:
+        console.print(
+            f"[yellow]Every row rests on about {scan.patterns[0].years} observations.[/] "
+            "A calendar month happens once a year, so the stored history is the "
+            "binding constraint here, not the method. Backfill more before "
+            "reading anything into an individual name: [cyan]bulk-fetch --what "
+            "prices --segment stored --lookback 5000[/]"
+        )
 
 
 @app.command()
