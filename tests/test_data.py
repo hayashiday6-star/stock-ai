@@ -224,3 +224,135 @@ def test_a_rate_limit_is_still_typed_separately() -> None:
         raise_for_status(_Failing(429, "slow down", {"Retry-After": "12"}), "prices for 7203")
 
     assert excinfo.value.retry_after == 12.0
+
+
+# --- subscription window ----------------------------------------------------
+
+
+def test_the_covered_range_is_read_back_out_of_the_refusal() -> None:
+    """Observed live: the 400 body states exactly what the plan would serve."""
+    import datetime as dt
+
+    from stock_ai.data.jquants_provider import subscription_window
+
+    message = (
+        'HTTP 400 while fetching prices for 7203. Provider said: {"message": "Your '
+        "subscription covers the following dates: 2021-08-16 ~ . If you want more "
+        'data, please check other plans:https://jpx-jquants.com/#dataset"}'
+    )
+    window = subscription_window(message)
+
+    assert window is not None
+    start, end = window
+    assert start == dt.date(2021, 8, 16)
+    assert end is None  # open right-hand side means "up to today"
+
+
+def test_a_closed_covered_range_is_read_too() -> None:
+    import datetime as dt
+
+    from stock_ai.data.jquants_provider import subscription_window
+
+    window = subscription_window("subscription covers the following dates: 2021-08-16 ~ 2026-01-31")
+    assert window == (dt.date(2021, 8, 16), dt.date(2026, 1, 31))
+
+
+def test_an_unrelated_error_names_no_window() -> None:
+    from stock_ai.data.jquants_provider import subscription_window
+
+    assert subscription_window("HTTP 500 while fetching prices for 7203.") is None
+
+
+def test_an_over_wide_request_is_narrowed_to_the_covered_range(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Failing the whole symbol throws away the years the plan does cover.
+
+    Live, a 5,000-day backfill asked for 2012-12-07 and the plan started
+    2021-08-16. The request 400'd, the symbol was recorded as failed, and the
+    ten extra months that *were* available never arrived.
+    """
+    import datetime as dt
+
+    import httpx
+
+    from stock_ai.data.jquants_provider import _default_fetcher
+
+    asked: list[tuple[str, str]] = []
+    body = (
+        '{"message": "Your subscription covers the following dates: 2021-08-16 ~ . '
+        'If you want more data, please check other plans."}'
+    )
+
+    class _Response:
+        def __init__(self, status_code: int, payload: dict, text: str = "") -> None:
+            self.status_code = status_code
+            self._payload = payload
+            self.text = text
+            self.headers: dict[str, str] = {}
+
+        def json(self) -> dict:
+            return self._payload
+
+    class _Client:
+        def __enter__(self) -> _Client:
+            return self
+
+        def __exit__(self, *exc: object) -> None:
+            return None
+
+        def __init__(self, **kwargs: object) -> None:
+            pass
+
+        def get(self, url: str, headers: dict, params: dict) -> _Response:
+            asked.append((params["from"], params["to"]))
+            if params["from"] < "2021-08-16":
+                return _Response(400, {}, body)
+            return _Response(200, {"data": [{"Date": "2021-08-16", "C": 100.0}]})
+
+    monkeypatch.setattr(httpx, "Client", _Client)
+    records = _default_fetcher(None)("7203", dt.date(2012, 12, 7), dt.date(2026, 8, 16))
+
+    assert len(asked) == 2
+    assert asked[0][0] == "2012-12-07"  # the request as asked
+    assert asked[1][0] == "2021-08-16"  # narrowed to what the plan covers
+    assert records  # and the covered years actually arrive
+
+
+def test_a_narrowing_that_would_change_nothing_re_raises(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Retrying the identical range would loop without ever making progress."""
+    import datetime as dt
+
+    import httpx
+
+    from stock_ai.core.exceptions import DataError
+    from stock_ai.data.jquants_provider import _default_fetcher
+
+    calls = {"n": 0}
+
+    class _Response:
+        status_code = 400
+        text = "subscription covers the following dates: 2021-08-16 ~ "
+        headers: dict[str, str] = {}
+
+    class _Client:
+        def __init__(self, **kwargs: object) -> None:
+            pass
+
+        def __enter__(self) -> _Client:
+            return self
+
+        def __exit__(self, *exc: object) -> None:
+            return None
+
+        def get(self, url: str, headers: dict, params: dict) -> _Response:
+            calls["n"] += 1
+            return _Response()
+
+    monkeypatch.setattr(httpx, "Client", _Client)
+    with pytest.raises(DataError):
+        _default_fetcher(None)("7203", dt.date(2021, 8, 16), dt.date(2026, 8, 16))
+
+    assert calls["n"] == 1  # no pointless second attempt

@@ -12,14 +12,16 @@ dynamically computed date range - a hard-coded start date will eventually 400.
 
 from __future__ import annotations
 
+import contextlib
 import datetime as dt
+import re
 from collections.abc import Callable
 from typing import Any
 
 import pandas as pd
 from pydantic import SecretStr
 
-from stock_ai.core.exceptions import DataError
+from stock_ai.core.exceptions import DataError, RateLimitError
 from stock_ai.core.logging import get_logger
 from stock_ai.data.http import raise_for_status
 from stock_ai.data.schema import (
@@ -95,10 +97,40 @@ def normalize_jquants(records: list[dict[str, Any]]) -> pd.DataFrame:
     return df.set_index(DATE)
 
 
+#: J-Quants rejects an out-of-plan range with a 400 that names the range it
+#: *would* serve, e.g. ``Your subscription covers the following dates:
+#: 2021-08-16 ~ .`` The open right-hand side means "up to today".
+_SUBSCRIPTION_WINDOW = re.compile(
+    r"subscription covers the following dates:\s*(\d{4}-\d{2}-\d{2})\s*~\s*(\d{4}-\d{2}-\d{2})?"
+)
+
+
+def subscription_window(message: str) -> tuple[dt.date, dt.date | None] | None:
+    """Return the date range a plan covers, if the error message names one.
+
+    The provider answers an over-wide request by stating exactly what it would
+    have served. Reading that back is the difference between "the whole symbol
+    failed" and "we now know the plan starts on 2021-08-16" - and it needs no
+    configuration, because the answer arrives with the refusal.
+    """
+    match = _SUBSCRIPTION_WINDOW.search(message)
+    if match is None:
+        return None
+    try:
+        start = dt.date.fromisoformat(match.group(1))
+    except ValueError:  # pragma: no cover - the regex already fixes the shape
+        return None
+    end: dt.date | None = None
+    if match.group(2):
+        with contextlib.suppress(ValueError):
+            end = dt.date.fromisoformat(match.group(2))
+    return start, end
+
+
 def _default_fetcher(api_key: SecretStr | None) -> JQuantsFetcher:
     """Build a fetcher that calls the J-Quants V2 daily-quotes endpoint."""
 
-    def fetch(symbol: str, start: dt.date, end: dt.date) -> list[dict[str, Any]]:
+    def request(symbol: str, start: dt.date, end: dt.date) -> list[dict[str, Any]]:
         import httpx
 
         headers = {"x-api-key": api_key.get_secret_value()} if api_key else {}
@@ -119,6 +151,37 @@ def _default_fetcher(api_key: SecretStr | None) -> JQuantsFetcher:
                 if not pagination_key:
                     break
         return records
+
+    def fetch(symbol: str, start: dt.date, end: dt.date) -> list[dict[str, Any]]:
+        """Fetch a range, narrowing once if the plan does not reach that far.
+
+        Asking for more history than the subscription covers fails the whole
+        symbol, which is the wrong outcome twice over: the years that *are*
+        covered were available all along, and a backfill across a universe
+        would fail every name for the same reason. Since the refusal states
+        the covered range, the only sane response is to take it and retry.
+        """
+        try:
+            return request(symbol, start, end)
+        except RateLimitError:
+            raise
+        except DataError as exc:
+            window = subscription_window(str(exc))
+            if window is None:
+                raise
+            covered_start, covered_end = window
+            narrowed_start = max(start, covered_start)
+            narrowed_end = min(end, covered_end) if covered_end else end
+            if narrowed_start >= narrowed_end or (narrowed_start, narrowed_end) == (start, end):
+                raise
+            logger.warning(
+                "%s: the plan covers %s onward, not %s. Fetching the covered part; "
+                "earlier history needs a different J-Quants plan.",
+                symbol,
+                covered_start,
+                start,
+            )
+            return request(symbol, narrowed_start, narrowed_end)
 
     return fetch
 
