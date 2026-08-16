@@ -146,3 +146,81 @@ def test_a_successful_response_raises_nothing() -> None:
         headers: dict[str, str] = {}
 
     raise_for_status(_Response(), "x")
+
+
+# --- error bodies -----------------------------------------------------------
+
+
+class _Failing:
+    """A minimal response object carrying a status and a body."""
+
+    def __init__(self, status_code: int, text: str = "", headers: dict | None = None) -> None:
+        self.status_code = status_code
+        self.text = text
+        self.headers = headers or {}
+
+
+def test_an_error_carries_the_providers_own_explanation() -> None:
+    """A status code is a category; the reason is only ever in the body.
+
+    Observed live: J-Quants answered a 13-year price range with ``400 Bad
+    Request`` and the message said only "HTTP 400". Whether the window was too
+    wide, the start predated the plan, or a parameter was wrong is exactly what
+    the body would have said, and it was being thrown away - the same discard
+    that turned a 403 into two rounds of guessing at "plan limits".
+    """
+    from stock_ai.core.exceptions import DataError
+    from stock_ai.data.http import raise_for_status
+
+    response = _Failing(400, '{"message":"The specified period is too long."}')
+    with pytest.raises(DataError) as excinfo:
+        raise_for_status(response, "prices for 7203")
+
+    assert "400" in str(excinfo.value)
+    assert "period is too long" in str(excinfo.value)
+
+
+def test_an_error_body_never_leaks_a_key() -> None:
+    """Error bodies quote the request back, and some providers key the URL."""
+    from stock_ai.core.exceptions import DataError
+    from stock_ai.core.logging import register_secret
+    from stock_ai.data.http import raise_for_status
+
+    register_secret("super-secret-key-value")
+    response = _Failing(400, "Bad request for Subscription-Key=super-secret-key-value")
+
+    with pytest.raises(DataError) as excinfo:
+        raise_for_status(response, "prices for 7203")
+
+    assert "super-secret-key-value" not in str(excinfo.value)
+    assert "<redacted>" in str(excinfo.value)
+
+
+def test_a_bodyless_error_still_reports_its_status() -> None:
+    from stock_ai.core.exceptions import DataError
+    from stock_ai.data.http import raise_for_status
+
+    with pytest.raises(DataError, match="HTTP 500"):
+        raise_for_status(_Failing(500, ""), "prices for 7203")
+
+
+def test_a_long_error_body_is_truncated() -> None:
+    from stock_ai.core.exceptions import DataError
+    from stock_ai.data.http import raise_for_status
+
+    with pytest.raises(DataError) as excinfo:
+        raise_for_status(_Failing(400, "x" * 5000), "prices for 7203")
+
+    assert len(str(excinfo.value)) < 500
+    assert "..." in str(excinfo.value)
+
+
+def test_a_rate_limit_is_still_typed_separately() -> None:
+    """The 429 path must keep its own type, body or no body."""
+    from stock_ai.core.exceptions import RateLimitError
+    from stock_ai.data.http import raise_for_status
+
+    with pytest.raises(RateLimitError) as excinfo:
+        raise_for_status(_Failing(429, "slow down", {"Retry-After": "12"}), "prices for 7203")
+
+    assert excinfo.value.retry_after == 12.0
