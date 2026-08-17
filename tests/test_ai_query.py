@@ -238,3 +238,120 @@ def test_the_dummy_provider_cannot_answer_a_structured_query() -> None:
 
     with pytest.raises(AIError, match="no JSON object"):
         parse_query(DummyAIProvider(), "PER15以下の株")
+
+
+# --- cost estimation --------------------------------------------------------
+
+
+def test_a_known_model_prices_a_call() -> None:
+    from stock_ai.ai.pricing import cost_of
+
+    # Opus 5: $5/MTok in, $25/MTok out.
+    assert cost_of("claude-opus-5", 1_000_000, 0) == pytest.approx(5.00)
+    assert cost_of("claude-opus-5", 0, 1_000_000) == pytest.approx(25.00)
+    assert cost_of("claude-opus-5", 2_000, 500) == pytest.approx(0.0225)
+
+
+def test_an_unpriced_model_returns_none_rather_than_a_guess() -> None:
+    """A made-up price reads exactly like a real one on screen."""
+    from stock_ai.ai.pricing import cost_of
+
+    assert cost_of("some-future-model", 1000, 1000) is None
+
+
+def test_the_estimate_is_a_range_because_summaries_are_conditional() -> None:
+    """Only disclosures clearing their threshold get summarized, and that is
+    the model's verdict - unknowable before the run."""
+    from stock_ai.ai.pricing import RunEstimate
+
+    estimate = RunEstimate(
+        model="claude-opus-5",
+        items=10,
+        rating_input_tokens=5_000,
+        summary_input_tokens=5_000,
+        rating_output_cap=8,
+        summary_output_cap=1024,
+    )
+
+    assert estimate.low is not None
+    assert estimate.high is not None
+    assert estimate.low < estimate.high
+    # Floor: rating input + 10 x 8 output tokens.
+    assert estimate.low == pytest.approx(cost_of_expected := (5_000 * 5 + 80 * 25) / 1_000_000)
+    assert cost_of_expected > 0
+
+
+def test_an_unpriced_estimate_reports_no_dollars() -> None:
+    from stock_ai.ai.pricing import RunEstimate
+
+    estimate = RunEstimate(
+        model="unknown-model",
+        items=1,
+        rating_input_tokens=100,
+        summary_input_tokens=100,
+        rating_output_cap=8,
+        summary_output_cap=1024,
+    )
+
+    assert not estimate.priced
+    assert estimate.low is None and estimate.high is None
+
+
+def test_usage_prices_itself() -> None:
+    from stock_ai.ai.pricing import Usage
+
+    usage = Usage(input_tokens=1_000, output_tokens=100, model="claude-opus-5")
+    assert usage.cost == pytest.approx((1_000 * 5 + 100 * 25) / 1_000_000)
+
+
+def test_the_estimate_counts_the_prompts_the_run_actually_sends() -> None:
+    """An estimate built from a reconstructed prompt prices a request that
+    never happens, so both paths must come from the same builders."""
+    from stock_ai.ai.analysis import (
+        IMPORTANCE_SYSTEM,
+        SUMMARY_SYSTEM,
+        importance_prompt,
+        summary_prompt,
+    )
+
+    text = "決算短信: 通期予想を上方修正"
+    assert text in importance_prompt(text)
+    assert text in summary_prompt(text)
+    assert "importance" in importance_prompt(text).lower()
+    assert "summarize" in summary_prompt(text).lower()
+    assert IMPORTANCE_SYSTEM and SUMMARY_SYSTEM
+
+
+def test_usage_is_recorded_from_the_response() -> None:
+    """Without this the run can say afterwards only that it spent something."""
+    from stock_ai.ai.anthropic_provider import AnthropicProvider
+
+    class _Block:
+        type = "text"
+        text = "high"
+
+    class _Usage:
+        input_tokens = 1_234
+        output_tokens = 7
+
+    class _Response:
+        content = [_Block()]
+        stop_reason = "end_turn"
+        usage = _Usage()
+
+    class _Messages:
+        def create(self, **kwargs: object) -> _Response:
+            return _Response()
+
+    class _Client:
+        messages = _Messages()
+
+    provider = AnthropicProvider(client=_Client(), model="claude-opus-5")
+    assert provider.last_usage is None
+
+    provider.complete("rate this")
+
+    assert provider.last_usage is not None
+    assert provider.last_usage.input_tokens == 1_234
+    assert provider.last_usage.output_tokens == 7
+    assert provider.last_usage.cost == pytest.approx((1_234 * 5 + 7 * 25) / 1_000_000)

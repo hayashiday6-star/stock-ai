@@ -9,36 +9,67 @@ from __future__ import annotations
 from stock_ai.ai.base import AIProvider
 from stock_ai.data.types import Importance
 
-_SUMMARY_SYSTEM = (
+SUMMARY_SYSTEM = (
     "You are a financial analyst. Summarize factually and concisely, "
     "without speculation or investment advice."
 )
-_SENTIMENT_SYSTEM = (
+SENTIMENT_SYSTEM = (
     "You classify the sentiment of financial text as exactly one word: "
     "positive, neutral, or negative."
 )
+
+#: Output ceilings, per call. These are what make a pre-run cost estimate
+#: bounded rather than open-ended: the model can never bill more output than
+#: this, whatever it decides to say.
+IMPORTANCE_MAX_TOKENS = 8
+SENTIMENT_MAX_TOKENS = 8
+SUMMARY_MAX_TOKENS = 1024
+
+#: Summary length the watchlist monitor asks for. Kept here beside the prompt
+#: it feeds so a cost estimate and the real run cannot drift apart.
+DEFAULT_SUMMARY_WORDS = 80
 
 Sentiment = str  # one of "positive" | "neutral" | "negative" | "unknown"
 _SENTIMENT_LABELS: tuple[str, ...] = ("positive", "negative", "neutral")
 
 
+def summary_prompt(text: str, *, max_words: int = DEFAULT_SUMMARY_WORDS) -> str:
+    """Build the summarization prompt.
+
+    Separate from :func:`summarize` so the cost estimate can count the tokens
+    of the *exact* prompt the run will send. An estimate built from a
+    reconstructed prompt would price a request that never happens.
+    """
+    return f"Summarize the following in at most {max_words} words:\n\n{text}"
+
+
+def importance_prompt(text: str) -> str:
+    """Build the importance-rating prompt (see :func:`summary_prompt`)."""
+    return f"Rate the importance (high/medium/low) of this disclosure:\n\n{text}"
+
+
 def summarize(provider: AIProvider, text: str, *, max_words: int = 120) -> str:
     """Summarize ``text`` (an IR document, news article, ...) in <= ``max_words``."""
-    prompt = f"Summarize the following in at most {max_words} words:\n\n{text}"
-    return provider.complete(prompt, system=_SUMMARY_SYSTEM).strip()
+    return provider.complete(
+        summary_prompt(text, max_words=max_words),
+        system=SUMMARY_SYSTEM,
+        max_tokens=SUMMARY_MAX_TOKENS,
+    ).strip()
 
 
 def analyze_sentiment(provider: AIProvider, text: str) -> Sentiment:
     """Return the sentiment label for ``text`` (``unknown`` if unclassifiable)."""
     prompt = f"Classify the sentiment (positive/neutral/negative) of:\n\n{text}"
-    raw = provider.complete(prompt, system=_SENTIMENT_SYSTEM, max_tokens=8).lower()
+    raw = provider.complete(
+        prompt, system=SENTIMENT_SYSTEM, max_tokens=SENTIMENT_MAX_TOKENS
+    ).lower()
     for label in _SENTIMENT_LABELS:
         if label in raw:
             return label
     return "unknown"
 
 
-_IMPORTANCE_SYSTEM = (
+IMPORTANCE_SYSTEM = (
     "You rate how much a disclosure about a listed company should change an "
     "investor's view. Reply with exactly one word.\n"
     "high   - materially changes the investment case: guidance revised, "
@@ -61,8 +92,9 @@ def classify_importance(provider: AIProvider, text: str) -> Importance:
     item that could not be judged is worth a human glance, whereas silently
     treating it as routine is how the one filing that mattered gets missed.
     """
-    prompt = f"Rate the importance (high/medium/low) of this disclosure:\n\n{text}"
-    raw = provider.complete(prompt, system=_IMPORTANCE_SYSTEM, max_tokens=8).lower()
+    raw = provider.complete(
+        importance_prompt(text), system=IMPORTANCE_SYSTEM, max_tokens=IMPORTANCE_MAX_TOKENS
+    ).lower()
     for label in _IMPORTANCE_LABELS:
         if label in raw:
             return Importance(label)

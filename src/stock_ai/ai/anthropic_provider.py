@@ -11,6 +11,7 @@ from typing import Any
 
 from pydantic import SecretStr
 
+from stock_ai.ai.pricing import Usage
 from stock_ai.core.exceptions import AIError
 from stock_ai.core.logging import get_logger
 
@@ -40,6 +41,10 @@ class AnthropicProvider:
         self._api_key = api_key
         self._model = model
         self._client = client
+        #: Tokens consumed by the most recent call, or ``None`` before the
+        #: first one. Recorded because a run that bills per disclosure has no
+        #: other way to say afterwards what it actually spent.
+        self.last_usage: Usage | None = None
 
     def _get_client(self) -> Any:
         """Return the SDK client, constructing it lazily on first use."""
@@ -65,6 +70,19 @@ class AnthropicProvider:
         except Exception as exc:  # normalize any SDK/transport error
             raise AIError(f"Anthropic request failed: {exc}") from exc
 
+        usage = getattr(response, "usage", None)
+        if usage is not None:
+            self.last_usage = Usage(
+                input_tokens=getattr(usage, "input_tokens", 0),
+                output_tokens=getattr(usage, "output_tokens", 0),
+                model=self._model,
+            )
+            logger.debug(
+                "Anthropic call: %d in, %d out",
+                self.last_usage.input_tokens,
+                self.last_usage.output_tokens,
+            )
+
         if getattr(response, "stop_reason", None) == "refusal":
             raise AIError("Claude refused the request.")
 
@@ -74,3 +92,26 @@ class AnthropicProvider:
         if not text:
             raise AIError("Claude returned no text content.")
         return text
+
+    @property
+    def model(self) -> str:
+        """The model ID this provider calls, needed to price a call."""
+        return self._model
+
+    def count_tokens(self, prompt: str, *, system: str | None = None) -> int:
+        """Return the exact input-token count for a request, without sending it.
+
+        ``count_tokens`` is a separate endpoint that does no generation and is
+        not billed, which is what makes a pre-run estimate exact on the input
+        side rather than a characters-divided-by-four guess.
+        """
+        kwargs: dict[str, Any] = {
+            "model": self._model,
+            "messages": [{"role": "user", "content": prompt}],
+        }
+        if system is not None:
+            kwargs["system"] = system
+        try:
+            return int(self._get_client().messages.count_tokens(**kwargs).input_tokens)
+        except Exception as exc:
+            raise AIError(f"Anthropic token count failed: {exc}") from exc
