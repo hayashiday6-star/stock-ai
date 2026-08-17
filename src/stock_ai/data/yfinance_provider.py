@@ -14,7 +14,7 @@ from typing import Any
 
 import pandas as pd
 
-from stock_ai.core.exceptions import DataError
+from stock_ai.core.exceptions import DataError, NoDataError
 from stock_ai.core.logging import get_logger
 from stock_ai.data.sanity import plausible_dividend_yield
 from stock_ai.data.schema import normalize_ohlcv
@@ -68,7 +68,9 @@ class YFinancePriceProvider:
         logger.debug("Fetching prices for %s: %s..%s", symbol, start, end)
         raw = self._download(symbol, start, end)
         if raw is None or raw.empty:
-            raise DataError(f"No price data returned for {symbol!r} in {start}..{end}.")
+            # Empty is the normal answer outside trading hours; the caller
+            # decides whether that is a fault for this symbol.
+            raise NoDataError(f"No price data returned for {symbol!r} in {start}..{end}.")
 
         prices = normalize_ohlcv(raw)
         logger.info("Fetched %d bars for %s", len(prices), symbol)

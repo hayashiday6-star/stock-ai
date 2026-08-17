@@ -282,3 +282,148 @@ def test_an_arbitrary_floor_still_asks_for_the_check() -> None:
     reading = _shared_floor_reading(dt.date(2022, 6, 27), dt.date(2026, 8, 16))
     assert "either the provider" in reading
     assert "--backfill" in reading
+
+
+# --- market routing ---------------------------------------------------------
+
+
+def test_a_japanese_code_routes_to_jp_whatever_the_suffix() -> None:
+    from stock_ai.data.markets import market_for_symbol
+
+    assert market_for_symbol("7203") == "JP"
+    assert market_for_symbol("7203.T") == "JP"
+    assert market_for_symbol("6758.JP") == "JP"
+    assert market_for_symbol(" 4593 ") == "JP"
+
+
+def test_anything_that_is_not_four_digits_is_us() -> None:
+    from stock_ai.data.markets import market_for_symbol
+
+    assert market_for_symbol("AAPL") == "US"
+    assert market_for_symbol("BRK.B") == "US"
+    assert market_for_symbol("720") == "US"
+    assert market_for_symbol("7203A") == "US"
+
+
+def test_a_mixed_list_splits_and_keeps_its_order() -> None:
+    """One --source cannot serve both markets; the list has to be split first."""
+    from stock_ai.data.markets import split_by_market
+
+    grouped = split_by_market(["AAPL", "7203", "MSFT", "6758"])
+
+    assert grouped == {"US": ["AAPL", "MSFT"], "JP": ["7203", "6758"]}
+
+
+def test_a_single_market_list_yields_one_group() -> None:
+    from stock_ai.data.markets import split_by_market
+
+    assert split_by_market(["AAPL", "MSFT"]) == {"US": ["AAPL", "MSFT"]}
+    assert split_by_market([]) == {}
+
+
+def test_daily_does_not_send_us_tickers_to_jquants(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: object
+) -> None:
+    """Bug (7) at a different entry point: one flag applied to both markets.
+
+    ``daily AAPL MSFT 7203 --source jquants`` used to hand every symbol to
+    J-Quants, which cannot price AAPL. Nothing about the command says so - the
+    US names simply land among the failures.
+    """
+    database = Database("sqlite:///:memory:")
+    database.create_all()
+    seen: list[tuple[str, tuple[str, ...]]] = []
+
+    class _Recorder:
+        def __init__(self, name: str) -> None:
+            self.name = name
+
+        def fetch_prices(self, symbol: str, start: dt.date, end: dt.date) -> pd.DataFrame:
+            seen.append((self.name, (symbol,)))
+            return _frame(["2024-01-02"])
+
+    def fake_source(source: str, settings: object) -> tuple[object, str]:
+        return _Recorder(source), "JP" if source == "jquants" else "US"
+
+    monkeypatch.setattr(cli, "Database", lambda: database)
+    monkeypatch.setattr(cli, "_price_source", fake_source)
+    monkeypatch.setenv("COLUMNS", "200")
+
+    result = runner.invoke(
+        cli.app,
+        ["daily", "AAPL", "7203", "--source", "jquants", "--once", "--provider", "dummy"],
+    )
+
+    assert result.exit_code in (0, 1)  # the monitor half may fail without keys
+    routed = {symbol: provider for provider, (symbol,) in seen}
+    assert routed["AAPL"] == "yfinance"
+    assert routed["7203"] == "jquants"
+    database.dispose()
+
+
+# --- empty responses --------------------------------------------------------
+
+
+class _Empty:
+    """A provider that has nothing for the range asked for."""
+
+    def fetch_prices(self, symbol: str, start: dt.date, end: dt.date) -> pd.DataFrame:
+        from stock_ai.core.exceptions import NoDataError
+
+        raise NoDataError(f"nothing for {symbol} in {start}..{end}")
+
+
+def test_no_new_bars_for_a_stored_symbol_is_not_a_failure() -> None:
+    """The daily job asked for today's bar at 08:38, before the session closed.
+
+    Observed live: ``prices (JP)`` reported "J-Quants returned no records" and
+    the scheduled task exited non-zero. That is the normal state every morning
+    and all weekend - reporting it as an error trains the reader to ignore the
+    one morning it means something.
+    """
+    database = Database("sqlite:///:memory:")
+    database.create_all()
+    _stored_symbol(database, "7203", ["2026-08-14"])
+
+    result = IngestionService(_Empty(), database).ingest_symbol(
+        "7203", end=dt.date(2026, 8, 17), market="JP"
+    )
+
+    assert result.ok
+    assert result.rows == 0
+    database.dispose()
+
+
+def test_no_data_at_all_for_an_unknown_symbol_is_still_a_failure() -> None:
+    """A ticker the provider does not know must not be silently accepted."""
+    database = Database("sqlite:///:memory:")
+    database.create_all()
+
+    result = IngestionService(_Empty(), database).ingest_symbol(
+        "NOSUCH", end=dt.date(2026, 8, 17), market="US"
+    )
+
+    assert not result.ok
+    assert result.error
+    database.dispose()
+
+
+def test_an_ordinary_failure_is_still_reported_for_a_stored_symbol() -> None:
+    """Only emptiness is forgiven; a real error must survive the change."""
+    from stock_ai.core.exceptions import DataError
+
+    database = Database("sqlite:///:memory:")
+    database.create_all()
+    _stored_symbol(database, "7203", ["2026-08-14"])
+
+    class _Broken:
+        def fetch_prices(self, symbol: str, start: dt.date, end: dt.date) -> pd.DataFrame:
+            raise DataError("HTTP 500 while fetching prices for 7203.")
+
+    result = IngestionService(_Broken(), database).ingest_symbol(
+        "7203", end=dt.date(2026, 8, 17), market="JP"
+    )
+
+    assert not result.ok
+    assert "500" in (result.error or "")
+    database.dispose()

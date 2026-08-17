@@ -83,9 +83,11 @@ project folder itself, so it does not matter where Windows opens:
 | `APIキー設定.bat` | Store one API key in `.env`, hidden as you paste it |
 | `2-動作確認.bat` | Check every data source, write `verify-output.txt` |
 | `3-データ取得.bat` | Load a 20-symbol trial, so a problem shows up cheaply |
+| `4-日次自動化.bat` | Register the daily job with Windows (asks for admin) |
 | `5-分析.bat` | Fill any gaps, screen, then test whether the score holds up |
 | `ダッシュボード起動.bat` | Open the dashboard in a browser |
 | `ダッシュボード起動(スマホ).bat` | Same, reachable from a phone on the same Wi-Fi |
+| `EDINET確認.bat` | Diagnose an EDINET key by trying every way of sending it |
 | `PowerShellを開く.bat` | A terminal already in this folder, for one-off commands |
 
 The phone launcher is separate on purpose. The dashboard has **no login**:

@@ -19,24 +19,43 @@
 .PARAMETER Channel
     Notification channel for alerts. Omit to print them instead.
 
+.PARAMETER Feed
+    Disclosure feed the monitor reads: all | edinet | news.
+
+.PARAMETER Source
+    Price source for symbols that are not Japanese listings. Four-digit codes
+    are routed to J-Quants regardless, so a mixed list needs no extra flag.
+
 .PARAMETER Register
     Create (or replace) the scheduled task instead of running the job now.
 
 .PARAMETER At
     Local time for -Register, as HH:mm.
 
+.PARAMETER Interactive
+    Ask for the settings instead of taking them as parameters. Prompting here
+    rather than in a .bat is deliberate: cmd interpolates a variable into the
+    command line unquoted, so a pasted value containing a space silently
+    becomes several arguments and lands on the wrong parameter.
+
 .EXAMPLE
     .\scripts\4-daily.ps1 -Provider claude -Channel discord
-    .\scripts\4-daily.ps1 -Register -At 18:00 -Provider claude -Channel discord
+    .\scripts\4-daily.ps1 -Register -At 18:00 -Provider claude -Channel discord -Feed edinet
+    .\scripts\4-daily.ps1 -Register -Symbols 7203,6758,AAPL -Feed edinet -Channel discord
 #>
 [CmdletBinding()]
 param(
     [string[]]$Symbols = @(),
     [string]$Provider = 'claude',
     [string]$Channel,
+    [ValidateSet('all', 'edinet', 'news')]
+    [string]$Feed = 'all',
+    [ValidateSet('yfinance', 'jquants')]
+    [string]$Source = 'yfinance',
     [switch]$Register,
     [ValidatePattern('^([01]\d|2[0-3]):[0-5]\d$')]
-    [string]$At = '18:00'
+    [string]$At = '18:00',
+    [switch]$Interactive
 )
 
 $ErrorActionPreference = 'Continue'
@@ -44,6 +63,74 @@ $root = Split-Path -Parent $PSScriptRoot
 Set-Location $root
 
 . "$PSScriptRoot\_common.ps1"
+
+# --- interactive settings --------------------------------------------------
+
+function Read-Setting {
+    <#
+    .SYNOPSIS
+        Ask until the answer is usable, showing what was wrong each time.
+    #>
+    param(
+        [Parameter(Mandatory)][string]$Prompt,
+        [string]$Default = '',
+        [string]$Pattern,
+        [string]$Hint
+    )
+    while ($true) {
+        $suffix = if ($Default) { " [$Default]" } else { ' (optional)' }
+        # Trim: a pasted answer usually brings trailing spaces, and a value
+        # with a space in it is what broke this in the first place.
+        $answer = (Read-Host "$Prompt$suffix").Trim()
+        if (-not $answer) { return $Default }
+        if (-not $Pattern -or $answer -match $Pattern) { return $answer }
+        Write-Warn "'$answer' is not valid here. $Hint"
+    }
+}
+
+if ($Interactive) {
+    Write-Section 'Daily job settings'
+    Write-Host 'Press Enter to accept the value in brackets.'
+    Write-Host ''
+
+    $At = Read-Setting -Prompt 'Time to run (24h)' -Default $At `
+        -Pattern '^([01]\d|2[0-3]):[0-5]\d$' -Hint 'Use HH:MM, e.g. 18:00.'
+
+    Write-Host ''
+    Write-Host 'Symbols whose prices to refresh, comma separated. Four-digit'
+    Write-Host 'codes go to J-Quants and the rest to yfinance, so 7203,6758,AAPL'
+    Write-Host 'is fine. Leave empty to only check the watchlist.'
+    $symbolText = Read-Setting -Prompt 'Symbols' `
+        -Pattern '^[A-Za-z0-9.,\-]+$' -Hint 'Letters, digits, dots and commas only.'
+    if ($symbolText) { $Symbols = $symbolText -split ',' | Where-Object { $_ } }
+
+    Write-Host ''
+    Write-Host 'Disclosure feed:  all = EDINET + news,  edinet = JP filings,  news = wire'
+    $Feed = Read-Setting -Prompt 'Feed' -Default 'all' `
+        -Pattern '^(all|edinet|news)$' -Hint 'Type all, edinet or news.'
+
+    Write-Host ''
+    Write-Host 'Notification channel. Empty prints alerts instead of sending them.'
+    $Channel = Read-Setting -Prompt 'Channel' `
+        -Pattern '^(console|discord|telegram|line)$' `
+        -Hint 'Type console, discord, telegram or line.'
+
+    Write-Host ''
+    Write-Host 'AI provider that rates each disclosure. "dummy" needs no key and'
+    Write-Host 'costs nothing; the others need their key in .env and bill per run.'
+    Write-Host 'A provider whose key is missing fails the monitor job every day,'
+    Write-Host 'so dummy is the safe default until a key is confirmed.'
+    $Provider = Read-Setting -Prompt 'Provider' -Default 'dummy' `
+        -Pattern '^(dummy|claude|openai|gemini)$' `
+        -Hint 'Type dummy, claude, openai or gemini.'
+
+    Write-Host ''
+    $summary = "daily at $At, feed $Feed, provider $Provider"
+    if ($Symbols.Count -gt 0) { $summary += ", symbols $($Symbols -join ',')" }
+    if ($Channel) { $summary += ", notifying $Channel" }
+    Write-Host "Registering: $summary"
+    $Register = $true
+}
 
 # --- registration ----------------------------------------------------------
 
@@ -58,6 +145,7 @@ if ($Register) {
         '-Provider', $Provider
     )
     if ($Channel) { $arguments += @('-Channel', $Channel) }
+    $arguments += @('-Feed', $Feed, '-Source', $Source)
     if ($Symbols.Count -gt 0) { $arguments += @('-Symbols', ($Symbols -join ',')) }
 
     try {
@@ -99,7 +187,7 @@ try {
 
     if (-not (Test-UvInstalled)) { return }
 
-    $arguments = @('daily', '--once', '--provider', $Provider)
+    $arguments = @('daily', '--once', '--provider', $Provider, '--feed', $Feed, '--source', $Source)
     if ($Channel) { $arguments += @('--channel', $Channel) }
     # A comma-joined -Symbols survives Task Scheduler's argument flattening.
     foreach ($symbol in ($Symbols -split ',' | Where-Object { $_ })) {
