@@ -1967,8 +1967,9 @@ def ai_cost(
     except AIError as exc:
         console.print(f"[red]{exc}[/]")
         console.print(
-            "[dim]Token counting needs a working ANTHROPIC_API_KEY. It is free "
-            "and generates nothing, but it is still an authenticated call.[/]"
+            "[dim]Counting tokens needs the anthropic package ('uv sync --extra "
+            "ai') and a key that the API accepts. The message above says which "
+            "of the two is missing - it is not always the key.[/]"
         )
         raise typer.Exit(code=1) from exc
 
@@ -2365,9 +2366,13 @@ def _secret_summary(value: SecretStr | None) -> str:
     tell a full key from one truncated by a bad copy. Length and a one-way
     fingerprint answer both while staying safe to paste into a bug report.
     """
-    if value is None:
-        return "[dim]-[/]"
-    secret = value.get_secret_value()
+    secret = value.get_secret_value() if value is not None else ""
+    if not secret.strip():
+        # An empty assignment in .env (``OPENAI_API_KEY=``) parses to "", which
+        # is not None - so a naive None check reports it as "set (0 chars)".
+        # That reads as configured and sends anyone debugging an auth failure
+        # looking in the wrong place.
+        return "[dim]not set[/]"
     digest = hashlib.sha256(secret.encode("utf-8")).hexdigest()[:8]
     return f"[green]set[/] [dim]({len(secret)} chars, fingerprint {digest})[/]"
 

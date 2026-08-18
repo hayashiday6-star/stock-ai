@@ -47,9 +47,22 @@ class AnthropicProvider:
         self.last_usage: Usage | None = None
 
     def _get_client(self) -> Any:
-        """Return the SDK client, constructing it lazily on first use."""
+        """Return the SDK client, constructing it lazily on first use.
+
+        A missing package and a rejected key are different problems with
+        different fixes, and the SDK's ``ModuleNotFoundError`` says nothing
+        about which. Naming the install here is what stops the caller being
+        sent to check a key that was correct all along.
+        """
         if self._client is None:
-            import anthropic
+            try:
+                import anthropic
+            except ImportError as exc:  # the dependency is an opt-in extra
+                raise AIError(
+                    "The 'anthropic' package is not installed. This is an "
+                    "optional extra, so it is absent until asked for: run "
+                    "'uv sync --extra ai'. Your API key is not the problem."
+                ) from exc
 
             key = self._api_key.get_secret_value() if self._api_key else None
             self._client = anthropic.Anthropic(api_key=key)
@@ -111,7 +124,8 @@ class AnthropicProvider:
         }
         if system is not None:
             kwargs["system"] = system
+        client = self._get_client()  # raises AIError with its own advice
         try:
-            return int(self._get_client().messages.count_tokens(**kwargs).input_tokens)
+            return int(client.messages.count_tokens(**kwargs).input_tokens)
         except Exception as exc:
             raise AIError(f"Anthropic token count failed: {exc}") from exc

@@ -355,3 +355,50 @@ def test_usage_is_recorded_from_the_response() -> None:
     assert provider.last_usage.input_tokens == 1_234
     assert provider.last_usage.output_tokens == 7
     assert provider.last_usage.cost == pytest.approx((1_234 * 5 + 7 * 25) / 1_000_000)
+
+
+def test_a_missing_package_is_not_reported_as_a_key_problem() -> None:
+    """Observed live: a correct 108-char key, and the advice said to check it.
+
+    The SDK raises ModuleNotFoundError, which says nothing about credentials.
+    Wrapping that in "check your API key" sends the reader to the one place
+    the fault is not.
+    """
+    import builtins
+
+    from stock_ai.ai.anthropic_provider import AnthropicProvider
+    from stock_ai.core.exceptions import AIError
+
+    real_import = builtins.__import__
+
+    def _no_anthropic(name: str, *args: object, **kwargs: object) -> object:
+        if name == "anthropic":
+            raise ImportError("No module named 'anthropic'")
+        return real_import(name, *args, **kwargs)
+
+    provider = AnthropicProvider(model="claude-opus-5")
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(builtins, "__import__", _no_anthropic)
+        with pytest.raises(AIError) as excinfo:
+            provider.count_tokens("hello")
+
+    message = str(excinfo.value)
+    assert "uv sync --extra ai" in message
+    assert "not the problem" in message
+
+
+def test_an_empty_env_value_is_not_reported_as_set() -> None:
+    """``OPENAI_API_KEY=`` in .env parses to "", which is not None.
+
+    Reported as "set (0 chars)" it reads as configured, which is the opposite
+    of what it means.
+    """
+    from pydantic import SecretStr
+
+    from stock_ai.cli import _secret_summary
+
+    assert "not set" in _secret_summary(SecretStr(""))
+    assert "not set" in _secret_summary(SecretStr("   "))
+    assert "not set" in _secret_summary(None)
+    assert "set" in _secret_summary(SecretStr("sk-real-key-value"))
+    assert "not set" not in _secret_summary(SecretStr("sk-real-key-value"))
