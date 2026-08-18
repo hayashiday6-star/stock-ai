@@ -249,9 +249,17 @@ def test_the_monitor_takes_the_same_feed_flag_the_estimate_does() -> None:
 
     The live check estimated 'all' (two disclosures) then ran 'edinet' (one),
     which reads exactly like an estimate that cannot be trusted.
+
+    Read off the parameter definition rather than the rendered --help: Rich
+    wraps to the terminal width, so an assertion on that text passes on a wide
+    developer console and fails in CI on the same correct code. It also tests
+    the wrong thing - what matters is which flags the command accepts.
     """
-    result = runner.invoke(app, ["monitor", "--help"])
-    assert result.exit_code == 0
-    assert "--feed" in result.stdout
+    import typer.main
+
+    command = typer.main.get_command(app).commands["monitor"]  # type: ignore[attr-defined]
+    flags = {opt for param in command.params for opt in param.opts}
+
+    assert "--feed" in flags
     # --source stays as an alias so existing scripts keep working.
-    assert "--source" in result.stdout
+    assert "--source" in flags
