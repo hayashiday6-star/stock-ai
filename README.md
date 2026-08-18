@@ -657,6 +657,14 @@ Ten screens: データ取得 / ランキング / 日米統合ランキング / �
 ポートフォリオ / 監視リスト / バックテスト / ファクター検証 / AI分析 / 通知テスト —
 the CLI features above, without the command line.
 
+The two screens that spend money carry the same cost machinery the CLI does:
+the watchlist has a free **費用を見積もる** button that counts tokens without
+generating any, both AI screens print what the run actually spent when it
+finishes, and the sidebar shows the active model — or warns that the SDK is
+missing, which otherwise looks identical to a working setup. A button in a
+browser has no console line to notice afterwards, so a control that bills an
+account silently is the one thing this had to avoid.
+
 ## Backtesting
 
 ```bash

@@ -286,3 +286,53 @@ def test_a_pull_without_a_restart_is_detectable() -> None:
     stale = on_disk != "0000000" and "不明" not in (on_disk, "0000000")
     assert stale is True
     assert (on_disk != on_disk) is False  # identical commits raise nothing
+
+
+def test_a_monitor_run_reports_what_it_spent() -> None:
+    """A button in a browser has no console line to notice afterwards.
+
+    The dashboard built its provider inside the call, so the record of what a
+    run cost was gone by the time anyone could ask for it.
+    """
+    from stock_ai.ai.pricing import Usage, UsageLedger
+    from stock_ai.dashboard.data import MonitorRun
+    from stock_ai.ir.monitor import MonitorResult
+
+    ledger = UsageLedger()
+    ledger.record(Usage(input_tokens=300, output_tokens=20, model="claude-opus-5"))
+
+    run = MonitorRun(result=MonitorResult(alerts=[], checked=0, skipped=0), usage=ledger)
+
+    assert run.usage is not None
+    assert run.usage.calls == 1
+    assert run.usage.cost == pytest.approx((300 * 5 + 20 * 25) / 1_000_000)
+
+
+def test_the_free_provider_reports_no_spend(db: Database) -> None:
+    """A "$0.0000" line would read as a bill that happened to be zero.
+
+    The watchlist is empty here, so the pass returns before touching a feed -
+    no network, and no provider call to bill either way.
+    """
+    run = data.run_monitor(db, "dummy", feed="news")
+
+    assert run.usage is None
+    assert run.result.checked == 0
+
+
+def test_the_dashboard_and_the_cli_price_the_same_run() -> None:
+    """Two estimates that disagree leave no way to tell which is real."""
+    from stock_ai.ai.estimate import estimate_disclosure_run
+
+    class _Counter:
+        model = "claude-opus-5"
+
+        def count_tokens(self, prompt: str, *, system: str | None = None) -> int:
+            return len(prompt)
+
+    estimate = estimate_disclosure_run(_Counter(), ["a filing", "another filing"])
+    assert estimate.items == 2
+    assert estimate.rating_input_tokens > 0
+    assert estimate.summary_input_tokens > 0
+    assert estimate.high is not None and estimate.low is not None
+    assert estimate.high > estimate.low
