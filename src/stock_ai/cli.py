@@ -230,24 +230,59 @@ def _symbols_from_file(path: Path) -> list[str]:
     works without reformatting.
     """
     try:
-        raw = path.read_text(encoding="utf-8")
+        data = path.read_bytes()
     except OSError as exc:
         raise typer.BadParameter(f"Could not read {path}: {exc}") from exc
+
+    raw = _decode_text_file(path, data)
 
     symbols: list[str] = []
     seen: set[str] = set()
     for line in raw.splitlines():
         text = line.split("#", 1)[0]
-        for part in text.replace(",", " ").split():
-            ticker = part.strip().upper()
+        for part in text.replace(",", " ").replace("\t", " ").split():
+            # A BOM survives decoding as a zero-width character, and Python does
+            # not count it as whitespace - left in, it becomes a "symbol".
+            ticker = part.strip().strip("\ufeff").upper()
             # Duplicates are silent rather than an error: a hand-maintained
             # list accumulates them, and re-fetching one is only wasted time.
             if ticker and ticker not in seen:
                 seen.add(ticker)
                 symbols.append(ticker)
     if not symbols:
-        raise typer.BadParameter(f"{path} contained no symbols.")
+        # "contained no symbols" is a conclusion, and on its own it leaves the
+        # reader with nothing to check. What the file actually holds is the
+        # thing that decides what to do next.
+        lines = raw.splitlines()
+        first = next((line for line in lines if line.strip()), "")
+        raise typer.BadParameter(
+            f"{path} contained no symbols. Read {len(data)} bytes, "
+            f"{len(lines)} line(s); the first non-empty line is "
+            f"{first[:60]!r}. Every line was blank, or began with '#', or the "
+            "file is not the one you meant - a Notepad save can land as "
+            f"'{path.name}.txt'."
+        )
     return symbols
+
+
+def _decode_text_file(path: Path, data: bytes) -> str:
+    """Decode a hand-made text file without insisting it be UTF-8.
+
+    The expected way to produce one of these is Notepad on Japanese Windows,
+    which writes UTF-16 for "Unicode", UTF-8 with a BOM, and cp932 for "ANSI" -
+    and only the middle one survives a plain ``read_text``. Failing on the
+    other two would reject a file whose contents are perfectly good, so the
+    encodings that reach this project in practice are all tried.
+    """
+    for encoding in ("utf-8-sig", "utf-16", "utf-8", "cp932"):
+        try:
+            return data.decode(encoding)
+        except (UnicodeDecodeError, LookupError):
+            continue
+    raise typer.BadParameter(
+        f"Could not read {path} as text. Save it as UTF-8 or ANSI from Notepad "
+        "(File -> Save As -> Encoding), or check it is not a spreadsheet."
+    )
 
 
 def _resolve_symbols(symbols: list[str] | None, symbols_file: Path | None) -> list[str]:
@@ -1786,10 +1821,12 @@ def watch(
 ) -> None:
     """Manage the watchlist that ``monitor`` checks.
 
-    Takes any number of symbols, because the cost of watching scales with how
-    many disclosures are *filed*, not with how many names are on the list: a
-    quiet day is as cheap for fifty names as for three. Adding them one command
-    at a time was the only thing making a longer list feel expensive.
+    Takes any number of symbols. What that costs depends on the feed, and the
+    two behave differently: EDINET matches a security code against the filings
+    of the day, so a name that filed nothing costs nothing, while the news feed
+    returns up to ``--limit`` items per symbol regardless. Adding two names to
+    a three-name list took the next run's priced work from 1 disclosure to 20 -
+    a backlog, not a new daily rate, because everything judged is remembered.
     """
     settings = get_settings()
     configure_logging(settings.log_level)
@@ -1837,9 +1874,11 @@ def watch(
     )
     if len(targets) > 1:
         console.print(
-            "[dim]Price the next check before paying for it: "
-            "'stock-ai ai-cost'. Cost follows the number of disclosures filed, "
-            "not the length of this list.[/]"
+            "[dim]Price the next check before paying for it: 'stock-ai "
+            "ai-cost'. Adding names does raise the cost of the *next* run: "
+            "the news feed returns up to --limit items per symbol whether or "
+            "not anything was filed, so each new name arrives with a backlog. "
+            "After that first pass only genuinely new items are judged.[/]"
         )
 
 
