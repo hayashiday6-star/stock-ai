@@ -28,12 +28,28 @@ db = ["sqlalchemy>=2.0", "alembic>=1.13"]
 ai = ["anthropic>=0.30", "openai>=1.30", "google-generativeai>=0.7"]
 backtest = ["vectorbt>=0.26"]
 dashboard = ["streamlit>=1.36"]
+# 'daily' without --once blocks and fires once a day; this is what it blocks on.
+# It was imported and never declared, which only surfaced when the environment
+# was cleaned: a fresh install could reach 'No module named schedule' at the
+# moment it was asked to start running unattended.
+scheduler = ["schedule>=1.2"]
 broker = ["ib-insync>=0.9.86"]
 
 [project.scripts]
 stock-ai = "stock_ai.cli:main"
 
 [dependency-groups]
+# Everything the CLI, dashboard and AI commands import at runtime, expressed as
+# a self-reference to the extras above so the versions are declared once.
+#
+# It exists because `uv run` syncs the environment to the project's *default*
+# requirements before running anything, and an extra is not a default:
+# `uv sync --extra ai` lasts only until the next `uv run`, which prunes it.
+# Observed live, mid-verification - "No module named 'anthropic'" on a machine
+# where the same command had worked minutes earlier and nothing but a git pull
+# had happened in between. A group listed in `default-groups` is maintained
+# rather than pruned, so the environment stops decaying under normal use.
+runtime = ["stock-ai[data,db,ai,dashboard,scheduler]"]
 dev = [
     "pytest>=8.2",
     "pytest-cov>=5.0",
@@ -41,6 +57,20 @@ dev = [
     "black>=24.4",
     "pre-commit>=3.7",
 ]
+
+# `uv run` syncs the environment to the project's *default* requirements before
+# it runs anything, and an extra is not a default. Installing one with
+# `uv sync --extra ai` therefore lasts only until the next `uv run`, which
+# quietly removes it again - observed live, mid-verification, as
+# "No module named 'anthropic'" on a machine where it had worked minutes
+# earlier and nothing but a git pull had happened.
+#
+# Naming the extras here makes them part of the default sync, so `uv run`
+# maintains them instead of pruning them. The extras stay declared separately
+# because a consumer installing this as a library still gets the small base.
+[tool.uv]
+# Both groups install on a bare `uv sync` and on every `uv run`.
+default-groups = ["dev", "runtime"]
 
 [build-system]
 requires = ["hatchling"]

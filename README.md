@@ -23,7 +23,7 @@ Built phase by phase; all ten phases are in place.
 ## What is verified, and what is only implemented
 
 "All ten phases in place" says the code exists. It does not say the code has
-met reality, and on this project the gap between those two mattered: nineteen
+met reality, and on this project the gap between those two mattered: twenty-one
 real bugs surfaced only when real data arrived, and nearly every one of them
 produced plausible wrong numbers rather than an error. So the table separates
 them.
@@ -47,6 +47,14 @@ both need a real terminal and a real model:
   console is cp932 and cp932 has no U+00A5. It does have the fullwidth `￥`,
   so the fix is a mapping, not a codepage change (see
   `stock_ai/core/encoding.py`).
+- The AI packages **uninstalled themselves.** A machine that had been calling
+  Claude for an hour answered `No module named 'anthropic'` after a `git pull`
+  and nothing else, because `uv run` re-syncs to the project's default
+  environment and an extra is not part of it. The same clean-up exposed
+  `schedule`, imported by the daily scheduler and declared nowhere — CI had
+  stayed green only because `vectorbt` happened to pull it in. Both are now in
+  the `runtime` dependency group, and CI installs what a user installs so the
+  two cannot drift apart again.
 
 | Area | State |
 |---|---|
@@ -159,20 +167,27 @@ uv run stock-ai version     # verify it runs
 uv run stock-ai info        # show active config (secrets masked)
 ```
 
-**`uv sync --extra X` replaces the installed extras, it does not add to them.**
-A second `uv sync --extra ai` uninstalls pandas, sqlalchemy and streamlit,
-and the next command dies with `No module named 'pandas'`. Name every extra
-you want in one command, or just take them all:
+That is all of it. Everything the CLI, dashboard and AI commands need is in
+the `runtime` dependency group, which `[tool.uv] default-groups` installs on a
+bare `uv sync` — **do not pass `--extra`.**
 
-```bash
-uv sync --all-extras                       # what 1-セットアップ.bat does
-uv sync --extra data --extra db --extra ai # or name them together
-```
+The extras are still declared, because a consumer installing this as a library
+should get the small base. But an extra is not part of the default environment,
+and `uv run` re-syncs to the default environment before it runs anything. So
+`uv sync --extra ai` holds only until the next `uv run` quietly prunes it —
+which is how a machine that had been making Claude calls for an hour started
+answering `No module named 'anthropic'` with nothing changed but a `git pull`.
+The group is maintained rather than pruned, so the environment stops decaying
+under normal use.
+
+`--extra X` also *replaces* rather than adds: `uv sync --extra ai` on its own
+uninstalls pandas, sqlalchemy and streamlit. `stock-ai info` reports whether
+the SDK is actually importable, so a key that is set and a call that cannot be
+made are distinguishable without reading a traceback.
 
 ## Fetching prices
 
 ```bash
-uv sync --all-extras
 uv run stock-ai fetch AAPL MSFT --start 2024-01-02 --end 2024-01-10
 uv run stock-ai fetch AAPL MSFT   # incremental: only bars newer than what's stored
 ```
@@ -612,7 +627,6 @@ uv run stock-ai notify "buy: AAPL" --channel console  # console|discord|telegram
 ## Dashboard
 
 ```bash
-uv sync --all-extras
 uv run streamlit run src/stock_ai/dashboard/app.py
 ```
 

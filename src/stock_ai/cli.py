@@ -175,6 +175,10 @@ def info() -> None:
     selected = settings.anthropic_model or ANTHROPIC_DEFAULT_MODEL
     origin = "from ANTHROPIC_MODEL" if settings.anthropic_model else "built-in default"
     table.add_row("anthropic_model", f"{selected} ({origin})")
+    # A key without the SDK is a configuration that looks complete and cannot
+    # make a single call. Both halves are needed, so both are shown, and the
+    # one that goes missing on its own is the one that is easy to overlook.
+    table.add_row("anthropic sdk", _import_status("anthropic"))
     for label, value in _secret_status(settings):
         table.add_row(label, _secret_summary(value))
     console.print(table)
@@ -2071,6 +2075,19 @@ def _render_estimate(estimate: RunEstimate) -> None:
         "row. Prices are a cached copy of Anthropic's published rates and can "
         "drift - the invoice is the authority.[/]"
     )
+
+
+def _import_status(module: str) -> str:
+    """Say whether ``module`` can be imported, without importing it for real."""
+    import importlib.util
+
+    try:
+        found = importlib.util.find_spec(module) is not None
+    except (ImportError, ValueError):  # a broken or partially removed install
+        found = False
+    if found:
+        return "installed"
+    return "[red]missing[/] - run 'uv sync' (see tool.uv default-groups)"
 
 
 def _report_spend(provider: object) -> None:

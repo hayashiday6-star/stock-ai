@@ -181,3 +181,28 @@ def test_an_unset_secret_has_no_fingerprint() -> None:
     from stock_ai.cli import _secret_summary
 
     assert "fingerprint" not in _secret_summary(None)
+
+
+def test_the_runtime_packages_survive_a_bare_sync() -> None:
+    """`uv run` re-syncs to the default environment before running anything.
+
+    An extra is not part of that environment, so `uv sync --extra ai` lasts
+    only until the next command - observed live as "No module named
+    'anthropic'" on a machine where the same call had worked minutes earlier.
+    A group named in default-groups is maintained instead of pruned.
+    """
+    import tomllib
+    from pathlib import Path
+
+    config = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))
+
+    groups = config["dependency-groups"]
+    assert "runtime" in groups
+    assert config["tool"]["uv"]["default-groups"] == ["dev", "runtime"]
+
+    # The group self-references the extras so the versions are declared once.
+    required = {"data", "db", "ai", "dashboard", "scheduler"}
+    declared = set(config["project"]["optional-dependencies"])
+    assert required <= declared
+    spec = groups["runtime"][0]
+    assert all(extra in spec for extra in required), spec

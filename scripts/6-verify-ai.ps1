@@ -112,7 +112,27 @@ try {
 
     # 'info' prints which model the AI commands will call. That line decides
     # the bill and is otherwise invisible until the invoice arrives.
-    $results['info'] = Invoke-Step 'configuration (model and key fingerprints)' @('info')
+    $results['info'] = Invoke-Step 'configuration (model, SDK, key fingerprints)' @('info')
+
+    # The key is only half of what an AI call needs, and this preflight checked
+    # only that half. A run then asked to confirm spending money and failed
+    # four checks on a missing package - the exact thing a preflight exists to
+    # catch. 'uv sync' is cheap and makes the answer current rather than
+    # remembered.
+    Write-Host ''
+    Write-Host '--- checking the environment is complete' -ForegroundColor Cyan
+    Write-Host '    uv sync' -ForegroundColor DarkGray
+    & uv sync 2>&1 | Out-Host
+    & uv run python -c "import anthropic" 2>&1 | Out-Null
+    $hasSdk = ($LASTEXITCODE -eq 0)
+    if ($hasSdk) {
+        Write-Ok 'The anthropic SDK is installed.'
+    }
+    else {
+        Write-Err 'The anthropic SDK is NOT installed, so no AI command can run.'
+        Write-Host '  Every AI check below would fail on the package, not on your key.'
+        Write-Host '  Fix: git pull (the fix is in pyproject.toml), then uv sync.'
+    }
 
     # --- 2. Notifications (free unless a webhook is configured) -----------
     Write-Section '2. Notifications'
@@ -163,6 +183,11 @@ try {
     }
     elseif (-not $hasKey) {
         Write-Err 'No ANTHROPIC_API_KEY in .env, so the AI commands cannot run.'
+        $runPaid = $false
+    }
+    elseif (-not $hasSdk) {
+        Write-Err 'The anthropic SDK is missing, so every check below would fail on that.'
+        Write-Host '  Not asking you to confirm spending on calls that cannot be made.'
         $runPaid = $false
     }
     elseif (-not $encodingOk) {

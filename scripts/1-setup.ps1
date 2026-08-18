@@ -28,7 +28,12 @@ Show-Version
 if (-not (Test-UvInstalled)) { Exit-WithPause 1 }
 
 Write-Host 'Installing dependencies (this can take a few minutes the first time)...'
-uv sync --all-extras
+# Plain 'uv sync', not '--all-extras'. The runtime packages live in a
+# dependency group that default-groups installs, and a group survives the
+# re-sync that every 'uv run' performs. An --extra does not: it is dropped the
+# next time any command runs, which is how the AI features stopped working on
+# a machine where nothing had changed but a git pull.
+uv sync
 if ($LASTEXITCODE -ne 0) {
     Write-Err 'uv sync failed. See the messages above.'
     Exit-WithPause 1
