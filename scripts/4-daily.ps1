@@ -11,7 +11,11 @@
     matters because the blocking mode has no catch-up if the machine sleeps.
 
 .PARAMETER Symbols
-    Symbols whose prices to refresh. Omit to refresh everything already stored.
+    Symbols whose prices to refresh. Omitting them skips the price job
+    entirely and runs only the watchlist check - it does *not* refresh
+    everything stored. A nightly pass over 1,500-odd stored names belongs in
+    'bulk-fetch', which throttles and resumes; this job has neither and would
+    spend the rate-limit budget in one burst.
 
 .PARAMETER Provider
     AI provider for the watchlist monitor.
@@ -188,6 +192,16 @@ if ($Register) {
         Write-Ok "Registered '$taskName' to run daily at $At."
         Write-Host 'Manage it in Task Scheduler (taskschd.msc).'
         Write-Host "Run it now with:  Start-ScheduledTask -TaskName '$taskName'"
+        Write-Host ''
+        # No -Principal is set, so the task inherits the default: it runs as
+        # this user and only while that user is logged on. Saying so matters -
+        # "daily" is otherwise read as "even when the machine is at the login
+        # screen", and the job would appear to have silently stopped.
+        Write-Host 'This runs as you, and only while you are logged on. It'
+        Write-Host 'catches up after sleep (StartWhenAvailable), but a day spent'
+        Write-Host 'logged out is a day it does not run. To change that, open'
+        Write-Host 'Task Scheduler and tick "Run whether user is logged on or'
+        Write-Host 'not" - Windows will ask for your password to store it.'
     }
     catch {
         Write-Err "Could not register the task: $($_.Exception.Message)"

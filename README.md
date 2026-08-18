@@ -699,6 +699,17 @@ run continues — a broken price fetch must not silence the monitor.
 `--once` is the form to put in cron or Task Scheduler, and is the recommended
 way to run this: the blocking mode has no catch-up if the machine was asleep.
 
+**Naming no symbols skips the price refresh** and runs only the watchlist
+check. It does not refresh everything stored — a nightly pass over 1,500-odd
+names belongs in `bulk-fetch`, which throttles and resumes, and this job has
+neither.
+
+The task `scripts/4-daily.ps1 -Register` creates runs **as you, only while you
+are logged on** (that is Windows' default principal). It catches up after sleep,
+but a day spent logged out is a day it does not run. Task Scheduler's *Run
+whether user is logged on or not* changes that, at the cost of storing your
+password.
+
 ## Scoring, AI, notifications
 
 ```bash
