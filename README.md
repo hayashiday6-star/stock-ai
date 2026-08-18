@@ -85,7 +85,8 @@ both need a real terminal and a real model:
 | AI: `ask` (plain-language screening) | **Verified** — "PER15倍以下でROE10%以上の日本株" parsed to `(ROE >= 0.1 AND 0 < PER <= 15.0) AND market in [JP]`; 344 of 1,552 matched. 318 input / 33 output tokens, $0.0024 |
 | AI: `summarize` | **Verified** — a Japanese IR excerpt condensed with every figure preserved and none invented. 155 / 109 tokens, $0.0035 |
 | AI: `sentiment` | **Verified** — a Japanese revision notice classified `positive`. 76 / 52 tokens, $0.0017. The 52 output tokens are why the old 8-token ceiling returned nothing |
-| AI: `monitor`, end to end | **Verified** — a real disclosure was rated `MEDIUM`, cleared the watch entry's threshold, was summarized, and came out as an alert. 0 unjudged. That is every branch of the nightly job on real data |
+| AI: `monitor`, end to end | **Verified** — real disclosures rated, thresholded, summarized and delivered as alerts, 0 unjudged, across several runs. A JP filing and a US news item in the same run came back in Japanese and English respectively, following each source |
+| **What an EDINET alert is judged from** | **The filing index, not the filing.** EDINET serves the document separately as XBRL and this project does not open it, so a `[HIGH]` on a 変更報告書 is a verdict on its title, filer and metadata. The model said so unprompted on the first real one |
 | Cost estimate vs. actual | **Verified on two runs.** `ai-cost` predicted 827 input tokens and the run consumed exactly 827; predicted 676 and the run consumed exactly 676 ($0.0120 against a $0.0418 ceiling) |
 | Notifications | **Console and Discord verified** — the webhook returned 204. Telegram/LINE unexercised |
 | Automated trading | **Paper broker only.** The IBKR path is a skeleton, opt-in, and has never placed an order. Do not point it at a funded account |
@@ -539,6 +540,16 @@ uv run stock-ai edinet-check --date 2026-08-14   # Documents > 0 = parsing path 
 
 `monitor` also logs `N filings scanned, M carried a securities code`, which
 separates "nobody filed" from "the field we match on is gone".
+
+**An EDINET alert is rated from the document index, not the document.** The
+filing itself is a separate endpoint serving XBRL, and this project does not
+open it — so the model sees a title, the filer, the document type, and whatever
+metadata the index carries. That is enough to say "a large-holding report was
+filed" and not enough to say what it contained. The body now states this
+outright, so a `[HIGH]` cannot be read as a judgement on text nobody fetched,
+and `edinet-check` prints which fields a live record actually carries — the set
+this project reads was chosen from the published spec, and a spec is not a
+response.
 
 If EDINET refuses the key, run `edinet-check` rather than guessing. The gateway
 answers `invalid subscription key` both when the key is wrong and when it is

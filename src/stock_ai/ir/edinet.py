@@ -132,12 +132,46 @@ def _submitted_on(record: dict[str, Any]) -> dt.date | None:
         return None
 
 
+#: Fields of a ``documents.json`` entry that carry meaning to a reader, beyond
+#: the filer and the document type. ``currentReportReason`` is the important
+#: one: on an extraordinary report it states the statutory reason for filing -
+#: a change of representative, a major shareholder change, litigation, a merger
+#: - which is exactly the question an importance rating is asking.
+#:
+#: Read defensively, by name, with anything absent simply skipped. These names
+#: come from the published API spec and have not been checked against a live
+#: response from here; ``edinet-check`` prints what a real record actually
+#: carries, which turns the assumption into a measurement.
+EXTRA_BODY_FIELDS: tuple[tuple[str, str], ...] = (
+    ("currentReportReason", "提出事由"),
+    ("subjectName", "対象会社"),
+    ("issuerName", "発行会社"),
+    ("periodStart", "対象期間開始"),
+    ("periodEnd", "対象期間終了"),
+)
+
+
 def to_disclosure(symbol: str, record: dict[str, Any]) -> Disclosure:
-    """Map one EDINET ``results`` entry onto a :class:`Disclosure`."""
+    """Map one EDINET ``results`` entry onto a :class:`Disclosure`.
+
+    The body is built from the filing *index*, not the filing. EDINET serves
+    the document itself from a separate endpoint as a ZIP of XBRL, and this
+    project does not open it - so an alert on a Japanese filing is a judgement
+    about its title and metadata. That is a real limit on how much a rating can
+    mean, and it is stated in the alert rather than left for the reader to
+    infer from a summary that happens to mention it.
+    """
     doc_id = str(record.get("docID") or "").strip()
     filer = str(record.get("filerName") or "").strip()
     doc_type = DOC_TYPE_LABELS.get(str(record.get("docTypeCode") or ""), "")
+
     body_parts = [part for part in (filer, doc_type) if part]
+    for key, label in EXTRA_BODY_FIELDS:
+        value = str(record.get(key) or "").strip()
+        if value:
+            body_parts.append(f"{label}: {value}")
+    body_parts.append("（これはEDINETの書類一覧に載る範囲の情報で、提出書類の本文ではありません）")
+
     return Disclosure(
         symbol=symbol,
         title=_title_of(record),
@@ -297,6 +331,11 @@ class ProbeResult:
     api_status: str
     message: str
     documents: int | None
+    #: Field names present on the first ``results`` entry, sorted. The set this
+    #: project reads is chosen from the published spec, and a spec is not a
+    #: response: printing what a live record actually carries is what turns
+    #: "these fields should exist" into something checked.
+    sample_fields: tuple[str, ...] = ()
 
     @property
     def accepted(self) -> bool:
@@ -356,9 +395,27 @@ def probe_key_placements(
         api_status = str(envelope[0]) if envelope else str(status)
         message = envelope[1] if envelope else "OK"
         results.append(
-            ProbeResult(placement, status, api_status, message, _document_count(payload))
+            ProbeResult(
+                placement,
+                status,
+                api_status,
+                message,
+                _document_count(payload),
+                _sample_fields(payload),
+            )
         )
     return results
+
+
+def _sample_fields(payload: Any) -> tuple[str, ...]:
+    """Field names on the first ``results`` entry, or empty if there is none."""
+    if not isinstance(payload, dict):
+        return ()
+    entries = payload.get("results")
+    if not isinstance(entries, list) or not entries:
+        return ()
+    first = entries[0]
+    return tuple(sorted(first)) if isinstance(first, dict) else ()
 
 
 def _http_requester(day: dt.date) -> Callable[[dict[str, str], dict[str, str]], tuple[int, Any]]:

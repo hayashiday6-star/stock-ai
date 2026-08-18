@@ -601,3 +601,49 @@ def test_the_probe_still_tests_the_placement_the_client_dropped() -> None:
     from stock_ai.ir.edinet import UNREAD_HEADER_PLACEMENT, key_placements
 
     assert UNREAD_HEADER_PLACEMENT in key_placements("k")
+
+
+def test_a_filing_carries_the_reason_it_was_filed_when_edinet_gives_one() -> None:
+    """The statutory reason is the question an importance rating is asking.
+
+    Observed live: a 変更報告書 was rated HIGH from its title alone, and the
+    model said so unprompted - "the information given is only the document
+    name and the company name".
+    """
+    from stock_ai.ir.edinet import to_disclosure
+
+    record = {
+        "docID": "S100YQPZ",
+        "docDescription": "変更報告書（短期大量譲渡）",
+        "docTypeCode": "350",
+        "filerName": "三菱商事株式会社",
+        "currentReportReason": "主要株主の異動",
+        "periodEnd": "2026-03-31",
+        "submitDateTime": "2026-08-17 15:30",
+    }
+    disclosure = to_disclosure("8058", record)
+
+    assert "主要株主の異動" in disclosure.body
+    assert "2026-03-31" in disclosure.body
+    assert "三菱商事株式会社" in disclosure.body
+
+
+def test_the_body_says_it_is_the_index_and_not_the_document() -> None:
+    """A HIGH on a filing whose text was never read has to say so.
+
+    EDINET serves the document separately as XBRL and this project does not
+    open it, so the rating is a judgement about a title and some metadata.
+    """
+    from stock_ai.ir.edinet import to_disclosure
+
+    disclosure = to_disclosure("8058", {"docID": "X", "docDescription": "変更報告書"})
+    assert "本文ではありません" in disclosure.body
+
+
+def test_absent_optional_fields_are_skipped_rather_than_rendered_empty() -> None:
+    """The field names come from a spec, and a spec is not a response."""
+    from stock_ai.ir.edinet import to_disclosure
+
+    disclosure = to_disclosure("7203", {"docID": "Y", "docDescription": "有価証券報告書"})
+    assert "提出事由:" not in disclosure.body
+    assert "対象期間開始:" not in disclosure.body
