@@ -103,14 +103,26 @@ class AnthropicProvider:
                 self.last_usage.output_tokens,
             )
 
-        if getattr(response, "stop_reason", None) == "refusal":
+        stop_reason = getattr(response, "stop_reason", None)
+        if stop_reason == "refusal":
             raise AIError("Claude refused the request.")
 
         text = "".join(
             block.text for block in response.content if getattr(block, "type", None) == "text"
         )
         if not text:
-            raise AIError("Claude returned no text content.")
+            # Observed live: a 200 response with an empty content list, from a
+            # call whose max_tokens was 8. "Claude returned no text content"
+            # sent the reader looking at the key and the model name, when the
+            # cause was a ceiling this code set itself. The stop reason is in
+            # the response the whole time, so it goes in the message.
+            if stop_reason == "max_tokens":
+                raise AIError(
+                    f"Claude produced nothing within max_tokens={max_tokens}. "
+                    "The ceiling is too low for this model, not a key or "
+                    "network problem - raise it at the call site."
+                )
+            raise AIError(f"Claude returned no text content (stop_reason={stop_reason!r}).")
         return text
 
     @property

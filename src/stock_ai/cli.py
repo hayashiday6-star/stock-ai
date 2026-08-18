@@ -1807,8 +1807,10 @@ def monitor(
         notifier=notifier,
     )
 
-    result = monitor_service.run(limit=limit, notify=notifier is not None)
-    _report_spend(ai)
+    try:
+        result = monitor_service.run(limit=limit, notify=notifier is not None)
+    finally:
+        _report_spend(ai)
     console.print(
         f"Checked [bold]{result.checked}[/] new disclosure(s), "
         f"skipped {result.skipped} already seen."
@@ -2162,7 +2164,7 @@ def daily(
 
     if once:
         results = scheduler.run_once()
-        _report_spend(ai)
+        _report_spend(ai)  # the scheduler already swallows per-job failures
         table = Table(title="daily run")
         table.add_column("job", style="cyan")
         table.add_column("status")
@@ -2190,6 +2192,7 @@ def _log_ingest(results: list[IngestResult]) -> None:
 def ask(
     question: str = typer.Argument(..., help='e.g. "PER15以下でROE20%以上の半導体株"'),
     provider: str = typer.Option("dummy", help="AI provider: dummy|claude|openai|gemini."),
+    top: int = typer.Option(20, help="Rows to print; 0 for every match."),
     explain_only: bool = typer.Option(
         False, "--explain-only", help="Show the interpretation without running it."
     ),
@@ -2218,12 +2221,9 @@ def ask(
         query = parse_query(ai, question)
     except AIError as exc:
         console.print(f"[red]could not interpret the question:[/] {exc}")
-        # A call that failed after the model answered is still billed, so the
-        # spend line belongs on the error path too.
-        _report_spend(ai)
         raise typer.Exit(code=1) from exc
-
-    _report_spend(ai)
+    finally:
+        _report_spend(ai)
     console.print(f"Understood as: [cyan]{query.describe()}[/]")
     if explain_only:
         return
@@ -2237,7 +2237,13 @@ def ask(
 
     console.print(f"Matched [bold]{len(matches)}[/] symbols.")
     if matches:
-        _render_report(build_report(collect_fundamentals(database, matches)))
+        # With names, like 'screen'. A four-digit code is not a company to
+        # anyone reading the output, and "is this list plausible?" is the one
+        # judgement the screen cannot make for itself.
+        report = build_report(
+            collect_fundamentals(database, matches), names=company_names(database, matches)
+        )
+        _render_report(report, limit=top or None)
     elif query.needs_statements:
         console.print(
             "[dim]This question needs the statement series; run 'statements' "
@@ -2255,8 +2261,13 @@ def summarize(
     settings = get_settings()
     configure_logging(settings.log_level)
     ai = get_ai_provider(provider, settings)
-    console.print(ai_summarize(ai, text, max_words=max_words))
-    _report_spend(ai)
+    # ``finally``: a call that fails after the model answered is still billed,
+    # and that is precisely the run where the reader most wants the figure. The
+    # first live failure of this command spent tokens and reported nothing.
+    try:
+        console.print(ai_summarize(ai, text, max_words=max_words))
+    finally:
+        _report_spend(ai)
 
 
 @app.command()
@@ -2268,8 +2279,10 @@ def sentiment(
     settings = get_settings()
     configure_logging(settings.log_level)
     ai = get_ai_provider(provider, settings)
-    console.print(analyze_sentiment(ai, text))
-    _report_spend(ai)
+    try:
+        console.print(analyze_sentiment(ai, text))
+    finally:
+        _report_spend(ai)
 
 
 def _warn_if_lookback_will_not_reach(database: Database, symbols: list[str], lookback: int) -> None:
@@ -2380,14 +2393,67 @@ def _build_condition(
     return conditions[0] if len(conditions) == 1 else All(*conditions)
 
 
-def _render_report(report: pd.DataFrame) -> None:
-    """Print a screening report as a Rich table."""
+#: Report columns that are ratios, and so want decimals rather than magnitude.
+_RATIO_COLUMNS = frozenset({"roe", "per", "pbr", "dividend_yield", "payout_ratio"})
+
+
+def _format_cell(column: str, value: object) -> str:
+    """Render one report value at a precision a person can read.
+
+    ``str(float)`` prints seventeen significant digits. On a 344-row screen
+    that wraps every column to four lines and turns the answer into a wall -
+    the numbers are all correct and none of them can be compared at a glance,
+    which for a table whose whole job is comparison is the same as being wrong.
+    """
+    if value is None:
+        return ""
+    if isinstance(value, float):
+        if pd.isna(value):
+            return "-"
+        if column in _RATIO_COLUMNS:
+            return f"{value:.3f}"
+        return _compact(value)
+    return str(value)
+
+
+def _compact(value: float) -> str:
+    """Render a large amount in a width a column can hold.
+
+    A JP market cap runs to fourteen digits, and printed in full it wraps to
+    five lines and pushes every other column out of shape. The suffix carries
+    no currency because this table does not know one - JP rows are yen and US
+    rows are dollars, which is why cross-market comparison lives in ``rank``
+    and its FX conversion rather than here. Full precision is one
+    ``--out results.csv`` away.
+    """
+    magnitude = abs(value)
+    for threshold, suffix in ((1e12, "T"), (1e9, "B"), (1e6, "M")):
+        if magnitude >= threshold:
+            return f"{value / threshold:,.2f}{suffix}"
+    return f"{value:,.0f}"
+
+
+def _render_report(report: pd.DataFrame, limit: int | None = None) -> None:
+    """Print a screening report as a Rich table, newest precision first.
+
+    ``limit`` caps the rows printed. A question like "PER under 15" matches
+    hundreds of names, and a terminal that has to scroll past all of them is
+    not showing an answer, it is hiding one.
+    """
+    shown = report if limit is None else report.head(limit)
     table = Table(title="screen results")
     for column in report.columns:
-        table.add_column(column, overflow="fold")
-    for row in report.itertuples(index=False):
-        table.add_row(*(("" if v is None else str(v)) for v in row))
+        table.add_column(column, overflow="fold", justify="right" if column != "symbol" else "left")
+    for row in shown.itertuples(index=False):
+        table.add_row(
+            *(_format_cell(col, val) for col, val in zip(report.columns, row, strict=True))
+        )
     console.print(table)
+    if limit is not None and len(report) > limit:
+        console.print(
+            f"[dim]Showing {limit} of {len(report)} matches. "
+            "Use --top to see more, or 'screen --out results.csv' for all of them.[/]"
+        )
 
 
 def _parse_date(value: str | None) -> dt.date | None:

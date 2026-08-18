@@ -23,9 +23,17 @@ Built phase by phase; all ten phases are in place.
 ## What is verified, and what is only implemented
 
 "All ten phases in place" says the code exists. It does not say the code has
-met reality, and on this project the gap between those two mattered: ten real
-bugs surfaced only when real data arrived, and every one of them produced
-plausible wrong numbers rather than an error. So the table separates them.
+met reality, and on this project the gap between those two mattered: sixteen
+real bugs surfaced only when real data arrived, and nearly every one of them
+produced plausible wrong numbers rather than an error. So the table separates
+them.
+
+The most recent is the clearest example. `sentiment` capped the model at 8
+output tokens — exactly what a one-word answer costs — and against the live API
+that returned a 200 with no content at all. The same ceiling sat on the
+importance rating the nightly monitor runs on, where it would not have looked
+like a failure at all: every disclosure would have come back unjudged and the
+run would have reported no alerts, which is indistinguishable from a quiet day.
 
 | Area | State |
 |---|---|
@@ -36,7 +44,10 @@ plausible wrong numbers rather than an error. So the table separates them.
 | US prices & fundamentals (yfinance) | **Verified on 10 large caps** (1,030 bars each) — not a full US universe |
 | Cross-market ranking (JP + US) | **Verified** — 1,564 securities ranked on one scale, JPY converted at a live rate |
 | Backtest engine | **Verified** — and the run found a real bug: `--strategy sma200` was running a 50-day filter |
-| AI scoring / chat / notifications | **Not validated** — needs a paid key. `6-AI検証.bat` (or `scripts/6-verify-ai.ps1`) runs the check: free steps first, then the billed ones only after you confirm |
+| AI: `ask` (plain-language screening) | **Verified** — "PER15倍以下でROE10%以上の日本株" parsed to `(ROE >= 0.1 AND 0 < PER <= 15.0) AND market in [JP]`; 344 of 1,552 matched. 318 input / 33 output tokens, $0.0024 |
+| AI: `summarize` | **Verified** — a Japanese IR excerpt condensed with every figure preserved and none invented. 155 / 109 tokens, $0.0035 |
+| AI: `sentiment` and `monitor`'s rating | **Not validated.** The live run found a bug (`max_tokens=8` returned an empty answer) and it is fixed but unretested. The monitor's rating call shares that ceiling and had no pending disclosure to exercise it |
+| Notifications | **Console verified.** Discord/Telegram/LINE unexercised — a configured webhook has never been posted to |
 | Automated trading | **Paper broker only.** The IBKR path is a skeleton, opt-in, and has never placed an order. Do not point it at a funded account |
 
 One known gap in the data, not the code: **a company that pays no dividend is

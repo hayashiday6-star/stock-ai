@@ -518,3 +518,52 @@ def test_the_configured_model_is_the_one_the_run_calls() -> None:
     assert chosen.model == "claude-haiku-4-5"
     # And the price it would be billed at follows the choice, not the default.
     assert PRICES_PER_MTOK[chosen.model] == (1.00, 5.00)
+
+
+def test_an_empty_answer_names_the_ceiling_that_caused_it() -> None:
+    """Observed live: 'no text content' from a call whose max_tokens was 8.
+
+    The stop reason was in the response the whole time. Without it the reader
+    checks the key and the model name, neither of which was the fault.
+    """
+    from stock_ai.ai.anthropic_provider import AnthropicProvider
+    from stock_ai.core.exceptions import AIError
+
+    class _Usage:
+        input_tokens = 200
+        output_tokens = 8
+
+    class _Response:
+        content: list[object] = []
+        stop_reason = "max_tokens"
+        usage = _Usage()
+
+    class _Messages:
+        def create(self, **kwargs: object) -> _Response:
+            return _Response()
+
+    class _Client:
+        messages = _Messages()
+
+    provider = AnthropicProvider(client=_Client(), model="claude-opus-5")
+    with pytest.raises(AIError) as excinfo:
+        provider.complete("classify this", max_tokens=8)
+
+    message = str(excinfo.value)
+    assert "max_tokens=8" in message
+    assert "not a key or" in message
+    # The call was billed even though it returned nothing usable.
+    assert provider.usage.calls == 1
+
+
+def test_the_one_word_ceilings_have_headroom() -> None:
+    """8 tokens returned an empty answer live; the monitor shares the ceiling.
+
+    Pinning the value keeps a future "it only needs one word" tidy-up from
+    silently reintroducing the failure - which on the importance rating would
+    show as every disclosure unjudged and no alerts, not as an error.
+    """
+    from stock_ai.ai.analysis import IMPORTANCE_MAX_TOKENS, SENTIMENT_MAX_TOKENS
+
+    assert IMPORTANCE_MAX_TOKENS >= 32
+    assert SENTIMENT_MAX_TOKENS >= 32

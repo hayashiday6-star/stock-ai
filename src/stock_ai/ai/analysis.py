@@ -21,8 +21,21 @@ SENTIMENT_SYSTEM = (
 #: Output ceilings, per call. These are what make a pre-run cost estimate
 #: bounded rather than open-ended: the model can never bill more output than
 #: this, whatever it decides to say.
-IMPORTANCE_MAX_TOKENS = 8
-SENTIMENT_MAX_TOKENS = 8
+#:
+#: The one-word ceilings were 8, which is what a one-word answer costs and
+#: nothing more. Run against the live API, that returned a 200 with an empty
+#: content list: the model spends its budget before the word arrives, and there
+#: is no partial answer to salvage. Raising it to 64 keeps the estimate bounded
+#: - 64 output tokens is $0.0016 at opus rates, against the $0.0002 the tight
+#: ceiling "saved" - and buys enough headroom that a model which prefaces its
+#: answer still gets to finish it.
+#:
+#: This mattered well beyond ``sentiment``, where it was found. The same
+#: ceiling is on the importance rating that the nightly monitor depends on, and
+#: there the failure would not have looked like a failure: every disclosure
+#: would have come back unjudged and the run would have reported no alerts.
+IMPORTANCE_MAX_TOKENS = 64
+SENTIMENT_MAX_TOKENS = 64
 SUMMARY_MAX_TOKENS = 1024
 
 #: Summary length the watchlist monitor asks for. Kept here beside the prompt

@@ -192,3 +192,53 @@ def test_an_ai_command_reports_what_it_spent(monkeypatch: pytest.MonkeyPatch) ->
     assert "4,000 in" in result.stdout
     # 4,000 * $5/M + 200 * $25/M = $0.025
     assert "$0.0250" in result.stdout
+
+
+def test_a_failed_ai_call_still_reports_what_it_spent(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The first live failure of 'sentiment' spent tokens and reported nothing."""
+    from stock_ai.ai.anthropic_provider import AnthropicProvider
+
+    class _Usage:
+        input_tokens = 200
+        output_tokens = 8
+
+    class _Response:
+        content: list[object] = []
+        stop_reason = "max_tokens"
+        usage = _Usage()
+
+    class _Messages:
+        def create(self, **kwargs: object) -> _Response:
+            return _Response()
+
+    class _Client:
+        messages = _Messages()
+
+    provider = AnthropicProvider(client=_Client(), model="claude-opus-5")
+    monkeypatch.setattr("stock_ai.cli.get_ai_provider", lambda name, settings: provider)
+
+    result = runner.invoke(app, ["sentiment", "good news", "--provider", "claude"])
+
+    assert result.exit_code != 0
+    assert "spent:" in result.stdout
+    assert "1 call(s)" in result.stdout
+
+
+def test_report_numbers_are_rendered_at_a_readable_precision() -> None:
+    """str(float) gives 17 digits, which wrapped a 344-row screen into a wall."""
+    import pandas as pd
+
+    from stock_ai.cli import _format_cell
+
+    assert _format_cell("per", 10.037256562235394) == "10.037"
+    assert _format_cell("roe", 0.10125) == "0.101"
+    # Fourteen digits printed in full wrapped the column to five lines.
+    assert _format_cell("market_cap", 43252245337710.0) == "43.25T"
+    assert _format_cell("revenue", 166855000000.0) == "166.85B"
+    assert _format_cell("net_income", 7117000.0) == "7.12M"
+    assert _format_cell("net_income", -450000.0) == "-450,000"
+    assert _format_cell("dividend_yield", float("nan")) == "-"
+    assert _format_cell("symbol", "7203") == "7203"
+    assert _format_cell("as_of", None) == ""
+    # A missing value must never render as a number.
+    assert _format_cell("revenue", pd.NA) in {"-", "<NA>"}
