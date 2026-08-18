@@ -692,3 +692,38 @@ def test_a_run_of_empty_days_gives_up_rather_than_looping() -> None:
         return 200, {"results": []}
 
     assert sample_filing_fields(SecretStr("k"), dt.date(2026, 8, 19), requester=empty) is None
+
+
+def test_filing_counts_uses_one_pass_and_drops_non_listed_filers() -> None:
+    """A name that never files produces no alert however long you watch it.
+
+    Counting what actually gets filed is what turns "which should I watch"
+    into something the data answers rather than a matter of taste.
+    """
+    import datetime as dt
+
+    from stock_ai.ir.edinet import EdinetDisclosureSource
+
+    days: list[dt.date] = []
+
+    def fetcher(day: dt.date) -> list[dict[str, object]]:
+        days.append(day)
+        return [
+            {"secCode": "72030", "docID": "a"},
+            {"secCode": "72030", "docID": "b"},
+            {"secCode": "80580", "docID": "c"},
+            {"docID": "d"},  # a fund or a non-listed filer: no secCode
+        ]
+
+    source = EdinetDisclosureSource(
+        lookback_days=3, fetcher=fetcher, clock=lambda: dt.date(2026, 8, 19)
+    )
+    counts = source.filing_counts()
+
+    assert counts["7203"] == 6  # 2 per day over 3 days
+    assert counts["8058"] == 3
+    assert len(days) == 3
+
+    # The day cache is shared, so asking again costs no further requests.
+    source.filing_counts()
+    assert len(days) == 3

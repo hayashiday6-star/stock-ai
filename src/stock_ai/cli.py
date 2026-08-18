@@ -83,6 +83,7 @@ from stock_ai.database.repository import (
     HoldingRepository,
     PriceRepository,
     WatchlistRepository,
+    get_profile,
     list_securities,
     price_history_spans,
     upsert_profile,
@@ -91,6 +92,7 @@ from stock_ai.ir.edinet import (
     CURRENT_PLACEMENT,
     EdinetDisclosureSource,
     ProbeResult,
+    normalize_sec_code,
     probe_key_placements,
     sample_filing_fields,
 )
@@ -1895,6 +1897,125 @@ def _parse_importance(value: str) -> Importance:
         raise typer.BadParameter(
             f"importance must be high, medium, or low; got {value!r}."
         ) from exc
+
+
+@app.command(name="watch-suggest")
+def watch_suggest(
+    lookback_days: int = typer.Option(30, help="Days of EDINET filings to count."),
+    top: int = typer.Option(20, help="How many names to propose."),
+    per_sector: int = typer.Option(2, help="Cap per sector, so the list spreads. 0 = no cap."),
+    add: bool = typer.Option(False, "--add", help="Add the proposed names to the watchlist."),
+    importance: str = typer.Option("medium", help="Alert threshold for names added."),
+) -> None:
+    """Propose watchlist names from which companies actually file.
+
+    This is not a view on which companies are worth owning, and nothing here
+    should be read as one. A watchlist decides *what you hear about*, and on
+    that question the data has something to say: a name that never files
+    produces no EDINET alert however long you watch it, while still costing a
+    news-feed pull on every run. So the ranking is filings made, not merit.
+
+    Only names already in your database are proposed - watching a company
+    whose prices and financials you do not hold gives an alert with nothing to
+    read it against.
+
+    The per-sector cap exists because filing frequency clusters: banks and
+    real-estate trusts file constantly, and an uncapped list is mostly those.
+    Spreading it is the difference between hearing about the market and
+    hearing about one corner of it.
+    """
+    settings = get_settings()
+    configure_logging(settings.log_level)
+
+    database = Database()
+    database.create_all()
+
+    source = EdinetDisclosureSource(api_key=settings.edinet_api_key, lookback_days=lookback_days)
+    console.print(f"Counting EDINET filings over the last {lookback_days} day(s)...")
+    counts = source.filing_counts()
+    if not counts:
+        console.print(
+            "[yellow]No filings found.[/] With a valid key that means a very "
+            "quiet window - try a longer --lookback-days. Run 'edinet-check' "
+            "if you suspect the key."
+        )
+        raise typer.Exit(code=1)
+
+    with database.session() as session:
+        watched = {e.symbol for e in WatchlistRepository(session).list_entries()}
+        stored = [sym for sym, market in list_securities(session) if market.upper() == "JP"]
+        profiles = {sym: get_profile(session, sym) for sym in stored}
+
+    rows: list[tuple[str, str, str, int]] = []
+    for symbol in stored:
+        code = normalize_sec_code(symbol)
+        if code is None or symbol in watched or code in watched:
+            continue
+        filings = counts.get(code, 0)
+        if filings == 0:
+            continue  # watching it would never produce an EDINET alert
+        profile = profiles.get(symbol)
+        rows.append(
+            (
+                symbol,
+                (profile.name if profile else "") or "-",
+                (profile.sector if profile else "") or "-",
+                filings,
+            )
+        )
+
+    rows.sort(key=lambda row: (-row[3], row[0]))
+    if per_sector > 0:
+        seen_sector: Counter[str] = Counter()
+        capped = []
+        for row in rows:
+            if seen_sector[row[2]] >= per_sector:
+                continue
+            seen_sector[row[2]] += 1
+            capped.append(row)
+        rows = capped
+    rows = rows[:top]
+
+    if not rows:
+        console.print(
+            "[yellow]Nothing to propose.[/] Every stored JP name that filed is "
+            "already watched, or none of them filed in this window."
+        )
+        raise typer.Exit(code=1)
+
+    table = Table(title=f"names that actually file (last {lookback_days} days)")
+    table.add_column("symbol", style="cyan")
+    table.add_column("name")
+    table.add_column("sector")
+    table.add_column("filings", justify="right")
+    for symbol, name, sector, filings in rows:
+        table.add_row(symbol, name, sector, str(filings))
+    console.print(table)
+    console.print(
+        "[dim]Ranked by filings made, not by merit - this says which names will "
+        "produce alerts, and nothing about whether they are worth owning.[/]"
+    )
+
+    symbols = [row[0] for row in rows]
+    if not add:
+        console.print(
+            f"\nAdd them with:\n  [cyan]stock-ai watch {' '.join(symbols)} --market JP[/]\n"
+            "Price the first run afterwards - the news feed hands each new name "
+            "a backlog: [cyan]stock-ai ai-cost[/]"
+        )
+        return
+
+    threshold = _parse_importance(importance)
+    with database.session() as session:
+        repo = WatchlistRepository(session)
+        for symbol in symbols:
+            repo.add(symbol, note=None, min_importance=threshold, market="JP")
+    console.print(f"\nAdded [bold]{len(symbols)}[/] name(s) at {threshold.value} and above.")
+    console.print(
+        "[yellow]The next run has a backlog[/] - the news feed returns up to "
+        "--limit items per new name. Price it before paying for it: "
+        "[cyan]stock-ai ai-cost[/]"
+    )
 
 
 @app.command()

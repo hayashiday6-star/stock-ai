@@ -35,6 +35,7 @@ Two things shape this adapter:
 from __future__ import annotations
 
 import datetime as dt
+from collections import Counter
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
@@ -550,6 +551,26 @@ class EdinetDisclosureSource:
         self._fetch_day = fetcher or _default_day_fetcher(api_key)
         self._today = clock or dt.date.today
         self._cache: dict[dt.date, list[dict[str, Any]]] = {}
+
+    def filing_counts(self) -> Counter[str]:
+        """How many filings each securities code made over the lookback window.
+
+        The watchlist decides which companies you hear about, and a name that
+        never files is a name that produces no EDINET alert however long you
+        watch it - while still costing a news-feed pull on every run. Counting
+        what actually gets filed turns "which should I watch" from a matter of
+        taste into something the data answers.
+
+        Uses the same day cache as :meth:`fetch`, so calling both in one pass
+        costs one set of requests rather than two.
+        """
+        counts: Counter[str] = Counter()
+        for day in self._recent_days():
+            for record in self._day_records(day):
+                code = _sec_code_of(record)
+                if code is not None:
+                    counts[code] += 1
+        return counts
 
     def fetch(self, symbol: str, limit: int = 10) -> list[Disclosure]:
         """Return up to ``limit`` recent filings for ``symbol``, newest first.

@@ -489,6 +489,29 @@ Sector questions need `profile`, and growth or dividend-streak questions need
 `statements`. Percentages are normalized on the way in, since a model asked for
 "ROE 20%" answers `20` about as often as `0.2`.
 
+## Choosing what to watch
+
+```bash
+uv run stock-ai watch-suggest --lookback-days 30
+uv run stock-ai watch-suggest --lookback-days 30 --add    # add them
+```
+
+Ranks the JP names already in your database by **how many EDINET filings they
+actually made**, and proposes the ones you are not watching yet.
+
+This is not a view on which companies are worth owning, and nothing it prints
+should be read as one. A watchlist decides *what you hear about*, and on that
+question the data has something to say: a name that never files produces no
+EDINET alert however long you watch it, while still costing a news-feed pull on
+every run. So the ranking is filings made, not merit.
+
+`--per-sector` (default 2) caps how many names one sector contributes, because
+filing frequency clusters — banks and real-estate trusts file constantly, and an
+uncapped list is mostly those.
+
+Names with no stored prices are never proposed: an alert about a company whose
+financials you do not hold has nothing to be read against.
+
 ## Watchlist monitoring
 
 ```bash
