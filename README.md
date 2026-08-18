@@ -134,17 +134,20 @@ uv run stock-ai version     # verify it runs
 uv run stock-ai info        # show active config (secrets masked)
 ```
 
-Install phase-specific extras as you reach them:
+**`uv sync --extra X` replaces the installed extras, it does not add to them.**
+A second `uv sync --extra ai` uninstalls pandas, sqlalchemy and streamlit,
+and the next command dies with `No module named 'pandas'`. Name every extra
+you want in one command, or just take them all:
 
 ```bash
-uv sync --extra data    # pandas, numpy, httpx, yfinance
-uv sync --extra db      # sqlalchemy, alembic
+uv sync --all-extras                       # what 1-セットアップ.bat does
+uv sync --extra data --extra db --extra ai # or name them together
 ```
 
 ## Fetching prices
 
 ```bash
-uv sync --extra data --extra db
+uv sync --all-extras
 uv run stock-ai fetch AAPL MSFT --start 2024-01-02 --end 2024-01-10
 uv run stock-ai fetch AAPL MSFT   # incremental: only bars newer than what's stored
 ```
@@ -528,7 +531,7 @@ uv run stock-ai notify "buy: AAPL" --channel console  # console|discord|telegram
 ## Dashboard
 
 ```bash
-uv sync --extra dashboard
+uv sync --all-extras
 uv run streamlit run src/stock_ai/dashboard/app.py
 ```
 
