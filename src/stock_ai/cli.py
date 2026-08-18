@@ -92,6 +92,7 @@ from stock_ai.ir.edinet import (
     EdinetDisclosureSource,
     ProbeResult,
     probe_key_placements,
+    sample_filing_fields,
 )
 from stock_ai.ir.edinet import (
     EXTRA_BODY_FIELDS as EDINET_EXTRA_BODY_FIELDS,
@@ -2008,28 +2009,48 @@ def edinet_check(
             result.message,
         )
     console.print(table)
-    _print_edinet_field_report(results)
+    _print_edinet_field_report(api_key, day, results)
     _print_edinet_verdict(results)
 
 
-def _print_edinet_field_report(results: list[ProbeResult]) -> None:
+def _print_edinet_field_report(
+    api_key: SecretStr, day: dt.date, results: list[ProbeResult]
+) -> None:
     """Show which fields a real filing record carries, and which we read.
 
     The fields fed to the importance rating were picked from the published API
     spec, and a spec is not a response. This says which of them a live record
     actually has - and, as importantly, which ones EDINET returns that this
     project is throwing away.
+
+    When the requested day had no filings - a quiet early morning, a weekend, a
+    holiday - the probe's own answer carries no record to sample, and earlier
+    this printed nothing at all. It now looks back for a day that did.
     """
     fields = next((r.sample_fields for r in results if r.sample_fields), ())
+    sampled_on = day
     if not fields:
-        return
+        if not any(r.accepted for r in results):
+            return  # the key is the problem; the verdict below covers it
+        console.print(
+            f"\n[dim]{day.isoformat()} had no filings, so it carries no record "
+            "to inspect. Looking back for a day that did...[/]"
+        )
+        found = sample_filing_fields(api_key, day)
+        if found is None:
+            console.print("[yellow]No filings in the last 10 days either.[/]")
+            return
+        sampled_on, fields = found
 
     used = {name for name, _label in EDINET_EXTRA_BODY_FIELDS}
     present = sorted(used & set(fields))
     absent = sorted(used - set(fields))
     unread = sorted(set(fields) - used - {"docID", "docDescription", "docTypeCode"})
 
-    console.print(f"\n[bold]Fields on a live filing record[/] ({len(fields)} in total)")
+    console.print(
+        f"\n[bold]Fields on a live filing record[/] "
+        f"({len(fields)} in total, sampled from {sampled_on.isoformat()})"
+    )
     if present:
         console.print(f"  [green]read, and present:[/] {', '.join(present)}")
     if absent:
@@ -2139,7 +2160,10 @@ def ai_cost(
         provider=provider,
     )
 
-    console.print("Fetching what the next run would judge (no model calls yet).")
+    console.print(
+        f"Pricing a run with [cyan]--feed {feed} --limit {limit} "
+        f"--lookback-days {lookback_days}[/] (no model calls yet)."
+    )
     work = monitor.pending(limit=limit)
     if not work:
         console.print(
@@ -2159,7 +2183,7 @@ def ai_cost(
         )
         raise typer.Exit(code=1) from exc
 
-    _render_estimate(estimate)
+    _render_estimate(estimate, feed=feed, limit=limit)
 
 
 def _estimate_run(
@@ -2186,9 +2210,16 @@ def _estimate_run(
         )
 
 
-def _render_estimate(estimate: RunEstimate) -> None:
-    """Show the range, and say plainly which half of it is a guess."""
-    table = Table(title=f"cost of the next monitor run ({estimate.model})")
+def _render_estimate(estimate: RunEstimate, feed: str = "", limit: int = 0) -> None:
+    """Show the range, and say plainly which half of it is a guess.
+
+    The title carries the flags the estimate assumed. ``monitor --limit 3``
+    against an ``ai-cost`` left at the default 10 prices work the run will not
+    do, and the two figures then disagree for a reason nothing on screen
+    explains - which is how a cost preview stops being believable.
+    """
+    assumed = f" at --feed {feed} --limit {limit}" if feed else ""
+    table = Table(title=f"cost of the next monitor run ({estimate.model}{assumed})")
     table.add_column("", style="cyan")
     table.add_column("disclosures", justify="right")
     table.add_column("input tokens", justify="right")
