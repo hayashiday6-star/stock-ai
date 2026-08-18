@@ -185,26 +185,80 @@ def info() -> None:
 
 @app.command()
 def fetch(
-    symbols: list[str] = typer.Argument(..., help="Ticker symbols, e.g. AAPL MSFT"),
+    symbols: list[str] | None = typer.Argument(None, help="Ticker symbols, e.g. AAPL MSFT"),
     start: str | None = typer.Option(None, help="ISO start date YYYY-MM-DD."),
     end: str | None = typer.Option(None, help="ISO end date; defaults to today."),
     lookback: int = typer.Option(365, help="Backfill days when a symbol has no data."),
     source: str = typer.Option("yfinance", help="Data source: yfinance (US) | jquants (JP)."),
+    symbols_file: Path | None = typer.Option(
+        None, "--symbols-file", help="Text file of symbols, one per line (# comments allowed)."
+    ),
 ) -> None:
-    """Fetch daily prices for SYMBOLS and store them in the local database."""
+    """Fetch daily prices for SYMBOLS and store them in the local database.
+
+    ``--symbols-file`` is how a US universe gets loaded: ``bulk-fetch`` is
+    J-Quants throughout, and yfinance has no listing endpoint to enumerate a
+    market from. Re-running is cheap - a symbol that is already current fetches
+    nothing - so the file can grow over time.
+    """
     settings = get_settings()
     configure_logging(settings.log_level)
 
+    targets = _resolve_symbols(symbols, symbols_file)
     provider, market = _price_source(source, settings)
     database = Database()
     database.create_all()
     service = IngestionService(provider, database, default_lookback_days=lookback)
 
-    results = service.ingest_many(symbols, _parse_date(start), _parse_date(end), market=market)
+    results = service.ingest_many(targets, _parse_date(start), _parse_date(end), market=market)
     _render_results(results)
 
     if any(not r.ok for r in results):
         raise typer.Exit(code=1)
+
+
+def _symbols_from_file(path: Path) -> list[str]:
+    """Read a symbol list: one per line, ``#`` comments and blanks ignored.
+
+    There is no listing endpoint for US equities the way J-Quants provides one
+    for the TSE, so a US universe has to come from somewhere. A file is that
+    somewhere, and it is deliberately not a scraped index membership list: this
+    project does not ship data it cannot verify, and a stale or wrong S&P 500
+    would look exactly like a correct one.
+
+    Commas are accepted as separators too, so a list pasted from a spreadsheet
+    works without reformatting.
+    """
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise typer.BadParameter(f"Could not read {path}: {exc}") from exc
+
+    symbols: list[str] = []
+    seen: set[str] = set()
+    for line in raw.splitlines():
+        text = line.split("#", 1)[0]
+        for part in text.replace(",", " ").split():
+            ticker = part.strip().upper()
+            # Duplicates are silent rather than an error: a hand-maintained
+            # list accumulates them, and re-fetching one is only wasted time.
+            if ticker and ticker not in seen:
+                seen.add(ticker)
+                symbols.append(ticker)
+    if not symbols:
+        raise typer.BadParameter(f"{path} contained no symbols.")
+    return symbols
+
+
+def _resolve_symbols(symbols: list[str] | None, symbols_file: Path | None) -> list[str]:
+    """Combine symbols given on the command line with those in a file."""
+    combined = list(symbols or [])
+    if symbols_file is not None:
+        combined.extend(_symbols_from_file(symbols_file))
+    if not combined:
+        raise typer.BadParameter("Name at least one symbol, or pass --symbols-file.")
+    seen: set[str] = set()
+    return [sym for sym in combined if not (sym in seen or seen.add(sym))]
 
 
 def _price_source(source: str, settings: Settings) -> tuple[PriceProvider, str]:
@@ -1721,20 +1775,33 @@ def notify(
 
 @app.command()
 def watch(
-    symbol: str | None = typer.Argument(None, help="Symbol to add; omit to list."),
-    note: str | None = typer.Option(None, help="Why this name is watched."),
+    symbols: list[str] | None = typer.Argument(None, help="Symbols to add; omit to list."),
+    note: str | None = typer.Option(None, help="Why these names are watched."),
     importance: str = typer.Option("medium", help="Alert threshold: high | medium | low."),
     market: str = typer.Option("US", help="Listing market: US | JP."),
-    remove: bool = typer.Option(False, "--remove", help="Drop SYMBOL from the watchlist."),
+    remove: bool = typer.Option(False, "--remove", help="Drop the symbols from the watchlist."),
+    symbols_file: Path | None = typer.Option(
+        None, "--symbols-file", help="Text file of symbols, one per line (# comments allowed)."
+    ),
 ) -> None:
-    """Manage the watchlist that ``monitor`` checks."""
+    """Manage the watchlist that ``monitor`` checks.
+
+    Takes any number of symbols, because the cost of watching scales with how
+    many disclosures are *filed*, not with how many names are on the list: a
+    quiet day is as cheap for fifty names as for three. Adding them one command
+    at a time was the only thing making a longer list feel expensive.
+    """
     settings = get_settings()
     configure_logging(settings.log_level)
 
     database = Database()
     database.create_all()
 
-    if symbol is None:
+    targets = list(symbols or [])
+    if symbols_file is not None:
+        targets.extend(_symbols_from_file(symbols_file))
+
+    if not targets:
         with database.session() as session:
             entries = WatchlistRepository(session).list_entries()
         if not entries:
@@ -1750,23 +1817,30 @@ def watch(
         console.print(table)
         return
 
+    threshold = _parse_importance(importance)
     with database.session() as session:
         repo = WatchlistRepository(session)
         if remove:
-            dropped = repo.remove(symbol)
-            console.print(
-                f"Removed [cyan]{symbol}[/]."
-                if dropped
-                else f"[yellow]{symbol} was not watched.[/]"
-            )
+            dropped = [sym for sym in targets if repo.remove(sym)]
+            missing = [sym for sym in targets if sym not in dropped]
+            if dropped:
+                console.print(f"Removed [cyan]{', '.join(dropped)}[/].")
+            if missing:
+                console.print(f"[yellow]Not watched: {', '.join(missing)}.[/]")
             return
-        repo.add(
-            symbol,
-            note=note,
-            min_importance=_parse_importance(importance),
-            market=market.upper(),
+        for sym in targets:
+            repo.add(sym, note=note, min_importance=threshold, market=market.upper())
+
+    console.print(
+        f"Watching [cyan]{len(targets)}[/] name(s) at {threshold.value} and above: "
+        f"{', '.join(targets)}"
+    )
+    if len(targets) > 1:
+        console.print(
+            "[dim]Price the next check before paying for it: "
+            "'stock-ai ai-cost'. Cost follows the number of disclosures filed, "
+            "not the length of this list.[/]"
         )
-    console.print(f"Watching [cyan]{symbol}[/] (alerts at {importance.lower()} and above).")
 
 
 def _parse_importance(value: str) -> Importance:
@@ -1791,12 +1865,22 @@ def monitor(
         help="Disclosure feed: all | edinet (JP filings) | news (yfinance).",
     ),
     lookback_days: int = typer.Option(7, help="Days of EDINET filings to scan."),
+    max_cost: float | None = typer.Option(
+        None,
+        "--max-cost",
+        help="Refuse to run if the priced worst case exceeds this many USD.",
+    ),
 ) -> None:
     """Check the watchlist for disclosures worth reporting.
 
     Each new item is rated and summarized by the AI provider, and anything at
     or above a name's threshold becomes an alert. Reported items are recorded,
     so running this daily does not re-deliver the same news.
+
+    ``--max-cost`` is for the unattended case. A scheduled run bills an account
+    every night with nobody watching, and the number of disclosures filed on a
+    given day is not something this system chooses. The check costs nothing: it
+    counts tokens, which is a separate unbilled endpoint.
     """
     settings = get_settings()
     configure_logging(settings.log_level)
@@ -1811,6 +1895,9 @@ def monitor(
         provider=ai,
         notifier=notifier,
     )
+
+    if max_cost is not None and not _within_budget(monitor_service, ai, max_cost, limit):
+        raise typer.Exit(code=1)
 
     try:
         result = monitor_service.run(limit=limit, notify=notifier is not None)
@@ -2089,6 +2176,56 @@ def _import_status(module: str) -> str:
     return "[red]missing[/] - run 'uv sync' (see tool.uv default-groups)"
 
 
+def _within_budget(
+    monitor_service: WatchMonitor, provider: object, max_cost: float, limit: int
+) -> bool:
+    """Whether the next pass is priced under ``max_cost``. Free to ask.
+
+    Checked against the *ceiling*, deliberately. The ceiling assumes every
+    disclosure is summarized, so a cap set from it will refuse some runs that
+    would in fact have been cheap - and that is the right way round for a job
+    nobody is watching. The cost of refusing is a day's alerts delayed, and
+    nothing is marked seen, so the next run picks them up.
+
+    Returns True when the provider cannot be priced at all, rather than
+    blocking: refusing to run because the *guard* could not be evaluated would
+    turn a cost feature into an outage.
+    """
+    count_tokens = getattr(provider, "count_tokens", None)
+    if count_tokens is None:
+        console.print(
+            "[yellow]--max-cost needs a provider that can count tokens[/] "
+            f"({getattr(provider, 'name', 'this one')} cannot). Running anyway; "
+            "the spend line at the end still reports what it cost."
+        )
+        return True
+
+    work = monitor_service.pending(limit=limit)
+    if not work:
+        return True
+
+    try:
+        estimate = _estimate_run(provider, work)  # type: ignore[arg-type]
+    except AIError as exc:
+        console.print(f"[yellow]Could not price this run ({exc}).[/] Running anyway.")
+        return True
+
+    ceiling = estimate.high
+    if ceiling is None or ceiling <= max_cost:
+        return True
+
+    console.print(
+        f"[red]Stopping: {estimate.items} disclosure(s) price at up to "
+        f"{_money(ceiling)}, over the --max-cost of ${max_cost:,.4f}.[/]\n"
+        "  Nothing was sent to the model and nothing was marked as seen, so "
+        "the next run picks these up.\n"
+        "  The figure is a worst case - it assumes every one of them is "
+        "summarized - so the real cost would likely be well under it. Raise "
+        "--max-cost, or narrow the run with --limit or --lookback-days."
+    )
+    return False
+
+
 def _report_spend(provider: object) -> None:
     """Print what an AI command actually spent, if the provider tracks it.
 
@@ -2136,12 +2273,22 @@ def daily(
     channel: str | None = typer.Option(None, help="Notification channel for alerts."),
     feed: str = typer.Option("all", help="Disclosure feed: all | edinet | news."),
     once: bool = typer.Option(False, "--once", help="Run the jobs now and exit."),
+    max_cost: float | None = typer.Option(
+        None,
+        "--max-cost",
+        help="Skip the monitor job if its priced worst case exceeds this many USD.",
+    ),
 ) -> None:
     """Run the daily pipeline: refresh prices, then check the watchlist.
 
     ``--once`` is the form to put in cron or Task Scheduler. Without it this
     blocks and fires every day at ``--at``, which is convenient for a desktop
     but has no catch-up if the machine was asleep.
+
+    Set ``--max-cost`` whenever ``--provider`` is a paid one. This runs
+    unattended: how many disclosures get filed on a given day is not something
+    the schedule controls, and a cap is the only thing standing between a busy
+    filing day and a bill nobody chose.
     """
     settings = get_settings()
     configure_logging(settings.log_level)
@@ -2175,15 +2322,22 @@ def daily(
     # read back afterwards. A provider constructed inside the lambda is gone by
     # the time the job returns, and with it the record of what it cost.
     ai = get_ai_provider(provider, settings)
-    scheduler.add(
-        "monitor",
-        lambda: WatchMonitor(
+
+    def check_watchlist() -> None:
+        service = WatchMonitor(
             database,
             source=_disclosure_source(feed, settings, 7),
             provider=ai,
             notifier=notifier,
-        ).run(notify=notifier is not None),
-    )
+        )
+        if max_cost is not None and not _within_budget(service, ai, max_cost, limit=10):
+            # Raised, not returned: the scheduler records a failed job, and a
+            # skipped monitor is exactly the thing that must not pass silently
+            # in a log nobody opens unless something looks wrong.
+            raise RuntimeError(f"monitor skipped: priced above --max-cost ${max_cost:,.4f}")
+        service.run(notify=notifier is not None)
+
+    scheduler.add("monitor", check_watchlist)
 
     if once:
         results = scheduler.run_once()

@@ -6,7 +6,9 @@ provider can be unit-tested without touching the network.
 
 from __future__ import annotations
 
+import contextlib
 import datetime as dt
+import logging
 import math
 from collections.abc import Callable
 from datetime import date, timedelta
@@ -15,7 +17,7 @@ from typing import Any
 import pandas as pd
 
 from stock_ai.core.exceptions import DataError, NoDataError
-from stock_ai.core.logging import get_logger
+from stock_ai.core.logging import get_logger, redact
 from stock_ai.data.sanity import plausible_dividend_yield
 from stock_ai.data.schema import normalize_ohlcv
 from stock_ai.data.sectors import from_yfinance
@@ -30,22 +32,60 @@ InfoFetcher = Callable[[str], dict[str, Any]]
 Clock = Callable[[], date]
 
 
+class _CaptureFailures(logging.Handler):
+    """Collect the warnings yfinance logs instead of raising."""
+
+    def __init__(self) -> None:
+        """Start with nothing captured."""
+        super().__init__(level=logging.WARNING)
+        self.messages: list[str] = []
+
+    def emit(self, record: logging.LogRecord) -> None:
+        """Record one message, never letting a formatting error escape."""
+        with contextlib.suppress(Exception):
+            self.messages.append(record.getMessage())
+
+
 def _default_download(symbol: str, start: date, end: date) -> pd.DataFrame:
     """Download raw daily bars from yfinance (imported lazily).
 
     yfinance treats ``end`` as exclusive, so we request one extra day to make
     the public ``[start, end]`` contract inclusive.
+
+    It also swallows transport failures: a refused connection, a proxy 403 or a
+    rate limit all come back as an empty frame, indistinguishable from a ticker
+    that does not exist. Downstream that becomes "the provider does not know
+    this symbol", so a network blip during a 500-name load would report 500
+    unknown tickers - a conclusion about the data drawn from a fact about the
+    network. The failure is not returned, but it *is* logged, so it is captured
+    here and turned back into an error.
+
+    Raises:
+        DataError: The download failed for a reason that is not "no such data".
     """
     import yfinance as yf
 
     end_exclusive = end + timedelta(days=1)
-    return yf.download(
-        symbol,
-        start=start.isoformat(),
-        end=end_exclusive.isoformat(),
-        auto_adjust=False,
-        progress=False,
-    )
+    capture = _CaptureFailures()
+    yf_logger = logging.getLogger("yfinance")
+    yf_logger.addHandler(capture)
+    try:
+        frame = yf.download(
+            symbol,
+            start=start.isoformat(),
+            end=end_exclusive.isoformat(),
+            auto_adjust=False,
+            progress=False,
+        )
+    finally:
+        yf_logger.removeHandler(capture)
+
+    if (frame is None or frame.empty) and capture.messages:
+        # Only when the frame is empty: yfinance also warns about things that
+        # do not invalidate a result it did return.
+        detail = redact("; ".join(capture.messages)[:300])
+        raise DataError(f"yfinance could not fetch {symbol!r}: {detail}")
+    return frame
 
 
 class YFinancePriceProvider:

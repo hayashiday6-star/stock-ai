@@ -26,6 +26,14 @@
     Price source for symbols that are not Japanese listings. Four-digit codes
     are routed to J-Quants regardless, so a mixed list needs no extra flag.
 
+.PARAMETER MaxCost
+    Dollars. The monitor job is skipped, and the run reported as failed, when
+    its priced worst case is above this. 0 disables the cap.
+
+    Set it whenever -Provider is a paid one. This runs unattended: how many
+    disclosures are filed on a given day is not something the schedule
+    controls, and the check itself costs nothing.
+
 .PARAMETER Register
     Create (or replace) the scheduled task instead of running the job now.
 
@@ -52,6 +60,7 @@ param(
     [string]$Feed = 'all',
     [ValidateSet('yfinance', 'jquants')]
     [string]$Source = 'yfinance',
+    [double]$MaxCost = 0,
     [switch]$Register,
     [ValidatePattern('^([01]\d|2[0-3]):[0-5]\d$')]
     [string]$At = '18:00',
@@ -124,8 +133,21 @@ if ($Interactive) {
         -Pattern '^(dummy|claude|openai|gemini)$' `
         -Hint 'Type dummy, claude, openai or gemini.'
 
+    if ($Provider -ne 'dummy') {
+        Write-Host ''
+        Write-Host 'A paid provider bills every night with nobody watching, and the'
+        Write-Host 'number of disclosures filed on a given day is not up to you. The'
+        Write-Host 'cap below stops the run when the priced worst case is above it;'
+        Write-Host 'checking costs nothing, and a skipped day is retried the next.'
+        Write-Host 'Measured runs so far have cost about $0.01-0.02 each.'
+        $capText = Read-Setting -Prompt 'Daily cap in USD (0 = no cap)' -Default '0.20' `
+            -Pattern '^\d+(\.\d+)?$' -Hint 'Type a number, e.g. 0.20'
+        $MaxCost = [double]$capText
+    }
+
     Write-Host ''
     $summary = "daily at $At, feed $Feed, provider $Provider"
+    if ($MaxCost -gt 0) { $summary += ", cap `$$MaxCost" }
     if ($Symbols.Count -gt 0) { $summary += ", symbols $($Symbols -join ',')" }
     if ($Channel) { $summary += ", notifying $Channel" }
     Write-Host "Registering: $summary"
@@ -146,6 +168,7 @@ if ($Register) {
     )
     if ($Channel) { $arguments += @('-Channel', $Channel) }
     $arguments += @('-Feed', $Feed, '-Source', $Source)
+    if ($MaxCost -gt 0) { $arguments += @('-MaxCost', $MaxCost) }
     if ($Symbols.Count -gt 0) { $arguments += @('-Symbols', ($Symbols -join ',')) }
 
     try {
@@ -189,6 +212,7 @@ try {
 
     $arguments = @('daily', '--once', '--provider', $Provider, '--feed', $Feed, '--source', $Source)
     if ($Channel) { $arguments += @('--channel', $Channel) }
+    if ($MaxCost -gt 0) { $arguments += @('--max-cost', $MaxCost) }
     # A comma-joined -Symbols survives Task Scheduler's argument flattening.
     foreach ($symbol in ($Symbols -split ',' | Where-Object { $_ })) {
         $arguments += $symbol.Trim()

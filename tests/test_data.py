@@ -5,6 +5,7 @@ No network access — a fake downloader is injected into the provider.
 
 from __future__ import annotations
 
+import sys
 from datetime import date
 
 import pandas as pd
@@ -460,3 +461,49 @@ def test_a_window_that_does_not_overlap_costs_no_request(
     # Entirely before the plan starts: nothing to ask for.
     assert fetcher("6758", dt.date(2010, 1, 1), dt.date(2011, 1, 1)) == []
     assert len(calls) == before
+
+
+def test_a_network_failure_is_not_reported_as_an_unknown_ticker() -> None:
+    """yfinance returns an empty frame for a refused connection.
+
+    Downstream that becomes "the provider does not know this symbol", so a blip
+    during a 500-name load would report 500 unknown tickers - a conclusion
+    about the data drawn from a fact about the network. Observed live: a proxy
+    403 surfaced as "No price data returned for 'AMZN'".
+    """
+    import logging
+
+    from stock_ai.data import yfinance_provider
+
+    class _FakeYF:
+        @staticmethod
+        def download(symbol: str, **kwargs: object) -> pd.DataFrame:
+            logging.getLogger("yfinance").error(
+                "1 Failed download: ['%s']: ConnectionError('proxy refused')", symbol
+            )
+            return pd.DataFrame()
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setitem(sys.modules, "yfinance", _FakeYF())
+        with pytest.raises(DataError) as excinfo:
+            yfinance_provider._default_download("AMZN", date(2024, 1, 1), date(2024, 1, 5))
+
+    message = str(excinfo.value)
+    assert "ConnectionError" in message
+    assert "No price data" not in message
+
+
+def test_a_genuinely_empty_result_stays_a_no_data_answer() -> None:
+    """An empty range with no complaint logged is still just "nothing yet"."""
+    from stock_ai.data import yfinance_provider
+
+    class _QuietYF:
+        @staticmethod
+        def download(symbol: str, **kwargs: object) -> pd.DataFrame:
+            return pd.DataFrame()
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setitem(sys.modules, "yfinance", _QuietYF())
+        frame = yfinance_provider._default_download("AAPL", date(2024, 1, 1), date(2024, 1, 5))
+
+    assert frame.empty  # the caller turns this into NoDataError, not an error
