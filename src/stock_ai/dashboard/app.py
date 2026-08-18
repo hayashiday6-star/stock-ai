@@ -18,11 +18,14 @@ from __future__ import annotations
 import datetime as dt
 from pathlib import Path
 
+import pandas as pd
 import streamlit as st
 
 from stock_ai.ai.analysis import analyze_sentiment
 from stock_ai.ai.analysis import summarize as ai_summarize
+from stock_ai.ai.anthropic_provider import DEFAULT_MODEL as ANTHROPIC_DEFAULT_MODEL
 from stock_ai.ai.factory import get_ai_provider
+from stock_ai.ai.pricing import UsageLedger
 from stock_ai.config.settings import get_settings
 from stock_ai.core.exceptions import BacktestError, NotificationError
 from stock_ai.dashboard import data
@@ -85,6 +88,16 @@ def _repo_commit() -> str:
 _LOADED_COMMIT = _repo_commit()
 
 
+def _module_installed(module: str) -> bool:
+    """Whether ``module`` can be imported, without importing it."""
+    import importlib.util
+
+    try:
+        return importlib.util.find_spec(module) is not None
+    except (ImportError, ValueError):  # a broken or partially removed install
+        return False
+
+
 def _sidebar_status(database: Database) -> None:
     """バージョンと、保存済みデータの中身を出す。"""
     st.sidebar.divider()
@@ -96,6 +109,19 @@ def _sidebar_status(database: Database) -> None:
             f"`{_LOADED_COMMIT}` です。**ダッシュボードを再起動してください** "
             "(黒いウィンドウで Ctrl+C → .bat を再実行)。Streamlit は画面の"
             "ファイルだけを読み直し、読み込み済みのモジュールは差し替えません。"
+        )
+
+    # Mirrors what `stock-ai info` reports. A key that is set and an SDK that
+    # is missing look identical from here otherwise - the configuration reads
+    # as complete and cannot make a single call.
+    settings = get_settings()
+    model = settings.anthropic_model or ANTHROPIC_DEFAULT_MODEL
+    if _module_installed("anthropic"):
+        st.sidebar.caption(f"AIモデル: `{model}`")
+    else:
+        st.sidebar.warning(
+            "anthropic パッケージが入っていません。AI機能は動きません"
+            "（キーの問題ではありません）。`uv sync` で入ります。"
         )
 
     counts = data.stored_counts(database)
@@ -322,9 +348,14 @@ def _page_ai() -> None:
         help="dummy はAPIキー不要のテスト用。claude/openai/gemini は .env にAPIキーが必要。",
     )
     text = st.text_area("分析する文章", height=180)
+    if provider != "dummy":
+        st.caption(
+            "この分析は2回モデルを呼びます（要約とセンチメント）。"
+            "実際に使った額は結果の下に出ます。"
+        )
     if st.button("🧠 分析する", type="primary") and text.strip():
+        ai = get_ai_provider(provider, get_settings())
         try:
-            ai = get_ai_provider(provider, get_settings())
             with st.spinner("AIが分析中..."):
                 summary = ai_summarize(ai, text)
                 sentiment = analyze_sentiment(ai, text)
@@ -334,6 +365,15 @@ def _page_ai() -> None:
             st.metric("判定", sentiment)
         except Exception as exc:  # surface provider/config errors to the user
             st.error(f"分析に失敗しました: {exc}")
+        finally:
+            # A call that failed after the model answered is still billed, and
+            # that is the run where the reader most wants the figure.
+            _render_spend(getattr(ai, "usage", None))
+    st.caption(
+        "要約は元の文章に忠実であることしか保証できません。"
+        "事実確認の仕組みはないので、数値は原典で確認してください。"
+        "また、要約は入力と同じ言語で返ります（日本語を入れれば日本語）。"
+    )
 
 
 def _fx_rates(text: str) -> dict[str, float]:
@@ -457,6 +497,110 @@ def _page_portfolio(database: Database) -> None:
     )
 
 
+def _money(value: float | None) -> str:
+    """Render dollars, or a dash when the model has no cached price."""
+    if value is None:
+        return "—"
+    return f"${value:,.4f}"
+
+
+def _render_spend(usage: UsageLedger | None) -> None:
+    """Say what the run just spent, in the same shape as the estimate.
+
+    Nothing at all for the dummy provider: "$0.0000" would read as a bill that
+    happened to be zero, when in fact no account was touched.
+    """
+    if usage is None:
+        return
+    model = "/".join(usage.models) if usage.models else "?"
+    st.caption(
+        f"使用量: {usage.calls} 回 / {model} / 入力 {usage.input_tokens:,} ・ "
+        f"出力 {usage.output_tokens:,} トークン → **{_money(usage.cost)}**"
+    )
+    if not usage.priced:
+        st.caption(
+            f"うち {usage.unpriced_calls} 回は価格表にないモデルでした。"
+            "トークン数は実測ですが、金額は推測せずに伏せています。"
+        )
+
+
+def _render_cost_estimate(database: Database, provider: str, feed: str, lookback_days: int) -> None:
+    """Price the next monitoring pass without making a billed call.
+
+    Only Claude is priced. Saying so beats showing an Anthropic figure beside
+    an OpenAI selection, which is the same mistake as ``ai-cost --model``
+    pricing a model the run could not actually select.
+    """
+    if provider.lower() not in {"claude", "anthropic"}:
+        st.info(
+            f"見積もりに対応しているのは Claude のみです（選択中: {provider}）。"
+            "他のプロバイダの料金体系は取り込んでいないため、"
+            "Claude の金額を出すと別物の数字を見せることになります。"
+        )
+        return
+
+    bar = st.progress(0.0, text="トークンを数えています（課金なし）")
+    try:
+        estimate = data.estimate_monitor_cost(
+            database,
+            feed=feed,
+            lookback_days=lookback_days,
+            on_progress=lambda done, total: bar.progress(done / total if total else 1.0),
+        )
+    except Exception as exc:  # surface provider/config errors to the user
+        bar.empty()
+        st.error(f"見積もれませんでした: {exc}")
+        st.caption(
+            "トークンの計数には anthropic パッケージ（`uv sync`）と、APIが受け付ける"
+            "キーの両方が要ります。上のメッセージがどちらなのかを示しています。"
+        )
+        return
+    bar.empty()
+
+    if estimate is None:
+        st.success("保留中の開示はありません。次回の実行は無料です。")
+        return
+
+    rating_out = estimate.rating_output_cap * estimate.items
+    summary_out = estimate.summary_output_cap * estimate.items
+    st.dataframe(
+        pd.DataFrame(
+            [
+                {
+                    "内訳": "判定のみ",
+                    "開示": estimate.items,
+                    "入力トークン": f"{estimate.rating_input_tokens:,}",
+                    "出力上限": f"{rating_out:,}",
+                    "費用(USD)": _money(estimate.low),
+                },
+                {
+                    "内訳": "判定＋要約",
+                    "開示": estimate.items,
+                    "入力トークン": (
+                        f"{estimate.rating_input_tokens + estimate.summary_input_tokens:,}"
+                    ),
+                    "出力上限": f"{rating_out + summary_out:,}",
+                    "費用(USD)": _money(estimate.high),
+                },
+            ]
+        ),
+        width="stretch",
+        hide_index=True,
+    )
+    st.caption(
+        f"モデル: `{estimate.model}`。**2行ともに最悪ケース**で、ありそうな値の幅では"
+        "ありません。入力は実測（推測ではありません）ですが、出力は各呼び出しの"
+        f"上限値です。一語で答える判定は上限{estimate.rating_output_cap}に対して"
+        "実測30〜60トークン程度なので、実額はどちらの行よりかなり下に着地します。"
+        "実際にいくら使ったかは、実行後に下へ表示されます。"
+    )
+    if not estimate.priced:
+        st.warning(
+            f"`{estimate.model}` は価格表にありません。トークン数は実測ですが、"
+            "金額は推測せずに伏せています。"
+        )
+
+
 def _page_watchlist(database: Database) -> None:
     st.header("👀 監視リスト")
     st.caption("登録銘柄の開示・ニュースをAIが判定し、重要なものだけを抽出します。")
@@ -507,19 +651,47 @@ def _page_watchlist(database: Database) -> None:
     with col3:
         lookback = st.number_input("EDINETを遡る日数", min_value=1, max_value=30, value=7)
 
-    if st.button("🔎 チェックする", type="primary"):
+    # The estimate is deliberately its own button, and it is first. This is a
+    # control in a browser: there is no console line to notice afterwards, and
+    # a button that bills an account without ever saying so is exactly what the
+    # cost feature exists to prevent.
+    #
+    # The labels follow the selected provider rather than always warning. A
+    # button that says "課金あり" when dummy is selected is wrong, and a warning
+    # that is wrong half the time is one people learn to click through - which
+    # would leave the real one unread.
+    paid = provider != "dummy"
+    col_est, col_run = st.columns(2)
+    if paid and col_est.button("💰 費用を見積もる（無料）"):
+        _render_cost_estimate(database, provider, feed, int(lookback))
+
+    run_label = "🔎 チェックする（課金あり）" if paid else "🔎 チェックする（dummy・無料）"
+    if col_run.button(run_label, type="primary"):
+        if paid:
+            st.caption(f"{provider} を呼びます。実際に使った額は結果の下に出ます。")
         with st.spinner("開示を取得して判定中..."):
-            result = data.run_monitor(database, provider, feed=feed, lookback_days=int(lookback))
+            run = data.run_monitor(database, provider, feed=feed, lookback_days=int(lookback))
+        result = run.result
         st.write(f"新規 {result.checked} 件を判定、既報 {result.skipped} 件をスキップ。")
+        _render_spend(run.usage)
         if result.unjudged:
             st.warning(
                 f"{result.unjudged} 件はAIプロバイダの失敗により判定できませんでした。"
-                "既読にはしていないので次回再試行されます。"
+                "既読にはしていないので次回再試行されます。\n\n"
+                "再試行は一時的な障害には正しい動作ですが、原因が恒久的なら"
+                "毎回課金されるだけになります。この件数が0にならない場合は、"
+                "実行ログの警告に原因が書かれています。"
             )
         if result.alerts:
             for alert in sorted(result.alerts, key=lambda a: a.importance.rank, reverse=True):
                 level = alert.importance.value.upper()
-                st.markdown(f"**[{level}] {alert.entry.symbol}** - {alert.disclosure.title}")
+                # The feed is named because "all" mixes a statutory filing with
+                # a third party writing about the company, and read as the
+                # former a news item carries a weight it has not earned.
+                origin = f" — via {alert.disclosure.source}" if alert.disclosure.source else ""
+                st.markdown(
+                    f"**[{level}] {alert.entry.symbol}**{origin} - {alert.disclosure.title}"
+                )
                 if alert.summary:
                     st.caption(alert.summary)
                 if alert.disclosure.url:

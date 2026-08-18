@@ -29,18 +29,12 @@ from rich.table import Table
 
 from stock_ai import __version__
 from stock_ai.ai.analysis import (
-    DEFAULT_SUMMARY_WORDS,
-    IMPORTANCE_MAX_TOKENS,
-    IMPORTANCE_SYSTEM,
-    SUMMARY_MAX_TOKENS,
-    SUMMARY_SYSTEM,
     analyze_sentiment,
-    importance_prompt,
-    summary_prompt,
 )
 from stock_ai.ai.analysis import summarize as ai_summarize
 from stock_ai.ai.anthropic_provider import DEFAULT_MODEL as ANTHROPIC_DEFAULT_MODEL
 from stock_ai.ai.anthropic_provider import AnthropicProvider
+from stock_ai.ai.estimate import estimate_disclosure_run
 from stock_ai.ai.factory import get_ai_provider
 from stock_ai.ai.pricing import RunEstimate, UsageLedger
 from stock_ai.ai.query import parse_query, run_query
@@ -2011,8 +2005,12 @@ def ai_cost(
 def _estimate_run(
     provider: AnthropicProvider, work: list[tuple[WatchEntry, Disclosure]]
 ) -> RunEstimate:
-    """Count the exact input tokens of every prompt the run would send."""
-    rating_input = summary_input = 0
+    """Count the tokens the run would send, drawing a bar while it goes.
+
+    The counting itself lives in :mod:`stock_ai.ai.estimate` because the
+    dashboard prices the same run, and two figures that disagree would leave
+    the reader with no way to decide which is real.
+    """
     with Progress(
         SpinnerColumn(),
         TextColumn("[progress.description]{task.description}"),
@@ -2021,23 +2019,11 @@ def _estimate_run(
         console=console,
     ) as progress:
         task = progress.add_task("counting tokens", total=len(work))
-        for index, (_entry, disclosure) in enumerate(work, start=1):
-            text = disclosure.as_text()
-            rating_input += provider.count_tokens(importance_prompt(text), system=IMPORTANCE_SYSTEM)
-            summary_input += provider.count_tokens(
-                summary_prompt(text, max_words=DEFAULT_SUMMARY_WORDS),
-                system=SUMMARY_SYSTEM,
-            )
-            progress.update(task, completed=index)
-
-    return RunEstimate(
-        model=provider.model,
-        items=len(work),
-        rating_input_tokens=rating_input,
-        summary_input_tokens=summary_input,
-        rating_output_cap=IMPORTANCE_MAX_TOKENS,
-        summary_output_cap=SUMMARY_MAX_TOKENS,
-    )
+        return estimate_disclosure_run(
+            provider,
+            [disclosure.as_text() for _entry, disclosure in work],
+            on_progress=lambda done, _total: progress.update(task, completed=done),
+        )
 
 
 def _render_estimate(estimate: RunEstimate) -> None:

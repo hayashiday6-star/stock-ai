@@ -8,10 +8,16 @@ logic is unit-testable without a running UI.
 from __future__ import annotations
 
 import datetime as dt
+from collections.abc import Callable
+from dataclasses import dataclass
 
 import pandas as pd
 
+from stock_ai.ai.anthropic_provider import DEFAULT_MODEL as ANTHROPIC_DEFAULT_MODEL
+from stock_ai.ai.anthropic_provider import AnthropicProvider
+from stock_ai.ai.estimate import estimate_disclosure_run
 from stock_ai.ai.factory import get_ai_provider
+from stock_ai.ai.pricing import RunEstimate, UsageLedger
 from stock_ai.backtest.engine import BacktestEngine
 from stock_ai.backtest.factor_test import FactorTestResult, run_factor_test
 from stock_ai.backtest.report import metrics_frame
@@ -372,13 +378,15 @@ def remove_watch(database: Database, symbol: str) -> bool:
         return WatchlistRepository(session).remove(symbol)
 
 
-def run_monitor(
-    database: Database,
-    provider_name: str,
-    feed: str = "all",
-    lookback_days: int = 7,
-) -> MonitorResult:
-    """Run one monitoring pass and return its alerts (no notification sent)."""
+def _watch_monitor(
+    database: Database, provider_name: str, feed: str, lookback_days: int
+) -> tuple[WatchMonitor, object]:
+    """Build the monitor and hand back its AI provider.
+
+    The provider is returned rather than kept inside, because it carries the
+    ledger of what the run actually spent - and a provider built inside the
+    call is gone by the time anyone could ask.
+    """
     settings = get_settings()
     edinet = EdinetDisclosureSource(api_key=settings.edinet_api_key, lookback_days=lookback_days)
     news = NewsDisclosureSource(YFinanceNewsSource())
@@ -390,10 +398,66 @@ def run_monitor(
     else:
         source = CompositeDisclosureSource(edinet, news)
 
-    monitor = WatchMonitor(
-        database, source=source, provider=get_ai_provider(provider_name, settings)
+    provider = get_ai_provider(provider_name, settings)
+    return WatchMonitor(database, source=source, provider=provider), provider
+
+
+@dataclass(frozen=True)
+class MonitorRun:
+    """What one monitoring pass found, and what it cost to find it."""
+
+    result: MonitorResult
+    usage: UsageLedger | None
+    """``None`` for providers that keep no ledger, e.g. the free dummy."""
+
+
+def run_monitor(
+    database: Database,
+    provider_name: str,
+    feed: str = "all",
+    lookback_days: int = 7,
+) -> MonitorRun:
+    """Run one monitoring pass and return its alerts (no notification sent).
+
+    The spend comes back with the result because this is a button in a browser:
+    there is no console line for the reader to notice afterwards, and a control
+    that bills an account without ever saying so is the one thing this whole
+    cost feature exists to prevent.
+    """
+    monitor, provider = _watch_monitor(database, provider_name, feed, lookback_days)
+    # No try/finally here, unlike the CLI: ``run`` absorbs a provider failure
+    # per disclosure and counts it as unjudged, so anything that escapes is a
+    # database error raised before or after the billed calls, not during them.
+    result = monitor.run()
+    ledger = getattr(provider, "usage", None)
+    spent = ledger if isinstance(ledger, UsageLedger) and ledger.calls else None
+    return MonitorRun(result=result, usage=spent)
+
+
+def estimate_monitor_cost(
+    database: Database,
+    feed: str = "all",
+    lookback_days: int = 7,
+    model: str | None = None,
+    on_progress: Callable[[int, int], None] | None = None,
+) -> RunEstimate | None:
+    """Price the next monitoring pass without making a single billed call.
+
+    Returns ``None`` when nothing is pending, which is the common case and
+    means the next run is free rather than cheap.
+    """
+    settings = get_settings()
+    provider = AnthropicProvider(
+        api_key=settings.anthropic_api_key,
+        model=model or settings.anthropic_model or ANTHROPIC_DEFAULT_MODEL,
     )
-    return monitor.run()
+    monitor, _ = _watch_monitor(database, "dummy", feed, lookback_days)
+    work = monitor.pending()
+    if not work:
+        return None
+    return estimate_disclosure_run(
+        provider, [disclosure.as_text() for _entry, disclosure in work], on_progress=on_progress
+    )
 
 
 # --- factor test ------------------------------------------------------------
