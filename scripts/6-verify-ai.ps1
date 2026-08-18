@@ -122,7 +122,7 @@ try {
     Write-Host ''
     Write-Host '--- checking the environment is complete' -ForegroundColor Cyan
     Write-Host '    uv sync' -ForegroundColor DarkGray
-    & uv sync 2>&1 | Out-Host
+    & uv sync 2>&1 | ForEach-Object { Write-Host $_ }
     & uv run python -c "import anthropic" 2>&1 | Out-Null
     $hasSdk = ($LASTEXITCODE -eq 0)
     if ($hasSdk) {

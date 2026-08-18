@@ -218,9 +218,10 @@ $logDir = Join-Path $root 'logs\daily'
 New-Item -ItemType Directory -Path $logDir -Force | Out-Null
 $log = Join-Path $logDir "$(Get-Date -Format 'yyyy-MM-dd').log"
 
+$started = Get-Date
 Start-Transcript -Path $log -Append | Out-Null
 try {
-    Write-Section "stock-ai daily  $(Get-Date -Format 'yyyy-MM-dd HH:mm')"
+    Write-Section "stock-ai daily  $($started.ToString('yyyy-MM-dd HH:mm:ss'))"
 
     if (-not (Test-UvInstalled)) { return }
 
@@ -236,6 +237,13 @@ try {
     if ($ok) { Write-Ok 'Finished.' } else { Write-Err 'Finished with errors.' }
 }
 finally {
+    # An explicit end marker, because the alternative reading of a log that
+    # stops after the command line is "the job is still running" - and the two
+    # look identical. This run took minutes; a reader checking on it partway
+    # through has no other way to tell which they are looking at.
+    $elapsed = (Get-Date) - $started
+    Write-Host ''
+    Write-Host ("=== RUN ENDED {0} (took {1:mm\:ss}) ===" -f (Get-Date -Format 'HH:mm:ss'), $elapsed)
     Stop-Transcript | Out-Null
 }
 

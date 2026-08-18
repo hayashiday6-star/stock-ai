@@ -218,11 +218,17 @@ function Invoke-Step {
         at the first one, because knowing which three of four failed is the
         whole point.
 
-        The command's output is piped to Out-Host rather than left to fall out
-        of the function. Without that pipe PowerShell folds native stdout into
-        the return value, which breaks this twice over: the user never sees the
-        output, and the caller gets a non-empty array that is truthy whether
-        the command succeeded or not - so every failure reads as a pass.
+        The output must not fall out of the function: PowerShell would fold
+        native stdout into the return value, and the caller would then get a
+        non-empty array that is truthy whether the command succeeded or not -
+        so every failure would read as a pass.
+
+        It is written back out with Write-Host rather than Out-Host. Under Task
+        Scheduler there is no console attached, and this is the one context
+        where the transcript *is* the record: a nightly log holding the header
+        and the command line but not one line of what the command said is
+        indistinguishable from a job that is still running. Write-Host is
+        transcribed in every host, attached console or not.
     #>
     param(
         [Parameter(Mandatory)][string]$Title,
@@ -234,7 +240,7 @@ function Invoke-Step {
     Write-Host "    uv run stock-ai $($Arguments -join ' ')" -ForegroundColor DarkGray
     Write-Host ''
 
-    & uv run stock-ai @Arguments 2>&1 | Out-Host
+    & uv run stock-ai @Arguments 2>&1 | ForEach-Object { Write-Host $_ }
     $code = $LASTEXITCODE
 
     if ($code -eq 0) {
