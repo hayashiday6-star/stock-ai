@@ -2052,14 +2052,14 @@ def _render_estimate(estimate: RunEstimate) -> None:
     rating_out = estimate.rating_output_cap * estimate.items
     summary_out = estimate.summary_output_cap * estimate.items
     table.add_row(
-        "rate only (floor)",
+        "rate only",
         str(estimate.items),
         f"{estimate.rating_input_tokens:,}",
         f"{rating_out:,}",
         _money(estimate.low),
     )
     table.add_row(
-        "rate + summarize (ceiling)",
+        "rate + summarize",
         str(estimate.items),
         f"{estimate.rating_input_tokens + estimate.summary_input_tokens:,}",
         f"{rating_out + summary_out:,}",
@@ -2075,9 +2075,17 @@ def _render_estimate(estimate: RunEstimate) -> None:
         return
 
     console.print(
-        "[dim]Input tokens are exact (counted, not estimated). Output is the "
-        "max_tokens ceiling, so the real cost lands at or below the ceiling "
-        "row. Prices are a cached copy of Anthropic's published rates and can "
+        "[dim]Both rows are worst cases, not a range around a likely figure. "
+        "Input is exact - counted, not estimated. Output is the max_tokens "
+        "ceiling on every call, and a rating that answers in one word uses a "
+        "small fraction of it: measured replies have run 30-50 tokens against "
+        f"a {estimate.rating_output_cap}-token cap, so the real cost lands far "
+        "below both rows. The two differ only in whether summaries happen.[/]"
+    )
+    console.print(
+        "[dim]The run itself prints what it actually spent when it finishes; "
+        "that line, not this table, is the figure to compare against a bill. "
+        "Prices here are a cached copy of Anthropic's published rates and can "
         "drift - the invoice is the authority.[/]"
     )
 

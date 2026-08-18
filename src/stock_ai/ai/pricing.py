@@ -72,11 +72,19 @@ class Usage:
 
 @dataclass(frozen=True)
 class RunEstimate:
-    """The cost of a monitor run, as a range rather than a single number.
+    """The cost of a monitor run, as two worst cases rather than one number.
 
     ``low`` assumes no disclosure clears its importance threshold, so only the
     rating calls happen. ``high`` assumes every one does and is also summarized.
-    The truth is somewhere between and depends on what was actually filed.
+    Which of those a run lands nearer depends on what was actually filed.
+
+    Both use the ``max_tokens`` ceiling for output, so neither is a prediction
+    and ``low`` is emphatically not a minimum. That distinction was academic
+    while the rating cap was 8 tokens and became the dominant term when it rose
+    to 512: at 403 input tokens, ``low`` is 14% the input we counted and 86% an
+    output allowance that measured replies use a tenth of. The honest reading
+    is "this run cannot cost more than X", and the run's own ``spent:`` line is
+    what says how much it did.
     """
 
     model: str

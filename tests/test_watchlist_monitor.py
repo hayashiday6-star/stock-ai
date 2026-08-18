@@ -417,3 +417,30 @@ def test_a_failing_job_does_not_stop_the_others() -> None:
 def test_scheduling_with_no_jobs_is_refused() -> None:
     with pytest.raises(ValueError, match="No jobs registered"):
         DailyScheduler().run_forever()
+
+
+def test_an_alert_says_which_feed_it_came_from() -> None:
+    """A statutory filing and a press article must not look identical.
+
+    The first live alert was a news summary about Toyota; read as an EDINET
+    filing it would carry a weight it has not earned.
+    """
+    from stock_ai.data.types import Disclosure, Importance, WatchEntry
+    from stock_ai.ir.monitor import Alert
+
+    entry = WatchEntry(symbol="7203", market="JP")
+    filing = Alert(
+        entry=entry,
+        disclosure=Disclosure(symbol="7203", title="決算短信", source="edinet"),
+        importance=Importance.HIGH,
+        summary="...",
+    )
+    article = Alert(
+        entry=entry,
+        disclosure=Disclosure(symbol="7203", title="Toyota sharpens cost cuts", source="yfinance"),
+        importance=Importance.MEDIUM,
+        summary="...",
+    )
+
+    assert "via edinet" in filing.format()
+    assert "via yfinance" in article.format()
