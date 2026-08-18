@@ -588,9 +588,22 @@ above what a rating-only run costs. The `spent:` line the run prints when it
 finishes is the figure to compare against a bill.
 
 Rating is cheap because the prompt asks for one word. Summaries are where the
-money goes, so the cost scales with **how many disclosures were filed**, not
-with how many symbols you watch. `--provider dummy` (the default in
-`4-日次自動化.bat`) costs nothing at all and needs no key.
+money goes. How the total scales depends on which feed is on, and the two are
+not alike:
+
+- **EDINET** matches a security code against the day's filings, so a watched
+  name that filed nothing costs nothing. Adding names is close to free.
+- **The news feed** returns up to `--limit` items per symbol whether or not
+  anything was filed, so **each new name arrives with a backlog** of up to
+  `--limit` items to judge. Measured: adding two names to a three-name list
+  took the next run from 1 pending disclosure to 20.
+
+That backlog is one-off — everything judged is remembered — but it lands on the
+first run after you extend the watchlist, which is exactly when you are least
+expecting a bill. Price it with `ai-cost` first, and use `--limit` to cap it.
+
+`--provider dummy` (the default in `4-日次自動化.bat`) costs nothing at all and
+needs no key.
 
 Prices are a cached copy of Anthropic's published rates and drift — the
 invoice is the authority, and an unpriced model shows a dash rather than a

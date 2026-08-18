@@ -263,3 +263,46 @@ def test_the_monitor_takes_the_same_feed_flag_the_estimate_does() -> None:
     assert "--feed" in flags
     # --source stays as an alias so existing scripts keep working.
     assert "--source" in flags
+
+
+def test_a_symbol_file_is_read_in_the_encodings_notepad_writes(tmp_path) -> None:
+    """The expected way to make one of these is Notepad on Japanese Windows.
+
+    It writes UTF-16 for "Unicode", UTF-8 with a BOM, and cp932 for "ANSI".
+    Only the middle one survives a plain read_text, and rejecting a file whose
+    contents are perfectly good is not a defensible failure.
+    """
+    from pathlib import Path
+
+    from stock_ai.cli import _symbols_from_file
+
+    body = "# 大型\nAAPL, MSFT, NVDA\nGOOGL   # Alphabet\n"
+    expected = ["AAPL", "MSFT", "NVDA", "GOOGL"]
+
+    for name, data in {
+        "utf8.txt": body.encode("utf-8"),
+        "bom.txt": b"\xef\xbb\xbf" + body.encode("utf-8"),
+        "utf16.txt": body.encode("utf-16"),
+        "cp932.txt": body.encode("cp932"),
+        "crlf.txt": b"\xef\xbb\xbf" + body.replace("\n", "\r\n").encode("utf-8"),
+    }.items():
+        path = Path(tmp_path) / name
+        path.write_bytes(data)
+        assert _symbols_from_file(path) == expected, name
+
+
+def test_an_unreadable_symbol_file_says_what_it_actually_held(tmp_path) -> None:
+    """ "contained no symbols" is a conclusion, and leaves nothing to check."""
+    from pathlib import Path
+
+    import typer
+
+    from stock_ai.cli import _symbols_from_file
+
+    path = Path(tmp_path) / "empty.txt"
+    path.write_bytes(b"")
+    with pytest.raises(typer.BadParameter) as excinfo:
+        _symbols_from_file(path)
+
+    message = str(excinfo.value)
+    assert "0 bytes" in message  # the fact that decides what to do next
