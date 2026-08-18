@@ -60,7 +60,7 @@ from stock_ai.config.settings import Settings, get_settings
 from stock_ai.core.encoding import install as install_console_encoding
 from stock_ai.core.exceptions import AIError, BacktestError, DataError, NotificationError
 from stock_ai.core.logging import configure_logging
-from stock_ai.core.scheduler import DailyScheduler
+from stock_ai.core.scheduler import DailyScheduler, JobResult
 from stock_ai.data.base import PriceProvider
 from stock_ai.data.bulk import BulkIngester, Dataset, store_universe
 from stock_ai.data.fx import FxConverter
@@ -100,6 +100,7 @@ from stock_ai.ir.edinet import (
 from stock_ai.ir.monitor import WatchMonitor
 from stock_ai.ir.sources import CompositeDisclosureSource, NewsDisclosureSource
 from stock_ai.news.sources import YFinanceNewsSource
+from stock_ai.notification.base import Notifier
 from stock_ai.notification.factory import get_notifier
 from stock_ai.portfolio.analysis import PortfolioAnalysis, analyze_portfolio
 from stock_ai.portfolio.growth_factors import tenbagger_weighted_factors
@@ -2382,6 +2383,11 @@ def daily(
         "--max-cost",
         help="Skip the monitor job if its priced worst case exceeds this many USD.",
     ),
+    heartbeat: bool = typer.Option(
+        False,
+        "--heartbeat",
+        help="Also notify when the run finished cleanly with nothing to report.",
+    ),
 ) -> None:
     """Run the daily pipeline: refresh prices, then check the watchlist.
 
@@ -2455,12 +2461,54 @@ def daily(
                 "[green]ok[/]" if outcome.ok else f"[red]error[/] {outcome.error or ''}",
             )
         console.print(table)
-        if any(not r.ok for r in results):
+
+        failed = [r for r in results if not r.ok]
+        _report_run_outcome(notifier, failed, results, heartbeat=heartbeat)
+        if failed:
             raise typer.Exit(code=1)
         return
 
     console.print(f"Running daily at [cyan]{at}[/]. Ctrl-C to stop.")
     scheduler.run_forever()
+
+
+def _report_run_outcome(
+    notifier: Notifier | None,
+    failed: list[JobResult],
+    results: list[JobResult],
+    *,
+    heartbeat: bool,
+) -> None:
+    """Send a notification when the unattended run did not go cleanly.
+
+    Alerts are only sent when there are alerts, which for a scheduled job makes
+    the channel silent in four different situations that mean opposite things:
+    nothing was filed, nothing cleared the threshold, the run was skipped by
+    ``--max-cost``, and the run failed outright. A monitoring channel that says
+    the same thing when all is well and when everything is broken is not a
+    monitoring channel.
+
+    So a failure always speaks. Success stays quiet unless ``--heartbeat`` is
+    asked for: a message every single morning is one people stop reading, and
+    then the failure message is unread too.
+    """
+    if notifier is None:
+        return
+
+    if failed:
+        detail = "\n".join(f"- {r.name}: {r.error or 'failed'}" for r in failed)
+        message = f"stock-ai daily: {len(failed)} of {len(results)} job(s) failed\n{detail}"
+    elif heartbeat:
+        message = f"stock-ai daily: {len(results)} job(s) ok, nothing above threshold."
+    else:
+        return
+
+    try:
+        notifier.send(message)
+    except NotificationError as exc:
+        # Never let the messenger take the run down: the jobs already ran, and
+        # their outcome is in the log whether or not it could be delivered.
+        console.print(f"[yellow]Could not send the run summary:[/] {exc}")
 
 
 def _log_ingest(results: list[IngestResult]) -> None:

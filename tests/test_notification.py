@@ -168,3 +168,71 @@ def test_transport_error_quoting_the_url_is_scrubbed() -> None:
     with pytest.raises(NotificationError) as excinfo:
         TelegramNotifier("SUPER-SECRET-TOKEN", "42", client=_EchoingClient()).send("x")
     assert "SUPER-SECRET-TOKEN" not in str(excinfo.value)
+
+
+def test_a_failed_unattended_run_speaks(monkeypatch) -> None:
+    """Alerts are only sent when there are alerts, which for a scheduled job
+    makes the channel silent in four situations that mean opposite things:
+    nothing was filed, nothing cleared the threshold, the run was skipped by
+    --max-cost, and the run failed outright. A channel that says the same
+    thing when all is well and when everything is broken is not a channel.
+    """
+    from stock_ai.cli import _report_run_outcome
+    from stock_ai.core.scheduler import JobResult
+
+    sent: list[str] = []
+
+    class _Spy:
+        name = "spy"
+
+        def send(self, message: str) -> None:
+            sent.append(message)
+
+    ok = JobResult(name="prices", ok=True, error=None)
+    bad = JobResult(name="monitor", ok=False, error="priced above --max-cost")
+
+    _report_run_outcome(_Spy(), [bad], [ok, bad], heartbeat=False)
+    assert len(sent) == 1
+    assert "monitor" in sent[0]
+    assert "priced above --max-cost" in sent[0]
+
+
+def test_a_clean_run_stays_quiet_unless_a_heartbeat_is_asked_for() -> None:
+    """A message every morning is one people stop reading - and then the
+    failure message is unread too."""
+    from stock_ai.cli import _report_run_outcome
+    from stock_ai.core.scheduler import JobResult
+
+    sent: list[str] = []
+
+    class _Spy:
+        name = "spy"
+
+        def send(self, message: str) -> None:
+            sent.append(message)
+
+    results = [JobResult(name="monitor", ok=True, error=None)]
+
+    _report_run_outcome(_Spy(), [], results, heartbeat=False)
+    assert sent == []
+
+    _report_run_outcome(_Spy(), [], results, heartbeat=True)
+    assert len(sent) == 1
+    assert "ok" in sent[0]
+
+
+def test_a_dead_notifier_does_not_take_the_run_down() -> None:
+    """The jobs already ran; their outcome is in the log either way."""
+    from stock_ai.cli import _report_run_outcome
+    from stock_ai.core.exceptions import NotificationError
+    from stock_ai.core.scheduler import JobResult
+
+    class _Broken:
+        name = "broken"
+
+        def send(self, message: str) -> None:
+            raise NotificationError("webhook 404")
+
+    _report_run_outcome(
+        _Broken(), [JobResult(name="monitor", ok=False, error="x")], [], heartbeat=False
+    )
