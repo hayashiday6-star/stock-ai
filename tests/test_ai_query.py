@@ -402,3 +402,119 @@ def test_an_empty_env_value_is_not_reported_as_set() -> None:
     assert "not set" in _secret_summary(None)
     assert "set" in _secret_summary(SecretStr("sk-real-key-value"))
     assert "not set" not in _secret_summary(SecretStr("sk-real-key-value"))
+
+
+def test_the_ledger_totals_every_call_not_just_the_last() -> None:
+    """A monitor run makes one call per disclosure; the last one is not the bill."""
+    from stock_ai.ai.pricing import Usage, UsageLedger
+
+    ledger = UsageLedger()
+    ledger.record(Usage(input_tokens=1_000, output_tokens=10, model="claude-opus-5"))
+    ledger.record(Usage(input_tokens=2_000, output_tokens=20, model="claude-opus-5"))
+
+    assert ledger.calls == 2
+    assert ledger.input_tokens == 3_000
+    assert ledger.output_tokens == 30
+    assert ledger.models == ["claude-opus-5"]
+    assert ledger.priced
+    assert ledger.cost == pytest.approx((3_000 * 5 + 30 * 25) / 1_000_000)
+
+
+def test_an_unpriced_call_is_counted_but_leaves_the_total_incomplete() -> None:
+    """Tokens are still real when the price is unknown; the dollars are not."""
+    from stock_ai.ai.pricing import Usage, UsageLedger
+
+    ledger = UsageLedger()
+    ledger.record(Usage(input_tokens=100, output_tokens=5, model="claude-opus-5"))
+    ledger.record(Usage(input_tokens=100, output_tokens=5, model="claude-not-launched-yet"))
+
+    assert ledger.calls == 2
+    assert ledger.input_tokens == 200
+    assert ledger.unpriced_calls == 1
+    assert not ledger.priced
+    # The priced half is still summed - it is just not the whole story.
+    assert ledger.cost == pytest.approx((100 * 5 + 5 * 25) / 1_000_000)
+
+
+def test_the_provider_accumulates_across_calls() -> None:
+    """``last_usage`` answers "that call"; a run needs "all of them"."""
+    from stock_ai.ai.anthropic_provider import AnthropicProvider
+
+    class _Block:
+        type = "text"
+        text = "high"
+
+    class _Usage:
+        input_tokens = 500
+        output_tokens = 4
+
+    class _Response:
+        content = [_Block()]
+        stop_reason = "end_turn"
+        usage = _Usage()
+
+    class _Messages:
+        def create(self, **kwargs: object) -> _Response:
+            return _Response()
+
+    class _Client:
+        messages = _Messages()
+
+    provider = AnthropicProvider(client=_Client(), model="claude-opus-5")
+    assert provider.usage.calls == 0
+
+    provider.complete("rate this")
+    provider.complete("rate that")
+    provider.complete("and this")
+
+    assert provider.usage.calls == 3
+    assert provider.usage.input_tokens == 1_500
+    assert provider.usage.output_tokens == 12
+    assert provider.last_usage is not None
+    assert provider.last_usage.input_tokens == 500  # unchanged meaning
+
+
+def test_a_provider_with_no_ledger_prints_nothing_rather_than_zero() -> None:
+    """The dummy provider is free; "spent $0.00" would imply it was billed."""
+    from stock_ai.ai.dummy import DummyAIProvider
+    from stock_ai.cli import _report_spend, console
+
+    with console.capture() as captured:
+        _report_spend(DummyAIProvider())
+    assert captured.get() == ""
+
+
+def test_the_spend_line_reports_the_run_total() -> None:
+    from stock_ai.ai.anthropic_provider import AnthropicProvider
+    from stock_ai.ai.pricing import Usage
+    from stock_ai.cli import _report_spend, console
+
+    provider = AnthropicProvider(model="claude-opus-5")
+    provider.usage.record(Usage(input_tokens=10_000, output_tokens=1_000, model="claude-opus-5"))
+    provider.usage.record(Usage(input_tokens=10_000, output_tokens=1_000, model="claude-opus-5"))
+
+    with console.capture() as captured:
+        _report_spend(provider)
+    text = captured.get()
+
+    assert "2 call(s)" in text
+    assert "20,000 in" in text
+    assert "2,000 out" in text
+    assert "$0.1500" in text  # 20k * $5/M + 2k * $25/M
+
+
+def test_the_configured_model_is_the_one_the_run_calls() -> None:
+    """Otherwise ``ai-cost --model`` prices something the run cannot select."""
+    from stock_ai.ai.anthropic_provider import DEFAULT_MODEL
+    from stock_ai.ai.factory import get_ai_provider
+    from stock_ai.ai.pricing import PRICES_PER_MTOK
+    from stock_ai.config.settings import Settings
+
+    # _env_file=None so a developer's own .env cannot decide the assertion.
+    default = get_ai_provider("claude", Settings(_env_file=None))
+    assert default.model == DEFAULT_MODEL
+
+    chosen = get_ai_provider("claude", Settings(_env_file=None, ANTHROPIC_MODEL="claude-haiku-4-5"))
+    assert chosen.model == "claude-haiku-4-5"
+    # And the price it would be billed at follows the choice, not the default.
+    assert PRICES_PER_MTOK[chosen.model] == (1.00, 5.00)

@@ -25,7 +25,7 @@ module reports it as one rather than picking a figure that reads as certainty.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 #: Dollars per million tokens, as ``(input, output)``. Anthropic first-party
 #: API rates; see the module warning about drift.
@@ -106,3 +106,46 @@ class RunEstimate:
     def priced(self) -> bool:
         """Whether this model has a known price at all."""
         return self.model in PRICES_PER_MTOK
+
+
+@dataclass
+class UsageLedger:
+    """Running total of what one command has actually spent.
+
+    ``Usage`` records a single call, which is enough for ``summarize`` and not
+    nearly enough for ``monitor``: a run that rates twelve disclosures and
+    summarizes four makes sixteen calls, and the last one's tokens say nothing
+    about the bill. An estimate that is never checked against the invoice is
+    just a claim, so the total is accumulated here and printed when the command
+    ends - the same shape of number as the estimate, so the two can be compared
+    directly.
+    """
+
+    calls: int = 0
+    input_tokens: int = 0
+    output_tokens: int = 0
+    #: Dollars for the calls that could be priced. See :attr:`priced`.
+    cost: float = 0.0
+    #: Calls whose model has no cached price; their tokens still count.
+    unpriced_calls: int = 0
+    #: Models used, in first-seen order. Normally one, but a command is free
+    #: to mix them and the total would be meaningless without saying so.
+    models: list[str] = field(default_factory=list)
+
+    def record(self, usage: Usage) -> None:
+        """Add one call to the total."""
+        self.calls += 1
+        self.input_tokens += usage.input_tokens
+        self.output_tokens += usage.output_tokens
+        if usage.model not in self.models:
+            self.models.append(usage.model)
+        call_cost = usage.cost
+        if call_cost is None:
+            self.unpriced_calls += 1
+        else:
+            self.cost += call_cost
+
+    @property
+    def priced(self) -> bool:
+        """Whether :attr:`cost` covers every call made."""
+        return self.unpriced_calls == 0

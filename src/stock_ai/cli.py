@@ -42,7 +42,7 @@ from stock_ai.ai.analysis import summarize as ai_summarize
 from stock_ai.ai.anthropic_provider import DEFAULT_MODEL as ANTHROPIC_DEFAULT_MODEL
 from stock_ai.ai.anthropic_provider import AnthropicProvider
 from stock_ai.ai.factory import get_ai_provider
-from stock_ai.ai.pricing import RunEstimate
+from stock_ai.ai.pricing import RunEstimate, UsageLedger
 from stock_ai.ai.query import parse_query, run_query
 from stock_ai.backtest.engine import BacktestEngine
 from stock_ai.backtest.factor_test import (
@@ -165,6 +165,12 @@ def info() -> None:
     table.add_row("version", __version__)
     table.add_row("env", settings.env)
     table.add_row("log_level", settings.log_level)
+    # Which model the AI commands will call, and whether that was a choice.
+    # It belongs next to the key because the two together decide the bill, and
+    # a model picked up from .env is otherwise invisible until the invoice.
+    selected = settings.anthropic_model or ANTHROPIC_DEFAULT_MODEL
+    origin = "from ANTHROPIC_MODEL" if settings.anthropic_model else "built-in default"
+    table.add_row("anthropic_model", f"{selected} ({origin})")
     for label, value in _secret_status(settings):
         table.add_row(label, _secret_summary(value))
     console.print(table)
@@ -1793,14 +1799,16 @@ def monitor(
     database = Database()
     database.create_all()
     notifier = get_notifier(channel, settings) if channel else None
+    ai = get_ai_provider(provider, settings)
     monitor_service = WatchMonitor(
         database,
         source=_disclosure_source(source, settings, lookback_days),
-        provider=get_ai_provider(provider, settings),
+        provider=ai,
         notifier=notifier,
     )
 
     result = monitor_service.run(limit=limit, notify=notifier is not None)
+    _report_spend(ai)
     console.print(
         f"Checked [bold]{result.checked}[/] new disclosure(s), "
         f"skipped {result.skipped} already seen."
@@ -1928,7 +1936,9 @@ def ai_cost(
     feed: str = typer.Option("all", help="Disclosure feed: all | edinet | news."),
     lookback_days: int = typer.Option(7, help="Days of EDINET filings to scan."),
     limit: int = typer.Option(10, help="Maximum disclosures per symbol."),
-    model: str = typer.Option(ANTHROPIC_DEFAULT_MODEL, help="Model to price."),
+    model: str | None = typer.Option(
+        None, help="Model to price; defaults to ANTHROPIC_MODEL, else the built-in default."
+    ),
 ) -> None:
     """Price the next watchlist run before paying for it.
 
@@ -1944,7 +1954,11 @@ def ai_cost(
     settings = get_settings()
     configure_logging(settings.log_level)
 
-    provider = AnthropicProvider(api_key=settings.anthropic_api_key, model=model)
+    # Defaulting to the configured model, not the built-in one, is what keeps
+    # the estimate honest: pricing opus while ANTHROPIC_MODEL selects haiku
+    # would be off by a factor of five in the direction that matters.
+    priced_model = model or settings.anthropic_model or ANTHROPIC_DEFAULT_MODEL
+    provider = AnthropicProvider(api_key=settings.anthropic_api_key, model=priced_model)
     database = Database()
     database.create_all()
     monitor = WatchMonitor(
@@ -2050,6 +2064,35 @@ def _render_estimate(estimate: RunEstimate) -> None:
     )
 
 
+def _report_spend(provider: object) -> None:
+    """Print what an AI command actually spent, if the provider tracks it.
+
+    The estimate and the invoice are only useful together. ``ai-cost`` says
+    what a run should cost; without this the run itself says nothing, and a
+    pre-run figure nobody ever checks is a claim rather than a measurement.
+
+    Written against whatever the provider happens to expose: ``dummy`` and the
+    OpenAI/Gemini providers keep no ledger, and a command that used one simply
+    prints nothing rather than a zero that would read as "free".
+    """
+    ledger = getattr(provider, "usage", None)
+    if not isinstance(ledger, UsageLedger) or ledger.calls == 0:
+        return
+
+    model = "/".join(ledger.models) if ledger.models else "?"
+    spent = _money(ledger.cost) if ledger.priced else _money(None)
+    console.print(
+        f"[dim]spent: {ledger.calls} call(s) to {model}, "
+        f"{ledger.input_tokens:,} in / {ledger.output_tokens:,} out - {spent}[/]"
+    )
+    if not ledger.priced:
+        console.print(
+            f"[yellow]{ledger.unpriced_calls} of those calls used a model with "
+            "no cached price[/], so the token counts are complete but the "
+            "dollar total is not shown rather than guessed."
+        )
+
+
 def _money(value: float | None) -> str:
     """Render dollars, or a dash when the model has no known price."""
     if value is None:
@@ -2103,18 +2146,23 @@ def daily(
             )
 
     notifier = get_notifier(channel, settings) if channel else None
+    # Built once, outside the job, so the spend of the run it performs can be
+    # read back afterwards. A provider constructed inside the lambda is gone by
+    # the time the job returns, and with it the record of what it cost.
+    ai = get_ai_provider(provider, settings)
     scheduler.add(
         "monitor",
         lambda: WatchMonitor(
             database,
             source=_disclosure_source(feed, settings, 7),
-            provider=get_ai_provider(provider, settings),
+            provider=ai,
             notifier=notifier,
         ).run(notify=notifier is not None),
     )
 
     if once:
         results = scheduler.run_once()
+        _report_spend(ai)
         table = Table(title="daily run")
         table.add_column("job", style="cyan")
         table.add_column("status")
@@ -2170,8 +2218,12 @@ def ask(
         query = parse_query(ai, question)
     except AIError as exc:
         console.print(f"[red]could not interpret the question:[/] {exc}")
+        # A call that failed after the model answered is still billed, so the
+        # spend line belongs on the error path too.
+        _report_spend(ai)
         raise typer.Exit(code=1) from exc
 
+    _report_spend(ai)
     console.print(f"Understood as: [cyan]{query.describe()}[/]")
     if explain_only:
         return
@@ -2204,6 +2256,7 @@ def summarize(
     configure_logging(settings.log_level)
     ai = get_ai_provider(provider, settings)
     console.print(ai_summarize(ai, text, max_words=max_words))
+    _report_spend(ai)
 
 
 @app.command()
@@ -2216,6 +2269,7 @@ def sentiment(
     configure_logging(settings.log_level)
     ai = get_ai_provider(provider, settings)
     console.print(analyze_sentiment(ai, text))
+    _report_spend(ai)
 
 
 def _warn_if_lookback_will_not_reach(database: Database, symbols: list[str], lookback: int) -> None:

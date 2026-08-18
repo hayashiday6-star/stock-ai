@@ -11,7 +11,7 @@ from typing import Any
 
 from pydantic import SecretStr
 
-from stock_ai.ai.pricing import Usage
+from stock_ai.ai.pricing import Usage, UsageLedger
 from stock_ai.core.exceptions import AIError
 from stock_ai.core.logging import get_logger
 
@@ -45,6 +45,12 @@ class AnthropicProvider:
         #: first one. Recorded because a run that bills per disclosure has no
         #: other way to say afterwards what it actually spent.
         self.last_usage: Usage | None = None
+        #: Every call this provider has made, added up. ``last_usage`` answers
+        #: "what did that cost"; a monitor run makes one call per disclosure
+        #: plus one per summary, and only the running total answers "what did
+        #: *this run* cost" - the figure the pre-run estimate is checked
+        #: against.
+        self.usage = UsageLedger()
 
     def _get_client(self) -> Any:
         """Return the SDK client, constructing it lazily on first use.
@@ -90,6 +96,7 @@ class AnthropicProvider:
                 output_tokens=getattr(usage, "output_tokens", 0),
                 model=self._model,
             )
+            self.usage.record(self.last_usage)
             logger.debug(
                 "Anthropic call: %d in, %d out",
                 self.last_usage.input_tokens,

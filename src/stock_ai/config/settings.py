@@ -45,6 +45,12 @@ class Settings(BaseSettings):
 
     # --- AI providers (Phase 6) ---
     anthropic_api_key: SecretStr | None = Field(default=None, validation_alias="ANTHROPIC_API_KEY")
+    #: Which Claude model to call. ``None`` means the provider's own default.
+    #: Configurable because the choice is a twenty-fold cost difference on the
+    #: same run, and because ``ai-cost --model`` could otherwise price a model
+    #: the run had no way to actually use - an estimate for one model and a
+    #: bill for another, with nothing on screen to say so.
+    anthropic_model: str | None = Field(default=None, validation_alias="ANTHROPIC_MODEL")
     openai_api_key: SecretStr | None = Field(default=None, validation_alias="OPENAI_API_KEY")
     gemini_api_key: SecretStr | None = Field(default=None, validation_alias="GEMINI_API_KEY")
 

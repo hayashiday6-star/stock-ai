@@ -36,7 +36,7 @@ plausible wrong numbers rather than an error. So the table separates them.
 | US prices & fundamentals (yfinance) | **Verified on 10 large caps** (1,030 bars each) — not a full US universe |
 | Cross-market ranking (JP + US) | **Verified** — 1,564 securities ranked on one scale, JPY converted at a live rate |
 | Backtest engine | **Verified** — and the run found a real bug: `--strategy sma200` was running a 50-day filter |
-| AI scoring / chat / notifications | **Not validated** — require provider keys not exercised here |
+| AI scoring / chat / notifications | **Not validated** — needs a paid key. `6-AI検証.bat` (or `scripts/6-verify-ai.ps1`) runs the check: free steps first, then the billed ones only after you confirm |
 | Automated trading | **Paper broker only.** The IBKR path is a skeleton, opt-in, and has never placed an order. Do not point it at a funded account |
 
 One known gap in the data, not the code: **a company that pays no dividend is
@@ -493,18 +493,74 @@ What is *not* knowable is how many summaries a run needs: a disclosure is only
 summarised if the model rates it above the watch entry's threshold. So the
 answer is a range, and it is reported as one:
 
+Measured on this project's own watchlist, one pending disclosure, `claude-opus-5`:
+
 | | disclosures | input tokens | output cap | cost (USD) |
 |---|---|---|---|---|
-| rate only (floor) | 12 | 9,840 | 96 | <$0.01 |
-| rate + summarize (ceiling) | 12 | 19,560 | 12,384 | $0.4076 |
+| rate only (floor) | 1 | 260 | 8 | <$0.01 (0.00150) |
+| rate + summarize (ceiling) | 1 | 364 | 1,032 | $0.0276 |
 
 Rating is cheap because the prompt asks for one word. Summaries are where the
-money goes. `--provider dummy` (the default in `4-日次自動化.bat`) costs
-nothing at all and needs no key.
+money goes, so the cost scales with **how many disclosures were filed**, not
+with how many symbols you watch. `--provider dummy` (the default in
+`4-日次自動化.bat`) costs nothing at all and needs no key.
 
 Prices are a cached copy of Anthropic's published rates and drift — the
 invoice is the authority, and an unpriced model shows a dash rather than a
 guessed figure.
+
+### And what it actually cost
+
+An estimate nobody checks is a claim. Every AI command prints what it really
+spent when it finishes:
+
+```
+spent: 3 call(s) to claude-opus-5, 1,204 in / 118 out - <$0.01 (0.00895)
+```
+
+That is the API's own `usage` figures summed over the run, priced the same way
+as the estimate, so the two can be read against each other directly. A run that
+lands above the ceiling means the estimate is wrong — worth reporting, because
+a cost preview that cannot be trusted is worse than none.
+
+### Choosing a cheaper model
+
+```bash
+# in .env
+ANTHROPIC_MODEL=claude-haiku-4-5
+```
+
+Model choice is a five-fold cost difference on the identical run
+(`$1/$5` per million tokens against opus's `$5/$25`). `ai-cost` prices whatever
+`ANTHROPIC_MODEL` selects, and `stock-ai info` shows which model is active and
+whether that came from `.env` or the built-in default — so the estimate and the
+run can never disagree about which model is being paid for.
+
+## Verifying the AI and notification features
+
+```powershell
+.\scripts\6-verify-ai.ps1            # free checks, then asks before spending
+.\scripts\6-verify-ai.ps1 -SkipPaid  # free checks only
+.\scripts\6-verify-ai.ps1 -Channel discord
+```
+
+These are the last two subsystems that have never met reality, for one reason:
+they are the only ones that need a paid key. The script runs them in the order
+that costs least to learn most — key and model, then the notifier, then
+`ai-cost`, and only then, after an explicit `yes`, the four billed checks
+(`sentiment`, `summarize`, `ask`, `monitor`) with the cheapest first. Everything
+lands in `verify-ai-output.txt`.
+
+Two details worth knowing about it:
+
+- The Japanese sample text means this one script is UTF-8 **with a BOM**, unlike
+  every other script here. It checks its own literals against their real code
+  points before spending anything: a lost BOM would otherwise pay Claude to
+  analyse mojibake and return a confident answer about it.
+- `notify --channel console` proves the notifier path, not a webhook. To check a
+  real one, put `DISCORD_WEBHOOK_URL` in `.env` and re-run with
+  `-Channel discord` — and then go and look at Discord. A clean exit means the
+  service accepted the POST, not that the message arrived.
 
 ## Daily automation
 

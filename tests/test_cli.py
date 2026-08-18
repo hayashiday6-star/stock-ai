@@ -149,3 +149,46 @@ def test_inspect_shows_the_fields_that_disambiguate_a_row(
 
     for field in ("DocType", "ROE", "NCNP", "DivTotalAnn", "FNP"):
         assert field in output, f"{field} must be visible in the table"
+
+
+def test_an_ai_command_reports_what_it_spent(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The wiring, not the arithmetic: does 'summarize' reach the spend line?
+
+    ``_report_spend`` is tested on its own, and the provider's ledger is tested
+    on its own. Neither says the command calls the one with the other, which is
+    the part that was actually missing.
+    """
+    from stock_ai.ai.anthropic_provider import AnthropicProvider
+
+    class _Block:
+        type = "text"
+        text = "A short summary."
+
+    class _Usage:
+        input_tokens = 4_000
+        output_tokens = 200
+
+    class _Response:
+        content = [_Block()]
+        stop_reason = "end_turn"
+        usage = _Usage()
+
+    class _Messages:
+        def create(self, **kwargs: object) -> _Response:
+            return _Response()
+
+    class _Client:
+        messages = _Messages()
+
+    provider = AnthropicProvider(client=_Client(), model="claude-opus-5")
+    monkeypatch.setattr("stock_ai.cli.get_ai_provider", lambda name, settings: provider)
+
+    result = runner.invoke(app, ["summarize", "Revenue rose 12%.", "--provider", "claude"])
+
+    assert result.exit_code == 0
+    assert "A short summary." in result.stdout
+    assert "spent:" in result.stdout
+    assert "1 call(s)" in result.stdout
+    assert "4,000 in" in result.stdout
+    # 4,000 * $5/M + 200 * $25/M = $0.025
+    assert "$0.0250" in result.stdout
