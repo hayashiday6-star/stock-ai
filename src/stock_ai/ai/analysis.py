@@ -9,9 +9,17 @@ from __future__ import annotations
 from stock_ai.ai.base import AIProvider
 from stock_ai.data.types import Importance
 
+#: Every prompt here carries this. The monitor watches Japanese filings and the
+#: reader is Japanese, but nothing in the prompt said so: the same IR excerpt
+#: came back in Japanese one run and in English the next. A summary whose
+#: language is a coin flip cannot go in a notification, and asking the model to
+#: "use Japanese" would break the US names in the same watchlist - so the rule
+#: is to follow the source, which is right for both.
+_SAME_LANGUAGE = " Reply in the same language as the text you are given: Japanese in, Japanese out."
+
 SUMMARY_SYSTEM = (
     "You are a financial analyst. Summarize factually and concisely, "
-    "without speculation or investment advice."
+    "without speculation or investment advice." + _SAME_LANGUAGE
 )
 SENTIMENT_SYSTEM = (
     "You classify the sentiment of financial text as exactly one word: "
@@ -41,6 +49,10 @@ SUMMARY_MAX_TOKENS = 1024
 #: Summary length the watchlist monitor asks for. Kept here beside the prompt
 #: it feeds so a cost estimate and the real run cannot drift apart.
 DEFAULT_SUMMARY_WORDS = 80
+
+# Deliberately *not* on the sentiment and importance prompts: both are parsed
+# by looking for an English label in the reply, so a Japanese answer would be
+# read as unclassifiable. Those two stay one English word regardless of input.
 
 Sentiment = str  # one of "positive" | "neutral" | "negative" | "unknown"
 _SENTIMENT_LABELS: tuple[str, ...] = ("positive", "negative", "neutral")

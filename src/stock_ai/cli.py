@@ -63,6 +63,7 @@ from stock_ai.backtest.seasonality import (
 )
 from stock_ai.backtest.strategy import BuyAndHold, Strategy, build_strategy
 from stock_ai.config.settings import Settings, get_settings
+from stock_ai.core.encoding import install as install_console_encoding
 from stock_ai.core.exceptions import AIError, BacktestError, DataError, NotificationError
 from stock_ai.core.logging import configure_logging
 from stock_ai.core.scheduler import DailyScheduler
@@ -139,6 +140,9 @@ app = typer.Typer(
     no_args_is_help=True,
     add_completion=False,
 )
+# Before the Console is built: Rich reads the stream's error handler at write
+# time, and a cp932 console would otherwise escape a yen sign into "\xa5".
+install_console_encoding()
 console = Console()
 
 
@@ -1782,8 +1786,11 @@ def monitor(
     provider: str = typer.Option("dummy", help="AI provider: dummy|claude|openai|gemini."),
     channel: str | None = typer.Option(None, help="Send alerts to console|discord|telegram|line."),
     limit: int = typer.Option(10, help="Disclosures pulled per watched symbol."),
-    source: str = typer.Option(
-        "all", help="Disclosure feed: all | edinet (JP filings) | news (yfinance)."
+    feed: str = typer.Option(
+        "all",
+        "--feed",
+        "--source",
+        help="Disclosure feed: all | edinet (JP filings) | news (yfinance).",
     ),
     lookback_days: int = typer.Option(7, help="Days of EDINET filings to scan."),
 ) -> None:
@@ -1802,7 +1809,7 @@ def monitor(
     ai = get_ai_provider(provider, settings)
     monitor_service = WatchMonitor(
         database,
-        source=_disclosure_source(source, settings, lookback_days),
+        source=_disclosure_source(feed, settings, lookback_days),
         provider=ai,
         notifier=notifier,
     )

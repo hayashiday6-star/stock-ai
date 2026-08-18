@@ -242,3 +242,16 @@ def test_report_numbers_are_rendered_at_a_readable_precision() -> None:
     assert _format_cell("as_of", None) == ""
     # A missing value must never render as a number.
     assert _format_cell("revenue", pd.NA) in {"-", "<NA>"}
+
+
+def test_the_monitor_takes_the_same_feed_flag_the_estimate_does() -> None:
+    """Priced with --feed and run with --source is two different questions.
+
+    The live check estimated 'all' (two disclosures) then ran 'edinet' (one),
+    which reads exactly like an estimate that cannot be trusted.
+    """
+    result = runner.invoke(app, ["monitor", "--help"])
+    assert result.exit_code == 0
+    assert "--feed" in result.stdout
+    # --source stays as an alias so existing scripts keep working.
+    assert "--source" in result.stdout

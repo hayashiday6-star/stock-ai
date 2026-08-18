@@ -30,6 +30,11 @@
     Notification channel to test: console, discord, telegram, or line.
     Anything but console needs its credential in .env.
 
+.PARAMETER Feed
+    Disclosure feed used for BOTH the estimate and the monitor run:
+    all, edinet, or news. They must match, or the two numbers describe
+    different work and the comparison between them means nothing.
+
 .PARAMETER Symbol
     Watchlist symbol used for the monitor check.
 
@@ -43,6 +48,8 @@ param(
     [switch]$SkipPaid,
     [ValidateSet('console', 'discord', 'telegram', 'line')]
     [string]$Channel = 'console',
+    [ValidateSet('all', 'edinet', 'news')]
+    [string]$Feed = 'all',
     [string]$Symbol = '7203'
 )
 
@@ -58,6 +65,7 @@ try {
     Write-Section 'stock-ai: AI and notification verification'
     Write-Host "Date    : $(Get-Date -Format 'yyyy-MM-dd HH:mm')"
     Write-Host "Channel : $Channel"
+    Write-Host "Feed    : $Feed"
     Write-Host "Symbol  : $Symbol"
     Show-Version
 
@@ -130,7 +138,13 @@ try {
     # --- 3. Estimate (free) ------------------------------------------------
     Write-Section '3. What the monitor run would cost (no model calls)'
 
-    $results['ai-cost'] = Invoke-Step 'ai-cost: price the next monitor run' @('ai-cost')
+    # The same --feed as the monitor below. The first run of this script priced
+    # 'all' and then ran 'edinet', so the estimate counted two disclosures and
+    # the run judged one - which reads exactly like a broken estimate, and was
+    # only this script asking two different questions.
+    $results['ai-cost'] = Invoke-Step 'ai-cost: price the next monitor run' @(
+        'ai-cost', '--feed', $Feed
+    )
     Write-Host ''
     Write-Host '  >> EXPECT two rows, a floor and a ceiling. Input tokens are counted,'
     Write-Host '     not guessed. If it says nothing is pending, the monitor has'
@@ -187,8 +201,9 @@ try {
             'summarize', $sampleSummary, '--provider', 'claude', '--max-words', '60'
         )
         Write-Host ''
-        Write-Host '  >> EXPECT a short Japanese summary that keeps the numbers. Invented'
-        Write-Host '     figures are the failure to look for, not a clumsy sentence.'
+        Write-Host '  >> EXPECT a short summary IN JAPANESE that keeps the numbers.'
+        Write-Host '     English out means the language rule in the prompt stopped working;'
+        Write-Host '     invented figures are the worse failure to look for.'
 
         $results['ask'] = Invoke-Step 'ask: screen from a plain-language question' @(
             'ask', $sampleQuestion, '--provider', 'claude'
@@ -203,7 +218,7 @@ try {
             'watch', $Symbol, '--market', 'JP'
         )
         $results['monitor'] = Invoke-Step 'monitor: rate real disclosures' @(
-            'monitor', '--provider', 'claude', '--source', 'edinet', '--lookback-days', '7'
+            'monitor', '--provider', 'claude', '--feed', $Feed, '--lookback-days', '7'
         )
         Write-Host ''
         Write-Host '  >> EXPECT the "spent:" line to land at or below the ceiling that'

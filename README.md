@@ -23,17 +23,30 @@ Built phase by phase; all ten phases are in place.
 ## What is verified, and what is only implemented
 
 "All ten phases in place" says the code exists. It does not say the code has
-met reality, and on this project the gap between those two mattered: sixteen
+met reality, and on this project the gap between those two mattered: nineteen
 real bugs surfaced only when real data arrived, and nearly every one of them
 produced plausible wrong numbers rather than an error. So the table separates
 them.
 
-The most recent is the clearest example. `sentiment` capped the model at 8
-output tokens — exactly what a one-word answer costs — and against the live API
-that returned a 200 with no content at all. The same ceiling sat on the
-importance rating the nightly monitor runs on, where it would not have looked
-like a failure at all: every disclosure would have come back unjudged and the
-run would have reported no alerts, which is indistinguishable from a quiet day.
+The clearest example: `sentiment` capped the model at 8 output tokens — exactly
+what a one-word answer costs — and against the live API that returned a 200
+with no content at all. The retest after the fix spent **52** output tokens to
+say `positive`. The same ceiling sat on the importance rating the nightly
+monitor runs on, where it would not have looked like a failure at all: every
+disclosure would have come back unjudged and the run would have reported no
+alerts, which is indistinguishable from a quiet day.
+
+Two more came out of the same session, both invisible to the test suite because
+both need a real terminal and a real model:
+
+- A summary of a Japanese filing came back **in English** on the second run
+  after coming back in Japanese on the first. Nothing in the prompt named a
+  language, so it was a coin flip — and a notification whose language is a coin
+  flip cannot be read at a glance.
+- `¥` printed as `\xa5`, in the money figure, because a Japanese Windows
+  console is cp932 and cp932 has no U+00A5. It does have the fullwidth `￥`,
+  so the fix is a mapping, not a codepage change (see
+  `stock_ai/core/encoding.py`).
 
 | Area | State |
 |---|---|
@@ -46,8 +59,9 @@ run would have reported no alerts, which is indistinguishable from a quiet day.
 | Backtest engine | **Verified** — and the run found a real bug: `--strategy sma200` was running a 50-day filter |
 | AI: `ask` (plain-language screening) | **Verified** — "PER15倍以下でROE10%以上の日本株" parsed to `(ROE >= 0.1 AND 0 < PER <= 15.0) AND market in [JP]`; 344 of 1,552 matched. 318 input / 33 output tokens, $0.0024 |
 | AI: `summarize` | **Verified** — a Japanese IR excerpt condensed with every figure preserved and none invented. 155 / 109 tokens, $0.0035 |
-| AI: `sentiment` and `monitor`'s rating | **Not validated.** The live run found a bug (`max_tokens=8` returned an empty answer) and it is fixed but unretested. The monitor's rating call shares that ceiling and had no pending disclosure to exercise it |
-| Notifications | **Console verified.** Discord/Telegram/LINE unexercised — a configured webhook has never been posted to |
+| AI: `sentiment` | **Verified** — a Japanese revision notice classified `positive`. 76 / 52 tokens, $0.0017. The 52 output tokens are why the old 8-token ceiling returned nothing |
+| AI: `monitor`'s importance rating | **Not validated.** Three live runs found nothing pending — the one disclosure on the watchlist was marked seen by the first. It needs a fresh filing, not another run |
+| Notifications | **Console and Discord verified** — the webhook returned 204. Telegram/LINE unexercised |
 | Automated trading | **Paper broker only.** The IBKR path is a skeleton, opt-in, and has never placed an order. Do not point it at a funded account |
 
 One known gap in the data, not the code: **a company that pays no dividend is
