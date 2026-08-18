@@ -444,3 +444,50 @@ def test_an_alert_says_which_feed_it_came_from() -> None:
 
     assert "via edinet" in filing.format()
     assert "via yfinance" in article.format()
+
+
+def test_a_run_priced_over_the_cap_is_refused_before_anything_is_sent() -> None:
+    """A scheduled run bills nightly with nobody watching.
+
+    How many disclosures are filed on a given day is not something the schedule
+    controls, so the cap is the only thing between a busy filing day and a bill
+    nobody chose. Checking costs nothing - counting tokens is unbilled.
+    """
+    from stock_ai.cli import _within_budget
+
+    class _Counter:
+        model = "claude-opus-5"
+        name = "anthropic"
+        calls = 0
+
+        def count_tokens(self, prompt: str, *, system: str | None = None) -> int:
+            type(self).calls += 1
+            return 5_000
+
+        def complete(self, *args: object, **kwargs: object) -> str:  # pragma: no cover
+            raise AssertionError("the run must not start when it is over budget")
+
+    class _Item:
+        def as_text(self) -> str:
+            return "a filing"
+
+    class _Pending:
+        def pending(self, limit: int = 10) -> list[tuple[object, object]]:
+            return [(object(), _Item())] * 3
+
+    provider = _Counter()
+    assert _within_budget(_Pending(), provider, max_cost=100.0, limit=10) is True
+    assert _within_budget(_Pending(), provider, max_cost=0.0001, limit=10) is False
+    assert _Counter.calls > 0  # it really priced the run rather than guessing
+
+
+def test_a_provider_that_cannot_be_priced_still_runs() -> None:
+    """Refusing because the guard could not be evaluated is an outage, not a cap."""
+    from stock_ai.ai.dummy import DummyAIProvider
+    from stock_ai.cli import _within_budget
+
+    class _Pending:
+        def pending(self, limit: int = 10) -> list[tuple[object, object]]:
+            raise AssertionError("nothing should be fetched when pricing is impossible")
+
+    assert _within_budget(_Pending(), DummyAIProvider(), max_cost=0.0, limit=10) is True

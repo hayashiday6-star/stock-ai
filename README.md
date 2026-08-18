@@ -23,7 +23,7 @@ Built phase by phase; all ten phases are in place.
 ## What is verified, and what is only implemented
 
 "All ten phases in place" says the code exists. It does not say the code has
-met reality, and on this project the gap between those two mattered: twenty-three
+met reality, and on this project the gap between those two mattered: twenty-four
 real bugs surfaced only when real data arrived, and nearly every one of them
 produced plausible wrong numbers rather than an error. So the table separates
 them.
@@ -58,6 +58,12 @@ both need a real terminal and a real model:
   ought to be enough. The cost of being generous is a wider printed range; the
   cost of being tight is a monitor that reports no alerts on a day something
   was filed.
+- A blocked network was reported as **"no price data returned"** — that is, as
+  a verdict about the ticker. yfinance swallows a refused connection and hands
+  back an empty frame, so a blip during a 500-name US load would have marked
+  all 500 as symbols the provider does not know. It logs the real reason even
+  though it does not raise it, so the log is captured and turned back into an
+  error.
 - The AI packages **uninstalled themselves.** A machine that had been calling
   Claude for an hour answered `No module named 'anthropic'` after a `git pull`
   and nothing else, because `uv run` re-syncs to the project's default
@@ -202,7 +208,25 @@ made are distinguishable without reading a traceback.
 ```bash
 uv run stock-ai fetch AAPL MSFT --start 2024-01-02 --end 2024-01-10
 uv run stock-ai fetch AAPL MSFT   # incremental: only bars newer than what's stored
+uv run stock-ai fetch --symbols-file us.txt --lookback 1500
 ```
+
+`--symbols-file` is how a **US universe** gets loaded. `bulk-fetch` is J-Quants
+throughout, and yfinance has no listing endpoint to enumerate a market from, so
+the list has to come from a file — one symbol per line, `#` comments and commas
+allowed, duplicates ignored:
+
+```text
+# core holdings
+AAPL, MSFT, NVDA
+GOOGL   # Alphabet class A
+```
+
+Deliberately not a scraped index membership list: this project does not ship
+data it cannot verify, and a stale S&P 500 would look exactly like a correct
+one. Follow it with `uv run stock-ai fundamentals` (no arguments), which
+refreshes every stored US symbol, and the names join the
+[cross-market ranking](#cross-market-ranking-jp--us).
 
 Prices are stored in `data/stock_ai.db` (SQLite). Re-running is idempotent —
 already-stored dates are updated, not duplicated — so this is safe to schedule
@@ -628,9 +652,22 @@ Two details worth knowing about it:
 ## Daily automation
 
 ```bash
-uv run stock-ai daily --once AAPL MSFT --provider claude --channel discord
+uv run stock-ai daily --once --provider claude --channel discord --max-cost 0.20
 uv run stock-ai daily --at 18:00 AAPL MSFT       # blocks, fires daily
 ```
+
+**Set `--max-cost` whenever `--provider` is a paid one.** A scheduled run bills
+an account every night with nobody watching, and how many disclosures get filed
+on a given day is not something the schedule controls. The check itself costs
+nothing — it counts tokens, which is a separate unbilled endpoint — and it runs
+before a single billed call.
+
+Over the cap, the monitor job is skipped and the run is reported as failed, so
+it shows up rather than passing quietly in a log nobody opens. Nothing is marked
+seen, so the next run picks the same disclosures up. The cap is compared against
+the *ceiling*, which assumes every disclosure is summarized, so it will
+sometimes refuse a run that would in fact have been cheap — the right way round
+for a job nobody is watching.
 
 Refreshes prices, then checks the watchlist. A job that fails is logged and the
 run continues — a broken price fetch must not silence the monitor.
