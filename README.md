@@ -23,7 +23,7 @@ Built phase by phase; all ten phases are in place.
 ## What is verified, and what is only implemented
 
 "All ten phases in place" says the code exists. It does not say the code has
-met reality, and on this project the gap between those two mattered: twenty-one
+met reality, and on this project the gap between those two mattered: twenty-two
 real bugs surfaced only when real data arrived, and nearly every one of them
 produced plausible wrong numbers rather than an error. So the table separates
 them.
@@ -47,6 +47,13 @@ both need a real terminal and a real model:
   console is cp932 and cp932 has no U+00A5. It does have the fullwidth `￥`,
   so the fix is a mapping, not a codepage change (see
   `stock_ai/core/encoding.py`).
+- The one-word output ceiling was wrong **twice**: 8 broke `sentiment`, and 64
+  — chosen after measuring `sentiment` at 49 tokens — then broke the importance
+  rating on a real filing the very next run. It is 512 now, set from
+  measurement plus a wide margin rather than from a third estimate of what
+  ought to be enough. The cost of being generous is a wider printed range; the
+  cost of being tight is a monitor that reports no alerts on a day something
+  was filed.
 - The AI packages **uninstalled themselves.** A machine that had been calling
   Claude for an hour answered `No module named 'anthropic'` after a `git pull`
   and nothing else, because `uv run` re-syncs to the project's default
@@ -68,7 +75,8 @@ both need a real terminal and a real model:
 | AI: `ask` (plain-language screening) | **Verified** — "PER15倍以下でROE10%以上の日本株" parsed to `(ROE >= 0.1 AND 0 < PER <= 15.0) AND market in [JP]`; 344 of 1,552 matched. 318 input / 33 output tokens, $0.0024 |
 | AI: `summarize` | **Verified** — a Japanese IR excerpt condensed with every figure preserved and none invented. 155 / 109 tokens, $0.0035 |
 | AI: `sentiment` | **Verified** — a Japanese revision notice classified `positive`. 76 / 52 tokens, $0.0017. The 52 output tokens are why the old 8-token ceiling returned nothing |
-| AI: `monitor`'s importance rating | **Not validated.** Three live runs found nothing pending — the one disclosure on the watchlist was marked seen by the first. It needs a fresh filing, not another run |
+| AI: `monitor`'s importance rating | **Partly verified** — two real EDINET filings reached the model; one was rated, one hit the output ceiling (raised again since, unretested). The summary branch has still never run, because nothing cleared the threshold |
+| Cost estimate vs. actual | **Verified against a real run.** `ai-cost` predicted 827 input tokens; the run consumed **exactly 827**, and $0.0065 against a $0.0614 ceiling |
 | Notifications | **Console and Discord verified** — the webhook returned 204. Telegram/LINE unexercised |
 | Automated trading | **Paper broker only.** The IBKR path is a skeleton, opt-in, and has never placed an order. Do not point it at a funded account |
 
@@ -533,12 +541,16 @@ What is *not* knowable is how many summaries a run needs: a disclosure is only
 summarised if the model rates it above the watch entry's threshold. So the
 answer is a range, and it is reported as one:
 
-Measured on this project's own watchlist, one pending disclosure, `claude-opus-5`:
+Measured on this project's own watchlist, `claude-opus-5`:
 
 | | disclosures | input tokens | output cap | cost (USD) |
 |---|---|---|---|---|
-| rate only (floor) | 1 | 260 | 8 | <$0.01 (0.00150) |
-| rate + summarize (ceiling) | 1 | 364 | 1,032 | $0.0276 |
+| rate only (floor) | 2 | 827 | 128 | <$0.01 (0.00734) |
+| rate + summarize (ceiling) | 2 | 1,394 | 2,176 | $0.0614 |
+
+The run that followed reported `spent: 2 call(s), 827 in / 94 out — $0.0065`.
+**The input count was exact** — 827 predicted, 827 consumed — and the total
+landed well under the ceiling, which is the whole claim this feature makes.
 
 Rating is cheap because the prompt asks for one word. Summaries are where the
 money goes, so the cost scales with **how many disclosures were filed**, not

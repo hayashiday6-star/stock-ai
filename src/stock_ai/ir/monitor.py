@@ -156,7 +156,9 @@ class WatchMonitor:
         )
         if unjudged:
             logger.warning(
-                "%d disclosure(s) could not be classified; they will be retried.", unjudged
+                "%d disclosure(s) could not be classified; they will be retried "
+                "(and billed) on the next run.",
+                unjudged,
             )
         if notify and alerts:
             self._deliver(result)

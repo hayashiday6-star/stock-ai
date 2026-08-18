@@ -30,20 +30,32 @@ SENTIMENT_SYSTEM = (
 #: bounded rather than open-ended: the model can never bill more output than
 #: this, whatever it decides to say.
 #:
-#: The one-word ceilings were 8, which is what a one-word answer costs and
-#: nothing more. Run against the live API, that returned a 200 with an empty
-#: content list: the model spends its budget before the word arrives, and there
-#: is no partial answer to salvage. Raising it to 64 keeps the estimate bounded
-#: - 64 output tokens is $0.0016 at opus rates, against the $0.0002 the tight
-#: ceiling "saved" - and buys enough headroom that a model which prefaces its
-#: answer still gets to finish it.
+#: The one-word ceilings started at 8 - what a one-word answer costs and
+#: nothing more. Live, that returned a 200 with an empty content list: the
+#: budget is gone before the word arrives, and there is no partial answer to
+#: salvage. 64 fixed ``sentiment`` (49 output tokens observed) and the very
+#: next run failed the *importance* rating at 64 on a real EDINET filing.
 #:
-#: This mattered well beyond ``sentiment``, where it was found. The same
-#: ceiling is on the importance rating that the nightly monitor depends on, and
-#: there the failure would not have looked like a failure: every disclosure
-#: would have come back unjudged and the run would have reported no alerts.
-IMPORTANCE_MAX_TOKENS = 64
-SENTIMENT_MAX_TOKENS = 64
+#: Two wrong guesses is enough. The measured answers are around 30-50 tokens,
+#: so a ceiling of 512 costs nothing in practice - it is a bound, not a
+#: reservation, and the bill follows the tokens actually produced. What it does
+#: cost is a wider printed estimate, and that is the right trade: an estimate
+#: that is pessimistic and holds beats one that is tight and lets a rating fail
+#: silently. ``spent:`` reports the real figure afterwards, so the width of the
+#: range is checked against reality on every run rather than believed.
+#:
+#: Why one word needs hundreds of tokens of headroom is not something this
+#: project can see from the outside; the response arrives empty with
+#: ``stop_reason="max_tokens"`` and no partial text to inspect. The ceiling is
+#: therefore set from measurement plus a wide margin, not from a model of what
+#: ought to be enough - that model has now been wrong twice.
+#:
+#: This matters most where it was found second. The importance rating is what
+#: the nightly monitor runs on, and there the failure does not look like a
+#: failure: the disclosure comes back unjudged and the run reports no alerts,
+#: which reads exactly like a quiet day.
+IMPORTANCE_MAX_TOKENS = 512
+SENTIMENT_MAX_TOKENS = 512
 SUMMARY_MAX_TOKENS = 1024
 
 #: Summary length the watchlist monitor asks for. Kept here beside the prompt

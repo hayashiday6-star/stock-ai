@@ -1829,7 +1829,12 @@ def monitor(
     if result.unjudged:
         console.print(
             f"[yellow]{result.unjudged} could not be classified[/] "
-            "(AI provider failed); they stay unseen and are retried next run."
+            "(AI provider failed); they stay unseen and are retried next run.\n"
+            "  Retrying is right for a network blip and costs money every "
+            "night if the cause is not one. If this count does not fall to "
+            "zero, read the warning above it - the failure names its own "
+            "cause - rather than letting a nightly job pay for the same "
+            "refusal indefinitely."
         )
     if result.alerts:
         console.print(result.format())
