@@ -93,6 +93,9 @@ from stock_ai.ir.edinet import (
     ProbeResult,
     probe_key_placements,
 )
+from stock_ai.ir.edinet import (
+    EXTRA_BODY_FIELDS as EDINET_EXTRA_BODY_FIELDS,
+)
 from stock_ai.ir.monitor import WatchMonitor
 from stock_ai.ir.sources import CompositeDisclosureSource, NewsDisclosureSource
 from stock_ai.news.sources import YFinanceNewsSource
@@ -2005,7 +2008,38 @@ def edinet_check(
             result.message,
         )
     console.print(table)
+    _print_edinet_field_report(results)
     _print_edinet_verdict(results)
+
+
+def _print_edinet_field_report(results: list[ProbeResult]) -> None:
+    """Show which fields a real filing record carries, and which we read.
+
+    The fields fed to the importance rating were picked from the published API
+    spec, and a spec is not a response. This says which of them a live record
+    actually has - and, as importantly, which ones EDINET returns that this
+    project is throwing away.
+    """
+    fields = next((r.sample_fields for r in results if r.sample_fields), ())
+    if not fields:
+        return
+
+    used = {name for name, _label in EDINET_EXTRA_BODY_FIELDS}
+    present = sorted(used & set(fields))
+    absent = sorted(used - set(fields))
+    unread = sorted(set(fields) - used - {"docID", "docDescription", "docTypeCode"})
+
+    console.print(f"\n[bold]Fields on a live filing record[/] ({len(fields)} in total)")
+    if present:
+        console.print(f"  [green]read, and present:[/] {', '.join(present)}")
+    if absent:
+        console.print(f"  [yellow]read, but this record does not have them:[/] {', '.join(absent)}")
+    console.print(f"  [dim]returned but not used: {', '.join(unread)}[/]")
+    console.print(
+        "[dim]An EDINET alert is rated from this index, not from the filing "
+        "itself - the document is served separately as XBRL and is not opened. "
+        "If something here would sharpen a rating, it is worth adding.[/]"
+    )
 
 
 def _print_edinet_verdict(results: list[ProbeResult]) -> None:
