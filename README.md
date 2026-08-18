@@ -134,17 +134,20 @@ uv run stock-ai version     # verify it runs
 uv run stock-ai info        # show active config (secrets masked)
 ```
 
-Install phase-specific extras as you reach them:
+**`uv sync --extra X` replaces the installed extras, it does not add to them.**
+A second `uv sync --extra ai` uninstalls pandas, sqlalchemy and streamlit,
+and the next command dies with `No module named 'pandas'`. Name every extra
+you want in one command, or just take them all:
 
 ```bash
-uv sync --extra data    # pandas, numpy, httpx, yfinance
-uv sync --extra db      # sqlalchemy, alembic
+uv sync --all-extras                       # what 1-セットアップ.bat does
+uv sync --extra data --extra db --extra ai # or name them together
 ```
 
 ## Fetching prices
 
 ```bash
-uv sync --extra data --extra db
+uv sync --all-extras
 uv run stock-ai fetch AAPL MSFT --start 2024-01-02 --end 2024-01-10
 uv run stock-ai fetch AAPL MSFT   # incremental: only bars newer than what's stored
 ```
@@ -474,6 +477,35 @@ measured on 2026-08-15 with a **valid** key:
 
 Pasting the URL into a browser only ever tests the first row.
 
+## What will an AI run cost?
+
+```bash
+uv run stock-ai ai-cost --feed edinet
+```
+
+Prices the **next** watchlist run before paying for it. Both halves are
+knowable in advance: input tokens are counted exactly by the provider's
+`count_tokens` endpoint (which generates nothing and is not billed), and output
+is capped by the `max_tokens` on each call — 8 tokens to rate a disclosure,
+1024 to summarise one.
+
+What is *not* knowable is how many summaries a run needs: a disclosure is only
+summarised if the model rates it above the watch entry's threshold. So the
+answer is a range, and it is reported as one:
+
+| | disclosures | input tokens | output cap | cost (USD) |
+|---|---|---|---|---|
+| rate only (floor) | 12 | 9,840 | 96 | <$0.01 |
+| rate + summarize (ceiling) | 12 | 19,560 | 12,384 | $0.4076 |
+
+Rating is cheap because the prompt asks for one word. Summaries are where the
+money goes. `--provider dummy` (the default in `4-日次自動化.bat`) costs
+nothing at all and needs no key.
+
+Prices are a cached copy of Anthropic's published rates and drift — the
+invoice is the authority, and an unpriced model shows a dash rather than a
+guessed figure.
+
 ## Daily automation
 
 ```bash
@@ -499,7 +531,7 @@ uv run stock-ai notify "buy: AAPL" --channel console  # console|discord|telegram
 ## Dashboard
 
 ```bash
-uv sync --extra dashboard
+uv sync --all-extras
 uv run streamlit run src/stock_ai/dashboard/app.py
 ```
 

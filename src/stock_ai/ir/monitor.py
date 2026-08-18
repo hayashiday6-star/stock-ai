@@ -21,7 +21,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from dataclasses import dataclass
 
-from stock_ai.ai.analysis import classify_importance
+from stock_ai.ai.analysis import DEFAULT_SUMMARY_WORDS, classify_importance
 from stock_ai.ai.analysis import summarize as ai_summarize
 from stock_ai.ai.base import AIProvider
 from stock_ai.core.exceptions import AIError
@@ -99,7 +99,7 @@ class WatchMonitor:
         source: DisclosureSource,
         provider: AIProvider,
         notifier: Notifier | None = None,
-        summary_words: int = 80,
+        summary_words: int = DEFAULT_SUMMARY_WORDS,
     ) -> None:
         """Wire the monitor to its collaborators.
 
@@ -161,6 +161,24 @@ class WatchMonitor:
         if notify and alerts:
             self._deliver(result)
         return result
+
+    def pending(self, limit: int = 10) -> list[tuple[WatchEntry, Disclosure]]:
+        """Return exactly what the next :meth:`run` would send to the model.
+
+        Same watchlist, same feed, same already-seen filter - but nothing is
+        judged, so calling this costs no tokens. It exists so a run can be
+        priced before it is paid for; anything that estimated from a different
+        set than :meth:`run` actually processes would be an estimate of the
+        wrong thing.
+        """
+        with self.database.session() as session:
+            entries = WatchlistRepository(session).list_entries()
+
+        work: list[tuple[WatchEntry, Disclosure]] = []
+        for entry in entries:
+            fresh, _seen = self._fresh_disclosures(entry, limit)
+            work.extend((entry, disclosure) for disclosure in fresh)
+        return work
 
     def _fresh_disclosures(self, entry: WatchEntry, limit: int) -> tuple[list[Disclosure], int]:
         """Return ``entry``'s unreported disclosures and how many were skipped."""

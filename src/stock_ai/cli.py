@@ -28,9 +28,21 @@ from rich.progress import (
 from rich.table import Table
 
 from stock_ai import __version__
-from stock_ai.ai.analysis import analyze_sentiment
+from stock_ai.ai.analysis import (
+    DEFAULT_SUMMARY_WORDS,
+    IMPORTANCE_MAX_TOKENS,
+    IMPORTANCE_SYSTEM,
+    SUMMARY_MAX_TOKENS,
+    SUMMARY_SYSTEM,
+    analyze_sentiment,
+    importance_prompt,
+    summary_prompt,
+)
 from stock_ai.ai.analysis import summarize as ai_summarize
+from stock_ai.ai.anthropic_provider import DEFAULT_MODEL as ANTHROPIC_DEFAULT_MODEL
+from stock_ai.ai.anthropic_provider import AnthropicProvider
 from stock_ai.ai.factory import get_ai_provider
+from stock_ai.ai.pricing import RunEstimate
 from stock_ai.ai.query import parse_query, run_query
 from stock_ai.backtest.engine import BacktestEngine
 from stock_ai.backtest.factor_test import (
@@ -62,7 +74,7 @@ from stock_ai.data.jquants_profile import JQuantsProfileProvider
 from stock_ai.data.jquants_provider import JQuantsPriceProvider
 from stock_ai.data.markets import split_by_market
 from stock_ai.data.service import FundamentalsService, IngestionService, IngestResult
-from stock_ai.data.types import Importance
+from stock_ai.data.types import Disclosure, Importance, WatchEntry
 from stock_ai.data.universe import JQuantsUniverse, Segment
 from stock_ai.data.yfinance_provider import (
     YFinanceFundamentalsProvider,
@@ -1911,6 +1923,142 @@ def _disclosure_source(name: str, settings: Settings, lookback_days: int):
     raise typer.BadParameter(f"Unknown source {name!r}; use all, edinet, or news.")
 
 
+@app.command(name="ai-cost")
+def ai_cost(
+    feed: str = typer.Option("all", help="Disclosure feed: all | edinet | news."),
+    lookback_days: int = typer.Option(7, help="Days of EDINET filings to scan."),
+    limit: int = typer.Option(10, help="Maximum disclosures per symbol."),
+    model: str = typer.Option(ANTHROPIC_DEFAULT_MODEL, help="Model to price."),
+) -> None:
+    """Price the next watchlist run before paying for it.
+
+    Counts the exact input tokens of every prompt the run would send, using the
+    provider's token-counting endpoint - which does no generation and is not
+    billed - and pairs them with the ``max_tokens`` ceiling on each call.
+
+    The result is a range, not a figure. Every disclosure is rated, but only
+    the ones the model calls important enough are also summarized, and that
+    verdict is not knowable in advance. The low end assumes none clear the
+    threshold; the high end assumes all of them do.
+    """
+    settings = get_settings()
+    configure_logging(settings.log_level)
+
+    provider = AnthropicProvider(api_key=settings.anthropic_api_key, model=model)
+    database = Database()
+    database.create_all()
+    monitor = WatchMonitor(
+        database,
+        source=_disclosure_source(feed, settings, lookback_days),
+        provider=provider,
+    )
+
+    console.print("Fetching what the next run would judge (no model calls yet).")
+    work = monitor.pending(limit=limit)
+    if not work:
+        console.print(
+            "[green]Nothing pending, so the next run costs nothing.[/] "
+            "Every disclosure on the watchlist has already been seen."
+        )
+        return
+
+    try:
+        estimate = _estimate_run(provider, work)
+    except AIError as exc:
+        console.print(f"[red]{exc}[/]")
+        console.print(
+            "[dim]Counting tokens needs the anthropic package ('uv sync --extra "
+            "ai') and a key that the API accepts. The message above says which "
+            "of the two is missing - it is not always the key.[/]"
+        )
+        raise typer.Exit(code=1) from exc
+
+    _render_estimate(estimate)
+
+
+def _estimate_run(
+    provider: AnthropicProvider, work: list[tuple[WatchEntry, Disclosure]]
+) -> RunEstimate:
+    """Count the exact input tokens of every prompt the run would send."""
+    rating_input = summary_input = 0
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        BarColumn(),
+        TaskProgressColumn(),
+        console=console,
+    ) as progress:
+        task = progress.add_task("counting tokens", total=len(work))
+        for index, (_entry, disclosure) in enumerate(work, start=1):
+            text = disclosure.as_text()
+            rating_input += provider.count_tokens(importance_prompt(text), system=IMPORTANCE_SYSTEM)
+            summary_input += provider.count_tokens(
+                summary_prompt(text, max_words=DEFAULT_SUMMARY_WORDS),
+                system=SUMMARY_SYSTEM,
+            )
+            progress.update(task, completed=index)
+
+    return RunEstimate(
+        model=provider.model,
+        items=len(work),
+        rating_input_tokens=rating_input,
+        summary_input_tokens=summary_input,
+        rating_output_cap=IMPORTANCE_MAX_TOKENS,
+        summary_output_cap=SUMMARY_MAX_TOKENS,
+    )
+
+
+def _render_estimate(estimate: RunEstimate) -> None:
+    """Show the range, and say plainly which half of it is a guess."""
+    table = Table(title=f"cost of the next monitor run ({estimate.model})")
+    table.add_column("", style="cyan")
+    table.add_column("disclosures", justify="right")
+    table.add_column("input tokens", justify="right")
+    table.add_column("output cap", justify="right")
+    table.add_column("cost (USD)", justify="right")
+
+    rating_out = estimate.rating_output_cap * estimate.items
+    summary_out = estimate.summary_output_cap * estimate.items
+    table.add_row(
+        "rate only (floor)",
+        str(estimate.items),
+        f"{estimate.rating_input_tokens:,}",
+        f"{rating_out:,}",
+        _money(estimate.low),
+    )
+    table.add_row(
+        "rate + summarize (ceiling)",
+        str(estimate.items),
+        f"{estimate.rating_input_tokens + estimate.summary_input_tokens:,}",
+        f"{rating_out + summary_out:,}",
+        _money(estimate.high),
+    )
+    console.print(table)
+
+    if not estimate.priced:
+        console.print(
+            f"[yellow]No cached price for {estimate.model}.[/] The token counts "
+            "above are real; the dollar figure is not shown rather than guessed."
+        )
+        return
+
+    console.print(
+        "[dim]Input tokens are exact (counted, not estimated). Output is the "
+        "max_tokens ceiling, so the real cost lands at or below the ceiling "
+        "row. Prices are a cached copy of Anthropic's published rates and can "
+        "drift - the invoice is the authority.[/]"
+    )
+
+
+def _money(value: float | None) -> str:
+    """Render dollars, or a dash when the model has no known price."""
+    if value is None:
+        return "[dim]-[/]"
+    if value < 0.01:
+        return f"[green]<$0.01[/] ({value:.5f})"
+    return f"${value:.4f}"
+
+
 @app.command()
 def daily(
     at: str = typer.Option("18:00", help="Local HH:MM the jobs run at."),
@@ -2218,9 +2366,13 @@ def _secret_summary(value: SecretStr | None) -> str:
     tell a full key from one truncated by a bad copy. Length and a one-way
     fingerprint answer both while staying safe to paste into a bug report.
     """
-    if value is None:
-        return "[dim]-[/]"
-    secret = value.get_secret_value()
+    secret = value.get_secret_value() if value is not None else ""
+    if not secret.strip():
+        # An empty assignment in .env (``OPENAI_API_KEY=``) parses to "", which
+        # is not None - so a naive None check reports it as "set (0 chars)".
+        # That reads as configured and sends anyone debugging an auth failure
+        # looking in the wrong place.
+        return "[dim]not set[/]"
     digest = hashlib.sha256(secret.encode("utf-8")).hexdigest()[:8]
     return f"[green]set[/] [dim]({len(secret)} chars, fingerprint {digest})[/]"
 
