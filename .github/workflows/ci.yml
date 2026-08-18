@@ -22,8 +22,30 @@ jobs:
           python-version: "3.13"
           enable-cache: true
 
+      # Plain 'uv sync', deliberately: default-groups installs exactly what a
+      # user's machine gets, so CI and the desktop can no longer disagree about
+      # what is present. '--all-extras' hid a real gap - 'schedule' was
+      # imported and never declared, and CI stayed green only because vectorbt
+      # happened to pull it in.
       - name: Install dependencies
-        run: uv sync --all-extras --dev
+        run: uv sync
+
+      - name: Every module the code imports is actually declared
+        run: |
+          uv run python - <<'PY'
+          import importlib.util, sys
+          # Imported lazily inside functions, so nothing else would catch a
+          # missing declaration until the command was run for real.
+          required = [
+              "anthropic", "openai", "google.generativeai",
+              "pandas", "sqlalchemy", "streamlit", "schedule",
+              "yfinance", "httpx", "openpyxl",
+          ]
+          missing = [m for m in required if importlib.util.find_spec(m) is None]
+          if missing:
+              sys.exit(f"not installed by a default sync: {missing}")
+          print("all runtime imports satisfied")
+          PY
 
       - name: Ruff lint
         run: uv run ruff check .

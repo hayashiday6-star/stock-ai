@@ -11,7 +11,7 @@ from typing import Any
 
 from pydantic import SecretStr
 
-from stock_ai.ai.pricing import Usage
+from stock_ai.ai.pricing import Usage, UsageLedger
 from stock_ai.core.exceptions import AIError
 from stock_ai.core.logging import get_logger
 
@@ -45,6 +45,12 @@ class AnthropicProvider:
         #: first one. Recorded because a run that bills per disclosure has no
         #: other way to say afterwards what it actually spent.
         self.last_usage: Usage | None = None
+        #: Every call this provider has made, added up. ``last_usage`` answers
+        #: "what did that cost"; a monitor run makes one call per disclosure
+        #: plus one per summary, and only the running total answers "what did
+        #: *this run* cost" - the figure the pre-run estimate is checked
+        #: against.
+        self.usage = UsageLedger()
 
     def _get_client(self) -> Any:
         """Return the SDK client, constructing it lazily on first use.
@@ -90,20 +96,33 @@ class AnthropicProvider:
                 output_tokens=getattr(usage, "output_tokens", 0),
                 model=self._model,
             )
+            self.usage.record(self.last_usage)
             logger.debug(
                 "Anthropic call: %d in, %d out",
                 self.last_usage.input_tokens,
                 self.last_usage.output_tokens,
             )
 
-        if getattr(response, "stop_reason", None) == "refusal":
+        stop_reason = getattr(response, "stop_reason", None)
+        if stop_reason == "refusal":
             raise AIError("Claude refused the request.")
 
         text = "".join(
             block.text for block in response.content if getattr(block, "type", None) == "text"
         )
         if not text:
-            raise AIError("Claude returned no text content.")
+            # Observed live: a 200 response with an empty content list, from a
+            # call whose max_tokens was 8. "Claude returned no text content"
+            # sent the reader looking at the key and the model name, when the
+            # cause was a ceiling this code set itself. The stop reason is in
+            # the response the whole time, so it goes in the message.
+            if stop_reason == "max_tokens":
+                raise AIError(
+                    f"Claude produced nothing within max_tokens={max_tokens}. "
+                    "The ceiling is too low for this model, not a key or "
+                    "network problem - raise it at the call site."
+                )
+            raise AIError(f"Claude returned no text content (stop_reason={stop_reason!r}).")
         return text
 
     @property

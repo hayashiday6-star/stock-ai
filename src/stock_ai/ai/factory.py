@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from stock_ai.ai.anthropic_provider import AnthropicProvider
+from stock_ai.ai.anthropic_provider import DEFAULT_MODEL, AnthropicProvider
 from stock_ai.ai.base import AIProvider
 from stock_ai.ai.dummy import DummyAIProvider
 from stock_ai.ai.gemini_provider import GeminiProvider
@@ -31,7 +31,10 @@ def get_ai_provider(name: str, settings: Settings) -> AIProvider:
     if key == "dummy":
         return DummyAIProvider()
     if key in _ANTHROPIC_ALIASES:
-        return AnthropicProvider(api_key=settings.anthropic_api_key)
+        return AnthropicProvider(
+            api_key=settings.anthropic_api_key,
+            model=settings.anthropic_model or DEFAULT_MODEL,
+        )
     if key in _OPENAI_ALIASES:
         return OpenAIProvider(api_key=settings.openai_api_key)
     if key in _GEMINI_ALIASES:

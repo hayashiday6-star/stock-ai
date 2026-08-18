@@ -23,9 +23,49 @@ Built phase by phase; all ten phases are in place.
 ## What is verified, and what is only implemented
 
 "All ten phases in place" says the code exists. It does not say the code has
-met reality, and on this project the gap between those two mattered: ten real
-bugs surfaced only when real data arrived, and every one of them produced
-plausible wrong numbers rather than an error. So the table separates them.
+met reality, and on this project the gap between those two mattered: twenty-three
+real bugs surfaced only when real data arrived, and nearly every one of them
+produced plausible wrong numbers rather than an error. So the table separates
+them.
+
+The clearest example: `sentiment` capped the model at 8 output tokens — exactly
+what a one-word answer costs — and against the live API that returned a 200
+with no content at all. The retest after the fix spent **52** output tokens to
+say `positive`. The same ceiling sat on the importance rating the nightly
+monitor runs on, where it would not have looked like a failure at all: every
+disclosure would have come back unjudged and the run would have reported no
+alerts, which is indistinguishable from a quiet day.
+
+Two more came out of the same session, both invisible to the test suite because
+both need a real terminal and a real model:
+
+- A summary of a Japanese filing came back **in English** on the second run
+  after coming back in Japanese on the first. Nothing in the prompt named a
+  language, so it was a coin flip — and a notification whose language is a coin
+  flip cannot be read at a glance.
+- `¥` printed as `\xa5`, in the money figure, because a Japanese Windows
+  console is cp932 and cp932 has no U+00A5. It does have the fullwidth `￥`,
+  so the fix is a mapping, not a codepage change (see
+  `stock_ai/core/encoding.py`).
+- An alert did not say **which feed it came from**. The first one this system
+  ever produced was a press article about Toyota, rendered identically to how a
+  statutory EDINET filing would have been. `--feed all` mixes the two, and a
+  news summary read as a company filing carries a weight it has not earned.
+- The one-word output ceiling was wrong **twice**: 8 broke `sentiment`, and 64
+  — chosen after measuring `sentiment` at 49 tokens — then broke the importance
+  rating on a real filing the very next run. It is 512 now, set from
+  measurement plus a wide margin rather than from a third estimate of what
+  ought to be enough. The cost of being generous is a wider printed range; the
+  cost of being tight is a monitor that reports no alerts on a day something
+  was filed.
+- The AI packages **uninstalled themselves.** A machine that had been calling
+  Claude for an hour answered `No module named 'anthropic'` after a `git pull`
+  and nothing else, because `uv run` re-syncs to the project's default
+  environment and an extra is not part of it. The same clean-up exposed
+  `schedule`, imported by the daily scheduler and declared nowhere — CI had
+  stayed green only because `vectorbt` happened to pull it in. Both are now in
+  the `runtime` dependency group, and CI installs what a user installs so the
+  two cannot drift apart again.
 
 | Area | State |
 |---|---|
@@ -36,7 +76,12 @@ plausible wrong numbers rather than an error. So the table separates them.
 | US prices & fundamentals (yfinance) | **Verified on 10 large caps** (1,030 bars each) — not a full US universe |
 | Cross-market ranking (JP + US) | **Verified** — 1,564 securities ranked on one scale, JPY converted at a live rate |
 | Backtest engine | **Verified** — and the run found a real bug: `--strategy sma200` was running a 50-day filter |
-| AI scoring / chat / notifications | **Not validated** — require provider keys not exercised here |
+| AI: `ask` (plain-language screening) | **Verified** — "PER15倍以下でROE10%以上の日本株" parsed to `(ROE >= 0.1 AND 0 < PER <= 15.0) AND market in [JP]`; 344 of 1,552 matched. 318 input / 33 output tokens, $0.0024 |
+| AI: `summarize` | **Verified** — a Japanese IR excerpt condensed with every figure preserved and none invented. 155 / 109 tokens, $0.0035 |
+| AI: `sentiment` | **Verified** — a Japanese revision notice classified `positive`. 76 / 52 tokens, $0.0017. The 52 output tokens are why the old 8-token ceiling returned nothing |
+| AI: `monitor`, end to end | **Verified** — a real disclosure was rated `MEDIUM`, cleared the watch entry's threshold, was summarized, and came out as an alert. 0 unjudged. That is every branch of the nightly job on real data |
+| Cost estimate vs. actual | **Verified on two runs.** `ai-cost` predicted 827 input tokens and the run consumed exactly 827; predicted 676 and the run consumed exactly 676 ($0.0120 against a $0.0418 ceiling) |
+| Notifications | **Console and Discord verified** — the webhook returned 204. Telegram/LINE unexercised |
 | Automated trading | **Paper broker only.** The IBKR path is a skeleton, opt-in, and has never placed an order. Do not point it at a funded account |
 
 One known gap in the data, not the code: **a company that pays no dividend is
@@ -134,20 +179,27 @@ uv run stock-ai version     # verify it runs
 uv run stock-ai info        # show active config (secrets masked)
 ```
 
-**`uv sync --extra X` replaces the installed extras, it does not add to them.**
-A second `uv sync --extra ai` uninstalls pandas, sqlalchemy and streamlit,
-and the next command dies with `No module named 'pandas'`. Name every extra
-you want in one command, or just take them all:
+That is all of it. Everything the CLI, dashboard and AI commands need is in
+the `runtime` dependency group, which `[tool.uv] default-groups` installs on a
+bare `uv sync` — **do not pass `--extra`.**
 
-```bash
-uv sync --all-extras                       # what 1-セットアップ.bat does
-uv sync --extra data --extra db --extra ai # or name them together
-```
+The extras are still declared, because a consumer installing this as a library
+should get the small base. But an extra is not part of the default environment,
+and `uv run` re-syncs to the default environment before it runs anything. So
+`uv sync --extra ai` holds only until the next `uv run` quietly prunes it —
+which is how a machine that had been making Claude calls for an hour started
+answering `No module named 'anthropic'` with nothing changed but a `git pull`.
+The group is maintained rather than pruned, so the environment stops decaying
+under normal use.
+
+`--extra X` also *replaces* rather than adds: `uv sync --extra ai` on its own
+uninstalls pandas, sqlalchemy and streamlit. `stock-ai info` reports whether
+the SDK is actually importable, so a key that is set and a call that cannot be
+made are distinguishable without reading a traceback.
 
 ## Fetching prices
 
 ```bash
-uv sync --all-extras
 uv run stock-ai fetch AAPL MSFT --start 2024-01-02 --end 2024-01-10
 uv run stock-ai fetch AAPL MSFT   # incremental: only bars newer than what's stored
 ```
@@ -493,18 +545,85 @@ What is *not* knowable is how many summaries a run needs: a disclosure is only
 summarised if the model rates it above the watch entry's threshold. So the
 answer is a range, and it is reported as one:
 
+Measured on this project's own watchlist, `claude-opus-5`:
+
 | | disclosures | input tokens | output cap | cost (USD) |
 |---|---|---|---|---|
-| rate only (floor) | 12 | 9,840 | 96 | <$0.01 |
-| rate + summarize (ceiling) | 12 | 19,560 | 12,384 | $0.4076 |
+| rate only (floor) | 2 | 827 | 128 | <$0.01 (0.00734) |
+| rate + summarize (ceiling) | 2 | 1,394 | 2,176 | $0.0614 |
+
+The runs that followed reported `827 in` and, a run later, `676 in` — **both
+exactly what was predicted**, with totals well under the ceiling. That is the
+whole claim this feature makes.
+
+Read the two rows as *worst cases*, not as a range around a likely figure.
+Input is counted, but output is the `max_tokens` ceiling on every call, and a
+rating that answers in one word uses a small fraction of it — measured replies
+run 30–60 tokens against a 512-token cap. So even the `rate only` row sits well
+above what a rating-only run costs. The `spent:` line the run prints when it
+finishes is the figure to compare against a bill.
 
 Rating is cheap because the prompt asks for one word. Summaries are where the
-money goes. `--provider dummy` (the default in `4-日次自動化.bat`) costs
-nothing at all and needs no key.
+money goes, so the cost scales with **how many disclosures were filed**, not
+with how many symbols you watch. `--provider dummy` (the default in
+`4-日次自動化.bat`) costs nothing at all and needs no key.
 
 Prices are a cached copy of Anthropic's published rates and drift — the
 invoice is the authority, and an unpriced model shows a dash rather than a
 guessed figure.
+
+### And what it actually cost
+
+An estimate nobody checks is a claim. Every AI command prints what it really
+spent when it finishes:
+
+```
+spent: 3 call(s) to claude-opus-5, 1,204 in / 118 out - <$0.01 (0.00895)
+```
+
+That is the API's own `usage` figures summed over the run, priced the same way
+as the estimate, so the two can be read against each other directly. A run that
+lands above the ceiling means the estimate is wrong — worth reporting, because
+a cost preview that cannot be trusted is worse than none.
+
+### Choosing a cheaper model
+
+```bash
+# in .env
+ANTHROPIC_MODEL=claude-haiku-4-5
+```
+
+Model choice is a five-fold cost difference on the identical run
+(`$1/$5` per million tokens against opus's `$5/$25`). `ai-cost` prices whatever
+`ANTHROPIC_MODEL` selects, and `stock-ai info` shows which model is active and
+whether that came from `.env` or the built-in default — so the estimate and the
+run can never disagree about which model is being paid for.
+
+## Verifying the AI and notification features
+
+```powershell
+.\scripts\6-verify-ai.ps1            # free checks, then asks before spending
+.\scripts\6-verify-ai.ps1 -SkipPaid  # free checks only
+.\scripts\6-verify-ai.ps1 -Channel discord
+```
+
+These are the last two subsystems that have never met reality, for one reason:
+they are the only ones that need a paid key. The script runs them in the order
+that costs least to learn most — key and model, then the notifier, then
+`ai-cost`, and only then, after an explicit `yes`, the four billed checks
+(`sentiment`, `summarize`, `ask`, `monitor`) with the cheapest first. Everything
+lands in `verify-ai-output.txt`.
+
+Two details worth knowing about it:
+
+- The Japanese sample text means this one script is UTF-8 **with a BOM**, unlike
+  every other script here. It checks its own literals against their real code
+  points before spending anything: a lost BOM would otherwise pay Claude to
+  analyse mojibake and return a confident answer about it.
+- `notify --channel console` proves the notifier path, not a webhook. To check a
+  real one, put `DISCORD_WEBHOOK_URL` in `.env` and re-run with
+  `-Channel discord` — and then go and look at Discord. A clean exit means the
+  service accepted the POST, not that the message arrived.
 
 ## Daily automation
 
@@ -531,7 +650,6 @@ uv run stock-ai notify "buy: AAPL" --channel console  # console|discord|telegram
 ## Dashboard
 
 ```bash
-uv sync --all-extras
 uv run streamlit run src/stock_ai/dashboard/app.py
 ```
 

@@ -42,7 +42,7 @@ from stock_ai.ai.analysis import summarize as ai_summarize
 from stock_ai.ai.anthropic_provider import DEFAULT_MODEL as ANTHROPIC_DEFAULT_MODEL
 from stock_ai.ai.anthropic_provider import AnthropicProvider
 from stock_ai.ai.factory import get_ai_provider
-from stock_ai.ai.pricing import RunEstimate
+from stock_ai.ai.pricing import RunEstimate, UsageLedger
 from stock_ai.ai.query import parse_query, run_query
 from stock_ai.backtest.engine import BacktestEngine
 from stock_ai.backtest.factor_test import (
@@ -63,6 +63,7 @@ from stock_ai.backtest.seasonality import (
 )
 from stock_ai.backtest.strategy import BuyAndHold, Strategy, build_strategy
 from stock_ai.config.settings import Settings, get_settings
+from stock_ai.core.encoding import install as install_console_encoding
 from stock_ai.core.exceptions import AIError, BacktestError, DataError, NotificationError
 from stock_ai.core.logging import configure_logging
 from stock_ai.core.scheduler import DailyScheduler
@@ -139,6 +140,9 @@ app = typer.Typer(
     no_args_is_help=True,
     add_completion=False,
 )
+# Before the Console is built: Rich reads the stream's error handler at write
+# time, and a cp932 console would otherwise escape a yen sign into "\xa5".
+install_console_encoding()
 console = Console()
 
 
@@ -165,6 +169,16 @@ def info() -> None:
     table.add_row("version", __version__)
     table.add_row("env", settings.env)
     table.add_row("log_level", settings.log_level)
+    # Which model the AI commands will call, and whether that was a choice.
+    # It belongs next to the key because the two together decide the bill, and
+    # a model picked up from .env is otherwise invisible until the invoice.
+    selected = settings.anthropic_model or ANTHROPIC_DEFAULT_MODEL
+    origin = "from ANTHROPIC_MODEL" if settings.anthropic_model else "built-in default"
+    table.add_row("anthropic_model", f"{selected} ({origin})")
+    # A key without the SDK is a configuration that looks complete and cannot
+    # make a single call. Both halves are needed, so both are shown, and the
+    # one that goes missing on its own is the one that is easy to overlook.
+    table.add_row("anthropic sdk", _import_status("anthropic"))
     for label, value in _secret_status(settings):
         table.add_row(label, _secret_summary(value))
     console.print(table)
@@ -1776,8 +1790,11 @@ def monitor(
     provider: str = typer.Option("dummy", help="AI provider: dummy|claude|openai|gemini."),
     channel: str | None = typer.Option(None, help="Send alerts to console|discord|telegram|line."),
     limit: int = typer.Option(10, help="Disclosures pulled per watched symbol."),
-    source: str = typer.Option(
-        "all", help="Disclosure feed: all | edinet (JP filings) | news (yfinance)."
+    feed: str = typer.Option(
+        "all",
+        "--feed",
+        "--source",
+        help="Disclosure feed: all | edinet (JP filings) | news (yfinance).",
     ),
     lookback_days: int = typer.Option(7, help="Days of EDINET filings to scan."),
 ) -> None:
@@ -1793,14 +1810,18 @@ def monitor(
     database = Database()
     database.create_all()
     notifier = get_notifier(channel, settings) if channel else None
+    ai = get_ai_provider(provider, settings)
     monitor_service = WatchMonitor(
         database,
-        source=_disclosure_source(source, settings, lookback_days),
-        provider=get_ai_provider(provider, settings),
+        source=_disclosure_source(feed, settings, lookback_days),
+        provider=ai,
         notifier=notifier,
     )
 
-    result = monitor_service.run(limit=limit, notify=notifier is not None)
+    try:
+        result = monitor_service.run(limit=limit, notify=notifier is not None)
+    finally:
+        _report_spend(ai)
     console.print(
         f"Checked [bold]{result.checked}[/] new disclosure(s), "
         f"skipped {result.skipped} already seen."
@@ -1808,7 +1829,12 @@ def monitor(
     if result.unjudged:
         console.print(
             f"[yellow]{result.unjudged} could not be classified[/] "
-            "(AI provider failed); they stay unseen and are retried next run."
+            "(AI provider failed); they stay unseen and are retried next run.\n"
+            "  Retrying is right for a network blip and costs money every "
+            "night if the cause is not one. If this count does not fall to "
+            "zero, read the warning above it - the failure names its own "
+            "cause - rather than letting a nightly job pay for the same "
+            "refusal indefinitely."
         )
     if result.alerts:
         console.print(result.format())
@@ -1928,7 +1954,9 @@ def ai_cost(
     feed: str = typer.Option("all", help="Disclosure feed: all | edinet | news."),
     lookback_days: int = typer.Option(7, help="Days of EDINET filings to scan."),
     limit: int = typer.Option(10, help="Maximum disclosures per symbol."),
-    model: str = typer.Option(ANTHROPIC_DEFAULT_MODEL, help="Model to price."),
+    model: str | None = typer.Option(
+        None, help="Model to price; defaults to ANTHROPIC_MODEL, else the built-in default."
+    ),
 ) -> None:
     """Price the next watchlist run before paying for it.
 
@@ -1944,7 +1972,11 @@ def ai_cost(
     settings = get_settings()
     configure_logging(settings.log_level)
 
-    provider = AnthropicProvider(api_key=settings.anthropic_api_key, model=model)
+    # Defaulting to the configured model, not the built-in one, is what keeps
+    # the estimate honest: pricing opus while ANTHROPIC_MODEL selects haiku
+    # would be off by a factor of five in the direction that matters.
+    priced_model = model or settings.anthropic_model or ANTHROPIC_DEFAULT_MODEL
+    provider = AnthropicProvider(api_key=settings.anthropic_api_key, model=priced_model)
     database = Database()
     database.create_all()
     monitor = WatchMonitor(
@@ -2020,14 +2052,14 @@ def _render_estimate(estimate: RunEstimate) -> None:
     rating_out = estimate.rating_output_cap * estimate.items
     summary_out = estimate.summary_output_cap * estimate.items
     table.add_row(
-        "rate only (floor)",
+        "rate only",
         str(estimate.items),
         f"{estimate.rating_input_tokens:,}",
         f"{rating_out:,}",
         _money(estimate.low),
     )
     table.add_row(
-        "rate + summarize (ceiling)",
+        "rate + summarize",
         str(estimate.items),
         f"{estimate.rating_input_tokens + estimate.summary_input_tokens:,}",
         f"{rating_out + summary_out:,}",
@@ -2043,11 +2075,61 @@ def _render_estimate(estimate: RunEstimate) -> None:
         return
 
     console.print(
-        "[dim]Input tokens are exact (counted, not estimated). Output is the "
-        "max_tokens ceiling, so the real cost lands at or below the ceiling "
-        "row. Prices are a cached copy of Anthropic's published rates and can "
+        "[dim]Both rows are worst cases, not a range around a likely figure. "
+        "Input is exact - counted, not estimated. Output is the max_tokens "
+        "ceiling on every call, and a rating that answers in one word uses a "
+        "small fraction of it: measured replies have run 30-50 tokens against "
+        f"a {estimate.rating_output_cap}-token cap, so the real cost lands far "
+        "below both rows. The two differ only in whether summaries happen.[/]"
+    )
+    console.print(
+        "[dim]The run itself prints what it actually spent when it finishes; "
+        "that line, not this table, is the figure to compare against a bill. "
+        "Prices here are a cached copy of Anthropic's published rates and can "
         "drift - the invoice is the authority.[/]"
     )
+
+
+def _import_status(module: str) -> str:
+    """Say whether ``module`` can be imported, without importing it for real."""
+    import importlib.util
+
+    try:
+        found = importlib.util.find_spec(module) is not None
+    except (ImportError, ValueError):  # a broken or partially removed install
+        found = False
+    if found:
+        return "installed"
+    return "[red]missing[/] - run 'uv sync' (see tool.uv default-groups)"
+
+
+def _report_spend(provider: object) -> None:
+    """Print what an AI command actually spent, if the provider tracks it.
+
+    The estimate and the invoice are only useful together. ``ai-cost`` says
+    what a run should cost; without this the run itself says nothing, and a
+    pre-run figure nobody ever checks is a claim rather than a measurement.
+
+    Written against whatever the provider happens to expose: ``dummy`` and the
+    OpenAI/Gemini providers keep no ledger, and a command that used one simply
+    prints nothing rather than a zero that would read as "free".
+    """
+    ledger = getattr(provider, "usage", None)
+    if not isinstance(ledger, UsageLedger) or ledger.calls == 0:
+        return
+
+    model = "/".join(ledger.models) if ledger.models else "?"
+    spent = _money(ledger.cost) if ledger.priced else _money(None)
+    console.print(
+        f"[dim]spent: {ledger.calls} call(s) to {model}, "
+        f"{ledger.input_tokens:,} in / {ledger.output_tokens:,} out - {spent}[/]"
+    )
+    if not ledger.priced:
+        console.print(
+            f"[yellow]{ledger.unpriced_calls} of those calls used a model with "
+            "no cached price[/], so the token counts are complete but the "
+            "dollar total is not shown rather than guessed."
+        )
 
 
 def _money(value: float | None) -> str:
@@ -2103,18 +2185,23 @@ def daily(
             )
 
     notifier = get_notifier(channel, settings) if channel else None
+    # Built once, outside the job, so the spend of the run it performs can be
+    # read back afterwards. A provider constructed inside the lambda is gone by
+    # the time the job returns, and with it the record of what it cost.
+    ai = get_ai_provider(provider, settings)
     scheduler.add(
         "monitor",
         lambda: WatchMonitor(
             database,
             source=_disclosure_source(feed, settings, 7),
-            provider=get_ai_provider(provider, settings),
+            provider=ai,
             notifier=notifier,
         ).run(notify=notifier is not None),
     )
 
     if once:
         results = scheduler.run_once()
+        _report_spend(ai)  # the scheduler already swallows per-job failures
         table = Table(title="daily run")
         table.add_column("job", style="cyan")
         table.add_column("status")
@@ -2142,6 +2229,7 @@ def _log_ingest(results: list[IngestResult]) -> None:
 def ask(
     question: str = typer.Argument(..., help='e.g. "PER15以下でROE20%以上の半導体株"'),
     provider: str = typer.Option("dummy", help="AI provider: dummy|claude|openai|gemini."),
+    top: int = typer.Option(20, help="Rows to print; 0 for every match."),
     explain_only: bool = typer.Option(
         False, "--explain-only", help="Show the interpretation without running it."
     ),
@@ -2171,7 +2259,8 @@ def ask(
     except AIError as exc:
         console.print(f"[red]could not interpret the question:[/] {exc}")
         raise typer.Exit(code=1) from exc
-
+    finally:
+        _report_spend(ai)
     console.print(f"Understood as: [cyan]{query.describe()}[/]")
     if explain_only:
         return
@@ -2185,7 +2274,13 @@ def ask(
 
     console.print(f"Matched [bold]{len(matches)}[/] symbols.")
     if matches:
-        _render_report(build_report(collect_fundamentals(database, matches)))
+        # With names, like 'screen'. A four-digit code is not a company to
+        # anyone reading the output, and "is this list plausible?" is the one
+        # judgement the screen cannot make for itself.
+        report = build_report(
+            collect_fundamentals(database, matches), names=company_names(database, matches)
+        )
+        _render_report(report, limit=top or None)
     elif query.needs_statements:
         console.print(
             "[dim]This question needs the statement series; run 'statements' "
@@ -2203,7 +2298,13 @@ def summarize(
     settings = get_settings()
     configure_logging(settings.log_level)
     ai = get_ai_provider(provider, settings)
-    console.print(ai_summarize(ai, text, max_words=max_words))
+    # ``finally``: a call that fails after the model answered is still billed,
+    # and that is precisely the run where the reader most wants the figure. The
+    # first live failure of this command spent tokens and reported nothing.
+    try:
+        console.print(ai_summarize(ai, text, max_words=max_words))
+    finally:
+        _report_spend(ai)
 
 
 @app.command()
@@ -2215,7 +2316,10 @@ def sentiment(
     settings = get_settings()
     configure_logging(settings.log_level)
     ai = get_ai_provider(provider, settings)
-    console.print(analyze_sentiment(ai, text))
+    try:
+        console.print(analyze_sentiment(ai, text))
+    finally:
+        _report_spend(ai)
 
 
 def _warn_if_lookback_will_not_reach(database: Database, symbols: list[str], lookback: int) -> None:
@@ -2326,14 +2430,67 @@ def _build_condition(
     return conditions[0] if len(conditions) == 1 else All(*conditions)
 
 
-def _render_report(report: pd.DataFrame) -> None:
-    """Print a screening report as a Rich table."""
+#: Report columns that are ratios, and so want decimals rather than magnitude.
+_RATIO_COLUMNS = frozenset({"roe", "per", "pbr", "dividend_yield", "payout_ratio"})
+
+
+def _format_cell(column: str, value: object) -> str:
+    """Render one report value at a precision a person can read.
+
+    ``str(float)`` prints seventeen significant digits. On a 344-row screen
+    that wraps every column to four lines and turns the answer into a wall -
+    the numbers are all correct and none of them can be compared at a glance,
+    which for a table whose whole job is comparison is the same as being wrong.
+    """
+    if value is None:
+        return ""
+    if isinstance(value, float):
+        if pd.isna(value):
+            return "-"
+        if column in _RATIO_COLUMNS:
+            return f"{value:.3f}"
+        return _compact(value)
+    return str(value)
+
+
+def _compact(value: float) -> str:
+    """Render a large amount in a width a column can hold.
+
+    A JP market cap runs to fourteen digits, and printed in full it wraps to
+    five lines and pushes every other column out of shape. The suffix carries
+    no currency because this table does not know one - JP rows are yen and US
+    rows are dollars, which is why cross-market comparison lives in ``rank``
+    and its FX conversion rather than here. Full precision is one
+    ``--out results.csv`` away.
+    """
+    magnitude = abs(value)
+    for threshold, suffix in ((1e12, "T"), (1e9, "B"), (1e6, "M")):
+        if magnitude >= threshold:
+            return f"{value / threshold:,.2f}{suffix}"
+    return f"{value:,.0f}"
+
+
+def _render_report(report: pd.DataFrame, limit: int | None = None) -> None:
+    """Print a screening report as a Rich table, newest precision first.
+
+    ``limit`` caps the rows printed. A question like "PER under 15" matches
+    hundreds of names, and a terminal that has to scroll past all of them is
+    not showing an answer, it is hiding one.
+    """
+    shown = report if limit is None else report.head(limit)
     table = Table(title="screen results")
     for column in report.columns:
-        table.add_column(column, overflow="fold")
-    for row in report.itertuples(index=False):
-        table.add_row(*(("" if v is None else str(v)) for v in row))
+        table.add_column(column, overflow="fold", justify="right" if column != "symbol" else "left")
+    for row in shown.itertuples(index=False):
+        table.add_row(
+            *(_format_cell(col, val) for col, val in zip(report.columns, row, strict=True))
+        )
     console.print(table)
+    if limit is not None and len(report) > limit:
+        console.print(
+            f"[dim]Showing {limit} of {len(report)} matches. "
+            "Use --top to see more, or 'screen --out results.csv' for all of them.[/]"
+        )
 
 
 def _parse_date(value: str | None) -> dt.date | None:

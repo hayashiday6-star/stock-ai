@@ -9,9 +9,17 @@ from __future__ import annotations
 from stock_ai.ai.base import AIProvider
 from stock_ai.data.types import Importance
 
+#: Every prompt here carries this. The monitor watches Japanese filings and the
+#: reader is Japanese, but nothing in the prompt said so: the same IR excerpt
+#: came back in Japanese one run and in English the next. A summary whose
+#: language is a coin flip cannot go in a notification, and asking the model to
+#: "use Japanese" would break the US names in the same watchlist - so the rule
+#: is to follow the source, which is right for both.
+_SAME_LANGUAGE = " Reply in the same language as the text you are given: Japanese in, Japanese out."
+
 SUMMARY_SYSTEM = (
     "You are a financial analyst. Summarize factually and concisely, "
-    "without speculation or investment advice."
+    "without speculation or investment advice." + _SAME_LANGUAGE
 )
 SENTIMENT_SYSTEM = (
     "You classify the sentiment of financial text as exactly one word: "
@@ -21,13 +29,42 @@ SENTIMENT_SYSTEM = (
 #: Output ceilings, per call. These are what make a pre-run cost estimate
 #: bounded rather than open-ended: the model can never bill more output than
 #: this, whatever it decides to say.
-IMPORTANCE_MAX_TOKENS = 8
-SENTIMENT_MAX_TOKENS = 8
+#:
+#: The one-word ceilings started at 8 - what a one-word answer costs and
+#: nothing more. Live, that returned a 200 with an empty content list: the
+#: budget is gone before the word arrives, and there is no partial answer to
+#: salvage. 64 fixed ``sentiment`` (49 output tokens observed) and the very
+#: next run failed the *importance* rating at 64 on a real EDINET filing.
+#:
+#: Two wrong guesses is enough. The measured answers are around 30-50 tokens,
+#: so a ceiling of 512 costs nothing in practice - it is a bound, not a
+#: reservation, and the bill follows the tokens actually produced. What it does
+#: cost is a wider printed estimate, and that is the right trade: an estimate
+#: that is pessimistic and holds beats one that is tight and lets a rating fail
+#: silently. ``spent:`` reports the real figure afterwards, so the width of the
+#: range is checked against reality on every run rather than believed.
+#:
+#: Why one word needs hundreds of tokens of headroom is not something this
+#: project can see from the outside; the response arrives empty with
+#: ``stop_reason="max_tokens"`` and no partial text to inspect. The ceiling is
+#: therefore set from measurement plus a wide margin, not from a model of what
+#: ought to be enough - that model has now been wrong twice.
+#:
+#: This matters most where it was found second. The importance rating is what
+#: the nightly monitor runs on, and there the failure does not look like a
+#: failure: the disclosure comes back unjudged and the run reports no alerts,
+#: which reads exactly like a quiet day.
+IMPORTANCE_MAX_TOKENS = 512
+SENTIMENT_MAX_TOKENS = 512
 SUMMARY_MAX_TOKENS = 1024
 
 #: Summary length the watchlist monitor asks for. Kept here beside the prompt
 #: it feeds so a cost estimate and the real run cannot drift apart.
 DEFAULT_SUMMARY_WORDS = 80
+
+# Deliberately *not* on the sentiment and importance prompts: both are parsed
+# by looking for an English label in the reply, so a Japanese answer would be
+# read as unclassifiable. Those two stay one English word regardless of input.
 
 Sentiment = str  # one of "positive" | "neutral" | "negative" | "unknown"
 _SENTIMENT_LABELS: tuple[str, ...] = ("positive", "negative", "neutral")

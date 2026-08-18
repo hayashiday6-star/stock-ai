@@ -53,10 +53,20 @@ class Alert:
     summary: str
 
     def format(self) -> str:
-        """Render the alert as a notification-ready block."""
+        """Render the alert as a notification-ready block.
+
+        The feed is named in the header because ``--feed all`` mixes two very
+        different things: an EDINET filing is a statutory disclosure by the
+        company, and a news item is a third party writing about it. The first
+        live alert this system produced was a press summary about Toyota, and
+        nothing on screen distinguished it from a filing - which is the sort of
+        thing a reader would only notice after acting on it.
+        """
         header = f"[{self.importance.value.upper()}] {self.entry.symbol}"
         if self.entry.note:
             header += f" ({self.entry.note})"
+        if self.disclosure.source:
+            header += f" - via {self.disclosure.source}"
         lines = [header, self.disclosure.title]
         if self.disclosure.published_on:
             lines.append(str(self.disclosure.published_on))
@@ -156,7 +166,9 @@ class WatchMonitor:
         )
         if unjudged:
             logger.warning(
-                "%d disclosure(s) could not be classified; they will be retried.", unjudged
+                "%d disclosure(s) could not be classified; they will be retried "
+                "(and billed) on the next run.",
+                unjudged,
             )
         if notify and alerts:
             self._deliver(result)
