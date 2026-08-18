@@ -647,3 +647,48 @@ def test_absent_optional_fields_are_skipped_rather_than_rendered_empty() -> None
     disclosure = to_disclosure("7203", {"docID": "Y", "docDescription": "有価証券報告書"})
     assert "提出事由:" not in disclosure.body
     assert "対象期間開始:" not in disclosure.body
+
+
+def test_the_field_sample_walks_back_past_a_day_with_no_filings() -> None:
+    """Run at 00:46 the probe asked for today, which had nothing filed yet.
+
+    Zero documents is a correct answer and a useless sample: the diagnostic
+    exists to show what a real record carries, and on a quiet morning, a
+    weekend or a holiday it silently showed nothing at all.
+    """
+    import datetime as dt
+
+    from pydantic import SecretStr
+
+    from stock_ai.ir.edinet import sample_filing_fields
+
+    asked: list[str] = []
+
+    def fake(params: dict[str, str], headers: dict[str, str]) -> tuple[int, object]:
+        day = params["date"]
+        asked.append(day)
+        if day == "2026-08-16":
+            return 200, {"results": [{"docID": "S1", "docDescription": "x", "secCode": "72030"}]}
+        return 200, {"results": []}
+
+    found = sample_filing_fields(SecretStr("k"), dt.date(2026, 8, 19), requester=fake)
+
+    assert found is not None
+    sampled_on, fields = found
+    assert sampled_on == dt.date(2026, 8, 16)
+    assert "secCode" in fields
+    # It stopped as soon as it found one rather than walking the whole window.
+    assert asked == ["2026-08-19", "2026-08-18", "2026-08-17", "2026-08-16"]
+
+
+def test_a_run_of_empty_days_gives_up_rather_than_looping() -> None:
+    import datetime as dt
+
+    from pydantic import SecretStr
+
+    from stock_ai.ir.edinet import sample_filing_fields
+
+    def empty(params: dict[str, str], headers: dict[str, str]) -> tuple[int, object]:
+        return 200, {"results": []}
+
+    assert sample_filing_fields(SecretStr("k"), dt.date(2026, 8, 19), requester=empty) is None

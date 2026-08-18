@@ -407,6 +407,38 @@ def probe_key_placements(
     return results
 
 
+def sample_filing_fields(
+    api_key: SecretStr,
+    day: dt.date,
+    max_days_back: int = 10,
+    requester: Callable[[dict[str, str], dict[str, str]], tuple[int, Any]] | None = None,
+) -> tuple[dt.date, tuple[str, ...]] | None:
+    """Walk back from ``day`` until a date has filings, and sample their fields.
+
+    The probe asks for today by default, and a quiet early morning - or a
+    weekend, or a holiday - returns zero documents. That is a correct answer
+    and a useless sample: the diagnostic exists to show what a real record
+    carries, and on those days it silently shows nothing at all.
+
+    Returns the date that had filings and its field names, or ``None`` if none
+    of the days looked at had any.
+    """
+    secret = api_key.get_secret_value()
+    _query, headers = key_placements(secret)[CURRENT_PLACEMENT]
+    for offset in range(max_days_back + 1):
+        target = day - dt.timedelta(days=offset)
+        send = requester or _http_requester(target)
+        params = {"date": target.isoformat(), "type": "2", **_query}
+        try:
+            _status, payload = send(params, headers)
+        except Exception:  # a transport failure here is not worth reporting twice
+            return None
+        fields = _sample_fields(payload)
+        if fields:
+            return target, fields
+    return None
+
+
 def _sample_fields(payload: Any) -> tuple[str, ...]:
     """Field names on the first ``results`` entry, or empty if there is none."""
     if not isinstance(payload, dict):
