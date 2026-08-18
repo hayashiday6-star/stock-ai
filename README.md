@@ -680,6 +680,14 @@ uv run stock-ai daily --once --provider claude --channel discord --max-cost 0.20
 uv run stock-ai daily --at 18:00 AAPL MSFT       # blocks, fires daily
 ```
 
+**A failed run notifies; a quiet one does not.** Alerts are only sent when
+there are alerts, which for a scheduled job leaves the channel silent in four
+situations that mean opposite things: nothing was filed, nothing cleared the
+threshold, the cap skipped the job, and the job broke. So a failure always
+sends a summary to `--channel`. Success stays quiet unless you pass
+`--heartbeat`, because a message every single morning is one people stop
+reading — and then the failure message is unread too.
+
 **Set `--max-cost` whenever `--provider` is a paid one.** A scheduled run bills
 an account every night with nobody watching, and how many disclosures get filed
 on a given day is not something the schedule controls. The check itself costs
