@@ -149,7 +149,8 @@ def test_a_one_word_rating_is_bound_by_a_prefill_not_by_asking_nicely() -> None:
 
     assert classify_importance(_Recording(), "臨時報告書") is Importance.HIGH
     assert seen["prefill"] == ONE_WORD_PREFILL
-    assert "\n" in (seen["stop_sequences"] or ())
+    # No stop sequence: the obvious one is a newline, which the API refuses.
+    assert not seen.get("stop_sequences")
 
 
 def test_the_prefill_becomes_an_assistant_turn_the_reply_must_continue() -> None:
@@ -176,11 +177,12 @@ def test_the_prefill_becomes_an_assistant_turn_the_reply_must_continue() -> None
         messages = _Messages()
 
     provider = AnthropicProvider(client=_Client())
-    assert provider.complete("rate this", prefill="The answer is:", stop_sequences=["\n"]) == "high"
+    reply = provider.complete("rate this", prefill="The answer is:", stop_sequences=["END"])
+    assert reply == "high"
 
     messages = captured["messages"]
     assert messages[-1] == {"role": "assistant", "content": "The answer is:"}
-    assert captured["stop_sequences"] == ["\n"]
+    assert captured["stop_sequences"] == ["END"]
 
 
 def test_a_prefill_is_trimmed_because_the_api_rejects_trailing_space() -> None:
@@ -210,3 +212,43 @@ def test_a_prefill_is_trimmed_because_the_api_rejects_trailing_space() -> None:
     assert captured["messages"][-1]["content"] == "The answer is:"
     # No stop sequences given, so none are sent rather than an empty list.
     assert "stop_sequences" not in captured
+
+
+def test_a_whitespace_only_stop_sequence_is_dropped_not_sent() -> None:
+    """The API refuses such a sequence, and refuses the whole request with it.
+
+    Asking to stop at a newline looks like the obvious way to cut a one-word
+    answer. It is rejected with 400, and because the rejection kills the call
+    rather than the option, one bad constant turned all 111 ratings of a live
+    run into errors. A stop sequence only trims an answer that would arrive
+    regardless, so an unusable one is worth less than the call it would cost.
+    """
+    from stock_ai.ai.anthropic_provider import AnthropicProvider
+
+    captured: dict[str, object] = {}
+
+    class _Block:
+        type = "text"
+        text = "medium"
+
+    class _Response:
+        content = [_Block()]
+        stop_reason = "end_turn"
+        usage = None
+
+    class _Messages:
+        def create(self, **kwargs: object) -> _Response:
+            captured.update(kwargs)
+            return _Response()
+
+    class _Client:
+        messages = _Messages()
+
+    provider = AnthropicProvider(client=_Client())
+    assert provider.complete("x", stop_sequences=["\n", "  ", ""]) == "medium"
+    assert "stop_sequences" not in captured
+
+    # A usable one still goes through, alongside a dropped one.
+    captured.clear()
+    provider.complete("x", stop_sequences=["\n", "END"])
+    assert captured["stop_sequences"] == ["END"]
