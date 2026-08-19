@@ -58,21 +58,63 @@ DayFetcher = Callable[[dt.date], list[dict[str, Any]]]
 #: description of its own. Only the codes a watchlist cares about are named;
 #: anything else keeps its numeric code.
 DOC_TYPE_LABELS: dict[str, str] = {
+    "010": "有価証券通知書",
+    "020": "変更通知書(有価証券通知書)",
     "030": "有価証券届出書",
+    "040": "訂正有価証券届出書",
+    "050": "届出の取下げ願い",
+    "060": "発行登録通知書",
+    "070": "変更通知書(発行登録通知書)",
+    "080": "発行登録書",
+    "090": "訂正発行登録書",
+    "100": "発行登録追補書類",
+    "110": "発行登録取下届出書",
     "120": "有価証券報告書",
     "130": "訂正有価証券報告書",
+    "135": "確認書",
+    "136": "訂正確認書",
     "140": "四半期報告書",
     "150": "訂正四半期報告書",
     "160": "半期報告書",
     "170": "訂正半期報告書",
     "180": "臨時報告書",
     "190": "訂正臨時報告書",
-    "200": "自己株券買付状況報告書",
-    "220": "親会社等状況報告書",
-    "230": "自己株券買付状況報告書",
+    "200": "親会社等状況報告書",
+    "210": "訂正親会社等状況報告書",
+    "220": "自己株券買付状況報告書",
+    "230": "訂正自己株券買付状況報告書",
+    "235": "内部統制報告書",
+    "236": "訂正内部統制報告書",
+    "240": "公開買付届出書",
+    "250": "訂正公開買付届出書",
+    "260": "公開買付撤回届出書",
+    "270": "公開買付報告書",
+    "280": "訂正公開買付報告書",
+    "290": "意見表明報告書",
+    "300": "訂正意見表明報告書",
+    "310": "対質問回答報告書",
+    "320": "訂正対質問回答報告書",
+    "330": "別途買付け禁止の特例を受けるための申出書",
+    "340": "訂正別途買付け禁止の特例を受けるための申出書",
     "350": "大量保有報告書",
-    "360": "変更報告書",
+    "360": "訂正大量保有報告書",
+    "370": "基準日の届出書",
+    "380": "変更届出書",
 }
+
+
+def doc_type_label(code: str) -> str:
+    """Return a readable name for a ``docTypeCode``, or the code itself.
+
+    Falling back to the raw code rather than to "unknown" keeps an unmapped
+    type traceable: the number can be looked up in EDINET's own table, while
+    a placeholder word loses the only handle on what arrived.
+    """
+    text = str(code or "").strip()
+    if not text:
+        return "(no type)"
+    return DOC_TYPE_LABELS.get(text, text)
+
 
 #: Filings that never reach a reader: withdrawn, or hidden by EDINET.
 _WITHDRAWN = "1"
@@ -565,12 +607,33 @@ class EdinetDisclosureSource:
         Uses the same day cache as :meth:`fetch`, so calling both in one pass
         costs one set of requests rather than two.
         """
-        counts: Counter[str] = Counter()
+        return Counter(
+            {code: sum(types.values()) for code, types in self.filing_type_counts().items()}
+        )
+
+    def filing_type_counts(self) -> dict[str, Counter[str]]:
+        """Per securities code, how many filings of each ``docTypeCode``.
+
+        A raw filing count says how loud a name is, not what it is saying, and
+        the two come apart badly. A company that files a dozen 訂正 in a month
+        is noisy without being informative, and one whose count is made of
+        大量保有報告書 is not really the one filing at all. Splitting the count
+        by type is what lets a reader tell an active discloser from a busy
+        corrections queue before committing a watchlist slot to it.
+
+        Only filings that a reader could actually receive are counted -
+        withdrawn and hidden ones are excluded, exactly as :meth:`fetch`
+        excludes them. Counting what ``fetch`` would never return would rank a
+        name on alerts it can never produce.
+        """
+        counts: dict[str, Counter[str]] = {}
         for day in self._recent_days():
             for record in self._day_records(day):
                 code = _sec_code_of(record)
-                if code is not None:
-                    counts[code] += 1
+                if code is None or not _is_visible(record):
+                    continue
+                doc_type = str(record.get("docTypeCode") or "").strip()
+                counts.setdefault(code, Counter())[doc_type] += 1
         return counts
 
     def fetch(self, symbol: str, limit: int = 10) -> list[Disclosure]:

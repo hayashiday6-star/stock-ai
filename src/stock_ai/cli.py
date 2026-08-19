@@ -92,6 +92,7 @@ from stock_ai.ir.edinet import (
     CURRENT_PLACEMENT,
     EdinetDisclosureSource,
     ProbeResult,
+    doc_type_label,
     normalize_sec_code,
     probe_key_placements,
     sample_filing_fields,
@@ -1899,6 +1900,44 @@ def _parse_importance(value: str) -> Importance:
         ) from exc
 
 
+def _print_type_breakdown(
+    rows: list[tuple[str, str, str, int]],
+    by_code: dict[str, Counter[str]],
+) -> None:
+    """Show what each proposed name's filing count is actually made of.
+
+    A count on its own cannot distinguish three very different names: one that
+    reports substantively, one whose month is mostly 訂正 of earlier filings,
+    and one whose number comes from 大量保有報告書. Only the first is worth a
+    watchlist slot, and the ranking cannot tell them apart - so the breakdown
+    is what turns the number into something a reader can act on.
+    """
+    table = Table(title="what those filings are")
+    table.add_column("symbol", style="cyan")
+    table.add_column("name")
+    table.add_column("document type")
+    table.add_column("n", justify="right")
+    for index, (symbol, name, _sector, _filings) in enumerate(rows):
+        types = by_code.get(normalize_sec_code(symbol) or "", Counter())
+        if index:
+            table.add_section()
+        first = True
+        for doc_type, count in types.most_common():
+            table.add_row(
+                symbol if first else "",
+                name if first else "",
+                doc_type_label(doc_type),
+                str(count),
+            )
+            first = False
+    console.print(table)
+    console.print(
+        "[dim]大量保有報告書 and 訂正 rows are filings about a company or "
+        "repairs to earlier ones - they inflate a count without adding much "
+        "a reader would act on.[/]"
+    )
+
+
 @app.command(name="watch-suggest")
 def watch_suggest(
     lookback_days: int = typer.Option(30, help="Days of EDINET filings to count."),
@@ -1906,6 +1945,9 @@ def watch_suggest(
     per_sector: int = typer.Option(2, help="Cap per sector, so the list spreads. 0 = no cap."),
     add: bool = typer.Option(False, "--add", help="Add the proposed names to the watchlist."),
     importance: str = typer.Option("medium", help="Alert threshold for names added."),
+    by_type: bool = typer.Option(
+        False, "--by-type", help="Break each name's count down by document type."
+    ),
 ) -> None:
     """Propose watchlist names from which companies actually file.
 
@@ -1932,7 +1974,8 @@ def watch_suggest(
 
     source = EdinetDisclosureSource(api_key=settings.edinet_api_key, lookback_days=lookback_days)
     console.print(f"Counting EDINET filings over the last {lookback_days} day(s)...")
-    counts = source.filing_counts()
+    by_code = source.filing_type_counts()
+    counts = Counter({code: sum(types.values()) for code, types in by_code.items()})
     failed = len(source.failed_days)
     if failed:
         # Widening the window is the natural response to an empty result, and
@@ -2012,6 +2055,9 @@ def watch_suggest(
         "[dim]Ranked by filings made, not by merit - this says which names will "
         "produce alerts, and nothing about whether they are worth owning.[/]"
     )
+
+    if by_type:
+        _print_type_breakdown(rows, by_code)
 
     symbols = [row[0] for row in rows]
     if not add:
