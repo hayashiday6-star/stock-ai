@@ -54,6 +54,18 @@ SENTIMENT_SYSTEM = (
 #: the nightly monitor runs on, and there the failure does not look like a
 #: failure: the disclosure comes back unjudged and the run reports no alerts,
 #: which reads exactly like a quiet day.
+#: Put in the model's mouth so the reply continues a sentence that can only
+#: end in a label. Asking in prose for "exactly one word" was not binding: the
+#: ratings measured on live data ran ~110 output tokens each, and two of
+#: nineteen produced no text at all - one after exhausting a 512-token ceiling.
+#: That ceiling had already been raised from 8 to 64 to 512 chasing the same
+#: symptom, which is the sign of a cause elsewhere: the request never
+#: constrained the answer, so no ceiling was ever going to be high enough.
+ONE_WORD_PREFILL = "The answer is:"
+#: A newline ends the reply, so an answer that starts correctly and then wants
+#: to justify itself is cut where the label ends.
+ONE_WORD_STOP: tuple[str, ...] = ("\n",)
+
 IMPORTANCE_MAX_TOKENS = 512
 SENTIMENT_MAX_TOKENS = 512
 SUMMARY_MAX_TOKENS = 1024
@@ -98,7 +110,11 @@ def analyze_sentiment(provider: AIProvider, text: str) -> Sentiment:
     """Return the sentiment label for ``text`` (``unknown`` if unclassifiable)."""
     prompt = f"Classify the sentiment (positive/neutral/negative) of:\n\n{text}"
     raw = provider.complete(
-        prompt, system=SENTIMENT_SYSTEM, max_tokens=SENTIMENT_MAX_TOKENS
+        prompt,
+        system=SENTIMENT_SYSTEM,
+        max_tokens=SENTIMENT_MAX_TOKENS,
+        prefill=ONE_WORD_PREFILL,
+        stop_sequences=ONE_WORD_STOP,
     ).lower()
     for label in _SENTIMENT_LABELS:
         if label in raw:
@@ -130,7 +146,11 @@ def classify_importance(provider: AIProvider, text: str) -> Importance:
     treating it as routine is how the one filing that mattered gets missed.
     """
     raw = provider.complete(
-        importance_prompt(text), system=IMPORTANCE_SYSTEM, max_tokens=IMPORTANCE_MAX_TOKENS
+        importance_prompt(text),
+        system=IMPORTANCE_SYSTEM,
+        max_tokens=IMPORTANCE_MAX_TOKENS,
+        prefill=ONE_WORD_PREFILL,
+        stop_sequences=ONE_WORD_STOP,
     ).lower()
     for label in _IMPORTANCE_LABELS:
         if label in raw:

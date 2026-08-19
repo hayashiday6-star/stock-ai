@@ -102,7 +102,14 @@ class _StubProvider:
         self.reply = reply
         self.last_system: str | None = None
 
-    def complete(self, prompt: str, *, system: str | None = None, max_tokens: int = 1024) -> str:
+    def complete(
+        self,
+        prompt: str,
+        *,
+        system: str | None = None,
+        max_tokens: int = 1024,
+        **_kwargs: object,
+    ) -> str:
         self.last_system = system
         return self.reply
 

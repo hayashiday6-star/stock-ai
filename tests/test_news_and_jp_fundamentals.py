@@ -135,7 +135,12 @@ def test_news_pipeline_feeds_sentiment_factor() -> None:
         name = "stub"
 
         def complete(
-            self, prompt: str, *, system: str | None = None, max_tokens: int = 1024
+            self,
+            prompt: str,
+            *,
+            system: str | None = None,
+            max_tokens: int = 1024,
+            **_kwargs: object,
         ) -> str:
             return "positive"
 

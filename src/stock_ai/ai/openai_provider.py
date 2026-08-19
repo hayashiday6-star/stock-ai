@@ -6,6 +6,7 @@ testing without network access.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import Any
 
 from pydantic import SecretStr
@@ -43,8 +44,21 @@ class OpenAIProvider:
             self._client = OpenAI(api_key=key)
         return self._client
 
-    def complete(self, prompt: str, *, system: str | None = None, max_tokens: int = 1024) -> str:
-        """Return the model's text response to ``prompt``."""
+    def complete(
+        self,
+        prompt: str,
+        *,
+        system: str | None = None,
+        max_tokens: int = 1024,
+        prefill: str | None = None,
+        stop_sequences: Sequence[str] | None = None,
+    ) -> str:
+        """Return the model's text response to ``prompt``.
+
+        ``prefill`` is accepted and ignored: this API has no equivalent, and
+        silently dropping it is better than refusing a call the caller only
+        meant to constrain.
+        """
         messages: list[dict[str, str]] = []
         if system is not None:
             messages.append({"role": "system", "content": system})

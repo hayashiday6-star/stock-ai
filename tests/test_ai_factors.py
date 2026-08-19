@@ -23,7 +23,14 @@ class _StubProvider:
     def __init__(self, reply: str) -> None:
         self.reply = reply
 
-    def complete(self, prompt: str, *, system: str | None = None, max_tokens: int = 1024) -> str:
+    def complete(
+        self,
+        prompt: str,
+        *,
+        system: str | None = None,
+        max_tokens: int = 1024,
+        **_kwargs: object,
+    ) -> str:
         return self.reply
 
 
