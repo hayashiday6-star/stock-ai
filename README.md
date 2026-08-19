@@ -532,6 +532,28 @@ If the AI provider itself fails, those items are deliberately **not** recorded �
 they stay unseen and are retried, so a few minutes of downtime cannot bury a
 filing permanently. The count is reported so an incomplete pass is visible.
 
+### Which provider actually runs
+
+Commands with no `--provider` use `AI_PROVIDER` from `.env`, and that defaults
+to `dummy`. **A dummy run is hard to tell from a real one**: it completes, lists
+alerts, names symbols and bills nothing, so it reads as a cheap run rather than
+a fake one — the giveaway is that every item comes back `[HIGH]` with the prompt
+echoed back as its summary. Set `AI_PROVIDER=claude` once a key is in place.
+
+A dummy pass deliberately records nothing as seen. A seen disclosure is never
+fetched again, so remembering an echo would hide those filings from every later
+real run, and re-running would not bring them back.
+
+If something has already been recorded that should not have been:
+
+```bash
+uv run stock-ai forget          # everything
+uv run stock-ai forget 2502     # one name
+```
+
+The next run re-judges what it forgets, and bills for it — price it with
+`ai-cost` first.
+
 ### Disclosure feeds
 
 `--source` picks where disclosures come from:

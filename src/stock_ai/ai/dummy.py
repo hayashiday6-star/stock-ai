@@ -12,6 +12,12 @@ class DummyAIProvider:
 
     name = "dummy"
 
+    #: This provider judges nothing, so its verdicts must not be recorded as
+    #: judgements. A seen disclosure is never looked at again, so remembering
+    #: an echo would bury the real filing permanently - the same reasoning that
+    #: keeps a failed provider call from being remembered.
+    is_stub = True
+
     def __init__(self, prefix: str = "[dummy]") -> None:
         """Store the response prefix."""
         self.prefix = prefix

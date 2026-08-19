@@ -11,7 +11,7 @@ from __future__ import annotations
 import datetime as dt
 
 import pandas as pd
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session
 
@@ -560,6 +560,37 @@ class WatchlistRepository:
             ).scalar_one_or_none()
             is not None
         )
+
+    def count_seen(self, symbol: str | None = None) -> int:
+        """How many disclosures are on record as already reported."""
+        stmt = select(func.count()).select_from(SeenDisclosure)
+        if symbol is not None:
+            stmt = stmt.where(
+                SeenDisclosure.security_id.in_(
+                    select(Security.id).where(Security.symbol == symbol.upper())
+                )
+            )
+        return int(self.session.execute(stmt).scalar_one())
+
+    def forget_seen(self, symbol: str | None = None) -> int:
+        """Drop the seen record for ``symbol`` (or everything) and return the count.
+
+        A seen disclosure is never fetched again, which is what stops a daily
+        run re-delivering yesterday's news - and also what makes a bad pass
+        permanent. A run that recorded verdicts it should not have leaves those
+        filings invisible to every later run, and no amount of re-running
+        recovers them. This is the way back.
+        """
+        removed = self.count_seen(symbol)
+        stmt = delete(SeenDisclosure)
+        if symbol is not None:
+            stmt = stmt.where(
+                SeenDisclosure.security_id.in_(
+                    select(Security.id).where(Security.symbol == symbol.upper())
+                )
+            )
+        self.session.execute(stmt)
+        return removed
 
     def mark_seen(self, disclosure: Disclosure, importance: Importance, market: str = "US") -> None:
         """Record ``disclosure`` as reported so later runs skip it."""

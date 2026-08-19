@@ -16,6 +16,11 @@ class AIProvider(Protocol):
 
     name: str
 
+    #: Whether this provider only imitates a model. Callers that persist a
+    #: verdict must not persist a stub's, since a recorded verdict is never
+    #: revisited and would hide the disclosure from every later real run.
+    is_stub: bool = False
+
     def complete(self, prompt: str, *, system: str | None = None, max_tokens: int = 1024) -> str:
         """Return the model's text response to ``prompt``.
 
