@@ -1941,6 +1941,52 @@ def _print_type_breakdown(
     )
 
 
+@app.command()
+def forget(
+    symbol: str | None = typer.Argument(None, help="Only forget this symbol. Omit for all."),
+    yes: bool = typer.Option(False, "--yes", help="Skip the confirmation."),
+) -> None:
+    """Drop the record of which disclosures have already been reported.
+
+    The seen record is what stops a daily run re-delivering yesterday's news,
+    and it is also what makes a bad pass permanent: a run that recorded
+    verdicts it should not have - a stub provider, a misconfigured model -
+    leaves those filings invisible to every later run, because a seen item is
+    never fetched again. Forgetting them is the only way back.
+
+    The next run then re-judges everything in its window, and bills for it.
+    Price it first with 'ai-cost'.
+    """
+    settings = get_settings()
+    configure_logging(settings.log_level)
+
+    database = Database()
+    database.create_all()
+
+    with database.session() as session:
+        pending = WatchlistRepository(session).count_seen(symbol)
+
+    scope = f"[bold]{symbol.upper()}[/]" if symbol else "the whole watchlist"
+    if not pending:
+        console.print(f"Nothing on record for {scope}; nothing to forget.")
+        return
+
+    console.print(
+        f"This forgets [bold]{pending}[/] reported disclosure(s) for {scope}. "
+        "The next run re-judges them and bills for it."
+    )
+    if not yes and not typer.confirm("Continue?"):
+        console.print("Left as it was.")
+        raise typer.Exit(code=1)
+
+    with database.session() as session:
+        removed = WatchlistRepository(session).forget_seen(symbol)
+    console.print(
+        f"Forgot [bold]{removed}[/] record(s). Price the next run before "
+        "paying for it: [cyan]stock-ai ai-cost[/]"
+    )
+
+
 @app.command(name="watch-suggest")
 def watch_suggest(
     lookback_days: int = typer.Option(30, help="Days of EDINET filings to count."),
@@ -2086,7 +2132,9 @@ def watch_suggest(
 
 @app.command()
 def monitor(
-    provider: str = typer.Option("dummy", help="AI provider: dummy|claude|openai|gemini."),
+    provider: str | None = typer.Option(
+        None, help="AI provider: dummy|claude|openai|gemini. Default: AI_PROVIDER."
+    ),
     channel: str | None = typer.Option(None, help="Send alerts to console|discord|telegram|line."),
     limit: int = typer.Option(10, help="Disclosures pulled per watched symbol."),
     feed: str = typer.Option(
@@ -2119,7 +2167,7 @@ def monitor(
     database = Database()
     database.create_all()
     notifier = get_notifier(channel, settings) if channel else None
-    ai = get_ai_provider(provider, settings)
+    ai = get_ai_provider(provider or settings.ai_provider, settings)
     monitor_service = WatchMonitor(
         database,
         source=_disclosure_source(feed, settings, lookback_days),
@@ -2563,7 +2611,9 @@ def daily(
     at: str = typer.Option("18:00", help="Local HH:MM the jobs run at."),
     symbols: list[str] | None = typer.Argument(None, help="Symbols to refresh."),
     source: str = typer.Option("yfinance", help="Price source: yfinance | jquants."),
-    provider: str = typer.Option("dummy", help="AI provider used by the monitor."),
+    provider: str | None = typer.Option(
+        None, help="AI provider used by the monitor. Default: AI_PROVIDER."
+    ),
     channel: str | None = typer.Option(None, help="Notification channel for alerts."),
     feed: str = typer.Option("all", help="Disclosure feed: all | edinet | news."),
     once: bool = typer.Option(False, "--once", help="Run the jobs now and exit."),
@@ -2620,7 +2670,7 @@ def daily(
     # Built once, outside the job, so the spend of the run it performs can be
     # read back afterwards. A provider constructed inside the lambda is gone by
     # the time the job returns, and with it the record of what it cost.
-    ai = get_ai_provider(provider, settings)
+    ai = get_ai_provider(provider or settings.ai_provider, settings)
 
     def check_watchlist() -> None:
         service = WatchMonitor(
@@ -2709,7 +2759,9 @@ def _log_ingest(results: list[IngestResult]) -> None:
 @app.command()
 def ask(
     question: str = typer.Argument(..., help='e.g. "PER15以下でROE20%以上の半導体株"'),
-    provider: str = typer.Option("dummy", help="AI provider: dummy|claude|openai|gemini."),
+    provider: str | None = typer.Option(
+        None, help="AI provider: dummy|claude|openai|gemini. Default: AI_PROVIDER."
+    ),
     top: int = typer.Option(20, help="Rows to print; 0 for every match."),
     explain_only: bool = typer.Option(
         False, "--explain-only", help="Show the interpretation without running it."
@@ -2734,7 +2786,7 @@ def ask(
         )
         raise typer.Exit(code=1)
 
-    ai = get_ai_provider(provider, settings)
+    ai = get_ai_provider(provider or settings.ai_provider, settings)
     try:
         query = parse_query(ai, question)
     except AIError as exc:
@@ -2772,13 +2824,15 @@ def ask(
 @app.command()
 def summarize(
     text: str = typer.Argument(..., help="Text (IR excerpt, news, ...) to summarize."),
-    provider: str = typer.Option("dummy", help="AI provider: dummy|claude|openai|gemini."),
+    provider: str | None = typer.Option(
+        None, help="AI provider: dummy|claude|openai|gemini. Default: AI_PROVIDER."
+    ),
     max_words: int = typer.Option(120, help="Maximum words in the summary."),
 ) -> None:
     """Summarize TEXT with the selected AI provider."""
     settings = get_settings()
     configure_logging(settings.log_level)
-    ai = get_ai_provider(provider, settings)
+    ai = get_ai_provider(provider or settings.ai_provider, settings)
     # ``finally``: a call that fails after the model answered is still billed,
     # and that is precisely the run where the reader most wants the figure. The
     # first live failure of this command spent tokens and reported nothing.
@@ -2791,12 +2845,14 @@ def summarize(
 @app.command()
 def sentiment(
     text: str = typer.Argument(..., help="Text to classify."),
-    provider: str = typer.Option("dummy", help="AI provider: dummy|claude|openai|gemini."),
+    provider: str | None = typer.Option(
+        None, help="AI provider: dummy|claude|openai|gemini. Default: AI_PROVIDER."
+    ),
 ) -> None:
     """Classify the sentiment of TEXT (positive / neutral / negative)."""
     settings = get_settings()
     configure_logging(settings.log_level)
-    ai = get_ai_provider(provider, settings)
+    ai = get_ai_provider(provider or settings.ai_provider, settings)
     try:
         console.print(analyze_sentiment(ai, text))
     finally:

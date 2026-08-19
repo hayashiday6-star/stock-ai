@@ -170,6 +170,16 @@ class WatchMonitor:
                 "(and billed) on the next run.",
                 unjudged,
             )
+        if checked and getattr(self.provider, "is_stub", False):
+            # Said plainly, because everything else about this run looks real:
+            # it lists alerts, it names symbols, and it costs nothing.
+            logger.warning(
+                "Provider %r only echoes prompts - these %d item(s) were not "
+                "judged, and nothing was recorded as seen. Set AI_PROVIDER or "
+                "pass --provider to run for real.",
+                getattr(self.provider, "name", "?"),
+                checked,
+            )
         if notify and alerts:
             self._deliver(result)
         return result
@@ -222,7 +232,12 @@ class WatchMonitor:
             logger.warning("Importance check failed for %s: %s", entry.symbol, exc)
             return UNJUDGED
 
-        self._remember(entry, disclosure, importance)
+        # A stub provider judged nothing, so nothing is worth remembering. A
+        # seen disclosure is never fetched again, so recording an echo would
+        # hide these filings from every later real run - the damage outlasts
+        # the test that caused it.
+        if not getattr(self.provider, "is_stub", False):
+            self._remember(entry, disclosure, importance)
         if importance.rank < entry.min_importance.rank:
             return None
 

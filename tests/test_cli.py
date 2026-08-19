@@ -306,3 +306,32 @@ def test_an_unreadable_symbol_file_says_what_it_actually_held(tmp_path) -> None:
 
     message = str(excinfo.value)
     assert "0 bytes" in message  # the fact that decides what to do next
+
+
+def test_ai_commands_take_their_provider_from_configuration() -> None:
+    """The estimate priced Claude while the run used the dummy.
+
+    ``ai-cost`` read the configured model and ``monitor`` had ``dummy`` frozen
+    into its signature, so the two commands disagreed about which provider the
+    run was for. Nothing on screen said so: the dummy pass reports alerts,
+    names symbols and bills nothing, which reads as a cheap run rather than a
+    fake one. A ``None`` default is what lets configuration decide.
+    """
+    import typer.main
+
+    command = typer.main.get_command(app)
+    for name in ("monitor", "daily", "ask", "summarize", "sentiment"):
+        params = {p.name: p for p in command.commands[name].params}
+        if "provider" not in params:
+            continue
+        assert params["provider"].default is None, name
+
+
+def test_the_provider_setting_is_read_from_the_environment(monkeypatch) -> None:
+    """Configuring it once must reach every command, not just the dashboard."""
+    from stock_ai.config.settings import Settings
+
+    monkeypatch.setenv("AI_PROVIDER", "claude")
+    assert Settings().ai_provider == "claude"
+    monkeypatch.delenv("AI_PROVIDER")
+    assert Settings().ai_provider == "dummy"

@@ -44,6 +44,12 @@ class Settings(BaseSettings):
     edinet_api_key: SecretStr | None = Field(default=None, validation_alias="EDINET_API_KEY")
 
     # --- AI providers (Phase 6) ---
+    #: Which provider the commands use when none is named on the command line.
+    #: It defaults to ``dummy`` so a fresh checkout runs without an API key,
+    #: and that default is exactly the trap it has to be configurable for: a
+    #: dummy run completes, reports alerts, and bills nothing, so nothing on
+    #: screen distinguishes it from a real one until the ratings are read.
+    ai_provider: str = Field(default="dummy", validation_alias="AI_PROVIDER")
     anthropic_api_key: SecretStr | None = Field(default=None, validation_alias="ANTHROPIC_API_KEY")
     #: Which Claude model to call. ``None`` means the provider's own default.
     #: Configurable because the choice is a twenty-fold cost difference on the

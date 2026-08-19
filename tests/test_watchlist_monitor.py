@@ -491,3 +491,87 @@ def test_a_provider_that_cannot_be_priced_still_runs() -> None:
             raise AssertionError("nothing should be fetched when pricing is impossible")
 
     assert _within_budget(_Pending(), DummyAIProvider(), max_cost=0.0, limit=10) is True
+
+
+def test_a_stub_provider_does_not_consume_the_backlog(tmp_path) -> None:
+    """A dummy run must leave the work for a real one.
+
+    Everything else about such a run looks real - it lists alerts, names
+    symbols and costs nothing - so the only thing separating it from a paid run
+    is whether the ratings are read closely. If it also marked items seen, the
+    filings would be hidden from every later run, and no re-run recovers them:
+    a seen disclosure is never fetched again.
+    """
+    from stock_ai.ai.dummy import DummyAIProvider
+    from stock_ai.data.types import Disclosure
+    from stock_ai.database.repository import WatchlistRepository
+    from stock_ai.ir.monitor import WatchMonitor
+
+    class OneItem:
+        def fetch(self, symbol: str, limit: int = 10) -> list[Disclosure]:
+            return [
+                Disclosure(
+                    symbol=symbol,
+                    title="臨時報告書",
+                    body="body",
+                    published_on=None,
+                    url="https://example.invalid/1",
+                    source="edinet",
+                )
+            ]
+
+    database = Database(f"sqlite:///{tmp_path / 'stub.db'}")
+    database.create_all()
+    with database.session() as session:
+        WatchlistRepository(session).add("2502", market="JP")
+
+    monitor = WatchMonitor(database, source=OneItem(), provider=DummyAIProvider())
+    first = monitor.run(limit=10)
+    assert first.checked == 1
+
+    # Nothing was recorded, so a real provider still sees the same item.
+    with database.session() as session:
+        assert WatchlistRepository(session).count_seen() == 0
+    assert monitor.run(limit=10).checked == 1
+
+
+def test_forgetting_seen_records_lets_a_real_run_see_them_again(tmp_path) -> None:
+    """Recovery from a pass that recorded verdicts it should not have."""
+    from stock_ai.ai.analysis import Importance
+    from stock_ai.data.types import Disclosure
+    from stock_ai.database.repository import WatchlistRepository
+
+    database = Database(f"sqlite:///{tmp_path / 'forget.db'}")
+    database.create_all()
+    item = Disclosure(
+        symbol="2502",
+        title="臨時報告書",
+        body="body",
+        published_on=None,
+        url="https://example.invalid/1",
+        source="edinet",
+    )
+    other = Disclosure(
+        symbol="7203",
+        title="半期報告書",
+        body="body",
+        published_on=None,
+        url="https://example.invalid/2",
+        source="edinet",
+    )
+    with database.session() as session:
+        repo = WatchlistRepository(session)
+        repo.mark_seen(item, Importance.HIGH, market="JP")
+        repo.mark_seen(other, Importance.HIGH, market="JP")
+
+    with database.session() as session:
+        repo = WatchlistRepository(session)
+        assert repo.count_seen() == 2
+        assert repo.forget_seen("2502") == 1
+
+    with database.session() as session:
+        repo = WatchlistRepository(session)
+        assert not repo.is_seen(item.uid)
+        assert repo.is_seen(other.uid)  # untouched
+        assert repo.forget_seen() == 1
+        assert repo.count_seen() == 0
