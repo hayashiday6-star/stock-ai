@@ -551,6 +551,7 @@ class EdinetDisclosureSource:
         self._fetch_day = fetcher or _default_day_fetcher(api_key)
         self._today = clock or dt.date.today
         self._cache: dict[dt.date, list[dict[str, Any]]] = {}
+        self._failed_days: set[dt.date] = set()
 
     def filing_counts(self) -> Counter[str]:
         """How many filings each securities code made over the lookback window.
@@ -637,4 +638,18 @@ class EdinetDisclosureSource:
             except Exception as exc:  # one bad day must not blind the rest
                 logger.warning("EDINET fetch failed for %s: %s", day, exc)
                 self._cache[day] = []
+                self._failed_days.add(day)
         return self._cache[day]
+
+    @property
+    def failed_days(self) -> frozenset[dt.date]:
+        """The days whose fetch raised, out of those scanned so far.
+
+        A failed day is cached as empty so that one outage does not cost a
+        request per watched name. That makes it indistinguishable from a day
+        on which nobody filed, which matters: "nothing was filed" invites you
+        to widen the window, while "nothing arrived" means widening it only
+        buys more failures. Callers that report emptiness to a human need to
+        tell those apart, and this is what lets them.
+        """
+        return frozenset(self._failed_days)

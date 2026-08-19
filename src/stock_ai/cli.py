@@ -1933,12 +1933,29 @@ def watch_suggest(
     source = EdinetDisclosureSource(api_key=settings.edinet_api_key, lookback_days=lookback_days)
     console.print(f"Counting EDINET filings over the last {lookback_days} day(s)...")
     counts = source.filing_counts()
-    if not counts:
+    failed = len(source.failed_days)
+    if failed:
+        # Widening the window is the natural response to an empty result, and
+        # it is exactly the wrong one when the requests are not arriving: it
+        # buys more failures and never reaches the cause.
         console.print(
-            "[yellow]No filings found.[/] With a valid key that means a very "
-            "quiet window - try a longer --lookback-days. Run 'edinet-check' "
-            "if you suspect the key."
+            f"[yellow]{failed} of {lookback_days} day(s) could not be "
+            "fetched[/] - those days are counted as empty. Run 'edinet-check' "
+            "to see why before trusting the ranking below."
         )
+    if not counts:
+        if failed == lookback_days:
+            console.print(
+                "[red]Every day failed, so this is not a quiet window - "
+                "nothing arrived at all.[/] A longer --lookback-days cannot "
+                "help. Run 'edinet-check' to test the key and the connection."
+            )
+        else:
+            console.print(
+                "[yellow]No filings found.[/] With a valid key that means a "
+                "very quiet window - try a longer --lookback-days. Run "
+                "'edinet-check' if you suspect the key."
+            )
         raise typer.Exit(code=1)
 
     with database.session() as session:
