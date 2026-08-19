@@ -78,10 +78,66 @@ def _default_client() -> Any:
     return httpx.Client()
 
 
+def split_message(message: str, limit: int) -> list[str]:
+    """Split ``message`` into pieces no longer than ``limit`` characters.
+
+    Every chat service caps a single message, and a monitor run has no say in
+    how many alerts a day produces: a quiet day is one short message and a busy
+    one is far past any cap. Sending the lot as one string turns a *good* day -
+    lots to report - into a delivery failure, which is precisely backwards.
+
+    Splits on blank lines first, since alerts are separated by one, then on
+    single lines, and only cuts mid-line for a line longer than the limit on
+    its own. The point is that a reader never sees an alert torn in half
+    because the one before it happened to be long.
+    """
+    if limit <= 0:
+        raise ValueError("limit must be positive")
+    if len(message) <= limit:
+        return [message] if message else []
+
+    chunks: list[str] = []
+    current = ""
+
+    def flush() -> None:
+        nonlocal current
+        if current:
+            chunks.append(current)
+            current = ""
+
+    for block in message.split("\n\n"):
+        candidate = f"{current}\n\n{block}" if current else block
+        if len(candidate) <= limit:
+            current = candidate
+            continue
+        flush()
+        if len(block) <= limit:
+            current = block
+            continue
+        # One alert alone is over the cap: fall back to lines, then to a hard
+        # cut, so something still arrives rather than nothing.
+        for line in block.split("\n"):
+            candidate = f"{current}\n{line}" if current else line
+            if len(candidate) <= limit:
+                current = candidate
+                continue
+            flush()
+            while len(line) > limit:
+                chunks.append(line[:limit])
+                line = line[limit:]
+            current = line
+    flush()
+    return chunks
+
+
 class DiscordNotifier:
     """Post a message to a Discord channel via an incoming webhook."""
 
     name = "discord"
+
+    #: Discord rejects a webhook payload whose ``content`` exceeds this, with a
+    #: 400 that names no field. Measured against the API, not guessed.
+    MAX_CHARS = 2000
 
     def __init__(self, webhook_url: SecretStr | str | None, client: Any = None) -> None:
         """Store the webhook URL and optional injected HTTP client."""
@@ -89,18 +145,26 @@ class DiscordNotifier:
         self._client = client
 
     def send(self, message: str) -> None:
-        """Deliver ``message`` to the configured Discord webhook."""
+        """Deliver ``message`` to the configured Discord webhook, in parts if needed."""
         url = _reveal(self._webhook_url)
         if not url:
             raise NotificationError("Discord webhook URL is not configured.")
-        _post_json(self._client or _default_client(), url, {"content": message})
-        logger.info("Sent Discord notification (%d chars)", len(message))
+        client = self._client or _default_client()
+        parts = split_message(message, self.MAX_CHARS)
+        for part in parts:
+            _post_json(client, url, {"content": part})
+        logger.info(
+            "Sent Discord notification (%d chars in %d message(s))", len(message), len(parts)
+        )
 
 
 class TelegramNotifier:
     """Send a message via the Telegram Bot API."""
 
     name = "telegram"
+
+    #: Telegram's documented limit for ``sendMessage`` text.
+    MAX_CHARS = 4096
 
     def __init__(
         self,
@@ -120,14 +184,22 @@ class TelegramNotifier:
         if not token or not chat_id:
             raise NotificationError("Telegram bot token or chat id is not configured.")
         url = f"https://api.telegram.org/bot{token}/sendMessage"
-        _post_json(self._client or _default_client(), url, {"chat_id": chat_id, "text": message})
-        logger.info("Sent Telegram notification (%d chars)", len(message))
+        client = self._client or _default_client()
+        parts = split_message(message, self.MAX_CHARS)
+        for part in parts:
+            _post_json(client, url, {"chat_id": chat_id, "text": part})
+        logger.info(
+            "Sent Telegram notification (%d chars in %d message(s))", len(message), len(parts)
+        )
 
 
 class LineNotifier:
     """Broadcast a message via the LINE Messaging API."""
 
     name = "line"
+
+    #: LINE's documented limit for a text message.
+    MAX_CHARS = 5000
 
     _URL = "https://api.line.me/v2/bot/message/broadcast"
 
@@ -142,6 +214,9 @@ class LineNotifier:
         if not token:
             raise NotificationError("LINE access token is not configured.")
         headers = {"Authorization": f"Bearer {token}"}
-        payload = {"messages": [{"type": "text", "text": message}]}
-        _post_json(self._client or _default_client(), self._URL, payload, headers=headers)
-        logger.info("Sent LINE notification (%d chars)", len(message))
+        client = self._client or _default_client()
+        parts = split_message(message, self.MAX_CHARS)
+        for part in parts:
+            payload = {"messages": [{"type": "text", "text": part}]}
+            _post_json(client, self._URL, payload, headers=headers)
+        logger.info("Sent LINE notification (%d chars in %d message(s))", len(message), len(parts))
