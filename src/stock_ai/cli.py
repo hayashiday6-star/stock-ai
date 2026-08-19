@@ -100,6 +100,9 @@ from stock_ai.ir.edinet import (
 from stock_ai.ir.edinet import (
     EXTRA_BODY_FIELDS as EDINET_EXTRA_BODY_FIELDS,
 )
+from stock_ai.ir.edinet import (
+    SUBJECT_CODE_FIELDS as EDINET_SUBJECT_CODE_FIELDS,
+)
 from stock_ai.ir.monitor import WatchMonitor
 from stock_ai.ir.sources import CompositeDisclosureSource, NewsDisclosureSource
 from stock_ai.news.sources import YFinanceNewsSource
@@ -2228,6 +2231,8 @@ def _print_edinet_field_report(
         sampled_on, fields = found
 
     used = {name for name, _label in EDINET_EXTRA_BODY_FIELDS}
+    used |= set(EDINET_SUBJECT_CODE_FIELDS)
+    used |= {"edinetCode", "filerName", "secCode", "submitDateTime"}
     present = sorted(used & set(fields))
     absent = sorted(used - set(fields))
     unread = sorted(set(fields) - used - {"docID", "docDescription", "docTypeCode"})

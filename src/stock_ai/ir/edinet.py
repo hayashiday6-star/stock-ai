@@ -164,6 +164,23 @@ def _title_of(record: dict[str, Any]) -> str:
     return DOC_TYPE_LABELS.get(code, f"EDINET書類 ({code})" if code else "EDINET書類")
 
 
+def subject_code_of(record: dict[str, Any]) -> str | None:
+    """Return the EDINET code of the company a filing is *about*, if not the filer.
+
+    A 大量保有報告書 is filed by the shareholder and carries the shareholder's
+    ``secCode``, so it lands under the shareholder's ticker while being about
+    somebody else entirely. Left unmarked it reads as the watched company's own
+    disclosure - and a rating made on that premise is answering the wrong
+    question about the wrong company.
+    """
+    filer_code = str(record.get("edinetCode") or "").strip()
+    for key in SUBJECT_CODE_FIELDS:
+        code = str(record.get(key) or "").strip()
+        if code and code != filer_code:
+            return code
+    return None
+
+
 def _submitted_on(record: dict[str, Any]) -> dt.date | None:
     """Parse ``submitDateTime`` (``YYYY-MM-DD HH:MM``) into a date."""
     raw = str(record.get("submitDateTime") or "").strip()
@@ -187,14 +204,27 @@ def _submitted_on(record: dict[str, Any]) -> dt.date | None:
 #: carries, which turns the assumption into a measurement.
 EXTRA_BODY_FIELDS: tuple[tuple[str, str], ...] = (
     ("currentReportReason", "提出事由"),
-    ("subjectName", "対象会社"),
-    ("issuerName", "発行会社"),
     ("periodStart", "対象期間開始"),
     ("periodEnd", "対象期間終了"),
 )
 
+#: Fields naming a company other than the filer, in the order they are
+#: preferred. EDINET gives these as EDINET codes (``E01234``) and supplies no
+#: matching name anywhere in ``documents.json`` - so a reader who wants the
+#: company must resolve the code, which is what :class:`EdinetDisclosureSource`
+#: does from the filings it has already downloaded.
+SUBJECT_CODE_FIELDS: tuple[str, ...] = (
+    "issuerEdinetCode",
+    "subjectEdinetCode",
+)
 
-def to_disclosure(symbol: str, record: dict[str, Any]) -> Disclosure:
+
+def to_disclosure(
+    symbol: str,
+    record: dict[str, Any],
+    *,
+    resolve_name: Callable[[str], str | None] | None = None,
+) -> Disclosure:
     """Map one EDINET ``results`` entry onto a :class:`Disclosure`.
 
     The body is built from the filing *index*, not the filing. EDINET serves
@@ -203,12 +233,32 @@ def to_disclosure(symbol: str, record: dict[str, Any]) -> Disclosure:
     about its title and metadata. That is a real limit on how much a rating can
     mean, and it is stated in the alert rather than left for the reader to
     infer from a summary that happens to mention it.
+
+    Filings about a *different* company are named as such. EDINET indexes a
+    大量保有報告書 under the shareholder who filed it, so watching a large
+    asset manager delivers its reports on everybody else's shares. Reported
+    plainly they read as the watched company's own news, and the rating is
+    then made about the wrong company entirely; ``resolve_name`` turns the
+    subject's EDINET code into a name where one is known.
     """
     doc_id = str(record.get("docID") or "").strip()
     filer = str(record.get("filerName") or "").strip()
     doc_type = DOC_TYPE_LABELS.get(str(record.get("docTypeCode") or ""), "")
 
+    subject_code = subject_code_of(record)
+    subject = None
+    if subject_code:
+        resolved = resolve_name(subject_code) if resolve_name else None
+        subject = resolved or subject_code
+
+    title = _title_of(record)
     body_parts = [part for part in (filer, doc_type) if part]
+    if subject:
+        title = f"{title}（対象: {subject}）"
+        body_parts.append(
+            f"この書類は{filer or '提出者'}が{subject}について提出したもので、"
+            f"{filer or '提出者'}自身の開示ではありません"
+        )
     for key, label in EXTRA_BODY_FIELDS:
         value = str(record.get(key) or "").strip()
         if value:
@@ -217,7 +267,7 @@ def to_disclosure(symbol: str, record: dict[str, Any]) -> Disclosure:
 
     return Disclosure(
         symbol=symbol,
-        title=_title_of(record),
+        title=title,
         body=" / ".join(body_parts),
         published_on=_submitted_on(record),
         url=_DOCUMENT_URL.format(doc_id=doc_id) if doc_id else None,
@@ -594,6 +644,7 @@ class EdinetDisclosureSource:
         self._today = clock or dt.date.today
         self._cache: dict[dt.date, list[dict[str, Any]]] = {}
         self._failed_days: set[dt.date] = set()
+        self._names: dict[str, str] = {}
 
     def filing_counts(self) -> Counter[str]:
         """How many filings each securities code made over the lookback window.
@@ -646,10 +697,19 @@ class EdinetDisclosureSource:
         if code is None:
             return []
 
+        # Warm every day before matching. Names are learnt from the filings a
+        # company makes itself, and a subject's own filing may land on a later
+        # day than the report about it - matching as we go would resolve those
+        # to a bare code purely because of the order days arrive in. The days
+        # are cached, so this costs no extra requests.
+        days = self._recent_days()
+        for day in days:
+            self._day_records(day)
+
         matches: list[Disclosure] = []
         scanned = 0
         with_codes = 0
-        for day in self._recent_days():
+        for day in days:
             for record in self._day_records(day):
                 scanned += 1
                 record_code = _sec_code_of(record)
@@ -657,7 +717,7 @@ class EdinetDisclosureSource:
                     with_codes += 1
                 if record_code != code or not _is_visible(record):
                     continue
-                matches.append(to_disclosure(symbol, record))
+                matches.append(to_disclosure(symbol, record, resolve_name=self.resolve_name))
 
         matches.sort(key=lambda d: d.published_on or dt.date.min, reverse=True)
         # Zero matches is ambiguous on its own: the company may simply not have
@@ -697,12 +757,34 @@ class EdinetDisclosureSource:
         """
         if day not in self._cache:
             try:
-                self._cache[day] = self._fetch_day(day)
+                records = self._fetch_day(day)
+                self._remember_names(records)
+                self._cache[day] = records
             except Exception as exc:  # one bad day must not blind the rest
                 logger.warning("EDINET fetch failed for %s: %s", day, exc)
                 self._cache[day] = []
                 self._failed_days.add(day)
         return self._cache[day]
+
+    def _remember_names(self, records: list[dict[str, Any]]) -> None:
+        """Learn ``edinetCode`` -> ``filerName`` from filings already downloaded.
+
+        EDINET names the subject of a filing only by code, and publishes no
+        lookup alongside it. Every company that files, though, states its own
+        code and name in its own entry - so the days already fetched for the
+        watchlist carry the mapping for free. A code that never filed in the
+        window stays unresolved and is shown as the raw code, which is still
+        the honest answer: it names a company, just not one this pass saw.
+        """
+        for record in records:
+            code = str(record.get("edinetCode") or "").strip()
+            name = str(record.get("filerName") or "").strip()
+            if code and name:
+                self._names.setdefault(code, name)
+
+    def resolve_name(self, edinet_code: str) -> str | None:
+        """Return the filer name seen for ``edinet_code`` in this pass, if any."""
+        return self._names.get(str(edinet_code or "").strip())
 
     @property
     def failed_days(self) -> frozenset[dt.date]:
