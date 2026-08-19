@@ -819,3 +819,99 @@ def test_document_type_labels_match_edinet_numbering() -> None:
     assert doc_type_label("100") == "発行登録追補書類"
     # An unmapped code stays traceable rather than becoming "unknown".
     assert doc_type_label("999") == "999"
+
+
+def test_a_filing_about_another_company_says_so() -> None:
+    """A 大量保有報告書 is indexed under the shareholder, not the company.
+
+    Watching a large asset manager therefore delivers its reports on everybody
+    else's shares. Unmarked they read as the watched company's own news, and
+    the rating is then made about the wrong company - so the subject has to
+    appear in the title the rating is built from, not only in a field nobody
+    reads.
+    """
+    from stock_ai.ir.edinet import to_disclosure
+
+    record = {
+        "docID": "S100XXXX",
+        "edinetCode": "E03615",
+        "filerName": "株式会社三菱ＵＦＪフィナンシャル・グループ",
+        "docTypeCode": "350",
+        "issuerEdinetCode": "E00821",
+        "submitDateTime": "2026-08-18 15:00",
+    }
+    names = {"E00821": "エア・ウォーター株式会社"}
+
+    disclosure = to_disclosure("8306", record, resolve_name=names.get)
+
+    assert "エア・ウォーター株式会社" in disclosure.title
+    assert "自身の開示ではありません" in disclosure.body
+
+    # With no name known the code still names a company, so it is shown as-is
+    # rather than dropped - a bare code is honest, silence is not.
+    unresolved = to_disclosure("8306", record, resolve_name=lambda _code: None)
+    assert "E00821" in unresolved.title
+
+
+def test_a_companys_own_filing_is_not_labelled_as_being_about_someone_else() -> None:
+    """The subject marker must not fire when the filer is the subject."""
+    from stock_ai.ir.edinet import to_disclosure
+
+    record = {
+        "docID": "S100YYYY",
+        "edinetCode": "E00821",
+        "filerName": "エア・ウォーター株式会社",
+        "docTypeCode": "180",
+        "issuerEdinetCode": "E00821",  # itself
+        "submitDateTime": "2026-08-18 15:00",
+    }
+
+    disclosure = to_disclosure("4088", record)
+
+    assert "対象:" not in disclosure.title
+    assert "自身の開示ではありません" not in disclosure.body
+
+
+def test_the_subject_name_is_learnt_from_days_fetched_for_the_watchlist() -> None:
+    """The name may come from a day later than the report that references it.
+
+    Resolving as each day is scanned would leave those as bare codes purely
+    because of the order days arrive in, which looks like missing data rather
+    than an ordering artefact.
+    """
+    import datetime as dt
+
+    from stock_ai.ir.edinet import EdinetDisclosureSource
+
+    def fetcher(day: dt.date) -> list[dict[str, object]]:
+        if day == dt.date(2026, 8, 19):
+            return [
+                {
+                    "docID": "a",
+                    "secCode": "83060",
+                    "edinetCode": "E03615",
+                    "filerName": "三菱ＵＦＪ",
+                    "docTypeCode": "350",
+                    "issuerEdinetCode": "E00821",
+                    "submitDateTime": "2026-08-19 15:00",
+                }
+            ]
+        # The subject files for itself only on an older day.
+        return [
+            {
+                "docID": "b",
+                "secCode": "40880",
+                "edinetCode": "E00821",
+                "filerName": "エア・ウォーター",
+                "docTypeCode": "180",
+                "submitDateTime": "2026-08-18 15:00",
+            }
+        ]
+
+    source = EdinetDisclosureSource(
+        lookback_days=2, fetcher=fetcher, clock=lambda: dt.date(2026, 8, 19)
+    )
+    found = source.fetch("8306")
+
+    assert len(found) == 1
+    assert "エア・ウォーター" in found[0].title
