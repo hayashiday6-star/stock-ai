@@ -19,7 +19,7 @@ Three properties make this safe to run on a schedule:
 from __future__ import annotations
 
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from stock_ai.ai.analysis import DEFAULT_SUMMARY_WORDS, classify_importance
 from stock_ai.ai.analysis import summarize as ai_summarize
@@ -92,6 +92,14 @@ class MonitorResult:
 
     These are *not* recorded as seen, so they are retried on the next run once
     the provider recovers. A non-zero count means the pass was incomplete.
+    """
+    delivery_error: str | None = None
+    """Why the alerts could not be sent, if a notifier was configured and failed.
+
+    Recorded rather than raised. By the time delivery is attempted the items are
+    already marked seen, so an exception here loses the alerts twice over: they
+    never reach the channel, and they are never looked at again. Keeping the
+    failure as data lets the caller still print what it found.
     """
 
     def format(self) -> str:
@@ -181,7 +189,9 @@ class WatchMonitor:
                 checked,
             )
         if notify and alerts:
-            self._deliver(result)
+            failure = self._deliver(result)
+            if failure:
+                result = replace(result, delivery_error=failure)
         return result
 
     def pending(self, limit: int = 10) -> list[tuple[WatchEntry, Disclosure]]:
@@ -262,13 +272,25 @@ class WatchMonitor:
         with self.database.session() as session:
             WatchlistRepository(session).mark_seen(disclosure, importance, market=entry.market)
 
-    def _deliver(self, result: MonitorResult) -> None:
-        """Send the alerts through the notifier, if one is configured."""
+    def _deliver(self, result: MonitorResult) -> str | None:
+        """Send the alerts through the notifier; return why it failed, if it did.
+
+        The failure is returned rather than raised. Delivery is the last step,
+        after every item has been judged, billed and marked seen - so an
+        exception here throws away work that has already been paid for, and
+        throws away the alerts with it, since a seen item is never re-examined.
+        The run reports what it found either way.
+        """
         if self.notifier is None:
             logger.warning("Alerts raised but no notifier is configured.")
-            return
-        self.notifier.send(result.format())
+            return None
+        try:
+            self.notifier.send(result.format())
+        except Exception as exc:
+            logger.error("Could not deliver %d alert(s): %s", len(result.alerts), exc)
+            return str(exc)
         logger.info("Delivered %d alert(s) via %s", len(result.alerts), self.notifier.name)
+        return None
 
 
 def unseen_only(database: Database, disclosures: Sequence[Disclosure]) -> list[Disclosure]:

@@ -2200,6 +2200,15 @@ def monitor(
         console.print(result.format())
     else:
         console.print("[dim]Nothing above threshold.[/]")
+    if result.delivery_error:
+        # Printed after the alerts, not instead of them: the items are already
+        # marked seen, so this screen is the only place they still exist.
+        console.print(
+            f"\n[red]The alerts above were not delivered:[/] {result.delivery_error}\n"
+            "  They are recorded as seen, so the next run will not repeat them. "
+            "'stock-ai forget' puts them back if you need them re-sent."
+        )
+        raise typer.Exit(code=1)
 
 
 @app.command(name="edinet-check")

@@ -599,3 +599,52 @@ def test_forgetting_seen_records_lets_a_real_run_see_them_again(tmp_path) -> Non
         assert repo.is_seen(other.uid)  # untouched
         assert repo.forget_seen() == 1
         assert repo.count_seen() == 0
+
+
+def test_a_failed_delivery_does_not_destroy_the_alerts_it_carried(database: Database) -> None:
+    """Delivery is the last step, after everything has been billed and recorded.
+
+    Raising there threw the alerts away twice: they never reached the channel,
+    and a seen item is never re-examined, so they could not be recovered by
+    re-running either. The failure is data now, and the caller still prints
+    what it found.
+    """
+    from stock_ai.core.exceptions import NotificationError
+
+    class _Refuses:
+        name = "refuses"
+
+        def send(self, message: str) -> None:
+            raise NotificationError("POST https://discord…/ failed: 400 Bad Request")
+
+    _watch(database, "4593.T", Importance.LOW)
+    source = StaticDisclosureSource({"4593.T": [_disclosure("通期業績予想の上方修正")]})
+    monitor = WatchMonitor(database, source, _FakeAI(), notifier=_Refuses())
+
+    result = monitor.run(notify=True)
+
+    assert len(result.alerts) == 1  # still reportable by the caller
+    assert result.delivery_error is not None
+    assert "400" in result.delivery_error
+
+
+def test_a_successful_delivery_records_no_error(database: Database) -> None:
+    """The field must stay empty on the ordinary path."""
+
+    class _Accepts:
+        name = "accepts"
+
+        def __init__(self) -> None:
+            self.sent: list[str] = []
+
+        def send(self, message: str) -> None:
+            self.sent.append(message)
+
+    notifier = _Accepts()
+    _watch(database, "4593.T", Importance.LOW)
+    source = StaticDisclosureSource({"4593.T": [_disclosure("通期業績予想の上方修正")]})
+
+    result = WatchMonitor(database, source, _FakeAI(), notifier=notifier).run(notify=True)
+
+    assert result.delivery_error is None
+    assert len(notifier.sent) == 1

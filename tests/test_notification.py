@@ -236,3 +236,55 @@ def test_a_dead_notifier_does_not_take_the_run_down() -> None:
     _report_run_outcome(
         _Broken(), [JobResult(name="monitor", ok=False, error="x")], [], heartbeat=False
     )
+
+
+def test_a_busy_day_is_split_rather_than_rejected() -> None:
+    """39 alerts in one Discord payload came back 400, and the run died with it.
+
+    A monitor pass has no say in how many alerts a day produces. Sending them
+    as one string turns a *good* day - lots to report - into a delivery
+    failure, which is exactly backwards.
+    """
+    from stock_ai.notification.channels import DiscordNotifier, split_message
+
+    alerts = "\n\n".join(f"[HIGH] {i:04d}\ntitle {i}\n{'summary ' * 30}" for i in range(39))
+    assert len(alerts) > DiscordNotifier.MAX_CHARS
+
+    parts = split_message(alerts, DiscordNotifier.MAX_CHARS)
+    assert len(parts) > 1
+    assert all(len(part) <= DiscordNotifier.MAX_CHARS for part in parts)
+    # Nothing is lost, and no alert is torn in half.
+    assert "\n\n".join(parts) == alerts
+    for part in parts:
+        assert part.startswith("[HIGH]")
+
+
+def test_an_over_long_single_alert_still_gets_through() -> None:
+    """One alert past the cap on its own must not block the whole delivery."""
+    from stock_ai.notification.channels import split_message
+
+    parts = split_message("x" * 250, 100)
+    assert [len(p) for p in parts] == [100, 100, 50]
+    assert "".join(parts) == "x" * 250
+
+
+def test_discord_posts_each_part_separately() -> None:
+    """The split has to reach the wire, not just the helper."""
+    from stock_ai.notification.channels import DiscordNotifier
+
+    posted: list[str] = []
+
+    class _Response:
+        def raise_for_status(self) -> None:
+            return None
+
+    class _Client:
+        def post(self, url: str, json: dict, headers: dict, timeout: float) -> _Response:
+            posted.append(json["content"])
+            return _Response()
+
+    message = "\n\n".join(f"block {i} " + "y" * 500 for i in range(10))
+    DiscordNotifier("https://discord.com/api/webhooks/x/y", client=_Client()).send(message)
+
+    assert len(posted) > 1
+    assert all(len(part) <= DiscordNotifier.MAX_CHARS for part in posted)
