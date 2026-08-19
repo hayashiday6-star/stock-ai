@@ -35,6 +35,7 @@ Two things shape this adapter:
 from __future__ import annotations
 
 import datetime as dt
+from collections import Counter
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
@@ -550,6 +551,27 @@ class EdinetDisclosureSource:
         self._fetch_day = fetcher or _default_day_fetcher(api_key)
         self._today = clock or dt.date.today
         self._cache: dict[dt.date, list[dict[str, Any]]] = {}
+        self._failed_days: set[dt.date] = set()
+
+    def filing_counts(self) -> Counter[str]:
+        """How many filings each securities code made over the lookback window.
+
+        The watchlist decides which companies you hear about, and a name that
+        never files is a name that produces no EDINET alert however long you
+        watch it - while still costing a news-feed pull on every run. Counting
+        what actually gets filed turns "which should I watch" from a matter of
+        taste into something the data answers.
+
+        Uses the same day cache as :meth:`fetch`, so calling both in one pass
+        costs one set of requests rather than two.
+        """
+        counts: Counter[str] = Counter()
+        for day in self._recent_days():
+            for record in self._day_records(day):
+                code = _sec_code_of(record)
+                if code is not None:
+                    counts[code] += 1
+        return counts
 
     def fetch(self, symbol: str, limit: int = 10) -> list[Disclosure]:
         """Return up to ``limit`` recent filings for ``symbol``, newest first.
@@ -616,4 +638,18 @@ class EdinetDisclosureSource:
             except Exception as exc:  # one bad day must not blind the rest
                 logger.warning("EDINET fetch failed for %s: %s", day, exc)
                 self._cache[day] = []
+                self._failed_days.add(day)
         return self._cache[day]
+
+    @property
+    def failed_days(self) -> frozenset[dt.date]:
+        """The days whose fetch raised, out of those scanned so far.
+
+        A failed day is cached as empty so that one outage does not cost a
+        request per watched name. That makes it indistinguishable from a day
+        on which nobody filed, which matters: "nothing was filed" invites you
+        to widen the window, while "nothing arrived" means widening it only
+        buys more failures. Callers that report emptiness to a human need to
+        tell those apart, and this is what lets them.
+        """
+        return frozenset(self._failed_days)
