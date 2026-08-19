@@ -25,6 +25,7 @@ module reports it as one rather than picking a figure that reads as certainty.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 
 #: Dollars per million tokens, as ``(input, output)``. Anthropic first-party
@@ -42,6 +43,25 @@ PRICES_PER_MTOK: dict[str, tuple[float, float]] = {
 
 _PER_MTOK = 1_000_000
 
+#: A pinned snapshot of a model, e.g. ``claude-haiku-4-5-20251001``.
+_DATED_SNAPSHOT = re.compile(r"^(?P<alias>.+)-\d{8}$")
+
+
+def price_of(model: str) -> tuple[float, float] | None:
+    """Return ``(input, output)`` dollars per million tokens for ``model``.
+
+    Dated snapshots resolve to their alias. Pinning a model to a date is the
+    documented way to keep a deployment stable, and the two names bill
+    identically - so treating ``claude-haiku-4-5-20251001`` as unknown would
+    withhold the cost of a run from the reader who was most careful about
+    which model they were running.
+    """
+    price = PRICES_PER_MTOK.get(model)
+    if price is not None:
+        return price
+    dated = _DATED_SNAPSHOT.match(model)
+    return PRICES_PER_MTOK.get(dated.group("alias")) if dated else None
+
 
 def cost_of(model: str, input_tokens: int, output_tokens: int) -> float | None:
     """Return the dollar cost of one call, or ``None`` for an unpriced model.
@@ -49,7 +69,7 @@ def cost_of(model: str, input_tokens: int, output_tokens: int) -> float | None:
     ``None`` rather than a guess: a made-up price on a screen reads exactly
     like a real one, and this figure exists to be trusted.
     """
-    price = PRICES_PER_MTOK.get(model)
+    price = price_of(model)
     if price is None:
         return None
     input_rate, output_rate = price

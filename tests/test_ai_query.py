@@ -574,3 +574,23 @@ def test_the_one_word_ceilings_have_headroom() -> None:
 
     assert IMPORTANCE_MAX_TOKENS >= 32
     assert SENTIMENT_MAX_TOKENS >= 32
+
+
+def test_a_pinned_model_is_priced_like_the_alias_it_pins() -> None:
+    """Pinning to a dated snapshot must not cost you the cost figure.
+
+    ``claude-haiku-4-5-20251001`` and ``claude-haiku-4-5`` are the same model
+    at the same rates; pinning the date is the documented way to keep a
+    deployment stable. Treating the pinned form as unknown withholds the spend
+    from whoever was most careful about which model they were running.
+    """
+    from stock_ai.ai.pricing import cost_of, price_of
+
+    assert price_of("claude-haiku-4-5-20251001") == (1.00, 5.00)
+    assert cost_of("claude-haiku-4-5-20251001", 1_000_000, 0) == pytest.approx(1.00)
+    assert cost_of("claude-haiku-4-5-20251001", 0, 1_000_000) == pytest.approx(5.00)
+
+    # A date on a model nobody has priced stays unpriced rather than guessed.
+    assert price_of("some-future-model-20261231") is None
+    # And a trailing number that is not a date is not treated as one.
+    assert price_of("claude-haiku-4-5-2025") is None
