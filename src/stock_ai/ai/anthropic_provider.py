@@ -107,7 +107,21 @@ class AnthropicProvider:
         if system is not None:
             kwargs["system"] = system
         if stop_sequences:
-            kwargs["stop_sequences"] = list(stop_sequences)
+            # The API rejects any sequence that is only whitespace, and it
+            # rejects the whole request when it does. A stop sequence is an
+            # optimisation on an answer that would arrive anyway, so one that
+            # cannot be sent is dropped rather than allowed to fail the call:
+            # this exact mistake - asking to stop at a newline - turned every
+            # rating in a 111-item run into a 400.
+            usable = [seq for seq in stop_sequences if seq.strip()]
+            if len(usable) != len(stop_sequences):
+                logger.warning(
+                    "Dropped %d whitespace-only stop sequence(s); the API "
+                    "rejects them and would have failed the request.",
+                    len(stop_sequences) - len(usable),
+                )
+            if usable:
+                kwargs["stop_sequences"] = usable
 
         try:
             response = self._get_client().messages.create(**kwargs)
