@@ -770,3 +770,52 @@ def test_a_total_outage_reports_no_filings_and_every_day_failed() -> None:
 
     assert not source.filing_counts()
     assert len(source.failed_days) == 4
+
+
+def test_filing_type_counts_split_by_type_and_exclude_what_fetch_hides() -> None:
+    """The ranking must count only filings a reader could actually receive.
+
+    ``fetch`` drops withdrawn and hidden filings, so counting them would rank a
+    name on alerts it can never produce - loud in the table, silent in practice.
+    """
+    import datetime as dt
+
+    from stock_ai.ir.edinet import EdinetDisclosureSource
+
+    def fetcher(day: dt.date) -> list[dict[str, object]]:
+        return [
+            {"secCode": "40880", "docTypeCode": "100", "docID": "a"},
+            {"secCode": "40880", "docTypeCode": "350", "docID": "b"},
+            {"secCode": "40880", "docTypeCode": "350", "docID": "c"},
+            # withdrawn: fetch would never return it, so it must not be counted
+            {"secCode": "40880", "docTypeCode": "120", "docID": "d", "withdrawalStatus": "1"},
+        ]
+
+    source = EdinetDisclosureSource(
+        lookback_days=2, fetcher=fetcher, clock=lambda: dt.date(2026, 8, 19)
+    )
+    by_type = source.filing_type_counts()
+
+    assert by_type["4088"]["350"] == 4  # 2 per day over 2 days
+    assert by_type["4088"]["100"] == 2
+    assert "120" not in by_type["4088"]
+    # The plain count stays consistent with the breakdown it is derived from.
+    assert source.filing_counts()["4088"] == 6
+
+
+def test_document_type_labels_match_edinet_numbering() -> None:
+    """These codes were mapped to each other's names, which reads as plausible.
+
+    ``_title_of`` falls back to this table when a filing carries no
+    description, and that text is what an AI rating is made from - so a
+    mislabelled type is not cosmetic, it is a wrong premise fed to a judgement.
+    """
+    from stock_ai.ir.edinet import doc_type_label
+
+    assert doc_type_label("200") == "親会社等状況報告書"
+    assert doc_type_label("220") == "自己株券買付状況報告書"
+    assert doc_type_label("230") == "訂正自己株券買付状況報告書"
+    assert doc_type_label("360") == "訂正大量保有報告書"
+    assert doc_type_label("100") == "発行登録追補書類"
+    # An unmapped code stays traceable rather than becoming "unknown".
+    assert doc_type_label("999") == "999"
