@@ -33,7 +33,14 @@ class _FakeAI:
         self.importance_calls = 0
         self.summary_calls = 0
 
-    def complete(self, prompt: str, *, system: str | None = None, max_tokens: int = 1024) -> str:
+    def complete(
+        self,
+        prompt: str,
+        *,
+        system: str | None = None,
+        max_tokens: int = 1024,
+        **_kwargs: object,
+    ) -> str:
         if prompt.startswith("Rate the importance"):
             self.importance_calls += 1
             return "high" if self.high_keyword in prompt else "low"
@@ -46,7 +53,14 @@ class _BrokenAI:
 
     name = "broken"
 
-    def complete(self, prompt: str, *, system: str | None = None, max_tokens: int = 1024) -> str:
+    def complete(
+        self,
+        prompt: str,
+        *,
+        system: str | None = None,
+        max_tokens: int = 1024,
+        **_kwargs: object,
+    ) -> str:
         raise AIError("provider down")
 
 
@@ -286,7 +300,12 @@ def test_an_unparseable_answer_is_a_verdict_not_an_outage(database: Database) ->
         name = "babbling"
 
         def complete(
-            self, prompt: str, *, system: str | None = None, max_tokens: int = 1024
+            self,
+            prompt: str,
+            *,
+            system: str | None = None,
+            max_tokens: int = 1024,
+            **_kwargs: object,
         ) -> str:
             return "I am not sure about this one"
 
@@ -308,7 +327,12 @@ def test_a_summary_failure_does_not_swallow_the_alert(database: Database) -> Non
         name = "partial"
 
         def complete(
-            self, prompt: str, *, system: str | None = None, max_tokens: int = 1024
+            self,
+            prompt: str,
+            *,
+            system: str | None = None,
+            max_tokens: int = 1024,
+            **_kwargs: object,
         ) -> str:
             if prompt.startswith("Rate the importance"):
                 return "high"

@@ -6,6 +6,7 @@ model object is injectable for testing without network access.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import Any
 
 from pydantic import SecretStr
@@ -51,8 +52,18 @@ class GeminiProvider:
             self._client = genai.GenerativeModel(self._model)
         return self._client
 
-    def complete(self, prompt: str, *, system: str | None = None, max_tokens: int = 1024) -> str:
+    def complete(
+        self,
+        prompt: str,
+        *,
+        system: str | None = None,
+        max_tokens: int = 1024,
+        prefill: str | None = None,
+        stop_sequences: Sequence[str] | None = None,
+    ) -> str:
         """Return the model's text response to ``prompt``.
+
+        ``prefill`` is accepted and ignored; this API has no equivalent.
 
         The Gemini SDK has no separate system field here, so ``system`` is
         prepended to the prompt.

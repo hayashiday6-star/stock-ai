@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+
 
 class DummyAIProvider:
     """Echoes a deterministic, truncated transformation of the prompt.
@@ -22,7 +24,15 @@ class DummyAIProvider:
         """Store the response prefix."""
         self.prefix = prefix
 
-    def complete(self, prompt: str, *, system: str | None = None, max_tokens: int = 1024) -> str:
-        """Return a deterministic echo of ``prompt`` (system is ignored)."""
+    def complete(
+        self,
+        prompt: str,
+        *,
+        system: str | None = None,
+        max_tokens: int = 1024,
+        prefill: str | None = None,
+        stop_sequences: Sequence[str] | None = None,
+    ) -> str:
+        """Return a deterministic echo of ``prompt`` (everything else ignored)."""
         snippet = prompt.strip().replace("\n", " ")[:200]
         return f"{self.prefix} {snippet}"

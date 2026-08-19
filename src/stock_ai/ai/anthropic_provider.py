@@ -7,6 +7,7 @@ testing without network access.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import Any
 
 from pydantic import SecretStr
@@ -74,15 +75,39 @@ class AnthropicProvider:
             self._client = anthropic.Anthropic(api_key=key)
         return self._client
 
-    def complete(self, prompt: str, *, system: str | None = None, max_tokens: int = 1024) -> str:
-        """Return Claude's text response to ``prompt``."""
+    def complete(
+        self,
+        prompt: str,
+        *,
+        system: str | None = None,
+        max_tokens: int = 1024,
+        prefill: str | None = None,
+        stop_sequences: Sequence[str] | None = None,
+    ) -> str:
+        """Return Claude's text response to ``prompt``.
+
+        ``prefill`` becomes a leading assistant turn, so the reply continues it
+        instead of starting freely. Asking in prose for one word is a request
+        the model can decline in favour of explaining itself - and an answer
+        that runs long is not merely wasteful here: it can exhaust
+        ``max_tokens`` and come back with no text at all, which reads as a
+        provider failure rather than a prompt that was never binding.
+        """
+        messages: list[dict[str, str]] = [{"role": "user", "content": prompt}]
+        if prefill:
+            # The API rejects a prefill with trailing whitespace, and callers
+            # write these as ordinary strings.
+            messages.append({"role": "assistant", "content": prefill.rstrip()})
+
         kwargs: dict[str, Any] = {
             "model": self._model,
             "max_tokens": max_tokens,
-            "messages": [{"role": "user", "content": prompt}],
+            "messages": messages,
         }
         if system is not None:
             kwargs["system"] = system
+        if stop_sequences:
+            kwargs["stop_sequences"] = list(stop_sequences)
 
         try:
             response = self._get_client().messages.create(**kwargs)

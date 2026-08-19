@@ -123,3 +123,90 @@ def test_anthropic_wraps_sdk_errors() -> None:
     provider = AnthropicProvider(client=_FakeClient(messages=_Boom()))
     with pytest.raises(AIError, match="request failed"):
         provider.complete("hi")
+
+
+def test_a_one_word_rating_is_bound_by_a_prefill_not_by_asking_nicely() -> None:
+    """Asking in prose for one word was not binding, and the ceiling was blamed.
+
+    On live data the ratings averaged ~110 output tokens each and two of
+    nineteen came back with no text at all, one of them after exhausting a
+    512-token ceiling that had already been raised from 8 to 64 chasing the
+    same symptom. Raising it again would have been the third guess at a cause
+    that was never the ceiling: the request did not constrain the answer, so no
+    ceiling was ever going to be high enough.
+    """
+    from stock_ai.ai.analysis import ONE_WORD_PREFILL, classify_importance
+    from stock_ai.data.types import Importance
+
+    seen: dict[str, object] = {}
+
+    class _Recording:
+        name = "recording"
+
+        def complete(self, prompt: str, **kwargs: object) -> str:
+            seen.update(kwargs)
+            return " high"
+
+    assert classify_importance(_Recording(), "臨時報告書") is Importance.HIGH
+    assert seen["prefill"] == ONE_WORD_PREFILL
+    assert "\n" in (seen["stop_sequences"] or ())
+
+
+def test_the_prefill_becomes_an_assistant_turn_the_reply_must_continue() -> None:
+    """A prefill only binds if it reaches the API as the start of the answer."""
+    from stock_ai.ai.anthropic_provider import AnthropicProvider
+
+    captured: dict[str, object] = {}
+
+    class _Block:
+        type = "text"
+        text = "high"
+
+    class _Response:
+        content = [_Block()]
+        stop_reason = "stop_sequence"
+        usage = None
+
+    class _Messages:
+        def create(self, **kwargs: object) -> _Response:
+            captured.update(kwargs)
+            return _Response()
+
+    class _Client:
+        messages = _Messages()
+
+    provider = AnthropicProvider(client=_Client())
+    assert provider.complete("rate this", prefill="The answer is:", stop_sequences=["\n"]) == "high"
+
+    messages = captured["messages"]
+    assert messages[-1] == {"role": "assistant", "content": "The answer is:"}
+    assert captured["stop_sequences"] == ["\n"]
+
+
+def test_a_prefill_is_trimmed_because_the_api_rejects_trailing_space() -> None:
+    """Callers write these as ordinary strings; the API will not take one."""
+    from stock_ai.ai.anthropic_provider import AnthropicProvider
+
+    captured: dict[str, object] = {}
+
+    class _Block:
+        type = "text"
+        text = "low"
+
+    class _Response:
+        content = [_Block()]
+        stop_reason = "end_turn"
+        usage = None
+
+    class _Messages:
+        def create(self, **kwargs: object) -> _Response:
+            captured.update(kwargs)
+            return _Response()
+
+    class _Client:
+        messages = _Messages()
+
+    AnthropicProvider(client=_Client()).complete("x", prefill="The answer is: ")
+    assert captured["messages"][-1]["content"] == "The answer is:"
+    # No stop sequences given, so none are sent rather than an empty list.
+    assert "stop_sequences" not in captured

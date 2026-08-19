@@ -31,7 +31,14 @@ class _StubProvider:
         self.reply = reply
         self.prompts: list[str] = []
 
-    def complete(self, prompt: str, *, system: str | None = None, max_tokens: int = 1024) -> str:
+    def complete(
+        self,
+        prompt: str,
+        *,
+        system: str | None = None,
+        max_tokens: int = 1024,
+        **_kwargs: object,
+    ) -> str:
         self.prompts.append(prompt)
         return self.reply
 
