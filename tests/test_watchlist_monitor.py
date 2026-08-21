@@ -496,8 +496,8 @@ def test_a_run_priced_over_the_cap_is_refused_before_anything_is_sent() -> None:
             return "a filing"
 
     class _Pending:
-        def pending(self, limit: int = 10) -> list[tuple[object, object]]:
-            return [(object(), _Item())] * 3
+        def pending_texts(self, limit: int = 10) -> list[tuple[str, str]]:
+            return [("ヤマハ発動機 (7272)", "本文")] * 3
 
     provider = _Counter()
     assert _within_budget(_Pending(), provider, max_cost=100.0, limit=10) is True
@@ -511,7 +511,7 @@ def test_a_provider_that_cannot_be_priced_still_runs() -> None:
     from stock_ai.cli import _within_budget
 
     class _Pending:
-        def pending(self, limit: int = 10) -> list[tuple[object, object]]:
+        def pending_texts(self, limit: int = 10) -> list[tuple[str, str]]:
             raise AssertionError("nothing should be fetched when pricing is impossible")
 
     assert _within_budget(_Pending(), DummyAIProvider(), max_cost=0.0, limit=10) is True

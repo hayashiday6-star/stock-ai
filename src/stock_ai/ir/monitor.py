@@ -28,7 +28,7 @@ from stock_ai.core.exceptions import AIError
 from stock_ai.core.logging import get_logger
 from stock_ai.data.types import Disclosure, Importance, WatchEntry
 from stock_ai.database.engine import Database
-from stock_ai.database.repository import WatchlistRepository
+from stock_ai.database.repository import WatchlistRepository, get_profile
 from stock_ai.ir.sources import DisclosureSource
 from stock_ai.notification.base import Notifier
 
@@ -150,6 +150,7 @@ class WatchMonitor:
             logger.info("Watchlist is empty; nothing to monitor.")
             return MonitorResult(alerts=[], checked=0, skipped=0)
 
+        subjects = self._subjects(entries)
         alerts: list[Alert] = []
         checked = skipped = unjudged = 0
         for entry in entries:
@@ -157,7 +158,7 @@ class WatchMonitor:
             skipped += already_seen
             for disclosure in fresh:
                 checked += 1
-                verdict = self._judge(entry, disclosure)
+                verdict = self._judge(entry, disclosure, about=subjects.get(entry.symbol))
                 if isinstance(verdict, _Unjudged):
                     unjudged += 1
                 elif verdict is not None:
@@ -212,6 +213,18 @@ class WatchMonitor:
             work.extend((entry, disclosure) for disclosure in fresh)
         return work
 
+    def pending_texts(self, limit: int = 10) -> list[tuple[str, str]]:
+        """Return ``(company, text)`` for everything the next run would judge.
+
+        Pairs the text with the company name the rating prompt will carry, so
+        a cost estimate prices the request that will actually be sent. The
+        name is part of that request; leaving it out would undercount every
+        item and reintroduce the drift this shared path exists to prevent.
+        """
+        work = self.pending(limit=limit)
+        subjects = self._subjects([entry for entry, _ in work])
+        return [(subjects.get(entry.symbol, entry.symbol), d.as_text()) for entry, d in work]
+
     def _fresh_disclosures(self, entry: WatchEntry, limit: int) -> tuple[list[Disclosure], int]:
         """Return ``entry``'s unreported disclosures and how many were skipped."""
         try:
@@ -225,7 +238,30 @@ class WatchMonitor:
             fresh = [item for item in items if not repo.is_seen(item.uid)]
         return fresh, len(items) - len(fresh)
 
-    def _judge(self, entry: WatchEntry, disclosure: Disclosure) -> Alert | None | _Unjudged:
+    def _subjects(self, entries: Sequence[WatchEntry]) -> dict[str, str]:
+        """Name each watched company, for the rating prompt to judge against.
+
+        A bare code says nothing to a model: asked to rate an item's bearing on
+        "7272" it cannot know whether an article about Autoliv concerns that
+        company or not. The stored profile already holds the name, and one
+        lookup per run is cheaper than the alerts it prevents.
+        """
+        subjects: dict[str, str] = {}
+        with self.database.session() as session:
+            for entry in entries:
+                name = ""
+                try:
+                    profile = get_profile(session, entry.symbol)
+                    name = (profile.name if profile else "") or ""
+                except Exception:  # a missing profile must not stop the run
+                    name = ""
+                label = f"{name} ({entry.symbol})" if name else entry.symbol
+                subjects[entry.symbol] = label
+        return subjects
+
+    def _judge(
+        self, entry: WatchEntry, disclosure: Disclosure, *, about: str | None = None
+    ) -> Alert | None | _Unjudged:
         """Rate and summarize one disclosure, returning an alert if it qualifies.
 
         Returns :data:`UNJUDGED` when the provider itself failed. That case is
@@ -237,7 +273,7 @@ class WatchMonitor:
         """
         text = disclosure.as_text()
         try:
-            importance = classify_importance(self.provider, text)
+            importance = classify_importance(self.provider, text, about=about)
         except AIError as exc:
             logger.warning("Importance check failed for %s: %s", entry.symbol, exc)
             return UNJUDGED

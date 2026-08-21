@@ -61,7 +61,15 @@ def estimate_disclosure_run(
     rating_input = summary_input = 0
     total = len(texts)
     for index, text in enumerate(texts, start=1):
-        rating_input += provider.count_tokens(importance_prompt(text), system=IMPORTANCE_SYSTEM)
+        # The rating prompt names the company, and that name is part of what
+        # gets billed. Pricing the unnamed form would quietly undercount every
+        # item - the whole point of sharing this code is that the estimate and
+        # the run cannot describe different requests.
+        subject, body = text if isinstance(text, tuple) else (None, text)
+        rating_input += provider.count_tokens(
+            importance_prompt(body, about=subject), system=IMPORTANCE_SYSTEM
+        )
+        text = body
         summary_input += provider.count_tokens(
             summary_prompt(text, max_words=DEFAULT_SUMMARY_WORDS), system=SUMMARY_SYSTEM
         )
