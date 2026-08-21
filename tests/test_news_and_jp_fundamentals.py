@@ -159,3 +159,38 @@ def test_jquants_to_float_rejects_non_finite_values() -> None:
     assert _to_float("1.5") == 1.5
     assert _to_float("") is None
     assert _to_float(None) is None
+
+
+def test_a_bare_japanese_code_is_queried_in_yahoos_own_form() -> None:
+    """`3003` is not ヒューリック to Yahoo; Tadawul numbers listings the same way.
+
+    Watching the bare code delivered Middle East small-cap articles - one of
+    them naming City Cement, which is Tadawul 3003 - under a Japanese
+    company's ticker. Every part of that output looks correct: the header
+    names the watched symbol, the summary is a faithful rendering of the
+    article, and nothing raises. Only the company is wrong.
+    """
+    from stock_ai.news.sources import YFinanceNewsSource
+
+    asked: list[str] = []
+
+    def fetcher(symbol: str) -> list[dict[str, object]]:
+        asked.append(symbol)
+        return [{"title": "決算", "summary": "..."}]
+
+    source = YFinanceNewsSource(fetcher=fetcher)
+    source.fetch("3003")
+    source.fetch("7203.T")
+    source.fetch("AAPL")
+
+    assert asked == ["3003.T", "7203.T", "AAPL"]
+
+
+def test_yahoo_symbol_leaves_anything_it_cannot_place_alone() -> None:
+    """Guessing beyond the unambiguous case would route symbols wrongly."""
+    from stock_ai.data.markets import to_yahoo_symbol
+
+    assert to_yahoo_symbol("3003") == "3003.T"
+    assert to_yahoo_symbol("3003.JP") == "3003.T"
+    assert to_yahoo_symbol("BRK.B") == "BRK.B"
+    assert to_yahoo_symbol("AAPL") == "AAPL"

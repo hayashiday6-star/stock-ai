@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from typing import Any, Protocol, runtime_checkable
 
 from stock_ai.core.logging import get_logger
+from stock_ai.data.markets import to_yahoo_symbol
 
 logger = get_logger(__name__)
 
@@ -78,11 +79,20 @@ class YFinanceNewsSource:
         return yf.Ticker(symbol).news or []
 
     def fetch(self, symbol: str, limit: int = 5) -> list[NewsItem]:
-        """Return up to ``limit`` recent headlines; failures yield an empty list."""
+        """Return up to ``limit`` recent headlines; failures yield an empty list.
+
+        The symbol is put into Yahoo's own form first. A bare Japanese code is
+        not a Tokyo listing there, and the wrong company's news arrives looking
+        entirely correct - right ticker in the header, coherent summary, no
+        error anywhere.
+        """
+        queried = to_yahoo_symbol(symbol)
+        if queried != symbol:
+            logger.debug("News for %s queried as %s", symbol, queried)
         try:
-            raw = self._fetch(symbol)
+            raw = self._fetch(queried)
         except Exception as exc:  # news is best-effort - never break scoring
-            logger.warning("News fetch failed for %s: %s", symbol, exc)
+            logger.warning("News fetch failed for %s: %s", queried, exc)
             return []
 
         items: list[NewsItem] = []
