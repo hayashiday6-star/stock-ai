@@ -335,3 +335,40 @@ def test_the_provider_setting_is_read_from_the_environment(monkeypatch) -> None:
     assert Settings().ai_provider == "claude"
     monkeypatch.delenv("AI_PROVIDER")
     assert Settings().ai_provider == "dummy"
+
+
+def test_news_shows_which_symbol_was_actually_queried(monkeypatch) -> None:
+    """The rewrite has to be visible, or the check cannot confirm anything.
+
+    Reading headlines is the free way to catch a feed answering for the wrong
+    company. That only works if the reader can see which symbol went out.
+    """
+    from typer.testing import CliRunner
+
+    from stock_ai.news.sources import NewsItem
+
+    monkeypatch.setattr(
+        "stock_ai.cli.YFinanceNewsSource",
+        lambda: type(
+            "_S", (), {"fetch": lambda self, sym, limit=5: [NewsItem("決算発表", "本文")]}
+        )(),
+    )
+    result = CliRunner().invoke(app, ["news", "3003"])
+
+    assert result.exit_code == 0
+    assert "3003.T" in result.stdout
+    assert "決算発表" in result.stdout
+
+
+def test_news_says_it_cannot_tell_empty_from_unknown(monkeypatch) -> None:
+    """No headlines is ambiguous, and saying so is the honest report."""
+    from typer.testing import CliRunner
+
+    monkeypatch.setattr(
+        "stock_ai.cli.YFinanceNewsSource",
+        lambda: type("_S", (), {"fetch": lambda self, sym, limit=5: []})(),
+    )
+    result = CliRunner().invoke(app, ["news", "9999"])
+
+    assert result.exit_code == 1
+    assert "does not know" in result.stdout
