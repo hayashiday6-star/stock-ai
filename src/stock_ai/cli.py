@@ -67,7 +67,7 @@ from stock_ai.data.fx import FxConverter
 from stock_ai.data.jquants_fundamentals import JQuantsFundamentalsProvider
 from stock_ai.data.jquants_profile import JQuantsProfileProvider
 from stock_ai.data.jquants_provider import JQuantsPriceProvider
-from stock_ai.data.markets import split_by_market
+from stock_ai.data.markets import split_by_market, to_yahoo_symbol
 from stock_ai.data.service import FundamentalsService, IngestionService, IngestResult
 from stock_ai.data.types import Disclosure, Importance, WatchEntry
 from stock_ai.data.universe import JQuantsUniverse, Segment
@@ -1939,6 +1939,50 @@ def _print_type_breakdown(
         "repairs to earlier ones - they inflate a count without adding much "
         "a reader would act on.[/]"
     )
+
+
+@app.command()
+def news(
+    symbol: str = typer.Argument(..., help="Symbol to pull headlines for."),
+    limit: int = typer.Option(5, help="How many headlines to show."),
+) -> None:
+    """Show what the news feed returns for one symbol. No model, no cost.
+
+    A feed that answers for the wrong company is invisible in an alert: the
+    header carries the symbol you asked for, the summary faithfully renders
+    whatever arrived, and nothing raises. Watching ヒューリック as the bare code
+    ``3003`` delivered Saudi small-cap articles for exactly that reason -
+    Tadawul numbers its listings in four digits too.
+
+    This is the check that costs nothing: read the headlines and see whose
+    company they are about.
+    """
+    settings = get_settings()
+    configure_logging(settings.log_level)
+
+    queried = to_yahoo_symbol(symbol)
+    if queried != symbol:
+        console.print(f"Querying [cyan]{queried}[/] (Yahoo's form of [cyan]{symbol}[/]).")
+
+    items = YFinanceNewsSource().fetch(symbol, limit=limit)
+    if not items:
+        console.print(
+            f"[yellow]No headlines for {symbol}.[/] That is either a quiet name "
+            "or a symbol this feed does not know - the feed cannot tell you which."
+        )
+        raise typer.Exit(code=1)
+
+    for index, item in enumerate(items, start=1):
+        console.print(f"\n[bold]{index}. {item.title}[/]")
+        if item.summary:
+            console.print(f"   [dim]{_compact_text(item.summary, 200)}[/]")
+    console.print("\n[dim]Check the company these are about, not just that they arrived.[/]")
+
+
+def _compact_text(text: str, width: int) -> str:
+    """Collapse whitespace and cut to ``width`` characters."""
+    flat = " ".join(text.split())
+    return flat if len(flat) <= width else f"{flat[:width]}..."
 
 
 @app.command()
