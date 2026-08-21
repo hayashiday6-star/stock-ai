@@ -38,6 +38,15 @@
     disclosures are filed on a given day is not something the schedule
     controls, and the check itself costs nothing.
 
+.PARAMETER Limit
+    Disclosures pulled per watched symbol. The news feed returns up to this
+    many for every name whether or not anything happened, so it sets the size
+    of the run more than the news does. 5 keeps a nightly pass small.
+
+.PARAMETER Heartbeat
+    Send a notification even when nothing cleared the threshold. Without it a
+    quiet night and a job that never ran look identical from the phone.
+
 .PARAMETER Register
     Create (or replace) the scheduled task instead of running the job now.
 
@@ -65,6 +74,9 @@ param(
     [ValidateSet('yfinance', 'jquants')]
     [string]$Source = 'yfinance',
     [double]$MaxCost = 0,
+    [ValidateRange(1, 100)]
+    [int]$Limit = 5,
+    [switch]$Heartbeat,
     [switch]$Register,
     [ValidatePattern('^([01]\d|2[0-3]):[0-5]\d$')]
     [string]$At = '18:00',
@@ -143,15 +155,33 @@ if ($Interactive) {
         Write-Host 'number of disclosures filed on a given day is not up to you. The'
         Write-Host 'cap below stops the run when the priced worst case is above it;'
         Write-Host 'checking costs nothing, and a skipped day is retried the next.'
-        Write-Host 'Measured runs so far have cost about $0.01-0.02 each.'
-        $capText = Read-Setting -Prompt 'Daily cap in USD (0 = no cap)' -Default '0.20' `
-            -Pattern '^\d+(\.\d+)?$' -Hint 'Type a number, e.g. 0.20'
+        Write-Host 'Measured: about $0.07 for 60 items on haiku, $0.10 on opus.'
+        Write-Host 'The cap is compared against a worst case, which runs several'
+        Write-Host 'times the real figure - set it well above what you expect to pay.'
+        $capText = Read-Setting -Prompt 'Daily cap in USD (0 = no cap)' -Default '1.00' `
+            -Pattern '^\d+(\.\d+)?$' -Hint 'Type a number, e.g. 1.00'
         $MaxCost = [double]$capText
     }
 
     Write-Host ''
-    $summary = "daily at $At, feed $Feed, provider $Provider"
+    Write-Host 'Disclosures pulled per watched symbol. The news feed returns this'
+    Write-Host 'many for every name whether or not anything happened, so it sets'
+    Write-Host 'the size of the run more than the news does.'
+    $limitText = Read-Setting -Prompt 'Per-symbol limit' -Default "$Limit" `
+        -Pattern '^([1-9]|[1-9]\d|100)$' -Hint 'Type a number from 1 to 100.'
+    $Limit = [int]$limitText
+
+    Write-Host ''
+    Write-Host 'Notify even when nothing clears the threshold? Without this, a quiet'
+    Write-Host 'night and a job that never ran look identical from the phone.'
+    $beatText = Read-Setting -Prompt 'Send a heartbeat (y/n)' -Default 'n' `
+        -Pattern '^[yn]$' -Hint 'Type y or n.'
+    $Heartbeat = ($beatText -eq 'y')
+
+    Write-Host ''
+    $summary = "daily at $At, feed $Feed, provider $Provider, limit $Limit"
     if ($MaxCost -gt 0) { $summary += ", cap `$$MaxCost" }
+    if ($Heartbeat) { $summary += ', heartbeat on' }
     if ($Symbols.Count -gt 0) { $summary += ", symbols $($Symbols -join ',')" }
     if ($Channel) { $summary += ", notifying $Channel" }
     Write-Host "Registering: $summary"
@@ -173,6 +203,8 @@ if ($Register) {
     if ($Channel) { $arguments += @('-Channel', $Channel) }
     $arguments += @('-Feed', $Feed, '-Source', $Source)
     if ($MaxCost -gt 0) { $arguments += @('-MaxCost', $MaxCost) }
+    $arguments += @('-Limit', $Limit)
+    if ($Heartbeat) { $arguments += '-Heartbeat' }
     if ($Symbols.Count -gt 0) { $arguments += @('-Symbols', ($Symbols -join ',')) }
 
     try {
@@ -227,6 +259,8 @@ try {
     $arguments = @('daily', '--once', '--provider', $Provider, '--feed', $Feed, '--source', $Source)
     if ($Channel) { $arguments += @('--channel', $Channel) }
     if ($MaxCost -gt 0) { $arguments += @('--max-cost', $MaxCost) }
+    $arguments += @('--limit', $Limit)
+    if ($Heartbeat) { $arguments += '--heartbeat' }
     # A comma-joined -Symbols survives Task Scheduler's argument flattening.
     foreach ($symbol in ($Symbols -split ',' | Where-Object { $_ })) {
         $arguments += $symbol.Trim()
