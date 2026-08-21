@@ -372,3 +372,37 @@ def test_news_says_it_cannot_tell_empty_from_unknown(monkeypatch) -> None:
 
     assert result.exit_code == 1
     assert "does not know" in result.stdout
+
+
+def test_the_unattended_job_can_be_told_a_per_symbol_limit() -> None:
+    """The nightly run was fixed at 10 with no way to say otherwise.
+
+    The news feed returns up to --limit items for every watched name whether
+    or not anything happened, so this sets the size of a run more than the news
+    does. A setting chosen by hand and unavailable to the job that actually
+    runs every night is not a setting.
+    """
+    import typer.main
+
+    params = {p.name: p for p in typer.main.get_command(app).commands["daily"].params}
+    assert "limit" in params
+    assert params["limit"].default == 10  # unchanged for anyone not passing it
+    assert "heartbeat" in params
+
+
+def test_the_daily_script_passes_limit_and_heartbeat_through() -> None:
+    """Registering a task and running it must agree on what was chosen.
+
+    The registration builds a command line for Task Scheduler and the run
+    builds one for the CLI. A flag added to one and not the other is a setting
+    that silently disappears the moment it is scheduled.
+    """
+    from pathlib import Path
+
+    script = Path(__file__).resolve().parents[1] / "scripts" / "4-daily.ps1"
+    text = script.read_text(encoding="utf-8")
+
+    assert "'-Limit', $Limit" in text  # into the scheduled task
+    assert "'--limit', $Limit" in text  # into the CLI it runs
+    assert "$arguments += '-Heartbeat'" in text
+    assert "$arguments += '--heartbeat'" in text

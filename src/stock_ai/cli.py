@@ -2667,6 +2667,9 @@ def daily(
     ),
     channel: str | None = typer.Option(None, help="Notification channel for alerts."),
     feed: str = typer.Option("all", help="Disclosure feed: all | edinet | news."),
+    limit: int = typer.Option(
+        10, help="Disclosures pulled per watched symbol, as in 'monitor --limit'."
+    ),
     once: bool = typer.Option(False, "--once", help="Run the jobs now and exit."),
     max_cost: float | None = typer.Option(
         None,
@@ -2730,12 +2733,12 @@ def daily(
             provider=ai,
             notifier=notifier,
         )
-        if max_cost is not None and not _within_budget(service, ai, max_cost, limit=10):
+        if max_cost is not None and not _within_budget(service, ai, max_cost, limit=limit):
             # Raised, not returned: the scheduler records a failed job, and a
             # skipped monitor is exactly the thing that must not pass silently
             # in a log nobody opens unless something looks wrong.
             raise RuntimeError(f"monitor skipped: priced above --max-cost ${max_cost:,.4f}")
-        service.run(notify=notifier is not None)
+        service.run(limit=limit, notify=notifier is not None)
 
     scheduler.add("monitor", check_watchlist)
 
