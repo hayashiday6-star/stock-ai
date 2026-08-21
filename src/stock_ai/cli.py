@@ -69,7 +69,7 @@ from stock_ai.data.jquants_profile import JQuantsProfileProvider
 from stock_ai.data.jquants_provider import JQuantsPriceProvider
 from stock_ai.data.markets import split_by_market, to_yahoo_symbol
 from stock_ai.data.service import FundamentalsService, IngestionService, IngestResult
-from stock_ai.data.types import Disclosure, Importance, WatchEntry
+from stock_ai.data.types import Importance
 from stock_ai.data.universe import JQuantsUniverse, Segment
 from stock_ai.data.yfinance_provider import (
     YFinanceFundamentalsProvider,
@@ -2455,7 +2455,7 @@ def ai_cost(
         f"Pricing a run with [cyan]--feed {feed} --limit {limit} "
         f"--lookback-days {lookback_days}[/] (no model calls yet)."
     )
-    work = monitor.pending(limit=limit)
+    work = monitor.pending_texts(limit=limit)
     if not work:
         console.print(
             "[green]Nothing pending, so the next run costs nothing.[/] "
@@ -2477,9 +2477,7 @@ def ai_cost(
     _render_estimate(estimate, feed=feed, limit=limit)
 
 
-def _estimate_run(
-    provider: AnthropicProvider, work: list[tuple[WatchEntry, Disclosure]]
-) -> RunEstimate:
+def _estimate_run(provider: AnthropicProvider, work: list[tuple[str, str]]) -> RunEstimate:
     """Count the tokens the run would send, drawing a bar while it goes.
 
     The counting itself lives in :mod:`stock_ai.ai.estimate` because the
@@ -2496,7 +2494,7 @@ def _estimate_run(
         task = progress.add_task("counting tokens", total=len(work))
         return estimate_disclosure_run(
             provider,
-            [disclosure.as_text() for _entry, disclosure in work],
+            work,
             on_progress=lambda done, _total: progress.update(task, completed=done),
         )
 
@@ -2595,12 +2593,12 @@ def _within_budget(
         )
         return True
 
-    work = monitor_service.pending(limit=limit)
+    work = monitor_service.pending_texts(limit=limit)
     if not work:
         return True
 
     try:
-        estimate = _estimate_run(provider, work)  # type: ignore[arg-type]
+        estimate = _estimate_run(provider, work)
     except AIError as exc:
         console.print(f"[yellow]Could not price this run ({exc}).[/] Running anyway.")
         return True

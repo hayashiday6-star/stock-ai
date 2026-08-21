@@ -151,3 +151,43 @@ def test_sentiment_cli_dummy() -> None:
 def test_summarize_cli_unknown_provider_errors() -> None:
     result = runner.invoke(cli.app, ["summarize", "text", "--provider", "bogus"])
     assert result.exit_code != 0
+
+
+def test_the_rating_is_asked_about_a_named_company() -> None:
+    """The feed returns peers and sector round-ups, and those rate high on merit.
+
+    Nvidia committing $105bn is important news. It is not news about SoftBank,
+    but a rater asked only "how important is this" has no way to say so - and
+    the item lands in SoftBank's alerts, correctly rated, about somebody else.
+    """
+    from stock_ai.ai.analysis import IMPORTANCE_SYSTEM, importance_prompt
+
+    named = importance_prompt("Nvidia commits $105bn", about="ソフトバンクグループ (9984)")
+    assert "ソフトバンクグループ (9984)" in named
+    # The rule that makes the name actionable travels with it.
+    assert "somebody else" in IMPORTANCE_SYSTEM
+    assert "low" in IMPORTANCE_SYSTEM
+
+    # Without a subject the prompt keeps its old shape, so other callers are
+    # not silently asked a different question.
+    assert "**to " not in importance_prompt("何か")
+
+
+def test_classify_importance_passes_the_subject_through() -> None:
+    """A name built but never sent would be a comment, not a constraint."""
+    from stock_ai.ai.analysis import classify_importance
+    from stock_ai.data.types import Importance
+
+    seen: dict[str, object] = {}
+
+    class _Recording:
+        name = "recording"
+
+        def complete(self, prompt: str, **kwargs: object) -> str:
+            seen["prompt"] = prompt
+            return "low"
+
+    assert classify_importance(_Recording(), "Autoliv Q2", about="ヤマハ発動機 (7272)") is (
+        Importance.LOW
+    )
+    assert "ヤマハ発動機 (7272)" in str(seen["prompt"])

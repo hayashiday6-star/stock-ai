@@ -93,8 +93,18 @@ def summary_prompt(text: str, *, max_words: int = DEFAULT_SUMMARY_WORDS) -> str:
     return f"Summarize the following in at most {max_words} words:\n\n{text}"
 
 
-def importance_prompt(text: str) -> str:
-    """Build the importance-rating prompt (see :func:`summary_prompt`)."""
+def importance_prompt(text: str, *, about: str | None = None) -> str:
+    """Build the importance-rating prompt (see :func:`summary_prompt`).
+
+    ``about`` names the company the item is supposed to concern. Without it the
+    model is asked whether the news matters at all, which is a different
+    question: a feed indexed by ticker returns peers, customers and sector
+    round-ups, and those are often genuinely important news - about somebody
+    else. Rated on their own merits they come back high, correctly, and land
+    in the watched company's alerts.
+    """
+    if about:
+        return f"Rate the importance (high/medium/low) of this item **to {about}**:\n\n{text}"
     return f"Rate the importance (high/medium/low) of this disclosure:\n\n{text}"
 
 
@@ -132,12 +142,17 @@ IMPORTANCE_SYSTEM = (
     "medium - genuine company news with limited immediate impact: routine "
     "results in line, small contracts, personnel below board level.\n"
     "low    - administrative or promotional: notices of meeting dates, "
-    "logo changes, conference appearances, reprints of old news."
+    "logo changes, conference appearances, reprints of old news.\n"
+    "If a company is named, rate the item's bearing on that company only. "
+    "Answer low when the item is about somebody else - a peer, a customer, a "
+    "supplier, the wider sector, or a list the company merely appears in - "
+    "however important that news is in its own right. Feeds indexed by ticker "
+    "return such items constantly, and they are not news about the company."
 )
 _IMPORTANCE_LABELS: tuple[str, ...] = ("high", "medium", "low")
 
 
-def classify_importance(provider: AIProvider, text: str) -> Importance:
+def classify_importance(provider: AIProvider, text: str, *, about: str | None = None) -> Importance:
     """Rate how much attention a disclosure deserves.
 
     Returns :attr:`~stock_ai.data.types.Importance.UNKNOWN` when the model's
@@ -146,7 +161,7 @@ def classify_importance(provider: AIProvider, text: str) -> Importance:
     treating it as routine is how the one filing that mattered gets missed.
     """
     raw = provider.complete(
-        importance_prompt(text),
+        importance_prompt(text, about=about),
         system=IMPORTANCE_SYSTEM,
         max_tokens=IMPORTANCE_MAX_TOKENS,
         prefill=ONE_WORD_PREFILL,

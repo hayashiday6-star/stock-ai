@@ -455,9 +455,7 @@ def estimate_monitor_cost(
     work = monitor.pending()
     if not work:
         return None
-    return estimate_disclosure_run(
-        provider, [disclosure.as_text() for _entry, disclosure in work], on_progress=on_progress
-    )
+    return estimate_disclosure_run(provider, monitor.pending_texts(), on_progress=on_progress)
 
 
 # --- factor test ------------------------------------------------------------
