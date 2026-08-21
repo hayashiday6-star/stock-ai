@@ -40,6 +40,27 @@ def market_for_symbol(symbol: str) -> str:
     return JAPAN if len(head) == 4 and head.isdigit() else UNITED_STATES
 
 
+def to_yahoo_symbol(symbol: str) -> str:
+    """Return the form Yahoo Finance knows ``symbol`` by.
+
+    A bare four-digit code is not a Tokyo listing to Yahoo - it is whatever
+    exchange answers first. Saudi's Tadawul also numbers its listings in four
+    digits, and ``3003`` there is City Cement: watching ヒューリック by its bare
+    code delivered Middle East small-cap articles, correctly summarised, under
+    a Japanese company's name. Nothing in that output looks like an error.
+
+    The suffix is added only where the code is unambiguous, and an already
+    qualified symbol is returned untouched.
+    """
+    text = symbol.strip().upper()
+    if market_for_symbol(text) != JAPAN:
+        return text
+    head, _, suffix = text.partition(".")
+    if not suffix:
+        return f"{head}.T"
+    return f"{head}.T" if f".{suffix}" in JP_SUFFIXES else text
+
+
 def split_by_market(symbols: list[str]) -> dict[str, list[str]]:
     """Group ``symbols`` by market, preserving their given order.
 
