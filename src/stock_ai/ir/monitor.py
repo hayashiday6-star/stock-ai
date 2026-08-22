@@ -133,6 +133,9 @@ class WatchMonitor:
         self.provider = provider
         self.notifier = notifier
         self.summary_words = summary_words
+        #: One answer per (symbol, limit) for this monitor's lifetime, so the
+        #: pricing pass and the run see the same items.
+        self._fetched: dict[tuple[str, int], list[Disclosure]] = {}
 
     def run(self, limit: int = 10, notify: bool = False) -> MonitorResult:
         """Make one pass over the watchlist.
@@ -226,12 +229,24 @@ class WatchMonitor:
         return [(subjects.get(entry.symbol, entry.symbol), d.as_text()) for entry, d in work]
 
     def _fresh_disclosures(self, entry: WatchEntry, limit: int) -> tuple[list[Disclosure], int]:
-        """Return ``entry``'s unreported disclosures and how many were skipped."""
-        try:
-            items = self.source.fetch(entry.symbol, limit=limit)
-        except Exception as exc:  # a dead feed must not abort the whole pass
-            logger.warning("Disclosure fetch failed for %s: %s", entry.symbol, exc)
-            return [], 0
+        """Return ``entry``'s unreported disclosures and how many were skipped.
+
+        The feed is asked once per symbol for the life of this monitor. A
+        priced run walks the whole watchlist twice - once to count tokens, once
+        to judge - and fetching twice is not merely wasteful: the second pass
+        can return a different set than the one that was priced, which is
+        exactly the drift the shared estimate exists to prevent. Nothing is
+        marked seen between the two, so one answer serves both.
+        """
+        cached = self._fetched.get((entry.symbol, limit))
+        if cached is None:
+            try:
+                cached = self.source.fetch(entry.symbol, limit=limit)
+            except Exception as exc:  # a dead feed must not abort the whole pass
+                logger.warning("Disclosure fetch failed for %s: %s", entry.symbol, exc)
+                cached = []
+            self._fetched[(entry.symbol, limit)] = cached
+        items = cached
 
         with self.database.session() as session:
             repo = WatchlistRepository(session)

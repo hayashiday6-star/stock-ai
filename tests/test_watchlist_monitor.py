@@ -648,3 +648,52 @@ def test_a_successful_delivery_records_no_error(database: Database) -> None:
 
     assert result.delivery_error is None
     assert len(notifier.sent) == 1
+
+
+def test_the_feed_is_asked_once_even_when_the_run_is_priced_first(database: Database) -> None:
+    """A priced run walked the whole watchlist twice, fetching twice with it.
+
+    Doubling the requests is the smaller half. The second pass can return a
+    different set than the one that was priced, so the estimate would describe
+    a run that never happened - the drift the shared estimate exists to
+    prevent, reintroduced one layer down.
+    """
+    calls: list[str] = []
+
+    class _Counting:
+        name = "counting"
+
+        def fetch(self, symbol: str, limit: int = 10) -> list[Disclosure]:
+            calls.append(symbol)
+            return [_disclosure("通期業績予想の上方修正")]
+
+    _watch(database, "4593.T", Importance.LOW)
+    monitor = WatchMonitor(database, _Counting(), _FakeAI())
+
+    priced = monitor.pending_texts(limit=5)
+    assert len(priced) == 1
+    result = monitor.run(limit=5)
+    assert result.checked == 1
+
+    assert calls == ["4593.T"]  # once, not once per pass
+
+
+def test_a_different_limit_is_a_different_question(database: Database) -> None:
+    """The cache is keyed by limit: 5 items and 10 are not the same request."""
+    calls: list[int] = []
+
+    class _Counting:
+        name = "counting"
+
+        def fetch(self, symbol: str, limit: int = 10) -> list[Disclosure]:
+            calls.append(limit)
+            return []
+
+    _watch(database, "4593.T", Importance.LOW)
+    monitor = WatchMonitor(database, _Counting(), _FakeAI())
+
+    monitor.pending(limit=5)
+    monitor.pending(limit=10)
+    monitor.pending(limit=5)
+
+    assert calls == [5, 10]
