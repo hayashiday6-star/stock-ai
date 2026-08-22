@@ -406,3 +406,39 @@ def test_the_daily_script_passes_limit_and_heartbeat_through() -> None:
     assert "'--limit', $Limit" in text  # into the CLI it runs
     assert "$arguments += '-Heartbeat'" in text
     assert "$arguments += '--heartbeat'" in text
+
+
+def test_fetch_routes_japanese_codes_away_from_yfinance(monkeypatch) -> None:
+    """`fetch 3003` with the default source stored another exchange's prices.
+
+    A bare four-digit code is a Tadawul listing to Yahoo, so 3003 comes back
+    as City Cement and is stored under ヒューリック's name. Nothing raises and
+    nothing about the stored series looks wrong afterwards - which is why the
+    routing has to happen before the request, not be left to a flag.
+    """
+    from typer.testing import CliRunner
+
+    asked: list[tuple[str, tuple[str, ...]]] = []
+
+    def _source(name: str, _settings: object) -> tuple[object, str]:
+        return name, ("JP" if name == "jquants" else "US")
+
+    class _Service:
+        def __init__(self, provider: str, *_args: object, **_kwargs: object) -> None:
+            self.provider = provider
+
+        def ingest_many(self, syms, *_args: object, **_kwargs: object) -> list:
+            asked.append((self.provider, tuple(syms)))
+            return []
+
+    monkeypatch.setattr("stock_ai.cli._price_source", _source)
+    monkeypatch.setattr("stock_ai.cli.IngestionService", _Service)
+
+    result = CliRunner().invoke(app, ["fetch", "3003", "AAPL"])
+
+    assert result.exit_code == 0
+    routed = dict(asked)
+    assert routed["jquants"] == ("3003",)
+    assert routed["yfinance"] == ("AAPL",)
+    # And it says so, rather than quietly overriding the flag it was given.
+    assert "rather than yfinance" in result.stdout
