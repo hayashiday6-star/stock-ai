@@ -216,12 +216,26 @@ def fetch(
     configure_logging(settings.log_level)
 
     targets = _resolve_symbols(symbols, symbols_file)
-    provider, market = _price_source(source, settings)
     database = Database()
     database.create_all()
-    service = IngestionService(provider, database, default_lookback_days=lookback)
 
-    results = service.ingest_many(targets, _parse_date(start), _parse_date(end), market=market)
+    # Routed by the ticker, not by the flag. One --source cannot serve a mixed
+    # list, and sending a Japanese code to yfinance does not fail: a bare four
+    # digits is a Tadawul listing there, so 3003 comes back as City Cement and
+    # is stored under ヒューリック's name. Nothing about that looks wrong later.
+    results = []
+    for market_code, group in split_by_market(targets).items():
+        resolved = "jquants" if market_code == "JP" else "yfinance"
+        if resolved != source.lower():
+            console.print(
+                f"[yellow]{', '.join(group)} are {market_code} listings; "
+                f"fetching them from {resolved} rather than {source}.[/]"
+            )
+        provider, market = _price_source(resolved, settings)
+        service = IngestionService(provider, database, default_lookback_days=lookback)
+        results.extend(
+            service.ingest_many(group, _parse_date(start), _parse_date(end), market=market)
+        )
     _render_results(results)
 
     if any(not r.ok for r in results):
