@@ -37,6 +37,8 @@ data/*.sqlite3
 tachibana_history*.json
 # 当日の仮想URL。復号済みなので、これ自体が資格情報。
 tachibana_session*.json
+# 登録用に書き出した公開鍵（秘密ではないが、生成物なので追跡しない）。
+tachibana_public*.txt
 
 # --- IDE / OS ---
 .vscode/

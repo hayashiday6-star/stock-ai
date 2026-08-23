@@ -69,12 +69,77 @@ def _sd_date() -> str:
     return f"{dt.datetime.now():%Y.%m.%d-%H:%M:%S}.000"
 
 
-def keygen(private_path: pathlib.Path) -> None:
-    """RSA鍵ペアを作り、登録用の公開鍵を2形式で表示する。
+def write_public_formats(private_path: pathlib.Path, out: pathlib.Path) -> None:
+    """公開鍵を、登録画面が求めうる形式すべてでファイルに書く。
 
-    サンプルの秘密鍵は PKCS#8 PEM（``-----BEGIN PRIVATE KEY-----``）なので
-    こちらもそれで書く。利用設定画面が受け付ける公開鍵の形式は画面を見ないと
-    分からないため、両方出して貼り分けてもらう。秘密鍵は表示しない。
+    コンソールからの複数行コピーはやめる。改行や折り返しが混ざるだけで
+    「公開キーの形式がエラーです」になり、鍵そのものは正しいのに原因が
+    鍵側に見えてしまう。メモ帳で開いて選択できるファイルにしておけば、
+    その経路を丸ごと消せる。
+
+    どの形式が正解かは画面を見ないと分からないので、候補を全部並べる。
+    ファイルは CRLF で書く。古いメモ帳は LF だけの行を折り返さない。
+    """
+    import base64
+
+    from cryptography.hazmat.primitives import serialization
+
+    key = serialization.load_pem_private_key(private_path.read_bytes(), password=None)
+    public = key.public_key()
+
+    def pem(fmt: serialization.PublicFormat) -> str:
+        return public.public_bytes(serialization.Encoding.PEM, fmt).decode().strip()
+
+    def flat(fmt: serialization.PublicFormat) -> str:
+        """PEM から BEGIN/END と改行を落とした、一行の BASE64。"""
+        body = [ln for ln in pem(fmt).splitlines() if not ln.startswith("-----")]
+        return "".join(body)
+
+    spki = serialization.PublicFormat.SubjectPublicKeyInfo
+    pkcs1 = serialization.PublicFormat.PKCS1
+    ssh = public.public_bytes(
+        serialization.Encoding.OpenSSH, serialization.PublicFormat.OpenSSH
+    ).decode()
+    der = base64.b64encode(public.public_bytes(serialization.Encoding.DER, spki)).decode()
+
+    sections = [
+        ("1. X.509 / SubjectPublicKeyInfo (PEM)  ← まずこれ", pem(spki)),
+        ("2. 同じものを一行に（BEGIN/END と改行なし）", flat(spki)),
+        ("3. PKCS#1 (PEM)", pem(pkcs1)),
+        ("4. PKCS#1 を一行に", flat(pkcs1)),
+        ("5. OpenSSH 形式", ssh),
+        ("6. DER を BASE64 で一行に（2 と同じ値）", der),
+    ]
+
+    lines = [
+        "立花証券 e支店・API 利用設定画面に登録する公開鍵",
+        "",
+        f"鍵の種類: RSA {key.key_size} bit / 公開指数 {public.public_numbers().e}",
+        (
+            "（公式サンプルに付属する鍵と同じ種類・同じ長さです）"
+            if key.key_size == 2048
+            else "（公式サンプルの鍵は 2048 bit です。2048 でも登録できます）"
+        ),
+        "",
+        "画面の条件（RSA / 2048 または 4096 ビット / SHA-256）を満たしています。",
+        "",
+        "上から順に試してください。番号と説明の行は貼らないでください。",
+        "=" * 68,
+    ]
+    for title, value in sections:
+        lines += ["", f"--- {title} ---", value]
+    lines += ["", "=" * 68, "", "秘密鍵はこのファイルには入っていません。"]
+
+    out.write_bytes(("\r\n".join(lines) + "\r\n").encode("utf-8"))
+
+
+def keygen(private_path: pathlib.Path, public_path: pathlib.Path, bits: int = 2048) -> None:
+    """RSA鍵ペアを作り、登録用の公開鍵をファイルに書き出す。
+
+    既定は RSA-2048 / e=65537。利用設定画面が受け付けるのは「RSA の 2048 または
+    4096 ビット」で、公式サンプルに付属する鍵も 2048 なので既定をそちらに合わせる。
+    秘密鍵はサンプルと同じ PKCS#8 PEM（``-----BEGIN PRIVATE KEY-----``）で書き、
+    表示はしない。
     """
     from cryptography.hazmat.primitives import serialization
     from cryptography.hazmat.primitives.asymmetric import rsa
@@ -82,7 +147,7 @@ def keygen(private_path: pathlib.Path) -> None:
     if private_path.exists():
         sys.exit(f"{private_path} は既にあります。上書きしないので、消すか別名を指定してください。")
 
-    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    key = rsa.generate_private_key(public_exponent=65537, key_size=bits)
     private_path.write_bytes(
         key.private_bytes(
             encoding=serialization.Encoding.PEM,
@@ -93,18 +158,11 @@ def keygen(private_path: pathlib.Path) -> None:
     if os.name == "posix":
         private_path.chmod(0o600)
 
-    public = key.public_key()
-    spki = public.public_bytes(
-        serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo
-    )
-    pkcs1 = public.public_bytes(serialization.Encoding.PEM, serialization.PublicFormat.PKCS1)
-
+    write_public_formats(private_path, public_path)
     print(f"秘密鍵を書きました: {private_path}")
-    print("  ※ このファイルは .env と同じ扱いです。git に入れないでください。\n")
-    print("--- 公開鍵 (X.509 / SubjectPublicKeyInfo). まずこちらを試してください ---")
-    print(spki.decode())
-    print("--- 公開鍵 (PKCS#1). 上が弾かれたらこちら ---")
-    print(pkcs1.decode())
+    print("  ※ このファイルは .env と同じ扱いです。git に入れないでください。")
+    print(f"登録用の公開鍵を書きました: {public_path}")
+    print("  このファイルを開いて、中の値をコピーしてください。")
 
 
 def decrypt_url(blob: str, private_path: pathlib.Path) -> str:
@@ -400,8 +458,20 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="立花証券・ｅ支店・ＡＰＩの疎通プローブ")
     sub = parser.add_subparsers(dest="command", required=True)
 
-    gen = sub.add_parser("keygen", help="RSA鍵ペアを作り、登録用の公開鍵を表示する")
+    gen = sub.add_parser("keygen", help="RSA鍵ペアを作り、登録用の公開鍵をファイルに書く")
     gen.add_argument("--private", type=pathlib.Path, default=pathlib.Path("tachibana_private.pem"))
+    gen.add_argument("--public", type=pathlib.Path, default=pathlib.Path("tachibana_public.txt"))
+    gen.add_argument(
+        "--bits",
+        type=int,
+        choices=(2048, 4096),
+        default=2048,
+        help="鍵長。利用設定画面が受け付けるのはこの2つ（既定: 2048）",
+    )
+
+    fmt = sub.add_parser("keyfmt", help="既存の秘密鍵から、登録用の公開鍵をあらゆる形式で書き直す")
+    fmt.add_argument("--private", type=pathlib.Path, default=pathlib.Path("tachibana_private.pem"))
+    fmt.add_argument("--public", type=pathlib.Path, default=pathlib.Path("tachibana_public.txt"))
 
     run = sub.add_parser("probe", help="ログイン〜株価履歴1銘柄までを実際に通す")
     run.add_argument("--private", type=pathlib.Path, default=pathlib.Path("tachibana_private.pem"))
@@ -421,7 +491,14 @@ def main() -> int:
 
     args = parser.parse_args()
     if args.command == "keygen":
-        keygen(args.private)
+        keygen(args.private, args.public, args.bits)
+        return 0
+    if args.command == "keyfmt":
+        if not args.private.exists():
+            sys.exit(f"秘密鍵が見つかりません: {args.private}\n先に `keygen` を実行してください。")
+        write_public_formats(args.private, args.public)
+        print(f"登録用の公開鍵を書き直しました: {args.public}")
+        print("  秘密鍵は変えていないので、登録済みの鍵があればそのまま使えます。")
         return 0
 
     auth_id = os.environ.get("TACHIBANA_AUTH_ID", "").strip()

@@ -39,6 +39,11 @@
     保存済みの当日セッションを捨て、ログインからやり直す。仮想ＵＲＬは当日限り
     なので、2回目以降は既定で保存分を使い回してログインを重ねない。
 
+.PARAMETER KeyFmt
+    鍵は作り直さず、登録用の公開鍵だけを全形式で書き出してメモ帳で開く。
+    登録画面に「公開キーの形式がエラーです」と言われたときに使う。
+    秘密鍵は変わらないので、やり直しにはならない。
+
 .EXAMPLE
     .\scripts\tachibana-probe.ps1
     .\scripts\tachibana-probe.ps1 -Symbol 7203
@@ -53,7 +58,8 @@ param(
     [string]$PrivateKey = 'tachibana_private.pem',
     [switch]$Demo,
     [switch]$UseGet,
-    [switch]$Fresh
+    [switch]$Fresh,
+    [switch]$KeyFmt
 )
 
 $ErrorActionPreference = 'Continue'
@@ -64,20 +70,20 @@ Set-Location (Split-Path -Parent $PSScriptRoot)
 if (-not (Test-UvInstalled)) { Exit-WithPause 1 }
 
 $hasKey = Test-Path $PrivateKey
+$PublicKey = 'tachibana_public.txt'
 
-if ($Keygen -or -not $hasKey) {
-    Write-Section 'Tachibana: 鍵ペアを作る'
-    if (-not $hasKey) {
-        Write-Host "秘密鍵 $PrivateKey が無いので、先に作ります。" -ForegroundColor Cyan
-        Write-Host ''
-    }
-    uv run python tools\tachibana_probe.py keygen --private $PrivateKey
-    if ($LASTEXITCODE -ne 0) { Exit-WithPause 1 }
-
+function Show-RegistrationSteps {
+    <#
+        登録画面に貼る値はメモ帳で開かせる。コンソールから複数行の BASE64 を
+        コピーすると折り返しや欠けが混ざり、鍵は正しいのに「公開キーの形式が
+        エラーです」になる。実際に一度そうなった。
+    #>
     Write-Host ''
     Write-Host '--- 次にやること ---' -ForegroundColor Cyan
-    Write-Host '  1. 上の公開鍵を、ｅ支店の API 利用設定画面に登録する'
-    Write-Host '     （まず X.509 の方を試し、弾かれたら PKCS#1 の方）'
+    Write-Host "  1. いま開いた $PublicKey から、"
+    Write-Host '     「1. X.509」の -----BEGIN----- から -----END----- までを'
+    Write-Host '     まるごとコピーし、ｅ支店の API 利用設定画面に貼る'
+    Write-Host '     弾かれたら 2 → 3 → 4 → 5 の順に試す（番号の行は貼らない）'
     Write-Host '  2. 同じ画面で認証IDを生成し、.env に次の行を書く'
     Write-Host '        TACHIBANA_AUTH_ID=（生成された値）'
     Write-Host '  3. このファイルをもう一度ダブルクリックする'
@@ -85,6 +91,29 @@ if ($Keygen -or -not $hasKey) {
     Write-Host "秘密鍵 $PrivateKey は .env と同じ扱いです。人に渡さないでください。" -ForegroundColor Yellow
     Write-Host '同じ扱いのファイルがもう1つ、実行後に tachibana_session.json として' -ForegroundColor Yellow
     Write-Host 'できます。その日の仮想URLが復号済みで入っています。' -ForegroundColor Yellow
+    Write-Host ''
+    Write-Host "（公開鍵だけ出し直したいときは -KeyFmt を付けて実行してください）" -ForegroundColor DarkGray
+}
+
+if ($KeyFmt -and $hasKey) {
+    Write-Section 'Tachibana: 登録用の公開鍵を書き直す'
+    uv run python tools\tachibana_probe.py keyfmt --private $PrivateKey --public $PublicKey
+    if ($LASTEXITCODE -ne 0) { Exit-WithPause 1 }
+    Start-Process notepad.exe $PublicKey
+    Show-RegistrationSteps
+    Exit-WithPause 0
+}
+
+if ($Keygen -or -not $hasKey) {
+    Write-Section 'Tachibana: 鍵ペアを作る'
+    if (-not $hasKey) {
+        Write-Host "秘密鍵 $PrivateKey が無いので、先に作ります。" -ForegroundColor Cyan
+        Write-Host ''
+    }
+    uv run python tools\tachibana_probe.py keygen --private $PrivateKey --public $PublicKey
+    if ($LASTEXITCODE -ne 0) { Exit-WithPause 1 }
+    Start-Process notepad.exe $PublicKey
+    Show-RegistrationSteps
     Exit-WithPause 0
 }
 
