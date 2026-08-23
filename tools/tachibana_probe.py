@@ -369,9 +369,11 @@ def _login(client: Client, auth_id: str, private_path: pathlib.Path) -> str | No
             continue
         # URL に見えることまで確かめる。復号が「通った」ことだけを成功の判定に
         # 使うと、鍵や方式を取り違えたまま先へ進んでしまう。
-        shape = "OK" if plain.startswith("http") else f"URLに見えません {plain[:16]!r}"
+        # 時価配信の口だけは wss:// で返る。http だけを見ていると、正しい値を
+        # 「URLに見えません」と報告することになる（実際にそう出た）。
+        shape = "OK" if plain.startswith(("http", "ws")) else f"URLに見えません {plain[:16]!r}"
         print(f"  {field}: {shape}  指紋 {_fingerprint(plain)}  {len(plain)}字")
-        if plain.startswith("http"):
+        if plain.startswith(("http", "ws")):
             urls[field] = plain
 
     if not urls.get("sUrlPrice"):
