@@ -10,12 +10,20 @@ UTF-16LE のタブ区切りで、``jpcrp`` で始まるファイルが本体（`
 
 実データ（日立 6501, 2026年6月提出）で確かめた罠が3つある。どれも数字は出る。
 
-**1. 同じ表に連結と単体が同居し、区分の列では見分けられない。** IFRS 適用会社
-では、連結が ``...IFRSSummaryOfBusinessResults``、提出会社単体が
-``...SummaryOfBusinessResults`` で、どちらも「連結・個別」列は「その他」になる。
+**1. 同じ表に連結と単体が同居する。見分けるのはコンテキストID。** 「連結・個別」
+列はどちらも「その他」で役に立たない。効くのは ``コンテキストID`` の
+``_NonConsolidatedMember`` という接尾辞で、これが付いている行が提出会社単体。
 日立の当期純利益は連結 802,368 百万に対し単体 784,025 百万、純資産に至っては
-6,568,369 対 3,949,169 と4割違う。名前で選ばなければ、それらしい別会社の数字を
-持つことになる。
+6,568,369 対 3,949,169 と4割違う。
+
+要素名でも見分けられるように**見える**。IFRS 適用会社では連結が
+``...IFRSSummaryOfBusinessResults``、単体が ``...SummaryOfBusinessResults`` に
+なっていて、日立ではコンテキストによる分類と完全に一致した。だがこれは IFRS
+適用会社に限った話で、**日本基準の会社では連結も単体も同じ要素名を使う**。名前
+だけで選ぶと、そこで単体を掴む。だからまずコンテキストで絞る。
+
+連結財務諸表を作っていない会社（子会社が無い）では連結の行が1つも無い。その
+ときだけ単体に落ちる。
 
 **2. EPS だけが分割調整されている。** 発行済株式数と1株配当は当時のまま。
 純利益 ÷ EPS で株数を逆算すると、分割前の年は報告値のちょうど5倍になる。
@@ -25,7 +33,14 @@ UTF-16LE のタブ区切りで、``jpcrp`` で始まるファイルが本体（`
 **3. 相対年度は「当期」と「当期末」が別。** 期間の項目（売上・利益）と時点の
 項目（純資産・総資産・株式数）でラベルが違う。片方だけ見ると3年分しか揃わない。
 
-**4. 相対年度しか無いので、決算年度は自分で解決する。** 表には「当期」「前期」
+**4. 要素名が意味を保証しない。** 日立の
+``EquityToAssetRatioIFRSSummaryOfBusinessResults`` は「自己資本比率」ではなく
+「１株当たり親会社所有者帰属持分（IFRS）」＝BPS で、値は 897.78 円。同じ有報の
+``EquityToAssetRatioSummaryOfBusinessResults`` のほうは本当に自己資本比率
+（0.454）。EDINET は会計基準ごとに別の概念へ同じ名前を使い回している。名前で
+選ぶときは項目名と値の桁を必ず確かめること。
+
+**5. 相対年度しか無いので、決算年度は自分で解決する。** 表には「当期」「前期」
 としか書いていない。実際の年度は ``jpdei`` の ``CurrentFiscalYearEndDateDEI``
 から1年ずつ遡って割り当てる。銘柄コードも同じ ``jpdei`` にあるが5桁
 （日立は ``65010``）で、末尾の株式種別を落とさないと watchlist と噛み合わない。
@@ -85,31 +100,57 @@ _SECURITY_CODE = "SecurityCodeDEI"
 _ACCOUNTING_STANDARD = "AccountingStandardsDEI"
 _FILER_NAME = "FilerNameInJapaneseDEI"
 
+#: コンテキストIDに付く、提出会社単体を表す接尾辞。
+#:
+#: ``CurrentYearDuration_NonConsolidatedMember`` のように付く。「連結・個別」列は
+#: 連結にも単体にも「その他」を入れるので、見分けられるのはここだけ。
+NON_CONSOLIDATED = "NonConsolidatedMember"
+
 #: EDINET が未記載に使う印。どれも 0 ではない。
 _BLANKS = frozenset(("", "-", "－", "―"))
 
-#: 会計基準ごとの、連結の要素名。IFRS を先に見る。
+#: :class:`AnnualFigures` の項目名 -> 会計基準ごとの、連結の要素名。
 #:
-#: IFRS 適用会社の CSV には日本基準名の要素も入っているが、それは提出会社単体の
-#: 表であって連結ではない。順序がそのまま優先順位になる。
-_REVENUE = ("RevenueIFRSSummaryOfBusinessResults", "NetSalesSummaryOfBusinessResults")
-_NET_INCOME = (
-    "ProfitLossAttributableToOwnersOfParentIFRSSummaryOfBusinessResults",
-    "NetIncomeLossSummaryOfBusinessResults",
-)
-_EQUITY = (
-    "EquityAttributableToOwnersOfParentIFRSSummaryOfBusinessResults",
-    "NetAssetsSummaryOfBusinessResults",
-)
-_TOTAL_ASSETS = (
-    "TotalAssetsIFRSSummaryOfBusinessResults",
-    "TotalAssetsSummaryOfBusinessResults",
-)
-_ROE = (
-    "RateOfReturnOnEquityIFRSSummaryOfBusinessResults",
-    "RateOfReturnOnEquitySummaryOfBusinessResults",
-)
-_SHARES = ("TotalNumberOfIssuedSharesSummaryOfBusinessResults",)
+#: 並びがそのまま優先順位。IFRS を先に見る。IFRS 適用会社の CSV には日本基準名の
+#: 要素も入っているが、それは提出会社単体の表であって連結ではない。
+#:
+#: 日本基準側の名前は日立（IFRS）1本から起こしたもので、日本基準の会社で同じ名前が
+#: 使われている確証はまだない。``tools/edinet_financials_check.py`` が、実際の有報に
+#: 出てくる要素とここを突き合わせて穴を出す。
+ELEMENTS: dict[str, tuple[str, ...]] = {
+    "revenue": (
+        "RevenueIFRSSummaryOfBusinessResults",
+        "NetSalesSummaryOfBusinessResults",
+    ),
+    "net_income": (
+        "ProfitLossAttributableToOwnersOfParentIFRSSummaryOfBusinessResults",
+        "NetIncomeLossSummaryOfBusinessResults",
+    ),
+    "equity": (
+        "EquityAttributableToOwnersOfParentIFRSSummaryOfBusinessResults",
+        "NetAssetsSummaryOfBusinessResults",
+    ),
+    "total_assets": (
+        "TotalAssetsIFRSSummaryOfBusinessResults",
+        "TotalAssetsSummaryOfBusinessResults",
+    ),
+    "roe": (
+        "RateOfReturnOnEquityIFRSSummaryOfBusinessResults",
+        "RateOfReturnOnEquitySummaryOfBusinessResults",
+    ),
+    "shares_outstanding": ("TotalNumberOfIssuedSharesSummaryOfBusinessResults",),
+}
+
+#: 時点の項目。相対年度が「当期末」側のラベルになる。残りは期間の項目。
+INSTANT_FIELDS = frozenset({"equity", "total_assets", "shares_outstanding"})
+
+#: 連結・単体の区別が意味を持たない項目。連結で絞る前の行から探す。
+#:
+#: 発行済株式総数は提出会社そのものの事実で、連結にしたところで別の数にはならない。
+#: EDINET もそう扱っていて、この行には常に ``_NonConsolidatedMember`` が付く。連結の
+#: 行だけに絞ると、単体の財務を弾くのと同じ理屈でこれも消え、株式数の列だけが空欄に
+#: なる。例外は出ない。
+ENTITY_FIELDS = frozenset({"shares_outstanding"})
 
 
 @dataclasses.dataclass(frozen=True)
@@ -212,11 +253,38 @@ def read_csv_zip(body: bytes) -> list[dict[str, str]]:
     return list(csv.DictReader(io.StringIO(text), delimiter="\t"))
 
 
+def is_consolidated(row: dict[str, str]) -> bool:
+    """その行が連結の数字か。単体なら ``False``。
+
+    「連結・個別」列は両方に「その他」を入れるので使えない。コンテキストIDの
+    ``_NonConsolidatedMember`` だけが実際に分かれている。
+    """
+    return NON_CONSOLIDATED not in row.get(CONTEXT, "")
+
+
+def summary_rows(rows: list[dict[str, str]]) -> list[dict[str, str]]:
+    """「主要な経営指標等」の行だけにする。"""
+    return [r for r in rows if "SummaryOfBusinessResults" in r.get(ELEMENT, "")]
+
+
+def consolidated_rows(rows: list[dict[str, str]]) -> list[dict[str, str]]:
+    """連結の行だけにする。連結が1行も無ければ、渡された行をそのまま返す。
+
+    子会社を持たない会社は連結財務諸表を作らないので、単体しか無い。そこで空を
+    返すと、有報はあるのに何も読めないことになる。どちらを使ったかはログに残す。
+    """
+    consolidated = [r for r in rows if is_consolidated(r)]
+    if consolidated:
+        return consolidated
+    logger.info("連結の行がありません。提出会社単体の数字を使います。")
+    return rows
+
+
 def _pick(rows: list[dict[str, str]], names: tuple[str, ...], year: str) -> float | None:
     """``names`` を優先順に探し、``year`` の値を返す。
 
-    順序が会計基準の優先順位そのもの。IFRS 適用会社の CSV には日本基準名の要素も
-    入っているが、それは提出会社単体の表であって連結ではない。
+    連結で絞った後の第二の防御線。IFRS 適用会社の表には日本基準名の要素も残る
+    ことがあるので、順序で IFRS を先に見る。
     """
     for name in names:
         for row in rows:
@@ -240,17 +308,19 @@ def parse_summary(rows: list[dict[str, str]]) -> list[AnnualFigures]:
     値が1つも取れなかった期は落とす。有報によっては5期揃わない（上場から日が
     浅い、会計基準を変えた、など）。
     """
+    summary = summary_rows(rows)
+    group = consolidated_rows(summary)
     figures: list[AnnualFigures] = []
     for duration, instant in YEAR_LABELS:
-        entry = AnnualFigures(
-            year=duration,
-            revenue=_pick(rows, _REVENUE, duration),
-            net_income=_pick(rows, _NET_INCOME, duration),
-            equity=_pick(rows, _EQUITY, instant),
-            total_assets=_pick(rows, _TOTAL_ASSETS, instant),
-            roe=_pick(rows, _ROE, duration),
-            shares_outstanding=_pick(rows, _SHARES, instant),
-        )
+        values = {
+            field: _pick(
+                summary if field in ENTITY_FIELDS else group,
+                names,
+                instant if field in INSTANT_FIELDS else duration,
+            )
+            for field, names in ELEMENTS.items()
+        }
+        entry = AnnualFigures(year=duration, **values)
         if not entry.is_empty():
             figures.append(entry)
     return figures

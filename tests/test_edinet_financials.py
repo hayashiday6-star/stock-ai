@@ -27,14 +27,19 @@ from stock_ai.core.exceptions import DataError
 from stock_ai.data.types import FiscalPeriod
 from stock_ai.ir.edinet import EdinetDisclosureSource
 from stock_ai.ir.edinet_financials import (
+    ELEMENTS,
+    INSTANT_FIELDS,
+    NON_CONSOLIDATED,
     AnnualFigures,
     FilingHeader,
     fetch_annual_reports,
     fetch_document,
+    is_consolidated,
     parse_filing,
     parse_header,
     parse_summary,
     read_csv_zip,
+    summary_rows,
     to_reports,
 )
 
@@ -106,15 +111,18 @@ HEADER = "\t".join(
 )
 
 
-def csv_text(*entries: tuple[str, str, str]) -> str:
-    """(要素ID, 相対年度, 値) から、最小の CSV を作る。
+def csv_text(*entries: tuple[str, ...]) -> str:
+    """(要素ID, 相対年度, 値[, コンテキストID]) から、最小の CSV を作る。
 
     ``jpdei`` の項目は接頭辞が違う。要素名で振り分けて、実物と同じ形にする。
+    「連結・個別」列は実物と同じく常に「その他」を入れる――そこでは何も分からない、
+    というのがこのモジュールの前提だから。
     """
     lines = [HEADER]
-    for element, year, value in entries:
+    for element, year, value, *rest in entries:
         prefix = "jpdei_cor" if element.endswith("DEI") else "jpcrp_cor"
-        cells = (f"{prefix}:{element}", "", "", year, "その他", "", "JPY", "円", value)
+        context = rest[0] if rest else ""
+        cells = (f"{prefix}:{element}", "", context, year, "その他", "", "JPY", "円", value)
         lines.append("\t".join(f'"{c}"' for c in cells))
     return "\r\n".join(lines)
 
@@ -162,6 +170,31 @@ def test_read_csv_zip_rejects_an_archive_without_the_body() -> None:
     body = make_zip(utf16(HEADER), names=(AUDIT_CSV,))
     with pytest.raises(DataError, match="jpcrp"):
         read_csv_zip(body)
+
+
+# --- 要素表と dataclass が食い違わないこと -------------------------------
+
+
+def test_every_element_maps_onto_a_field() -> None:
+    """``ELEMENTS`` の鍵は ``AnnualFigures`` の項目名。綴り違いは ``TypeError`` になる。
+
+    ``parse_summary`` は ``AnnualFigures(**values)`` で組むので、片方だけ足すと
+    起動時に落ちる。テストがあるのは、落ちる場所が読んだ有報の中身に依存しない
+    ことをはっきりさせるため。
+    """
+    fields = set(AnnualFigures.__dataclass_fields__) - {"year"}
+    assert set(ELEMENTS) == fields
+
+
+def test_instant_fields_are_a_subset_of_the_elements() -> None:
+    """時点の項目は、必ず表にある項目でなければならない。
+
+    ここが外れると、対応する項目は「当期末」ではなく「当期」で探されて必ず空に
+    なる。5期ぶんの表がその列だけ空欄で出てくるだけで、例外は出ない。
+    """
+    instants = set(INSTANT_FIELDS)
+    assert instants <= set(ELEMENTS)
+    assert instants == {"equity", "total_assets", "shares_outstanding"}
 
 
 # --- 罠1: 連結と単体が同居する -------------------------------------------
@@ -227,6 +260,81 @@ def test_ifrs_wins_even_when_the_japanese_gaap_row_comes_first() -> None:
     )
     (current,) = parse_summary(read_csv_zip(body))
     assert current.net_income == 802_368_000_000.0
+
+
+def test_consolidated_and_standalone_are_told_apart_by_context(
+    rows: list[dict[str, str]],
+) -> None:
+    """実データで、どの行が単体かはコンテキストIDだけが言っている。
+
+    「連結・個別」列は連結にも単体にも「その他」を入れる。日立の有報で単体側に
+    回るのは、非IFRS の財務項目と――発行済株式数・資本金のような、そもそも連結の
+    概念が無い項目。
+    """
+    assert {r["連結・個別"] for r in summary_rows(rows)} == {"その他"}
+    standalone = {r["要素ID"].split(":")[-1] for r in summary_rows(rows) if not is_consolidated(r)}
+    assert "NetIncomeLossSummaryOfBusinessResults" in standalone
+    assert "ProfitLossAttributableToOwnersOfParentIFRSSummaryOfBusinessResults" not in standalone
+
+
+def test_the_japanese_gaap_case_needs_the_context_not_the_name() -> None:
+    """日本基準の会社は、連結も単体も**同じ要素名**を使う。
+
+    IFRS 適用会社では連結に ``...IFRS...`` が付くので名前で分かれて見えるが、
+    それは IFRS 適用会社に限った話。日本基準では名前が一致し、違うのは
+    コンテキストIDの ``_NonConsolidatedMember`` だけになる。名前の優先順位しか
+    見ていないと、ここで単体を掴む――行の並び次第で、例外は出ない。
+    """
+    body = make_zip(
+        utf16(
+            csv_text(
+                (
+                    "NetIncomeLossSummaryOfBusinessResults",
+                    "当期",
+                    "300",
+                    "CurrentYearDuration_" + NON_CONSOLIDATED,
+                ),
+                ("NetIncomeLossSummaryOfBusinessResults", "当期", "500", "CurrentYearDuration"),
+            )
+        )
+    )
+    (current,) = parse_summary(read_csv_zip(body))
+    assert current.net_income == 500.0
+
+
+def test_a_filer_without_subsidiaries_falls_back_to_standalone() -> None:
+    """子会社が無ければ連結財務諸表そのものが無い。空を返すより単体を使う。"""
+    body = make_zip(
+        utf16(
+            csv_text(
+                (
+                    "NetIncomeLossSummaryOfBusinessResults",
+                    "当期",
+                    "300",
+                    "CurrentYearDuration_" + NON_CONSOLIDATED,
+                ),
+            )
+        )
+    )
+    (current,) = parse_summary(read_csv_zip(body))
+    assert current.net_income == 300.0
+
+
+def test_the_share_count_survives_the_consolidated_filter(
+    rows: list[dict[str, str]], years: dict[str, AnnualFigures]
+) -> None:
+    """発行済株式総数は常に単体タグが付く。連結で絞ると消える。
+
+    連結の株式数という概念は無いので、EDINET は提出会社の事実として持っている。
+    財務項目と同じ扱いで弾くと、株式数の列だけが空欄になる――例外は出ない。
+    """
+    shares = [
+        r
+        for r in summary_rows(rows)
+        if r["要素ID"].endswith("TotalNumberOfIssuedSharesSummaryOfBusinessResults")
+    ]
+    assert shares and all(not is_consolidated(r) for r in shares)
+    assert years["当期"].shares_outstanding == 4_535_560_000.0
 
 
 # --- 罠2: 1株当たりの値を年をまたいで使えない ----------------------------
