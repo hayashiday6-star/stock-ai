@@ -3,10 +3,12 @@
     立花証券・ｅ支店・ＡＰＩの仕様を実機で確定する。
 
 .DESCRIPTION
-    マニュアルだけでは決まらない点が4つ残っている。仮想ＵＲＬの暗号方式、
-    JSON引数のURLエンコード要否、応答の文字コード、専用ＵＲＬの版である。
-    どれも推測で実装するとエラーにならずに間違うため、本実装の前に
-    ログイン1回と株価取得1回だけを通して観測する。
+    本実装の前に、ログイン1回と株価取得1回だけを実際に通して確かめる。
+    要求の組み立ては公式サンプル（e_api_sample_v4r9.py）に合わせてあり、
+    POST・ShiftJIS・RSA-OAEP(SHA256)・p_no の採番・sJsonOfmt まで同じ。
+
+    仮想ＵＲＬは復号できたことだけでは成功としない。http で始まることまで
+    確かめる。鍵や方式を取り違えたまま先へ進むのを防ぐためである。
 
     手順は2段階だが、どちらを実行するかはこのスクリプトが判断する。
     秘密鍵が無ければ鍵ペアを作って止まり、あれば疎通確認に進む。
@@ -25,16 +27,27 @@
 .PARAMETER PrivateKey
     秘密鍵のパス。既定は tachibana_private.pem（.gitignore 済み）。
 
+.PARAMETER Demo
+    本番ではなく検証環境（demo-kabuka）へ接続する。デモ用の口座と認証IDが要る。
+    利用できる時間帯が決まっている点に注意。
+
+.PARAMETER UseGet
+    POST ではなく GET で送る。サンプルの既定は POST で、通常は切り替え不要。
+    片方だけ塞がれている環境かどうかを切り分けたいときに使う。
+
 .EXAMPLE
     .\scripts\tachibana-probe.ps1
     .\scripts\tachibana-probe.ps1 -Symbol 7203
+    .\scripts\tachibana-probe.ps1 -Demo
 #>
 [CmdletBinding()]
 param(
     [switch]$Keygen,
     [ValidatePattern('^\d{4}$')]
     [string]$Symbol = '6501',
-    [string]$PrivateKey = 'tachibana_private.pem'
+    [string]$PrivateKey = 'tachibana_private.pem',
+    [switch]$Demo,
+    [switch]$UseGet
 )
 
 $ErrorActionPreference = 'Continue'
@@ -81,8 +94,14 @@ if (-not (Test-EnvKeySet 'TACHIBANA_AUTH_ID')) {
     Exit-WithPause 1
 }
 
-Write-Section "Tachibana: probe ($Symbol)"
-uv run python tools\tachibana_probe.py probe --symbol $Symbol --private $PrivateKey
+$label = if ($Demo) { "$Symbol / demo" } else { $Symbol }
+Write-Section "Tachibana: probe ($label)"
+
+$probeArgs = @('probe', '--symbol', $Symbol, '--private', $PrivateKey)
+if ($Demo) { $probeArgs += '--demo' }
+if ($UseGet) { $probeArgs += '--get' }
+
+uv run python tools\tachibana_probe.py @probeArgs
 $code = $LASTEXITCODE
 
 if ($code -ne 0) {

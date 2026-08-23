@@ -1,20 +1,29 @@
-"""立花証券・ｅ支店・ＡＰＩの疎通プローブ。本実装の前に仕様を実機で確定する。
+"""立花証券・ｅ支店・ＡＰＩの疎通プローブ。本実装の前に実機で1往復だけ通す。
 
-マニュアル本文だけでは決められない点が4つある。どれも推測で実装すると、
-それらしく動いて静かに間違う類のものなので、100行書く前に1往復で確かめる。
+要求の組み立ては公式サンプル（e_api_sample_v4r9.py, MIT）に合わせてある。
+マニュアル本文だけでは決まらなかった点が、サンプルで全部確定した:
 
-1. **仮想ＵＲＬの暗号方式。** 「登録した公開鍵で暗号化」としか書かれておらず、
-   アルゴリズムもパディングも別資料にある。ここは総当たりで観測する。
-2. **JSON引数のURLエンコード要否。** マニュアルの例は生のJSONを ``?`` の後ろに
-   置いている。ブラウザは自動で percent-encode するので、実際の要求がどちらの
-   形なのかは例からは決まらない。
-3. **応答の文字コード。** 一部資料は ShiftJIS と書くが、本文中で ShiftJIS を
-   明示しているのはニュース本文のBASE64だけ。宣言を信じず実測する。
-4. **専用ＵＲＬの版。** ``e_api_vNrN`` は雛形で、実値は利用設定画面で確認する。
+- **仮想ＵＲＬの暗号は RSA-OAEP（MGF1-SHA256 / SHA256, label なし）。**
+  復号後の平文には改行が付くので落とす。
+- **要求は既定で HTTP POST、本文が JSON 文字列**（``Content-Type:
+  application/json``）。GET も通り、その場合 ``?`` の後ろは**生の JSON**で、
+  percent-encode しない。
+- **応答は ShiftJIS。** マニュアル本文が ShiftJIS と明示していたのはニュースの
+  BASE64 だけだったが、サンプルは応答全体を ``shift-jis`` で復号している。
+- **専用ＵＲＬは本番 kabuka / 検証 demo-kabuka の ``e_api_v4r9``。**
+
+サンプルから分かった、マニュアルの機能説明には書かれていない要求項目:
+
+- ``p_no`` は要求ごとに増える通番。サンプルは日付つきファイルに保存して
+  翌要求へ引き継ぐ。
+- ``p_sd_date`` はミリ秒まで持つが、サンプルは ``.000`` 固定で送っている。
+- ``sJsonOfmt`` に ``"5"`` を必ず入れる。
+- エラーは2段。まず伝送層の ``p_errno`` / ``p_err``、次に業務層の
+  ``sResultCode`` / ``sResultText``。片方だけ見ると素通しする。
 
 **個人情報について。** ログイン応答には口座開設区分（ＮＩＳＡ・信用・先物ＯＰ等の
-有無）が含まれる。これは仕様確定に不要なので保存も表示もしない。診断に要る項目
-だけを名指しで拾う。仮想ＵＲＬと認証ＩＤも当然出さない。
+有無）が含まれる。これは疎通確認に不要なので保存も表示もしない。診断に要る項目
+だけを名指しで拾う。認証ＩＤと仮想ＵＲＬも指紋しか出さない。
 """
 
 from __future__ import annotations
@@ -22,6 +31,7 @@ from __future__ import annotations
 import argparse
 import base64
 import datetime as dt
+import hashlib
 import json
 import os
 import pathlib
@@ -38,28 +48,33 @@ _SAFE_LOGIN_FIELDS = (
     "sUpdateInformAPISpecFunction",
 )
 
-#: 仮想ＵＲＬの項目名。値は復号前も復号後も秘密。
+#: 仮想ＵＲＬの項目名。値は復号の前も後も秘密。
 _URL_FIELDS = ("sUrlRequest", "sUrlMaster", "sUrlPrice", "sUrlEvent", "sUrlEventWebSocket")
 
-
-def _stamp() -> str:
-    """``p_sd_date`` の形式 ``yyyy.mm.dd-hh:mn:ss.ttt`` で現在時刻を返す。"""
-    now = dt.datetime.now()
-    return f"{now:%Y.%m.%d-%H:%M:%S}.{now.microsecond // 1000:03d}"
+_PRODUCTION = "https://kabuka.e-shiten.jp/e_api_v4r9"
+_DEMO = "https://demo-kabuka.e-shiten.jp/e_api_v4r9"
 
 
 def _fingerprint(value: str) -> str:
     """秘密そのものではなく、同一性だけを比べられる短い指紋を返す。"""
-    import hashlib
-
     return hashlib.sha256(value.encode("utf-8")).hexdigest()[:12]
 
 
-def keygen(private_path: pathlib.Path) -> None:
-    """RSA鍵ペアを作り、公開鍵を2形式で表示する。
+def _sd_date() -> str:
+    """``p_sd_date``（``yyyy.mm.dd-hh:mn:ss.ttt``）を返す。
 
-    利用設定画面がどちらの形式を受け付けるかは画面を見ないと分からないので、
-    両方出して貼り分けてもらう。秘密鍵はファイルにのみ書き、表示しない。
+    公式サンプルはミリ秒を ``.000`` 固定で送っている。実時刻を入れて弾かれる
+    余地を残す理由がないので、ここでも合わせる。
+    """
+    return f"{dt.datetime.now():%Y.%m.%d-%H:%M:%S}.000"
+
+
+def keygen(private_path: pathlib.Path) -> None:
+    """RSA鍵ペアを作り、登録用の公開鍵を2形式で表示する。
+
+    サンプルの秘密鍵は PKCS#8 PEM（``-----BEGIN PRIVATE KEY-----``）なので
+    こちらもそれで書く。利用設定画面が受け付ける公開鍵の形式は画面を見ないと
+    分からないため、両方出して貼り分けてもらう。秘密鍵は表示しない。
     """
     from cryptography.hazmat.primitives import serialization
     from cryptography.hazmat.primitives.asymmetric import rsa
@@ -92,84 +107,104 @@ def keygen(private_path: pathlib.Path) -> None:
     print(pkcs1.decode())
 
 
-def _login_url(base: str, auth_id: str, *, encode: bool) -> str:
-    """ログイン要求のURLを組み立てる。``encode`` で引数の渡し方を切り替える。"""
-    from urllib.parse import quote
+def decrypt_url(blob: str, private_path: pathlib.Path) -> str:
+    r"""暗号化された仮想ＵＲＬを復号する。
 
-    payload = json.dumps(
-        {
-            "p_no": "1",
-            "p_sd_date": _stamp(),
-            "sCLMID": "CLMAuthLoginRequest",
-            "sAuthId": auth_id,
-        },
-        ensure_ascii=False,
-        separators=(",", ":"),
-    )
-    query = quote(payload, safe="") if encode else payload
-    return f"{base.rstrip('/')}/auth/?{query}"
-
-
-def _decode(raw: bytes) -> tuple[str, str]:
-    """本文を復号し、(文字コード名, 文字列) を返す。宣言ではなく実測で決める。"""
-    for name in ("utf-8", "cp932"):
-        try:
-            return name, raw.decode(name)
-        except UnicodeDecodeError:
-            continue
-    return "utf-8/replace", raw.decode("utf-8", errors="replace")
-
-
-def _try_decrypt(blob: str, private_path: pathlib.Path) -> tuple[str, str] | None:
-    """暗号化された仮想ＵＲＬを、パディングを総当たりして復号する。
-
-    復号できたことを成功の判定に使ってはいけない。PKCS1v15 は、別方式で
-    暗号化された文字列を渡しても例外を投げずにゴミを返すことがある（この
-    プローブの自己テストで実際に起きた）。方式を取り違えたまま「成功」と
-    報告すれば、本実装がそのまま間違った前提の上に乗る。
-
-    そこで平文が仮想ＵＲＬに見えること――``http`` で始まること――まで
-    確かめて初めて成功とする。どれも URL にならなかった場合は、黙って
-    諦めるのではなく候補を全部見せる。
-
-    Returns:
-        (方式名, 復号結果) か、URLとして通ったものが無ければ ``None``。
+    方式は公式サンプルどおり RSA-OAEP（MGF1-SHA256 / SHA256）。平文には改行が
+    付いてくるので落とす。ここを ``strip()`` し忘れると、以降の要求URLの末尾に
+    ``\\r\\n`` が残り、原因の見えない失敗になる。
     """
     from cryptography.hazmat.primitives import hashes, serialization
     from cryptography.hazmat.primitives.asymmetric import padding
 
     key = serialization.load_pem_private_key(private_path.read_bytes(), password=None)
-    try:
-        cipher = base64.b64decode(blob, validate=True)
-    except Exception as exc:  # noqa: BLE001 - 何が来ても観測して報告したい
-        print(f"    BASE64として読めません: {exc}")
-        return None
+    plain = key.decrypt(
+        base64.b64decode(blob),
+        padding.OAEP(mgf=padding.MGF1(hashes.SHA256()), algorithm=hashes.SHA256(), label=None),
+    )
+    return plain.decode("ascii").strip()
 
-    schemes: list[tuple[str, Any]] = [
-        (
-            "OAEP-SHA256",
-            padding.OAEP(padding.MGF1(hashes.SHA256()), hashes.SHA256(), None),
-        ),
-        (
-            "OAEP-SHA1",
-            padding.OAEP(padding.MGF1(hashes.SHA1()), hashes.SHA1(), None),  # noqa: S303
-        ),
-        ("PKCS1v15", padding.PKCS1v15()),
-    ]
-    candidates: list[tuple[str, str]] = []
-    for name, scheme in schemes:
+
+class Client:
+    """ｅ支店・ＡＰＩへの1セッション。要求の組み立てを公式サンプルに合わせる。"""
+
+    def __init__(self, base: str, *, use_post: bool = True) -> None:
+        """接続先と送信方法を決める。
+
+        Args:
+            base: ｅ支店・ＡＰＩ専用ＵＲＬ。
+            use_post: ``True`` で POST（サンプルの既定）、``False`` で GET。
+        """
+        import httpx
+
+        self.base = base.rstrip("/")
+        self.use_post = use_post
+        self._p_no = 0
+        # リダイレクトは追わない。GET のとき認証ＩＤが要求のクエリ文字列に入るので、
+        # 追従すると Location が指す先へそのまま再送されることになる。相手がどこで
+        # あれ、秘密を黙って転送するより 302 を観測して報告する方が正しい。
+        self._client = httpx.Client(timeout=30.0, follow_redirects=False)
+
+    def __enter__(self) -> Client:
+        """``with`` で使えるようにする。"""
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        """接続を閉じる。"""
+        self._client.close()
+
+    def _payload(self, fields: dict[str, str]) -> str:
+        """共通ヘッダを足した要求 JSON を、サンプルと同じ並びで組み立てる。"""
+        self._p_no += 1
+        body = {
+            "p_no": str(self._p_no),
+            "p_sd_date": _sd_date(),
+            "sJsonOfmt": "5",
+            **fields,
+        }
+        return json.dumps(body, ensure_ascii=False, separators=(",", ":"))
+
+    def request(self, url: str, fields: dict[str, str]) -> tuple[dict[str, Any], str]:
+        """1要求を投げ、(応答, 生テキスト) を返す。
+
+        Raises:
+            RuntimeError: HTTP が 200 以外、または本文が JSON として読めない。
+        """
+        payload = self._payload(fields)
+        if self.use_post:
+            response = self._client.post(
+                url, content=payload.encode("utf-8"), headers={"Content-Type": "application/json"}
+            )
+        else:
+            # GET では ``?`` の後ろに生の JSON を置く。percent-encode しない。
+            response = self._client.get(f"{url}?{payload}")
+
+        if response.is_redirect:
+            location = response.headers.get("location", "(なし)")
+            raise RuntimeError(f"HTTP {response.status_code}: リダイレクトされました → {location}")
+        # 応答は ShiftJIS。cp932 は shift-jis の上位互換で、機種依存文字も通る。
+        text = response.content.decode("cp932", errors="replace")
+        if response.status_code != 200:
+            raise RuntimeError(f"HTTP {response.status_code}: {text[:200]}")
         try:
-            plain = key.decrypt(cipher, scheme)
-        except Exception:  # noqa: BLE001 - 失敗が普通なので次を試す
-            continue
-        text = plain.decode("utf-8", errors="replace")
-        if text.startswith("http"):
-            return name, text
-        candidates.append((name, text))
+            return json.loads(text), text
+        except json.JSONDecodeError as exc:
+            raise RuntimeError(f"JSON として読めません: {exc}\n先頭300字: {text[:300]}") from None
 
-    for name, text in candidates:
-        print(f"    {name}: 復号は通りましたが URL に見えません（先頭16字 {text[:16]!r}）")
-    return None
+    @staticmethod
+    def check(answer: dict[str, Any]) -> str | None:
+        """応答のエラーを2段とも見る。問題なければ ``None``。
+
+        伝送層 (``p_errno``) と業務層 (``sResultCode``) は別物で、片方だけ見ると
+        もう片方のエラーを正常として素通しする。
+        """
+        errno = str(answer.get("p_errno", "0"))
+        if errno != "0":
+            return f"伝送エラー p_errno={errno} p_err={answer.get('p_err', '')!r}"
+        code = str(answer.get("sResultCode", "0"))
+        if code != "0":
+            return f"業務エラー sResultCode={code} sResultText={answer.get('sResultText', '')!r}"
+        return None
 
 
 def probe(
@@ -178,144 +213,96 @@ def probe(
     private_path: pathlib.Path,
     symbol: str,
     out: pathlib.Path,
+    *,
+    use_post: bool,
 ) -> int:
-    """ログインから株価履歴1銘柄までを1往復ずつ通し、観測結果を報告する。"""
-    import httpx
-
+    """ログインから株価履歴1銘柄までを通し、観測結果を報告する。"""
     if not private_path.exists():
         sys.exit(f"秘密鍵が見つかりません: {private_path}\n先に `keygen` を実行してください。")
 
-    print(f"認証ID 指紋: {_fingerprint(auth_id)}  (値そのものは表示しません)")
-    print(f"接続先: {base.rstrip('/')}/auth/\n")
+    method = "POST" if use_post else "GET"
+    print(f"接続先: {base.rstrip('/')}   送信方法: {method}")
+    print(f"認証ID 指紋: {_fingerprint(auth_id)}  (値そのものは表示しません)\n")
 
-    # --- 1. ログイン。引数の渡し方が未確定なので両方試す ---------------------
-    login: dict[str, Any] | None = None
-    encode_args = False
-    # リダイレクトは追わない。認証IDは要求のクエリ文字列に入るので、追従すると
-    # Location が指す先へそのまま再送されることになる。相手がどこであれ、秘密を
-    # 黙って転送するより、302 を観測して報告する方がプローブとして正しい。
-    with httpx.Client(timeout=30.0, follow_redirects=False) as client:
-        for encode in (False, True):
-            label = "percent-encoded" if encode else "生JSON"
-            try:
-                response = client.get(_login_url(base, auth_id, encode=encode))
-            except Exception as exc:  # noqa: BLE001 - 到達性そのものを観測している
-                print(f"[{label}] 接続失敗: {type(exc).__name__}: {exc}")
-                continue
-            charset, text = _decode(response.content)
-            size = len(response.content)
-            print(f"[{label}] HTTP {response.status_code}, 文字コード={charset}, {size} bytes")
-            if response.is_redirect:
-                # 転送先そのものは出す（秘密ではない）。追従はしない。
-                print(f"    リダイレクト先: {response.headers.get('location', '(なし)')}")
-                continue
-            if response.status_code != 200:
-                print(f"    本文: {text[:200]}")
-                continue
-            try:
-                login = json.loads(text)
-            except json.JSONDecodeError as exc:
-                print(f"    JSONとして読めません: {exc}")
-                print(f"    先頭200字: {text[:200]}")
-                continue
-            print(f"    → この渡し方が通りました（引数は{label}で送る）")
-            encode_args = encode
-            break
-
-        if login is None:
-            print("\nログインできませんでした。上の観測結果を貼ってください。")
+    with Client(base, use_post=use_post) as client:
+        # --- 1. ログイン -----------------------------------------------------
+        print("--- ログイン ---")
+        try:
+            login, _ = client.request(
+                f"{client.base}/auth/",
+                {"sCLMID": "CLMAuthLoginRequest", "sAuthId": auth_id},
+            )
+        except RuntimeError as exc:
+            print(f"失敗: {exc}")
             return 1
 
-        print("\n--- ログイン応答（口座情報は除外して表示） ---")
         for field in _SAFE_LOGIN_FIELDS:
             if field in login:
                 print(f"  {field} = {login[field]!r}")
-        if login.get("sResultCode") not in ("0", 0):
-            print("\n結果コードが 0 ではありません。上記 sResultText を確認してください。")
+        problem = Client.check(login)
+        if problem:
+            print(f"\n{problem}")
             return 1
         if login.get("sKinsyouhouMidokuFlg") == "1":
             print("\n金商法交付書面が未読です。この場合、仮想ＵＲＬは発行されません。")
             print("e支店Webサイトで書面を確認してから、もう一度実行してください。")
             return 1
 
-        # --- 2. 仮想ＵＲＬの復号。暗号方式が未確定なので総当たり -------------
-        print("\n--- 仮想ＵＲＬの復号 ---")
-        scheme_used: str | None = None
+        # --- 2. 仮想ＵＲＬの復号 ---------------------------------------------
+        print("\n--- 仮想ＵＲＬの復号 (RSA-OAEP / SHA256) ---")
         price_url: str | None = None
         for field in _URL_FIELDS:
             blob = login.get(field)
             if not blob:
                 print(f"  {field}: （空）")
                 continue
-            print(f"  {field}: 暗号文 {len(blob)} 字")
-            result = _try_decrypt(blob, private_path)
-            if result is None:
-                print("    → PKCS1v15 / OAEP-SHA1 / OAEP-SHA256 のいずれでも復号できません")
+            try:
+                plain = decrypt_url(blob, private_path)
+            except Exception as exc:  # noqa: BLE001 - 原因を観測して報告したい
+                print(f"  {field}: 復号できません — {type(exc).__name__}: {exc}")
                 continue
-            scheme, plain = result
-            scheme_used = scheme
-            print(f"    → {scheme} で復号成功。指紋 {_fingerprint(plain)}、{len(plain)} 字")
-            if not plain.startswith("http"):
-                print(f"    ※ URLに見えません。先頭20字: {plain[:20]!r}")
-            if field == "sUrlPrice":
+            # URL に見えることまで確かめる。復号が「通った」ことだけを成功の判定に
+            # 使うと、鍵や方式を取り違えたまま先へ進んでしまう。
+            shape = "OK" if plain.startswith("http") else f"URLに見えません {plain[:16]!r}"
+            print(f"  {field}: {shape}  指紋 {_fingerprint(plain)}  {len(plain)}字")
+            if field == "sUrlPrice" and plain.startswith("http"):
                 price_url = plain
 
-        if scheme_used is None:
-            print("\n仮想ＵＲＬを復号できませんでした。登録した公開鍵と、いま使っている")
-            print("秘密鍵が対になっているかを確認してください。")
-            return 1
-        print(f"\n暗号方式は {scheme_used} と確定しました。")
-
         if not price_url:
-            print("時価情報の仮想ＵＲＬ (sUrlPrice) が取れませんでした。")
+            print("\n時価情報の仮想ＵＲＬ (sUrlPrice) を復号できませんでした。")
+            print("利用設定画面に登録した公開鍵と、いま使っている秘密鍵が対か確認してください。")
             return 1
 
         # --- 3. 株価履歴を1銘柄だけ取得 ---------------------------------------
         print(f"\n--- 蓄積情報問合取得: {symbol} ---")
-        payload = json.dumps(
-            {
-                "p_no": "2",
-                "p_sd_date": _stamp(),
-                "sCLMID": "CLMMfdsGetMarketPriceHistory",
-                "sIssueCode": symbol,
-                "sSizyouC": "00",
-            },
-            ensure_ascii=False,
-            separators=(",", ":"),
-        )
-        from urllib.parse import quote
+        try:
+            history, _ = client.request(
+                price_url,
+                {
+                    "sCLMID": "CLMMfdsGetMarketPriceHistory",
+                    "sIssueCode": symbol,
+                    "sSizyouC": "00",
+                },
+            )
+        except RuntimeError as exc:
+            print(f"失敗: {exc}")
+            return 1
 
-        # ログインで通った渡し方をそのまま使う。認証と業務で違う可能性は低く、
-        # 違ったならここで落ちて分かる。
-        query = quote(payload, safe="") if encode_args else payload
-        try:
-            response = client.get(f"{price_url}?{query}")
-        except Exception as exc:  # noqa: BLE001
-            print(f"接続失敗: {type(exc).__name__}: {exc}")
-            return 1
-        charset, text = _decode(response.content)
-        print(f"HTTP {response.status_code}, 文字コード={charset}, {len(response.content)} bytes")
-        if response.status_code != 200:
-            print(f"本文: {text[:300]}")
-            return 1
-        try:
-            history = json.loads(text)
-        except json.JSONDecodeError as exc:
-            print(f"JSONとして読めません: {exc}\n先頭300字: {text[:300]}")
+        problem = Client.check(history)
+        if problem:
+            print(problem)
             return 1
 
     bars = history.get("aCLMMfdsMarketPriceHistory") or []
-    print(f"結果コード: {history.get('sResultCode', '(なし)')!r}  レコード数: {len(bars)}")
+    print(f"レコード数: {len(bars)}")
     if bars:
-        print("\n最古の1件:")
-        print(f"  {json.dumps(bars[0], ensure_ascii=False)}")
-        print("最新の1件:")
-        print(f"  {json.dumps(bars[-1], ensure_ascii=False)}")
-        print(f"\n日付の範囲: {bars[0].get('sDate')} 〜 {bars[-1].get('sDate')}")
+        print(f"日付の範囲: {bars[0].get('sDate')} 〜 {bars[-1].get('sDate')}")
+        print(f"\n最古: {json.dumps(bars[0], ensure_ascii=False)}")
+        print(f"最新: {json.dumps(bars[-1], ensure_ascii=False)}")
         splits = [b for b in bars if b.get("pSPUK") not in (None, "", "0")]
-        print(f"分割係数が入っている日: {len(splits)} 件")
+        print(f"\n分割係数が入っている日: {len(splits)} 件")
         if splits:
-            print(f"  例: {json.dumps(splits[-1], ensure_ascii=False)}")
+            print(f"  直近: {json.dumps(splits[-1], ensure_ascii=False)}")
 
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(history, ensure_ascii=False, indent=1), encoding="utf-8")
@@ -326,7 +313,7 @@ def probe(
 
 def main() -> int:
     """コマンドラインから keygen / probe を実行する。"""
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(description="立花証券・ｅ支店・ＡＰＩの疎通プローブ")
     sub = parser.add_subparsers(dest="command", required=True)
 
     gen = sub.add_parser("keygen", help="RSA鍵ペアを作り、登録用の公開鍵を表示する")
@@ -337,9 +324,15 @@ def main() -> int:
     run.add_argument("--symbol", default="6501", help="試す銘柄コード（既定: 6501 日立）")
     run.add_argument(
         "--base",
-        default=os.environ.get("TACHIBANA_BASE_URL", "https://kabuka.e-shiten.jp/e_api_v4r9"),
-        help="ｅ支店・ＡＰＩ専用ＵＲＬ。利用設定画面の表示に合わせる",
+        default=os.environ.get("TACHIBANA_BASE_URL") or _PRODUCTION,
+        help=f"専用ＵＲＬ。既定 {_PRODUCTION}",
     )
+    run.add_argument(
+        "--demo",
+        action="store_true",
+        help=f"検証環境 ({_DEMO}) を使う。利用時間帯が決まっている点に注意",
+    )
+    run.add_argument("--get", action="store_true", help="POST ではなく GET で送る")
     run.add_argument("--out", type=pathlib.Path, default=pathlib.Path("tachibana_history.json"))
 
     args = parser.parse_args()
@@ -353,7 +346,8 @@ def main() -> int:
             "環境変数 TACHIBANA_AUTH_ID が空です。\n"
             "利用設定画面で生成した認証IDを .env に書くか、実行前に設定してください。"
         )
-    return probe(args.base, auth_id, args.private, args.symbol, args.out)
+    base = _DEMO if args.demo else args.base
+    return probe(base, auth_id, args.private, args.symbol, args.out, use_post=not args.get)
 
 
 if __name__ == "__main__":
