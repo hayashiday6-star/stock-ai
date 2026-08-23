@@ -493,6 +493,15 @@ def main() -> int:
     )
     run.add_argument("--get", action="store_true", help="POST ではなく GET で送る")
     run.add_argument("--out", type=pathlib.Path, default=pathlib.Path("tachibana_history.json"))
+    run.add_argument(
+        "--session",
+        type=pathlib.Path,
+        default=pathlib.Path("tachibana_session.json"),
+        help="当日の仮想ＵＲＬと p_no の保存先。復号済みＵＲＬが入るので資格情報扱い",
+    )
+    run.add_argument(
+        "--fresh", action="store_true", help="保存済みセッションを捨ててログインからやり直す"
+    )
 
     args = parser.parse_args()
     if args.command == "keygen":
@@ -513,7 +522,16 @@ def main() -> int:
             "利用設定画面で生成した認証IDを .env に書くか、実行前に設定してください。"
         )
     base = _DEMO if args.demo else args.base
-    return probe(base, auth_id, args.private, args.symbol, args.out, use_post=not args.get)
+    return probe(
+        base,
+        auth_id,
+        args.private,
+        args.symbol,
+        args.out,
+        use_post=not args.get,
+        session_path=args.session,
+        fresh=args.fresh,
+    )
 
 
 if __name__ == "__main__":
