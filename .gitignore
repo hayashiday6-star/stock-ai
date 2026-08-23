@@ -39,6 +39,8 @@ tachibana_history*.json
 tachibana_session*.json
 # 登録用に書き出した公開鍵（秘密ではないが、生成物なので追跡しない）。
 tachibana_public*.txt
+# EDINET から落とした書類本体（公開情報だが、生成物なので追跡しない）。
+edinet_probe/
 
 # --- IDE / OS ---
 .vscode/
