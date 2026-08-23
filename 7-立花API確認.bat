@@ -4,19 +4,25 @@ cd /d "%~dp0"
 rem This .bat pauses at the end; stop the script pausing too.
 set STOCK_AI_NO_PAUSE=1
 
+rem Everything printed here is ASCII on purpose. cmd.exe reads a .bat in the
+rem console codepage (cp932 on a Japanese Windows), so UTF-8 Japanese in this
+rem file arrives as mojibake - and mojibake bytes can end an echo early, after
+rem which cmd tries to run the rest of the line as a command. The Japanese
+rem belongs in the .ps1, which is UTF-8 with a BOM and handles it correctly.
+
 echo ============================================
 echo   stock-ai : Tachibana e-shiten API probe
 echo ============================================
 echo.
-echo J-Quants の有料プランをやめるための下調べです。
-echo 立花の API から株価を取れるかを、1 銘柄だけ
-echo 実際に取得して確かめます。
+echo Groundwork for dropping the paid J-Quants plan.
+echo This fetches ONE symbol from Tachibana to find out
+echo whether the price feed can replace it.
 echo.
-echo 初回は鍵ペアを作って止まります。表示された公開鍵を
-echo e支店の利用設定画面に登録し、認証IDを .env に書いてから
-echo もう一度このファイルを実行してください。
+echo The first run creates a key pair and stops. Register
+echo the printed public key in the e-shiten settings page,
+echo put the auth ID in .env, then run this file again.
 echo.
-echo 認証IDと仮想URLは表示されません。
+echo The auth ID and the virtual URLs are never displayed.
 echo.
 
 powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0scripts\tachibana-probe.ps1"
