@@ -12,6 +12,7 @@ CSV から SummaryOfBusinessResults の行だけを抜いたもので、UTF-16LE
 
 from __future__ import annotations
 
+import datetime as dt
 import io
 import logging
 import pathlib
@@ -20,11 +21,15 @@ import zipfile
 import pytest
 
 from stock_ai.core.exceptions import DataError
+from stock_ai.data.types import FiscalPeriod
 from stock_ai.ir.edinet_financials import (
     AnnualFigures,
+    FilingHeader,
     parse_filing,
+    parse_header,
     parse_summary,
     read_csv_zip,
+    to_reports,
 )
 
 FIXTURE = pathlib.Path(__file__).parent / "fixtures" / "edinet_6501_summary.tsv"
@@ -34,6 +39,14 @@ FIXTURE = pathlib.Path(__file__).parent / "fixtures" / "edinet_6501_summary.tsv"
 MAIN_CSV = "XBRL_TO_CSV/jpcrp030000-asr-001_E01737-000_2026-03-31_01_2026-06-22.csv"
 AUDIT_CSV = "XBRL_TO_CSV/jpaud-aai-cc-001_E01737-000_2026-03-31_01_2026-06-22.csv"
 AUDIT_CSV2 = "XBRL_TO_CSV/jpaud-aar-cn-001_E01737-000_2026-03-31_01_2026-06-22.csv"
+
+#: 有報の素性。同じ ``S100YGBO`` から。相対年度は「提出日時点」の1件だけ。
+DEI = (
+    ("SecurityCodeDEI", "提出日時点", "65010"),
+    ("CurrentFiscalYearEndDateDEI", "提出日時点", "2026-03-31"),
+    ("AccountingStandardsDEI", "提出日時点", "IFRS"),
+    ("FilerNameInJapaneseDEI", "提出日時点", "株式会社日立製作所"),
+)
 
 #: 億円。実データの照合を読みやすくするためだけの定数。
 OKU = 100_000_000.0
@@ -88,12 +101,16 @@ HEADER = "\t".join(
 
 
 def csv_text(*entries: tuple[str, str, str]) -> str:
-    """(要素ID, 相対年度, 値) から、最小の CSV を作る。"""
+    """(要素ID, 相対年度, 値) から、最小の CSV を作る。
+
+    ``jpdei`` の項目は接頭辞が違う。要素名で振り分けて、実物と同じ形にする。
+    """
     lines = [HEADER]
     for element, year, value in entries:
-        cells = (f"jpcrp_cor:{element}", "", "", year, "その他", "", "JPY", "円", value)
+        prefix = "jpdei_cor" if element.endswith("DEI") else "jpcrp_cor"
+        cells = (f"{prefix}:{element}", "", "", year, "その他", "", "JPY", "円", value)
         lines.append("\t".join(f'"{c}"' for c in cells))
-    return "\n".join(lines)
+    return "\r\n".join(lines)
 
 
 # --- ZIP の取り出し -------------------------------------------------------
@@ -101,7 +118,7 @@ def csv_text(*entries: tuple[str, str, str]) -> str:
 
 def test_read_csv_zip_reads_the_body(fixture_bytes: bytes) -> None:
     """本体 CSV の全行が読める。"""
-    assert len(read_csv_zip(make_zip(fixture_bytes))) == 160
+    assert len(read_csv_zip(make_zip(fixture_bytes))) == 187
 
 
 def test_read_csv_zip_ignores_the_audit_reports(fixture_bytes: bytes) -> None:
@@ -112,7 +129,7 @@ def test_read_csv_zip_ignores_the_audit_reports(fixture_bytes: bytes) -> None:
     assert AUDIT_CSV < MAIN_CSV
     audit = utf16(csv_text(("NetSalesSummaryOfBusinessResults", "当期", "1")))
     body = make_zip(audit, audit, fixture_bytes, names=(AUDIT_CSV, AUDIT_CSV2, MAIN_CSV))
-    assert len(read_csv_zip(body)) == 160
+    assert len(read_csv_zip(body)) == 187
 
 
 def test_read_csv_zip_warns_when_the_body_is_ambiguous(
@@ -123,7 +140,7 @@ def test_read_csv_zip_warns_when_the_body_is_ambiguous(
     with caplog.at_level(logging.WARNING):
         assert (
             len(read_csv_zip(make_zip(fixture_bytes, fixture_bytes, names=(MAIN_CSV, other))))
-            == 160
+            == 187
         )
     assert "本体候補が 2 件" in caplog.text
 
@@ -358,19 +375,120 @@ def test_unparseable_values_are_skipped_not_raised() -> None:
     assert current.net_income == 8.0
 
 
+# --- 罠4: 相対年度しか書いていない -------------------------------------
+
+
+def test_header_reads_the_filing_identity(rows: list[dict[str, str]]) -> None:
+    """銘柄・決算日・会計基準は ``jpdei`` にある。表そのものには無い。"""
+    header = parse_header(rows)
+    assert header.symbol == "6501"
+    assert header.fiscal_year_end == dt.date(2026, 3, 31)
+    assert header.accounting_standard == "IFRS"
+    assert header.filer_name == "株式会社日立製作所"
+
+
+def test_security_code_drops_the_share_class_digit(rows: list[dict[str, str]]) -> None:
+    """EDINET の銘柄コードは5桁。末尾を残すと watchlist の 6501 と噛み合わない。"""
+    raw = [r for r in rows if r["要素ID"].endswith("SecurityCodeDEI")]
+    assert [r["値"] for r in raw] == ["65010"]
+    assert parse_header(rows).symbol == "6501"
+
+
+def test_header_ignores_the_not_applicable_marker() -> None:
+    """``jpdei`` の未該当はダッシュで埋まる。文字列として拾ってはいけない。"""
+    body = make_zip(utf16(csv_text(("SecurityCodeDEI", "提出日時点", "－"))))
+    assert parse_header(read_csv_zip(body)) == FilingHeader()
+
+
+def test_header_survives_an_unreadable_date() -> None:
+    """決算日が読めなくても、他の項目は返す。判断は呼ぶ側に残す。"""
+    body = make_zip(
+        utf16(
+            csv_text(
+                ("CurrentFiscalYearEndDateDEI", "提出日時点", "令和8年3月31日"),
+                ("SecurityCodeDEI", "提出日時点", "65010"),
+            )
+        )
+    )
+    header = parse_header(read_csv_zip(body))
+    assert header.fiscal_year_end is None
+    assert header.symbol == "6501"
+
+
+# --- 相対年度から決算年度へ ----------------------------------------------
+
+
+def test_fiscal_years_count_back_from_the_filing(rows: list[dict[str, str]]) -> None:
+    """当期が 2026年度で、そこから1年ずつ遡る。
+
+    年度は決算日の**年**。J-Quants 側が ``FYEnd`` の年を使っているので、揃えて
+    おかないと同じ決算期が別の年度に入り、一意キーが効かなくなる。
+    """
+    reports = to_reports(parse_header(rows), parse_summary(rows))
+    assert [r.fiscal_year for r in reports] == [2022, 2023, 2024, 2025, 2026]
+    assert all(r.symbol == "6501" for r in reports)
+    assert all(r.period is FiscalPeriod.FY for r in reports)
+
+
+def test_reports_carry_the_consolidated_numbers(rows: list[dict[str, str]]) -> None:
+    """年度を付けても連結のまま。単体に落ちない。"""
+    latest = to_reports(parse_header(rows), parse_summary(rows))[-1]
+    assert (latest.fiscal_year, latest.net_income) == (2026, 802_368_000_000.0)
+    assert latest.equity == 6_568_369_000_000.0
+
+
+def test_reports_leave_per_share_fields_unset(rows: list[dict[str, str]]) -> None:
+    """``FinancialReport`` には eps も bps もあるが、有報からは埋めない。
+
+    EPS は分割調整済み、1株配当と株数は当時のまま。同じ行に並べた時点で、
+    どれかの組み合わせが年をまたいで割られる。埋めないのが唯一の防ぎ方。
+    """
+    for report in to_reports(parse_header(rows), parse_summary(rows)):
+        assert report.eps is None
+        assert report.bps is None
+        assert report.dividend_per_share is None
+        assert report.payout_ratio is None
+
+
+def test_an_explicit_symbol_overrides_the_filing(rows: list[dict[str, str]]) -> None:
+    """上場コードを持たない提出会社のための逃げ道。"""
+    reports = to_reports(parse_header(rows), parse_summary(rows), symbol="6502")
+    assert {r.symbol for r in reports} == {"6502"}
+
+
+def test_to_reports_refuses_without_a_symbol(rows: list[dict[str, str]]) -> None:
+    """コードが無ければ、どの会社の数字か決められない。0 埋めより例外。"""
+    with pytest.raises(DataError, match="銘柄コード"):
+        to_reports(FilingHeader(fiscal_year_end=dt.date(2026, 3, 31)), parse_summary(rows))
+
+
+def test_to_reports_refuses_without_a_fiscal_year_end(rows: list[dict[str, str]]) -> None:
+    """決算日が無ければ相対年度を年度に直せない。当て推量で並べない。"""
+    with pytest.raises(DataError, match="決算日"):
+        to_reports(FilingHeader(symbol="6501"), parse_summary(rows))
+
+
+def test_a_december_filer_lands_on_the_calendar_year() -> None:
+    """12月期は決算日の年がそのまま年度。3月期と同じ規則で扱える。"""
+    header = FilingHeader(symbol="4755", fiscal_year_end=dt.date(2025, 12, 31))
+    figures = [AnnualFigures(year="前期", revenue=1.0), AnnualFigures(year="当期", revenue=2.0)]
+    assert [r.fiscal_year for r in to_reports(header, figures)] == [2024, 2025]
+
+
 # --- 入口 -----------------------------------------------------------------
 
 
 def test_parse_filing_reads_the_real_archive(fixture_bytes: bytes) -> None:
-    """ZIP のバイト列から5期ぶんまで、ひと息で。"""
-    figures = parse_filing(make_zip(fixture_bytes))
-    assert len(figures) == 5
-    assert figures[-1].net_income == 802_368_000_000.0
+    """ZIP のバイト列から、そのまま保存できる5期ぶんまで、ひと息で。"""
+    reports = parse_filing(make_zip(fixture_bytes))
+    assert [r.fiscal_year for r in reports] == [2022, 2023, 2024, 2025, 2026]
+    assert reports[-1].net_income == 802_368_000_000.0
+    assert reports[-1].symbol == "6501"
 
 
 def test_parse_filing_refuses_an_empty_summary() -> None:
     """表が空なら、空の5期を返すより言う。"""
-    body = make_zip(utf16(csv_text(("SomethingElseEntirely", "当期", "1"))))
+    body = make_zip(utf16(csv_text(("SomethingElseEntirely", "当期", "1"), *DEI)))
     with pytest.raises(DataError, match="1期ぶんも読めませんでした"):
         parse_filing(body)
 

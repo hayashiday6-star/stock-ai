@@ -25,6 +25,11 @@ UTF-16LE のタブ区切りで、``jpcrp`` で始まるファイルが本体（`
 **3. 相対年度は「当期」と「当期末」が別。** 期間の項目（売上・利益）と時点の
 項目（純資産・総資産・株式数）でラベルが違う。片方だけ見ると3年分しか揃わない。
 
+**4. 相対年度しか無いので、決算年度は自分で解決する。** 表には「当期」「前期」
+としか書いていない。実際の年度は ``jpdei`` の ``CurrentFiscalYearEndDateDEI``
+から1年ずつ遡って割り当てる。銘柄コードも同じ ``jpdei`` にあるが5桁
+（日立は ``65010``）で、末尾の株式種別を落とさないと watchlist と噛み合わない。
+
 このモジュールは**絶対額と、報告された比率**だけを取る。1株当たりの値から
 何かを導かない。
 """
@@ -33,11 +38,13 @@ from __future__ import annotations
 
 import csv
 import dataclasses
+import datetime as dt
 import io
 import zipfile
 
 from stock_ai.core.exceptions import DataError
 from stock_ai.core.logging import get_logger
+from stock_ai.data.types import FinancialReport, FiscalPeriod
 
 logger = get_logger(__name__)
 
@@ -57,6 +64,16 @@ YEAR_LABELS: tuple[tuple[str, str], ...] = (
     ("前期", "前期末"),
     ("当期", "当期末"),
 )
+
+#: 有報の素性が入っている要素。相対年度は ``提出日時点`` の1件だけ。
+_FISCAL_YEAR_END = "CurrentFiscalYearEndDateDEI"
+_PREVIOUS_YEAR_END = "PreviousFiscalYearEndDateDEI"
+_SECURITY_CODE = "SecurityCodeDEI"
+_ACCOUNTING_STANDARD = "AccountingStandardsDEI"
+_FILER_NAME = "FilerNameInJapaneseDEI"
+
+#: EDINET が未記載に使う印。どれも 0 ではない。
+_BLANKS = frozenset(("", "-", "－", "―"))
 
 #: 会計基準ごとの、連結の要素名。IFRS を先に見る。
 #:
@@ -108,6 +125,53 @@ class AnnualFigures:
         )
 
 
+@dataclasses.dataclass(frozen=True)
+class FilingHeader:
+    """有報そのものの素性。数字を年度と銘柄に結び付けるのに要る。"""
+
+    symbol: str | None = None
+    """4桁の銘柄コード。上場していない提出会社では ``None``。"""
+
+    fiscal_year_end: dt.date | None = None
+    """当期の決算日。相対年度を実際の年度に直す基準。"""
+
+    accounting_standard: str | None = None
+    """``IFRS`` / ``Japan GAAP`` / ``US GAAP``。どの要素名を掴んだかの裏取りに使う。"""
+
+    filer_name: str | None = None
+
+
+def _text(rows: list[dict[str, str]], name: str) -> str | None:
+    """``jpdei`` の1項目を読む。未記載の印は値として返さない。"""
+    for row in rows:
+        if row.get(ELEMENT, "").endswith(name):
+            value = (row.get(VALUE) or "").strip()
+            if value not in _BLANKS:
+                return value
+    return None
+
+
+def parse_header(rows: list[dict[str, str]]) -> FilingHeader:
+    """``jpdei`` から、有報の素性を読む。"""
+    raw_code = _text(rows, _SECURITY_CODE)
+    # EDINET の銘柄コードは5桁で、末尾は株式の種別。日立は 65010。
+    symbol = raw_code[:4] if raw_code and raw_code[:4].isdigit() else None
+
+    end = _text(rows, _FISCAL_YEAR_END)
+    try:
+        fiscal_year_end = dt.date.fromisoformat(end) if end else None
+    except ValueError:
+        logger.warning("決算日として読めません: %r", end)
+        fiscal_year_end = None
+
+    return FilingHeader(
+        symbol=symbol,
+        fiscal_year_end=fiscal_year_end,
+        accounting_standard=_text(rows, _ACCOUNTING_STANDARD),
+        filer_name=_text(rows, _FILER_NAME),
+    )
+
+
 def read_csv_zip(body: bytes) -> list[dict[str, str]]:
     """``type=5`` の ZIP から、本体 CSV の行を読む。
 
@@ -148,7 +212,7 @@ def _pick(rows: list[dict[str, str]], names: tuple[str, ...], year: str) -> floa
             if row.get(RELATIVE_YEAR) != year:
                 continue
             raw = (row.get(VALUE) or "").strip()
-            if raw in ("", "-", "－", "―"):
+            if raw in _BLANKS:
                 continue
             try:
                 return float(raw)
@@ -179,10 +243,69 @@ def parse_summary(rows: list[dict[str, str]]) -> list[AnnualFigures]:
     return figures
 
 
-def parse_filing(body: bytes) -> list[AnnualFigures]:
-    """``type=5`` の応答から、5期ぶんの財務を取り出す。"""
-    figures = parse_summary(read_csv_zip(body))
+def to_reports(
+    header: FilingHeader, figures: list[AnnualFigures], symbol: str | None = None
+) -> list[FinancialReport]:
+    """相対年度の並びを、決算年度の付いた :class:`FinancialReport` にする。
+
+    年度は当期の決算日の**年**。J-Quants 側が ``FYEnd`` の年を使っており、揃えて
+    おかないと同じ決算期が2行に分かれる（``(security, fiscal_year, period)`` が
+    一意キー）。3月期なら 2026-03-31 は 2026 年度。
+
+    そこから1期につき1年ずつ遡る。決算期を変更した会社ではずれるが、有報の表は
+    相対年度しか持たないので、これ以上のことは1本の有報からは分からない。
+
+    Args:
+        header: ``parse_header`` の結果。決算日が無ければ何も返せない。
+        figures: ``parse_summary`` の結果。古い順。
+        symbol: 銘柄コードを外から与える。有報が上場コードを持たないときの逃げ道。
+
+    Raises:
+        DataError: 決算日か銘柄コードが解決できない。
+    """
+    code = symbol or header.symbol
+    if not code:
+        raise DataError("有報から銘柄コードを読めませんでした（未上場の提出会社の可能性）。")
+    if header.fiscal_year_end is None:
+        raise DataError(f"{code}: 有報から決算日を読めず、相対年度を年度に直せません。")
+
+    latest = header.fiscal_year_end.year
+    reports = []
+    for offset, entry in enumerate(reversed(figures)):
+        reports.append(
+            FinancialReport(
+                symbol=code,
+                fiscal_year=latest - offset,
+                period=FiscalPeriod.FY,
+                revenue=entry.revenue,
+                net_income=entry.net_income,
+                equity=entry.equity,
+                shares_outstanding=entry.shares_outstanding,
+            )
+        )
+    reports.reverse()
+    return reports
+
+
+def parse_filing(body: bytes, symbol: str | None = None) -> list[FinancialReport]:
+    """``type=5`` の応答から、5期ぶんの財務を取り出す。
+
+    ここが入口。ZIP のバイト列を渡すと、そのまま
+    :class:`~stock_ai.database.repository.FinancialStatementRepository` に入れられる
+    並びが返る。
+    """
+    rows = read_csv_zip(body)
+    figures = parse_summary(rows)
     if not figures:
         raise DataError("「主要な経営指標等」から1期ぶんも読めませんでした。")
-    logger.info("有報から %d 期ぶんを読みました", len(figures))
-    return figures
+    header = parse_header(rows)
+    reports = to_reports(header, figures, symbol)
+    logger.info(
+        "%s (%s): %d 期ぶんを読みました（%d〜%d 年度）",
+        reports[0].symbol,
+        header.accounting_standard or "会計基準不明",
+        len(reports),
+        reports[0].fiscal_year,
+        reports[-1].fiscal_year,
+    )
+    return reports
