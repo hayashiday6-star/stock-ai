@@ -42,9 +42,12 @@ import datetime as dt
 import io
 import zipfile
 
+from pydantic import SecretStr
+
 from stock_ai.core.exceptions import DataError
 from stock_ai.core.logging import get_logger
 from stock_ai.data.types import FinancialReport, FiscalPeriod
+from stock_ai.ir.edinet import CURRENT_PLACEMENT, EdinetDisclosureSource, key_placements
 
 logger = get_logger(__name__)
 
@@ -64,6 +67,16 @@ YEAR_LABELS: tuple[tuple[str, str], ...] = (
     ("前期", "前期末"),
     ("当期", "当期末"),
 )
+
+#: 書類そのものを取る口。``type`` で中身が変わり、``5`` だけが CSV 変換版。
+_DOCUMENT_URL = "https://api.edinet-fsa.go.jp/api/v2/documents/{doc_id}"
+
+#: XBRL を CSV に変換したもの。``1`` は iXBRL 一式（3.7MB・86ファイル）、``2`` は
+#: PDF、``3`` は代替書面、``4`` は英文。``5`` が要るものだけを持っている。
+CSV_TYPE = "5"
+
+#: 有価証券報告書と、その訂正。訂正のほうが新しく、数字が直っている。
+ANNUAL_REPORT_TYPES = ("120", "130")
 
 #: 有報の素性が入っている要素。相対年度は ``提出日時点`` の1件だけ。
 _FISCAL_YEAR_END = "CurrentFiscalYearEndDateDEI"
@@ -309,3 +322,65 @@ def parse_filing(body: bytes, symbol: str | None = None) -> list[FinancialReport
         reports[-1].fiscal_year,
     )
     return reports
+
+
+def fetch_document(doc_id: str, api_key: SecretStr | None = None, timeout: float = 60.0) -> bytes:
+    """``type=5`` の ZIP をそのまま落とす。
+
+    EDINET は断った要求にも **HTTP 200** を返し、本文を JSON のエラーにする。
+    ここで ZIP かどうかを見ないと、``read_csv_zip`` が「ZIP ではありません」と
+    言うだけになり、鍵が無いのか書類が無いのか分からなくなる。
+
+    Raises:
+        DataError: HTTP エラー、または ZIP 以外が返った。
+    """
+    import httpx
+
+    params = {"type": CSV_TYPE}
+    headers: dict[str, str] = {}
+    if api_key is not None:
+        extra_params, extra_headers = key_placements(api_key.get_secret_value())[CURRENT_PLACEMENT]
+        params.update(extra_params)
+        headers.update(extra_headers)
+
+    url = _DOCUMENT_URL.format(doc_id=doc_id)
+    with httpx.Client(timeout=timeout, follow_redirects=True) as client:
+        response = client.get(url, params=params, headers=headers)
+    if response.status_code >= 400:
+        raise DataError(f"{doc_id}: EDINET が HTTP {response.status_code} を返しました。")
+
+    body = response.content
+    if body[:2] != b"PK":
+        # 200 で返ってくるエラー本文。鍵が無い / 書類が無い / type が違う のどれか。
+        detail = body[:200].decode("utf-8", errors="replace").strip()
+        hint = "" if api_key is not None else " EDINET_API_KEY が未設定です。"
+        raise DataError(f"{doc_id}: ZIP ではなく {detail!r} が返りました。{hint}")
+
+    logger.info("%s: type=%s を %d バイト取得しました", doc_id, CSV_TYPE, len(body))
+    return body
+
+
+def fetch_annual_reports(
+    symbol: str,
+    api_key: SecretStr | None = None,
+    lookback_days: int = 400,
+    source: EdinetDisclosureSource | None = None,
+) -> list[FinancialReport]:
+    """``symbol`` の直近の有報から、5期ぶんの財務を取る。
+
+    有報は年に1度しか出ないので、既定の窓は400日。1日1リクエストで、日ごとの
+    応答は :class:`EdinetDisclosureSource` が抱え込むため、同じインスタンスを
+    使い回せば銘柄が何本あっても走査の費用は変わらない。逆に1銘柄だけのために
+    呼ぶと400リクエスト掛かる。
+
+    Raises:
+        DataError: 窓の中に有報が見つからない。
+    """
+    finder = source or EdinetDisclosureSource(api_key=api_key, lookback_days=lookback_days)
+    doc_ids = finder.find_documents(symbol, ANNUAL_REPORT_TYPES, limit=1)
+    if not doc_ids:
+        raise DataError(
+            f"{symbol}: 直近 {finder.lookback_days} 日に有価証券報告書がありません。"
+            "窓を広げるか、決算から3ヶ月後あたりに実行してください。"
+        )
+    return parse_filing(fetch_document(doc_ids[0], api_key), symbol=symbol)

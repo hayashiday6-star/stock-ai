@@ -442,3 +442,64 @@ def test_fetch_routes_japanese_codes_away_from_yfinance(monkeypatch) -> None:
     assert routed["yfinance"] == ("AAPL",)
     # And it says so, rather than quietly overriding the flag it was given.
     assert "rather than yfinance" in result.stdout
+
+
+# --- 財務諸表の取得元 -----------------------------------------------------
+
+
+def _settings(**overrides: object):
+    """設定を1つ作る。``.env`` は読ませない。
+
+    キーワードは**環境変数名**で渡す。フィールド名で渡すと ``extra="ignore"`` に
+    黙って落とされ、既定値のままの設定が返る。
+    """
+    from stock_ai.config.settings import Settings
+
+    return Settings(_env_file=None, **overrides)  # type: ignore[arg-type]
+
+
+def test_statements_defaults_to_the_configured_source() -> None:
+    """``--source`` を省いたら設定に従う。既定は J-Quants のまま。"""
+    from stock_ai.cli import _statement_fetcher
+
+    _, used = _statement_fetcher("", _settings(), 400)
+    assert used == "jquants"
+
+
+def test_statements_reads_edinet_from_settings() -> None:
+    """``.env`` に ``JP_STATEMENT_SOURCE=edinet`` と書けば、引数なしで切り替わる。"""
+    from stock_ai.cli import _statement_fetcher
+
+    _, used = _statement_fetcher("", _settings(JP_STATEMENT_SOURCE="edinet"), 400)
+    assert used == "edinet"
+
+
+def test_statements_option_overrides_the_setting() -> None:
+    from stock_ai.cli import _statement_fetcher
+
+    _, used = _statement_fetcher("edinet", _settings(), 400)
+    assert used == "edinet"
+
+
+def test_statements_rejects_an_unknown_source() -> None:
+    """綴り違いを J-Quants に落とさない。黙って別の口に行くほうが悪い。"""
+    import typer
+
+    from stock_ai.cli import _statement_fetcher
+
+    with pytest.raises(typer.BadParameter, match="edinet"):
+        _statement_fetcher("EDINET-v2", _settings(), 400)
+
+
+def test_the_edinet_window_is_wide_enough_for_an_annual_report() -> None:
+    """有報は年に1度。既定の窓が1年を切っていると、必ず空振りする年がある。"""
+    from stock_ai.cli import _statement_fetcher
+
+    fetcher, _ = _statement_fetcher("edinet", _settings(), 400)
+    assert fetcher.__closure__ is not None
+    sources = [
+        cell.cell_contents
+        for cell in fetcher.__closure__
+        if hasattr(cell.cell_contents, "lookback_days")
+    ]
+    assert [s.lookback_days for s in sources] == [400]

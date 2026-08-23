@@ -11,6 +11,7 @@ import datetime as dt
 import hashlib
 import sys
 from collections import Counter
+from collections.abc import Callable
 from pathlib import Path
 
 import pandas as pd
@@ -70,7 +71,7 @@ from stock_ai.data.jquants_provider import JQuantsPriceProvider
 from stock_ai.data.markets import split_by_market, to_yahoo_symbol
 from stock_ai.data.service import FundamentalsService, IngestionService, IngestResult
 from stock_ai.data.tachibana import TachibanaPriceProvider
-from stock_ai.data.types import Importance
+from stock_ai.data.types import FinancialReport, Importance
 from stock_ai.data.universe import JQuantsUniverse, Segment
 from stock_ai.data.yfinance_provider import (
     YFinanceFundamentalsProvider,
@@ -104,6 +105,7 @@ from stock_ai.ir.edinet import (
 from stock_ai.ir.edinet import (
     SUBJECT_CODE_FIELDS as EDINET_SUBJECT_CODE_FIELDS,
 )
+from stock_ai.ir.edinet_financials import fetch_annual_reports
 from stock_ai.ir.monitor import WatchMonitor
 from stock_ai.ir.sources import CompositeDisclosureSource, NewsDisclosureSource
 from stock_ai.news.sources import YFinanceNewsSource
@@ -409,27 +411,69 @@ def fundamentals(
         raise typer.Exit(code=1)
 
 
+#: 日本株の財務諸表を取れる先。
+STATEMENT_SOURCES = ("jquants", "edinet")
+
+
+def _statement_fetcher(
+    source: str, settings: Settings, lookback_days: int
+) -> tuple[Callable[[str], list[FinancialReport]], str]:
+    """Return a per-symbol statement fetcher and the name of what it uses.
+
+    ``edinet`` reads the 「主要な経営指標等」table out of the annual report, which
+    carries five fiscal years in one filing and costs nothing. It needs a wide
+    date window to find that filing - an annual report is filed once a year -
+    but the day lists are shared across symbols, so the scan is paid once per
+    run rather than once per name.
+    """
+    chosen = (source or "").strip().lower() or settings.jp_statement_source.strip().lower()
+    if chosen not in STATEMENT_SOURCES:
+        raise typer.BadParameter(
+            f"Unknown statement source '{source}'. Use one of {STATEMENT_SOURCES}."
+        )
+
+    if chosen == "edinet":
+        edinet = EdinetDisclosureSource(
+            api_key=settings.edinet_api_key, lookback_days=lookback_days
+        )
+        return (
+            lambda symbol: fetch_annual_reports(symbol, settings.edinet_api_key, source=edinet)
+        ), chosen
+
+    provider = JQuantsFundamentalsProvider(api_key=settings.jquants_api_key)
+    return provider.fetch_statements, chosen
+
+
 @app.command()
 def statements(
     symbols: list[str] = typer.Argument(..., help="JP security codes, e.g. 7203 4593"),
+    source: str = typer.Option("", "--source", help=f"One of {', '.join(STATEMENT_SOURCES)}."),
+    lookback_days: int = typer.Option(
+        400, "--lookback-days", help="EDINET only: how far back to look for the annual report."
+    ),
 ) -> None:
-    """Fetch and store the disclosed statement history for SYMBOLS (J-Quants).
+    """Fetch and store the disclosed statement history for SYMBOLS.
 
-    This is what the growth, dividend-streak, and payout screens read. One
-    request per symbol returns every period the plan covers, so the whole
-    history lands in a single run.
+    This is what the growth, dividend-streak, and payout screens read.
+
+    ``--source jquants`` makes one request per symbol and returns every period
+    the plan covers. ``--source edinet`` reads five fiscal years out of the
+    annual report instead, which is free - but per-share figures stay empty
+    there, because the filing restates EPS for splits while leaving the share
+    count and the dividend at their historical scale.
     """
     settings = get_settings()
     configure_logging(settings.log_level)
 
     database = Database()
     database.create_all()
-    provider = JQuantsFundamentalsProvider(api_key=settings.jquants_api_key)
+    fetch_statements, used = _statement_fetcher(source, settings, lookback_days)
+    console.print(f"[dim]財務諸表の取得元: {used}[/dim]")
 
     results: list[IngestResult] = []
     for symbol in symbols:
         try:
-            reports = provider.fetch_statements(symbol)
+            reports = fetch_statements(symbol)
             with database.session() as session:
                 rows = FinancialStatementRepository(session).upsert_reports(
                     symbol, reports, market="JP"

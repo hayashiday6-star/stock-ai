@@ -36,7 +36,7 @@ from __future__ import annotations
 
 import datetime as dt
 from collections import Counter
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -739,6 +739,37 @@ class EdinetDisclosureSource:
                 scanned,
             )
         return matches[:limit]
+
+    def find_documents(self, symbol: str, doc_types: Sequence[str], limit: int = 1) -> list[str]:
+        """Return ``docID``s of ``symbol``'s filings of the given types, newest first.
+
+        The document list is the only place a ``docID`` appears, and the
+        download endpoint takes nothing else - so anything that wants a filing's
+        *contents* has to come through here first.
+
+        Uses the same day cache as :meth:`fetch`, so discovery costs no extra
+        requests in a pass that is already scanning. It does mean the window is
+        ``lookback_days``: an annual report is filed once a year, so finding one
+        needs a window measured in months, not the default week.
+        """
+        code = normalize_sec_code(symbol)
+        if code is None:
+            return []
+
+        wanted = {str(t).strip() for t in doc_types}
+        found: list[str] = []
+        for day in self._recent_days():
+            for record in self._day_records(day):
+                if _sec_code_of(record) != code or not _is_visible(record):
+                    continue
+                if str(record.get("docTypeCode") or "").strip() not in wanted:
+                    continue
+                doc_id = str(record.get("docID") or "").strip()
+                if doc_id:
+                    found.append(doc_id)
+                    if len(found) >= limit:
+                        return found
+        return found
 
     def clear_cache(self) -> None:
         """Drop the cached day responses so the next pass refetches them."""

@@ -59,6 +59,9 @@ class Settings(BaseSettings):
     )
     # 日本株の株価をどこから取るか。J-Quants の有料プランをやめるなら 'tachibana'。
     jp_price_source: str = Field(default="jquants", validation_alias="JP_PRICE_SOURCE")
+    # 日本株の財務諸表をどこから取るか。'edinet' は有報の「主要な経営指標等」から
+    # 5期ぶんを読む。無料だが、有報を探すのに1日1リクエストで数百日ぶん走査する。
+    jp_statement_source: str = Field(default="jquants", validation_alias="JP_STATEMENT_SOURCE")
 
     # --- AI providers (Phase 6) ---
     #: Which provider the commands use when none is named on the command line.

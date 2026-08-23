@@ -17,14 +17,20 @@ import io
 import logging
 import pathlib
 import zipfile
+from collections.abc import Callable
+from typing import Any
 
 import pytest
+from pydantic import SecretStr
 
 from stock_ai.core.exceptions import DataError
 from stock_ai.data.types import FiscalPeriod
+from stock_ai.ir.edinet import EdinetDisclosureSource
 from stock_ai.ir.edinet_financials import (
     AnnualFigures,
     FilingHeader,
+    fetch_annual_reports,
+    fetch_document,
     parse_filing,
     parse_header,
     parse_summary,
@@ -497,3 +503,212 @@ def test_is_empty_only_looks_at_the_numbers() -> None:
     """``year`` は常に入っている。空判定の材料にしない。"""
     assert AnnualFigures(year="当期").is_empty()
     assert not AnnualFigures(year="当期", roe=0.0).is_empty()
+
+
+# --- 取ってくる -----------------------------------------------------------
+
+
+class _Response:
+    """``httpx.Response`` のうち、この経路が読む分だけ。"""
+
+    def __init__(self, content: bytes, status_code: int = 200) -> None:
+        self.content = content
+        self.status_code = status_code
+
+
+class _Client:
+    """1回の GET を記録する偽 ``httpx.Client``。"""
+
+    last: dict[str, Any] = {}
+    response = _Response(b"PK\x03\x04rest")
+
+    def __init__(self, *_args: Any, **_kwargs: Any) -> None:
+        pass
+
+    def __enter__(self) -> _Client:
+        return self
+
+    def __exit__(self, *_exc: object) -> None:
+        return None
+
+    def get(self, url: str, params: dict[str, str], headers: dict[str, str]) -> _Response:
+        _Client.last = {"url": url, "params": params, "headers": headers}
+        return _Client.response
+
+
+@pytest.fixture
+def fake_http(monkeypatch: pytest.MonkeyPatch) -> type[_Client]:
+    """``httpx.Client`` を差し替える。実際の EDINET は叩かない。"""
+    import httpx
+
+    _Client.last = {}
+    _Client.response = _Response(b"PK\x03\x04rest")
+    monkeypatch.setattr(httpx, "Client", _Client)
+    return _Client
+
+
+def test_fetch_document_asks_for_the_csv_conversion(fake_http: type[_Client]) -> None:
+    """``type=5`` だけが CSV。``1`` を取ると iXBRL 一式 3.7MB を解析する羽目になる。"""
+    assert fetch_document("S100YGBO") == b"PK\x03\x04rest"
+    assert fake_http.last["url"].endswith("/documents/S100YGBO")
+    assert fake_http.last["params"]["type"] == "5"
+
+
+def test_fetch_document_sends_the_key_where_the_gateway_reads_it(
+    fake_http: type[_Client],
+) -> None:
+    """書類の口も一覧と同じ認証。ヘッダだけでは 401 になることが分かっている。"""
+    fetch_document("S100YGBO", SecretStr("k"))
+    assert fake_http.last["params"]["Subscription-Key"] == "k"
+    assert fake_http.last["headers"]["Ocp-Apim-Subscription-Key"] == "k"
+
+
+def test_fetch_document_sends_nothing_without_a_key(fake_http: type[_Client]) -> None:
+    """鍵が無いときに空の値を送らない。"""
+    fetch_document("S100YGBO")
+    assert "Subscription-Key" not in fake_http.last["params"]
+    assert fake_http.last["headers"] == {}
+
+
+def test_fetch_document_reports_an_http_error(fake_http: type[_Client]) -> None:
+    fake_http.response = _Response(b"", status_code=404)
+    with pytest.raises(DataError, match="HTTP 404"):
+        fetch_document("S100YGBO")
+
+
+def test_fetch_document_catches_the_200_that_is_an_error(fake_http: type[_Client]) -> None:
+    """EDINET は断った要求にも 200 を返し、本文だけをエラーにする。
+
+    ここで見ないと、下流が「ZIP ではありません」と言うだけになり、鍵が無いのか
+    書類が無いのか分からない。
+    """
+    fake_http.response = _Response(b'{"StatusCode":401,"message":"Access denied"}')
+    with pytest.raises(DataError, match="Access denied"):
+        fetch_document("S100YGBO", SecretStr("k"))
+
+
+def test_a_missing_key_is_named_in_the_error(fake_http: type[_Client]) -> None:
+    """鍵未設定は原因が分かっている数少ないケース。そう言う。"""
+    fake_http.response = _Response(b'{"StatusCode":401}')
+    with pytest.raises(DataError, match="EDINET_API_KEY"):
+        fetch_document("S100YGBO")
+
+
+def test_the_key_is_not_in_the_error_text(fake_http: type[_Client]) -> None:
+    """例外文はログにもコンソールにも出る。鍵を混ぜない。"""
+    fake_http.response = _Response(b'{"StatusCode":401,"message":"Access denied"}')
+    with pytest.raises(DataError) as raised:
+        fetch_document("S100YGBO", SecretStr("s3cret"))
+    assert "s3cret" not in str(raised.value)
+
+
+# --- 有報を見つけて読むまで ----------------------------------------------
+
+
+#: 日立が実際に有報を出した日。
+FILED_ON = dt.date(2026, 6, 22)
+
+
+def day_records(
+    calendar: dict[dt.date, list[dict[str, Any]]],
+) -> Callable[[dt.date], list[dict[str, Any]]]:
+    """日付ごとの書類一覧を返すフェッチャ。載っていない日は空。"""
+
+    def fetch(day: dt.date) -> list[dict[str, Any]]:
+        return list(calendar.get(day, ()))
+
+    return fetch
+
+
+def annual_report(doc_id: str = "S100YGBO", doc_type: str = "120") -> dict[str, Any]:
+    return {
+        "docID": doc_id,
+        "secCode": "65010",
+        "docTypeCode": doc_type,
+        "filerName": "株式会社日立製作所",
+        "submitDateTime": "2026-06-22 09:00",
+    }
+
+
+def source_over(
+    *records: dict[str, Any], calendar: dict[dt.date, list[dict[str, Any]]] | None = None
+) -> EdinetDisclosureSource:
+    """2026-08-23 から400日遡る、実際と同じ窓の探索器。"""
+    return EdinetDisclosureSource(
+        lookback_days=400,
+        fetcher=day_records(calendar if calendar is not None else {FILED_ON: list(records)}),
+        clock=lambda: dt.date(2026, 8, 23),
+    )
+
+
+def test_find_documents_returns_the_doc_id() -> None:
+    """``docID`` は書類一覧にしか無い。ダウンロードの口はこれしか受け取らない。"""
+    assert source_over(annual_report()).find_documents("6501", ("120",)) == ["S100YGBO"]
+
+
+def test_find_documents_matches_the_five_digit_code() -> None:
+    """一覧側のコードも5桁。4桁の watchlist 記号と突き合わせる。"""
+    assert source_over(annual_report()).find_documents("6501.T", ("120",)) == ["S100YGBO"]
+
+
+def test_find_documents_ignores_other_filing_types() -> None:
+    """臨時報告書には「主要な経営指標等」が無い。"""
+    assert source_over(annual_report(doc_type="180")).find_documents("6501", ("120",)) == []
+
+
+def test_find_documents_skips_a_withdrawn_filing() -> None:
+    """取り下げられた書類は読めない。``fetch`` が外すものはここでも外す。"""
+    withdrawn = annual_report() | {"withdrawalStatus": "1"}
+    assert source_over(withdrawn).find_documents("6501", ("120",)) == []
+
+
+def test_find_documents_skips_a_us_symbol() -> None:
+    """EDINET に無い記号のために400日ぶんの走査をしない。"""
+    assert source_over(annual_report()).find_documents("AAPL", ("120",)) == []
+
+
+def test_fetch_annual_reports_goes_from_symbol_to_five_years(
+    fake_http: type[_Client], fixture_bytes: bytes
+) -> None:
+    """銘柄コードだけ渡せば、保存できる5期ぶんが返る。"""
+    fake_http.response = _Response(make_zip(fixture_bytes))
+    reports = fetch_annual_reports("6501", source=source_over(annual_report()))
+    assert [r.fiscal_year for r in reports] == [2022, 2023, 2024, 2025, 2026]
+    assert fake_http.last["url"].endswith("/documents/S100YGBO")
+
+
+def test_a_later_correction_wins(fake_http: type[_Client], fixture_bytes: bytes) -> None:
+    """訂正有報には直した数字が入っている。後から出るので、新しい日から探せば勝つ。
+
+    元の有報も候補型に入れておかないと、訂正の出ていない年は何も見つからない。
+    順序を決めているのは型ではなく提出日。
+    """
+    fake_http.response = _Response(make_zip(fixture_bytes))
+    source = source_over(
+        calendar={
+            FILED_ON: [annual_report()],
+            dt.date(2026, 7, 15): [annual_report("S100ZZZZ", doc_type="130")],
+        }
+    )
+    fetch_annual_reports("6501", source=source)
+    assert fake_http.last["url"].endswith("/documents/S100ZZZZ")
+
+
+def test_the_original_is_used_when_there_is_no_correction(
+    fake_http: type[_Client], fixture_bytes: bytes
+) -> None:
+    """訂正が出ている年のほうが珍しい。"""
+    fake_http.response = _Response(make_zip(fixture_bytes))
+    fetch_annual_reports("6501", source=source_over(annual_report()))
+    assert fake_http.last["url"].endswith("/documents/S100YGBO")
+
+
+def test_fetch_annual_reports_says_when_the_window_is_too_narrow() -> None:
+    """有報は年に1度。既定の7日窓で呼ぶと必ず空になる。理由を言う。"""
+    source = EdinetDisclosureSource(
+        lookback_days=7,
+        fetcher=day_records({FILED_ON: [annual_report()]}),
+        clock=lambda: dt.date(2026, 8, 23),
+    )
+    with pytest.raises(DataError, match="直近 7 日"):
+        fetch_annual_reports("6501", source=source)
