@@ -111,6 +111,7 @@ extend-immutable-calls = ["typer.Argument", "typer.Option"]
 "src/stock_ai/dashboard/app.py" = ["D415"]
 "src/stock_ai/data/tachibana.py" = ["D415"]
 "src/stock_ai/database/repository.py" = ["D415"]
+"src/stock_ai/ir/edinet_financials.py" = ["D415"]
 "tools/*" = ["D415"]
 
 [tool.black]

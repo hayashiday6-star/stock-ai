@@ -81,6 +81,35 @@ def find_annual_report(
     return None
 
 
+def decode_text(body: bytes) -> tuple[str, str | None]:
+    """バイト列を文字列にする。読めたことを成功の判定に使わない。
+
+    UTF-16 は、偶数長ならほとんどどんなバイト列でも例外を出さずに「読めて」
+    しまう。実際このプローブは、UTF-8 の JSON エラー応答を UTF-16 として
+    復号し、文字化けを観測結果として表示した。BOM を先に見て、無ければ
+    UTF-8 を試し、それでも駄目なときだけ他を当たる。
+
+    Returns:
+        (文字コード名, 文字列)。テキストに見えなければ文字列は ``None``。
+    """
+    for bom, name in (
+        (b"\xff\xfe", "utf-16"),
+        (b"\xfe\xff", "utf-16"),
+        (b"\xef\xbb\xbf", "utf-8-sig"),
+    ):
+        if body.startswith(bom):
+            try:
+                return name, body.decode(name)
+            except (UnicodeDecodeError, UnicodeError):
+                break
+    for name in ("utf-8", "cp932"):
+        try:
+            return name, body.decode(name)
+        except (UnicodeDecodeError, UnicodeError):
+            continue
+    return "", None
+
+
 def describe(body: bytes, out: pathlib.Path) -> None:
     """受け取ったものが何なのかを、宣言ではなく中身から言う。"""
     out.write_bytes(body)
@@ -100,19 +129,13 @@ def describe(body: bytes, out: pathlib.Path) -> None:
         print("    PDF")
         return
 
-    # テキストらしいなら、文字コードと先頭を見る。EDINET の CSV は UTF-16LE の
-    # タブ区切りだという説明があるが、宣言を信じずに実測する。
-    for name in ("utf-16", "utf-8", "cp932"):
-        try:
-            text = body.decode(name)
-        except (UnicodeDecodeError, UnicodeError):
-            continue
-        head = text[:400].replace("\t", "→").replace("\r", "")
-        print(f"    テキスト（{name} で読めた）先頭:")
-        for line in head.splitlines()[:6]:
-            print(f"      {line}")
+    charset, text = decode_text(body)
+    if text is None:
+        print(f"    不明な形式。先頭16バイト: {body[:16]!r}")
         return
-    print(f"    不明な形式。先頭16バイト: {body[:16]!r}")
+    print(f"    テキスト（{charset}）先頭:")
+    for line in text[:400].replace("\t", "→").replace("\r", "").splitlines()[:6]:
+        print(f"      {line}")
 
 
 def probe(sec_code: str, days: int, out_dir: pathlib.Path) -> int:
