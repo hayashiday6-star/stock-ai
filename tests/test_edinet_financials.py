@@ -954,3 +954,91 @@ def test_an_unknown_relative_year_is_dropped_with_a_warning(
         reports = to_reports(header, [AnnualFigures(year="五期前", revenue=1.0)])
     assert reports == []
     assert "五期前" in caplog.text
+
+
+# --- 日本基準の事業会社（9020 JR東日本） ---------------------------------
+#
+# 固定値は 9020 に対する tools/edinet_financials_check.py の実行結果（docID
+# S100YC7N, 2026年3月期）から。四期前は2022年3月期――コロナで最終赤字の年で、
+# 負の値と未記載のダッシュが同じ表に並ぶ。
+
+RAIL_FIXTURE = pathlib.Path(__file__).parent / "fixtures" / "edinet_9020_summary.tsv"
+
+
+@pytest.fixture(scope="module")
+def rail_rows() -> list[dict[str, str]]:
+    return read_csv_zip(make_zip(RAIL_FIXTURE.read_bytes()))
+
+
+@pytest.fixture(scope="module")
+def rail(rail_rows: list[dict[str, str]]) -> AnnualFigures:
+    (only,) = parse_summary(rail_rows)
+    return only
+
+
+def test_net_sales_has_not_appeared_in_any_real_filing(
+    rows: list[dict[str, str]],
+    jgaap_rows: list[dict[str, str]],
+    rail_rows: list[dict[str, str]],
+) -> None:
+    """売上高 ``NetSalesSummaryOfBusinessResults`` は3社とも1行も持っていない。
+
+    日立は売上収益（IFRS）、三菱UFJは経常収益、JR東日本は営業収益。候補には
+    残してあるが、**実データで確認できていない唯一の要素名**だという事実を
+    ここに留めておく。取れているつもりで取れていない、が一番困る。
+    """
+    for filing in (rows, jgaap_rows, rail_rows):
+        names = {element_name(r) for r in filing}
+        assert "NetSalesSummaryOfBusinessResults" not in names
+
+
+def test_a_railway_reports_revenue_as_operating_revenue(rail: AnnualFigures) -> None:
+    """鉄道の最上段は営業収益。19,790億。"""
+    assert rail.revenue == 1_978_967_000_000.0
+
+
+def test_the_same_element_is_consolidated_here_and_standalone_at_the_bank(
+    jgaap_rows: list[dict[str, str]], rail_rows: list[dict[str, str]]
+) -> None:
+    """営業収益は、JR東日本では連結、三菱UFJでは単体の欄にある。
+
+    同じ要素名が会社によって別の側に付く。だから候補の優先順位だけでは足りず、
+    先にコンテキストで絞る必要がある。三菱UFJで営業収益（単体 6,226億）を
+    掴んでいたら、経常収益（連結 60,758億）の10分の1で成長率を出していた。
+    """
+    name = "OperatingRevenue1SummaryOfBusinessResults"
+    rail = {element_name(r): is_consolidated(r) for r in summary_rows(rail_rows)}
+    bank = {element_name(r): is_consolidated(r) for r in summary_rows(jgaap_rows)}
+    assert rail[name] is True
+    assert bank[name] is False
+
+
+def test_a_loss_year_keeps_its_sign(rail: AnnualFigures) -> None:
+    """2022年3月期は最終赤字。符号を落とすと、赤字の年が黒字に見える。"""
+    assert rail.net_income == -94_948_000_000.0
+    assert rail.roe == pytest.approx(-0.039)
+
+
+def test_the_reported_roe_agrees_with_the_consolidated_loss(rail: AnnualFigures) -> None:
+    """連結 -949億 ÷ 自己資本 24,181億 = -3.93%。報告値は -3.9%。"""
+    assert rail.net_income / rail.equity == pytest.approx(-0.039, abs=0.001)
+
+
+def test_a_full_width_dash_is_not_a_number(rail_rows: list[dict[str, str]]) -> None:
+    """赤字の年は配当性向も PER も出せず、全角ダッシュが入る。
+
+    0 として取り込むと、配当性向 0%・PER 0 倍の割安株として画面に出る。
+    """
+    dashes = {element_name(r) for r in rail_rows if (r.get("値") or "").strip() == "－"}
+    assert "PayoutRatioSummaryOfBusinessResults" in dashes
+    assert "PriceEarningsRatioSummaryOfBusinessResults" in dashes
+
+
+def test_the_railway_figures_come_through(rail_rows: list[dict[str, str]]) -> None:
+    """1期ぶんが、年度の付いた保存できる形まで通る。"""
+    (report,) = parse_filing(make_zip(RAIL_FIXTURE.read_bytes()))
+    assert report.symbol == "9020"
+    assert report.fiscal_year == 2022
+    assert report.revenue == 1_978_967_000_000.0
+    assert report.net_income == -94_948_000_000.0
+    assert report.shares_outstanding == 377_932_000.0
