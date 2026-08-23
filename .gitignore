@@ -22,6 +22,9 @@ htmlcov/
 .env.*
 !.env.example
 設定.txt
+# 立花の仮想URLを復号する秘密鍵。.env と同じ扱い。
+*.pem
+tachibana_private*
 
 # --- Data / logs / DB (runtime artifacts) ---
 logs/*
@@ -30,6 +33,8 @@ data/*.db
 data/*.sqlite
 data/*.sqlite3
 *.db-journal
+# プローブが書き出す生の応答。
+tachibana_history*.json
 
 # --- IDE / OS ---
 .vscode/

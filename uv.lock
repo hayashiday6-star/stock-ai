@@ -2654,6 +2654,10 @@ db = [
 scheduler = [
     { name = "schedule" },
 ]
+tachibana = [
+    { name = "cryptography" },
+    { name = "httpx" },
+]
 
 [package.dev-dependencies]
 dev = [
@@ -2664,15 +2668,17 @@ dev = [
     { name = "ruff" },
 ]
 runtime = [
-    { name = "stock-ai", extra = ["ai", "dashboard", "data", "db", "scheduler"] },
+    { name = "stock-ai", extra = ["ai", "dashboard", "data", "db", "scheduler", "tachibana"] },
 ]
 
 [package.metadata]
 requires-dist = [
     { name = "alembic", marker = "extra == 'db'", specifier = ">=1.13" },
     { name = "anthropic", marker = "extra == 'ai'", specifier = ">=0.30" },
+    { name = "cryptography", marker = "extra == 'tachibana'", specifier = ">=42.0" },
     { name = "google-generativeai", marker = "extra == 'ai'", specifier = ">=0.7" },
     { name = "httpx", marker = "extra == 'data'", specifier = ">=0.27" },
+    { name = "httpx", marker = "extra == 'tachibana'", specifier = ">=0.27" },
     { name = "ib-insync", marker = "extra == 'broker'", specifier = ">=0.9.86" },
     { name = "numpy", marker = "extra == 'data'", specifier = ">=1.26" },
     { name = "openai", marker = "extra == 'ai'", specifier = ">=1.30" },
@@ -2689,7 +2695,7 @@ requires-dist = [
     { name = "vectorbt", marker = "extra == 'backtest'", specifier = ">=0.26" },
     { name = "yfinance", marker = "extra == 'data'", specifier = ">=0.2.40" },
 ]
-provides-extras = ["data", "db", "ai", "backtest", "dashboard", "scheduler", "broker"]
+provides-extras = ["data", "db", "ai", "backtest", "dashboard", "scheduler", "broker", "tachibana"]
 
 [package.metadata.requires-dev]
 dev = [
@@ -2699,7 +2705,7 @@ dev = [
     { name = "pytest-cov", specifier = ">=5.0" },
     { name = "ruff", specifier = ">=0.5" },
 ]
-runtime = [{ name = "stock-ai", extras = ["data", "db", "ai", "dashboard", "scheduler"] }]
+runtime = [{ name = "stock-ai", extras = ["data", "db", "ai", "dashboard", "scheduler", "tachibana"] }]
 
 [[package]]
 name = "streamlit"

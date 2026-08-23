@@ -1,0 +1,98 @@
+<#
+.SYNOPSIS
+    立花証券・ｅ支店・ＡＰＩの仕様を実機で確定する。
+
+.DESCRIPTION
+    マニュアルだけでは決まらない点が4つ残っている。仮想ＵＲＬの暗号方式、
+    JSON引数のURLエンコード要否、応答の文字コード、専用ＵＲＬの版である。
+    どれも推測で実装するとエラーにならずに間違うため、本実装の前に
+    ログイン1回と株価取得1回だけを通して観測する。
+
+    手順は2段階だが、どちらを実行するかはこのスクリプトが判断する。
+    秘密鍵が無ければ鍵ペアを作って止まり、あれば疎通確認に進む。
+    ダブルクリックで起動しても、そのとき必要な方だけが動く。
+
+    認証IDと仮想ＵＲＬは表示しない。ログイン応答に含まれる口座開設区分
+    （ＮＩＳＡ・信用の有無など）も、仕様確定には不要なので読まない。
+
+.PARAMETER Keygen
+    秘密鍵が既にあっても、作り直す。既存のファイルは上書きせず中断するので、
+    作り直すなら先に自分で消すか -PrivateKey で別名を指定する。
+
+.PARAMETER Symbol
+    試す銘柄コード。既定は 6501（日立製作所）。
+
+.PARAMETER PrivateKey
+    秘密鍵のパス。既定は tachibana_private.pem（.gitignore 済み）。
+
+.EXAMPLE
+    .\scripts\tachibana-probe.ps1
+    .\scripts\tachibana-probe.ps1 -Symbol 7203
+#>
+[CmdletBinding()]
+param(
+    [switch]$Keygen,
+    [ValidatePattern('^\d{4}$')]
+    [string]$Symbol = '6501',
+    [string]$PrivateKey = 'tachibana_private.pem'
+)
+
+$ErrorActionPreference = 'Continue'
+Set-Location (Split-Path -Parent $PSScriptRoot)
+
+. "$PSScriptRoot\_common.ps1"
+
+if (-not (Test-UvInstalled)) { Exit-WithPause 1 }
+
+$hasKey = Test-Path $PrivateKey
+
+if ($Keygen -or -not $hasKey) {
+    Write-Section 'Tachibana: 鍵ペアを作る'
+    if (-not $hasKey) {
+        Write-Host "秘密鍵 $PrivateKey が無いので、先に作ります。" -ForegroundColor Cyan
+        Write-Host ''
+    }
+    uv run python tools\tachibana_probe.py keygen --private $PrivateKey
+    if ($LASTEXITCODE -ne 0) { Exit-WithPause 1 }
+
+    Write-Host ''
+    Write-Host '--- 次にやること ---' -ForegroundColor Cyan
+    Write-Host '  1. 上の公開鍵を、ｅ支店の API 利用設定画面に登録する'
+    Write-Host '     （まず X.509 の方を試し、弾かれたら PKCS#1 の方）'
+    Write-Host '  2. 同じ画面で認証IDを生成し、.env に次の行を書く'
+    Write-Host '        TACHIBANA_AUTH_ID=（生成された値）'
+    Write-Host '  3. このファイルをもう一度ダブルクリックする'
+    Write-Host ''
+    Write-Host "秘密鍵 $PrivateKey は .env と同じ扱いです。人に渡さないでください。" -ForegroundColor Yellow
+    Exit-WithPause 0
+}
+
+if (-not (Test-EnvKeySet 'TACHIBANA_AUTH_ID')) {
+    Write-Section 'Tachibana: probe'
+    Write-Err '.env に TACHIBANA_AUTH_ID がありません。'
+    Write-Host ''
+    Write-Host 'ｅ支店の API 利用設定画面で認証IDを生成し、.env に次の行を'
+    Write-Host '書いてから、もう一度実行してください。'
+    Write-Host ''
+    Write-Host '    TACHIBANA_AUTH_ID=（生成された値）'
+    Write-Host ''
+    Write-Host '同じ画面に公開鍵の登録も必要です。まだなら、いま作られている'
+    Write-Host "$PrivateKey を消してから実行すると鍵作成からやり直せます。"
+    Exit-WithPause 1
+}
+
+Write-Section "Tachibana: probe ($Symbol)"
+uv run python tools\tachibana_probe.py probe --symbol $Symbol --private $PrivateKey
+$code = $LASTEXITCODE
+
+if ($code -ne 0) {
+    Write-Host ''
+    Write-Err '最後まで通りませんでした。上の出力をそのまま貼ってください。'
+    Write-Host '観測できたところまでが、そのまま次の一手を決める材料になります。'
+}
+else {
+    Write-Host ''
+    Write-Ok '疎通しました。tachibana_history.json も貼ってください。'
+}
+
+Exit-WithPause $code
