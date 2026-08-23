@@ -35,6 +35,7 @@ import hashlib
 import json
 import os
 import pathlib
+import re
 import sys
 from typing import Any
 
@@ -51,8 +52,62 @@ _SAFE_LOGIN_FIELDS = (
 #: 仮想ＵＲＬの項目名。値は復号の前も後も秘密。
 _URL_FIELDS = ("sUrlRequest", "sUrlMaster", "sUrlPrice", "sUrlEvent", "sUrlEventWebSocket")
 
-_PRODUCTION = "https://kabuka.e-shiten.jp/e_api_v4r9"
-_DEMO = "https://demo-kabuka.e-shiten.jp/e_api_v4r9"
+#: 本番と検証のホスト。版はパスの Prefix (``e_api_vNrN``) で切り替わる。
+_HOSTS = {
+    "production": "https://kabuka.e-shiten.jp",
+    "demo": "https://demo-kabuka.e-shiten.jp",
+}
+
+#: 版ごとの (公開日, 廃止日)。廃止日は「その日から停止」の意味。
+#:
+#: 版は固定値として埋めない。旧版は後継版の並行リリースからおよそ60日で
+#: 停止する運びで、実際 v4r9 は 2026-09-27 に止まる。埋め込んでしまうと、
+#: その日から「原因不明の通信エラー」として現れることになる。
+_VERSIONS: dict[str, tuple[dt.date, dt.date | None]] = {
+    "v4r9": (dt.date(2026, 5, 16), dt.date(2026, 9, 27)),
+    "v4r10": (dt.date(2026, 8, 29), None),
+}
+
+#: いま既定にする版。v4r10 の公開日を過ぎたら、そちらへ切り替える。
+_DEFAULT_VERSION = "v4r9"
+
+
+def default_version(today: dt.date | None = None) -> str:
+    """その日に使うべき版を返す。
+
+    v4r10 は 2026-08-29 公開、v4r9 は 2026-09-27 停止。公開日を過ぎたら
+    新しい版を既定にする。並行リリース期間があるので、切り替えても
+    v4r9 が使えなくなるわけではない。
+    """
+    now = today or dt.date.today()
+    released = [name for name, (start, _end) in _VERSIONS.items() if start <= now]
+    if not released:
+        return _DEFAULT_VERSION
+    # 数字の大きい方が新しい。"v4r10" > "v4r9" は文字列比較では偽になる。
+    return max(released, key=lambda name: [int(n) for n in re.findall(r"\d+", name)])
+
+
+def base_url(version: str, *, demo: bool = False) -> str:
+    """版とホストから専用ＵＲＬを組み立てる。"""
+    return f"{_HOSTS['demo' if demo else 'production']}/e_api_{version}"
+
+
+def version_warning(version: str, today: dt.date | None = None) -> str | None:
+    """使っている版が期限に近い、または新しい版が出ていれば知らせる。"""
+    now = today or dt.date.today()
+    known = _VERSIONS.get(version)
+    if known is None:
+        return f"{version} は把握していない版です。停止予定日を確認してください。"
+    _start, end = known
+    newest = default_version(now)
+    if end is not None and now >= end:
+        return f"{version} は {end} に停止済みです。{newest} へ移行してください。"
+    if end is not None:
+        left = (end - now).days
+        if newest != version:
+            return f"{version} は {end} に停止します（あと {left} 日）。{newest} が公開済みです。"
+        return f"{version} は {end} に停止します（あと {left} 日）。"
+    return None
 
 
 def _fingerprint(value: str) -> str:
@@ -485,13 +540,18 @@ def main() -> int:
     run.add_argument("--symbol", default="6501", help="試す銘柄コード（既定: 6501 日立）")
     run.add_argument(
         "--base",
-        default=os.environ.get("TACHIBANA_BASE_URL") or _PRODUCTION,
-        help=f"専用ＵＲＬ。既定 {_PRODUCTION}",
+        default=os.environ.get("TACHIBANA_BASE_URL") or "",
+        help="専用ＵＲＬを直接指定する。空なら --version と --demo から組み立てる",
+    )
+    run.add_argument(
+        "--version",
+        default=os.environ.get("TACHIBANA_API_VERSION") or "",
+        help=f"ＡＰＩの版。空ならその日の既定（今日は {default_version()}）",
     )
     run.add_argument(
         "--demo",
         action="store_true",
-        help=f"検証環境 ({_DEMO}) を使う。利用時間帯が決まっている点に注意",
+        help="検証環境 (demo-kabuka) を使う。利用時間帯が決まっている点に注意",
     )
     run.add_argument("--get", action="store_true", help="POST ではなく GET で送る")
     run.add_argument("--out", type=pathlib.Path, default=pathlib.Path("tachibana_history.json"))
@@ -523,7 +583,11 @@ def main() -> int:
             "環境変数 TACHIBANA_AUTH_ID が空です。\n"
             "利用設定画面で生成した認証IDを .env に書くか、実行前に設定してください。"
         )
-    base = _DEMO if args.demo else args.base
+    version = args.version or default_version()
+    base = args.base or base_url(version, demo=args.demo)
+    warning = version_warning(version)
+    if warning and not args.base:
+        print(f"[注意] {warning}\n")
     return probe(
         base,
         auth_id,

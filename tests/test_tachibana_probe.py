@@ -98,8 +98,8 @@ def test_demo_switches_the_host(probe_module, monkeypatch):
     monkeypatch.setattr(sys, "argv", ["tachibana_probe.py", "probe", "--demo"])
 
     assert probe_module.main() == 0
-    assert captured["base"] == probe_module._DEMO
-    assert "demo" in captured["base"]
+    assert captured["base"] == probe_module.base_url(probe_module.default_version(), demo=True)
+    assert "demo-kabuka" in captured["base"]
 
 
 def test_a_missing_auth_id_stops_before_any_request(probe_module, monkeypatch):
@@ -147,3 +147,73 @@ def test_keyfmt_does_not_touch_the_private_key(probe_module, monkeypatch, tmp_pa
     )
     assert probe_module.main() == 0
     assert private.read_bytes() == before
+
+
+# --- API の版 -----------------------------------------------------------------
+#
+# 版はパスの Prefix にあり、旧版は後継の並行リリースから約60日で停止する。
+# v4r9 は 2026-09-27 に止まる。固定値で埋めると、その日から「原因不明の通信
+# エラー」として現れるので、日付から解決する。
+
+
+def test_the_newer_version_wins_once_it_is_released(probe_module) -> None:
+    """ "v4r10" > "v4r9" は文字列比較では偽になる。数値で比べる必要がある。"""
+    import datetime as dt
+
+    assert probe_module.default_version(dt.date(2026, 8, 28)) == "v4r9"
+    # v4r10 の公開日。
+    assert probe_module.default_version(dt.date(2026, 8, 29)) == "v4r10"
+    assert probe_module.default_version(dt.date(2027, 1, 1)) == "v4r10"
+
+
+def test_a_version_past_its_end_date_says_so(probe_module) -> None:
+    """停止後に黙って接続を試みると、原因の見えない失敗になる。"""
+    import datetime as dt
+
+    # 停止前は残り日数を告げるだけ。
+    before = probe_module.version_warning("v4r9", dt.date(2026, 9, 26))
+    assert before is not None and "あと 1 日" in before
+
+    # 停止日そのものから「停止済み」。
+    after = probe_module.version_warning("v4r9", dt.date(2026, 9, 27))
+    assert after is not None and "停止済み" in after and "v4r10" in after
+
+
+def test_the_current_version_alone_raises_nothing_alarming(probe_module) -> None:
+    """最新版を使っているときに移行を促してはいけない。"""
+    import datetime as dt
+
+    assert probe_module.version_warning("v4r10", dt.date(2026, 9, 27)) is None
+
+
+def test_an_unknown_version_is_reported_rather_than_assumed_fine(probe_module) -> None:
+    """把握していない版を黙って通すと、停止日を誰も見ないまま使い続ける。"""
+    import datetime as dt
+
+    warning = probe_module.version_warning("v5r1", dt.date(2026, 9, 1))
+    assert warning is not None and "v5r1" in warning
+
+
+def test_base_url_puts_the_version_in_the_path(probe_module) -> None:
+    """版はホスト名ではなくパスの Prefix にある。"""
+    assert probe_module.base_url("v4r10") == "https://kabuka.e-shiten.jp/e_api_v4r10"
+    assert (
+        probe_module.base_url("v4r10", demo=True) == "https://demo-kabuka.e-shiten.jp/e_api_v4r10"
+    )
+
+
+def test_an_explicit_base_url_overrides_the_version(probe_module, monkeypatch) -> None:
+    """接続先を直接指定したときは、そちらを尊重する。"""
+    captured: dict = {}
+    monkeypatch.setattr(
+        probe_module, "probe", lambda base, *a, **k: captured.update(base=base) or 0
+    )
+    monkeypatch.setenv("TACHIBANA_AUTH_ID", "authid")
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["tachibana_probe.py", "probe", "--base", "https://example.invalid/e_api_v9r9"],
+    )
+
+    assert probe_module.main() == 0
+    assert captured["base"] == "https://example.invalid/e_api_v9r9"
