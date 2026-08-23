@@ -29,6 +29,7 @@ from dotenv import load_dotenv
 from pydantic import SecretStr
 
 from stock_ai.core.logging import configure_logging
+from stock_ai.core.version import describe
 from stock_ai.ir.edinet import EdinetDisclosureSource
 from stock_ai.ir.edinet_financials import (
     ANNUAL_REPORT_TYPES,
@@ -37,6 +38,7 @@ from stock_ai.ir.edinet_financials import (
     LABEL,
     RELATIVE_YEAR,
     VALUE,
+    AnnualFigures,
     fetch_document,
     is_consolidated,
     parse_header,
@@ -81,11 +83,58 @@ def _ratio(value: float | None, width: int = 8) -> str:
     return _cell("―" if value is None else f"{value:.1%}", width)
 
 
+#: 空欄になった項目を埋めうる語。CSV 全体の項目名をこれで引く。
+GAP_HINTS: dict[str, tuple[str, ...]] = {
+    # 「収益」だけだと株価収益率が引っ掛かる。語を絞る。
+    "revenue": ("売上", "営業収益", "経常収益", "純収益", "総収益", "営業収入"),
+    "net_income": ("当期純利益", "当期利益", "親会社"),
+    "equity": ("純資産", "持分", "自己資本"),
+    "total_assets": ("総資産", "資産合計"),
+    "roe": ("自己資本利益率", "持分利益率"),
+    "shares_outstanding": ("発行済株式",),
+}
+
+
+def _report_gaps(rows: list[dict[str, str]], figures: list[AnnualFigures]) -> None:
+    """埋まらなかった項目について、CSV 全体に何があったかを出す。
+
+    空欄のまま「取れませんでした」とだけ言われても、要素名を足せばいいのか、
+    その有報に本当に無いのかが分からない。``主要な経営指標等`` の外まで含めて
+    候補を並べれば、次に何を足すかがその場で決まる。
+
+    トヨタがこれを必要にした。IFRS 適用なのに ``RevenueIFRS…`` を持たず、
+    ``NetSales…``（売上高）は提出会社単体。連結の売上が表から丸ごと欠けている。
+    """
+    missing = sorted({f for f in GAP_HINTS if all(getattr(e, f) is None for e in figures)})
+    if not missing:
+        return
+
+    print("\n--- 埋まらなかった項目と、CSV 全体にあった候補 ---")
+    for field in missing:
+        hints = GAP_HINTS[field]
+        found = {}
+        for row in rows:
+            label = row.get(LABEL, "")
+            if not any(h in label for h in hints):
+                continue
+            name = row.get(ELEMENT, "").split(":")[-1]
+            if name not in found:
+                basis = "連結" if is_consolidated(row) else "単体"
+                found[name] = (basis, label, row.get(RELATIVE_YEAR, ""), row.get(VALUE, ""))
+        print(f"\n  [{field}] 候補 {len(found)} 件")
+        for name, (basis, label, year, value) in sorted(found.items())[:25]:
+            print(f"    {basis} {name:<58} {label[:28]}  [{year}={value[:24]}]")
+        if len(found) > 25:
+            print(f"    …ほか {len(found) - 25} 件")
+
+
 def check(sec_code: str, days: int) -> int:
     """1銘柄ぶん、実物を取って読めたところと読めなかったところを出す。"""
     secret = (os.environ.get("EDINET_API_KEY") or "").strip()
     if not secret:
         sys.exit("環境変数 EDINET_API_KEY が空です。.env を確認してください。")
+    # 貼られた出力だけで、どのコードが出したものか確定できるように。
+    print(f"バージョン: {describe()}")
     print(f"APIキー 指紋: {_fingerprint(secret)}  (値そのものは表示しません)")
 
     api_key = SecretStr(secret)
@@ -142,7 +191,10 @@ def check(sec_code: str, days: int) -> int:
         print(f"  {mark} {basis} {element:<62} {label}  [{sample[:40]}]")
 
     print(f"\n要素 {len(seen)} 種類（うち連結 {len(consolidated)}）。")
-    print("上の出力をそのまま貼ってください。")
+
+    _report_gaps(rows, parse_summary(rows))
+
+    print("\n上の出力をそのまま貼ってください。")
     print("有価証券報告書は公開情報なので、そのままで構いません。")
     return 0
 

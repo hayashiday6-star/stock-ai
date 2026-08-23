@@ -1042,3 +1042,74 @@ def test_the_railway_figures_come_through(rail_rows: list[dict[str, str]]) -> No
     assert report.revenue == 1_978_967_000_000.0
     assert report.net_income == -94_948_000_000.0
     assert report.shares_outstanding == 377_932_000.0
+
+
+# --- IFRS だが売上収益を持たない会社（7203 トヨタ） -----------------------
+#
+# 固定値は 7203 に対する実行結果（docID S100Y8NY, 2026年3月期）から。四期前ぶん。
+# この有報で初めて NetSalesSummaryOfBusinessResults（売上高）が実データに現れた
+# ――ただし提出会社単体の欄で。
+
+TOYOTA_FIXTURE = pathlib.Path(__file__).parent / "fixtures" / "edinet_7203_summary.tsv"
+
+
+@pytest.fixture(scope="module")
+def toyota_rows() -> list[dict[str, str]]:
+    return read_csv_zip(make_zip(TOYOTA_FIXTURE.read_bytes()))
+
+
+@pytest.fixture(scope="module")
+def toyota(toyota_rows: list[dict[str, str]]) -> AnnualFigures:
+    (only,) = parse_summary(toyota_rows)
+    return only
+
+
+def test_net_sales_finally_appears_but_only_as_the_parent_company(
+    toyota_rows: list[dict[str, str]],
+) -> None:
+    """4社目にして売上高が現れた。連結ではなく提出会社単体の欄に。
+
+    トヨタの単体売上高は 12.6兆。連結は 48兆前後で、4倍近く違う。
+    """
+    (row,) = [r for r in toyota_rows if element_name(r) == "NetSalesSummaryOfBusinessResults"]
+    assert row["値"] == "12607858000000"
+    assert not is_consolidated(row)
+
+
+def test_an_ifrs_filer_can_lack_a_consolidated_revenue_element(
+    toyota_rows: list[dict[str, str]], toyota: AnnualFigures
+) -> None:
+    """トヨタは IFRS なのに RevenueIFRS… を持たない。連結の売上が表に無い。
+
+    候補のどれも連結では見つからないので revenue は空になる。単体の売上高
+    12.6兆 を代わりに入れないことがここの要点――連結 48兆 のつもりで 12.6兆 を
+    使えば、成長率も PSR も別の会社の話になる。
+    """
+    names = {element_name(r) for r in toyota_rows}
+    assert "RevenueIFRSSummaryOfBusinessResults" not in names
+    assert toyota.revenue is None
+
+
+def test_everything_else_is_the_consolidated_ifrs_figure(toyota: AnnualFigures) -> None:
+    """売上以外は連結が取れている。空になるのは1項目だけ。"""
+    assert toyota.net_income == 2_850_110_000_000.0
+    assert toyota.equity == 26_245_969_000_000.0
+    assert toyota.total_assets == 67_688_771_000_000.0
+    assert toyota.shares_outstanding == 16_314_987_000.0
+
+
+def test_the_standalone_roe_is_close_enough_to_pass_unnoticed(toyota: AnnualFigures) -> None:
+    """連結 11.5% に対し単体 11.9%。取り違えても誰も気付かない。
+
+    三菱UFJ（12.9% 対 20.8%）やJR東日本のように離れていれば目で気付けるが、
+    ここは 0.4 ポイントしか違わない。目視では守れない、という証拠。
+    """
+    assert toyota.roe == pytest.approx(0.115)
+    assert abs(0.119 - 0.115) < 0.005
+
+
+def test_total_assets_needs_the_context_here_too(toyota_rows: list[dict[str, str]]) -> None:
+    """総資産は IFRS 名も日本基準名も両方あり、単体は3分の1。"""
+    bases = {element_name(r): is_consolidated(r) for r in summary_rows(toyota_rows)}
+    assert bases["TotalAssetsIFRSSummaryOfBusinessResults"] is True
+    assert bases["TotalAssetsSummaryOfBusinessResults"] is False

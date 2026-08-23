@@ -37,6 +37,8 @@ Set-Location (Split-Path -Parent $PSScriptRoot)
 
 . "$PSScriptRoot\_common.ps1"
 
+Show-Version
+
 if (-not (Test-UvInstalled)) { Exit-WithPause 1 }
 
 if (-not (Test-EnvKeySet 'EDINET_API_KEY')) {
