@@ -82,8 +82,8 @@ function Show-RegistrationSteps {
     Write-Host '--- 次にやること ---' -ForegroundColor Cyan
     Write-Host "  1. いま開いた $PublicKey から、"
     Write-Host '     「1. X.509」の -----BEGIN----- から -----END----- までを'
-    Write-Host '     まるごとコピーし、ｅ支店の API 利用設定画面に貼る'
-    Write-Host '     弾かれたら 2 → 3 → 4 → 5 の順に試す（番号の行は貼らない）'
+    Write-Host '     その2行ごとコピーし、ｅ支店の API 利用設定画面に貼る'
+    Write-Host '     （この形式で通ることを確認済み。番号の行は貼らない）'
     Write-Host '  2. 同じ画面で認証IDを生成し、.env に次の行を書く'
     Write-Host '        TACHIBANA_AUTH_ID=（生成された値）'
     Write-Host '  3. このファイルをもう一度ダブルクリックする'

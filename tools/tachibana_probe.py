@@ -77,7 +77,10 @@ def write_public_formats(private_path: pathlib.Path, out: pathlib.Path) -> None:
     鍵側に見えてしまう。メモ帳で開いて選択できるファイルにしておけば、
     その経路を丸ごと消せる。
 
-    どの形式が正解かは画面を見ないと分からないので、候補を全部並べる。
+    形式は **X.509 SPKI の PEM、BEGIN/END 行を含めてそのまま** で通ることを
+    実機で確認済み。残りの候補も落とさずに残してあるのは、画面の仕様が変わった
+    ときに再び総当たりから始めないためで、通常は先頭だけ見れば足りる。
+
     ファイルは CRLF で書く。古いメモ帳は LF だけの行を折り返さない。
     """
     import base64
@@ -103,7 +106,7 @@ def write_public_formats(private_path: pathlib.Path, out: pathlib.Path) -> None:
     der = base64.b64encode(public.public_bytes(serialization.Encoding.DER, spki)).decode()
 
     sections = [
-        ("1. X.509 / SubjectPublicKeyInfo (PEM)  ← まずこれ", pem(spki)),
+        ("1. X.509 / SubjectPublicKeyInfo (PEM)  ★これで通ります", pem(spki)),
         ("2. 同じものを一行に（BEGIN/END と改行なし）", flat(spki)),
         ("3. PKCS#1 (PEM)", pem(pkcs1)),
         ("4. PKCS#1 を一行に", flat(pkcs1)),
@@ -123,7 +126,9 @@ def write_public_formats(private_path: pathlib.Path, out: pathlib.Path) -> None:
         "",
         "画面の条件（RSA / 2048 または 4096 ビット / SHA-256）を満たしています。",
         "",
-        "上から順に試してください。番号と説明の行は貼らないでください。",
+        "登録には 1 を使ってください。-----BEGIN----- から -----END----- までを、",
+        "その2行を含めてまるごと貼ります。番号と説明の行は貼らないでください。",
+        "2 以降は、画面の仕様が変わって 1 が通らなくなったときの控えです。",
         "=" * 68,
     ]
     for title, value in sections:
