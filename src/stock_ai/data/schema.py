@@ -76,3 +76,43 @@ def normalize_ohlcv(raw: pd.DataFrame) -> pd.DataFrame:
 
     df[VOLUME] = df[VOLUME].fillna(0).astype("int64")
     return df
+
+
+def split_adjusted(prices: pd.DataFrame) -> pd.DataFrame:
+    """Put ``open``/``high``/``low``/``close`` on the ``adj_close`` basis.
+
+    Every strategy, indicator and the backtest engine read :data:`CLOSE` and
+    :data:`OPEN` - the prices actually traded. Across a split those jump, and
+    nothing downstream can tell a split from a crash. Hitachi (6501) is a plain
+    example: over 2024-06-03 .. 2024-07-31 the raw close falls 79.8% while the
+    adjusted close rises 0.9%. A 200-day average spanning that day is
+    meaningless, and a reported drawdown becomes an artifact - the same symbol's
+    25-year hold reported a maximum drawdown of -84.71%, which is exactly the
+    raw series' figure, against -83.01% on the adjusted one. The reported low
+    was 2025-04-07 measured from a pre-split 2024 peak five times its own scale.
+
+    Adjusting once, here, is what keeps signals and returns in the same space.
+    The factor is ``adj_close / close``, which is the split ratio (and, where a
+    provider adjusts for dividends too, the total-return ratio). It is applied
+    to the whole bar because a high or a low is on the same scale as its close.
+
+    Rows the factor cannot be computed for - a zero or missing close - are left
+    as they are rather than dropped: this function normalises, it does not judge
+    what is usable.
+
+    Returns:
+        A new frame; the input is not modified. Frames without
+        :data:`ADJ_CLOSE` come back unchanged.
+    """
+    if ADJ_CLOSE not in prices.columns or CLOSE not in prices.columns:
+        return prices
+
+    close = pd.to_numeric(prices[CLOSE], errors="coerce")
+    adjusted = pd.to_numeric(prices[ADJ_CLOSE], errors="coerce")
+    factor = (adjusted / close).where(close > 0).fillna(1.0)
+
+    frame = prices.copy()
+    for column in (OPEN, HIGH, LOW, CLOSE):
+        if column in frame.columns:
+            frame[column] = pd.to_numeric(frame[column], errors="coerce") * factor
+    return frame

@@ -2993,7 +2993,11 @@ def _warn_if_lookback_will_not_reach(database: Database, symbols: list[str], loo
 
 
 def _load_prices(database: Database, symbol: str) -> pd.DataFrame:
-    """Load stored prices for ``symbol`` or fail with a helpful message."""
+    """Load stored prices for ``symbol`` or fail with a helpful message.
+
+    The frame arrives on the adjusted basis; see
+    :meth:`~stock_ai.database.repository.PriceRepository.get_prices`.
+    """
     with database.session() as session:
         prices = PriceRepository(session).get_prices(symbol)
     if prices.empty:

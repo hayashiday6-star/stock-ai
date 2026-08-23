@@ -27,6 +27,7 @@ from stock_ai.data.schema import (
     OHLCV_COLUMNS,
     OPEN,
     VOLUME,
+    split_adjusted,
 )
 from stock_ai.data.types import (
     Disclosure,
@@ -257,7 +258,19 @@ class PriceRepository:
         start: dt.date | None = None,
         end: dt.date | None = None,
     ) -> pd.DataFrame:
-        """Return stored bars for ``symbol`` as a canonical OHLCV frame."""
+        """Return stored bars for ``symbol``, on the split-adjusted basis.
+
+        The adjustment happens here, not in the callers, because there are a
+        dozen call sites and every strategy, indicator and the backtest engine
+        reads ``close`` and ``open``. One forgotten call site is a backtest that
+        reports a split as an 80% crash and says nothing about it - which is
+        what was happening. See
+        :func:`~stock_ai.data.schema.split_adjusted` for the measured effect.
+
+        Nothing that reads the *current* price changes: the factor is
+        ``adj_close / close``, and on the latest bar there is no later split, so
+        it is 1.0. Only history moves, which is the point.
+        """
         stmt = (
             select(PriceBar).join(Security).where(Security.symbol == symbol).order_by(PriceBar.date)
         )
@@ -283,7 +296,7 @@ class PriceRepository:
             columns=[DATE, *OHLCV_COLUMNS],
         )
         frame[DATE] = pd.to_datetime(frame[DATE])
-        return frame.set_index(DATE)
+        return split_adjusted(frame.set_index(DATE))
 
     def latest_date(self, symbol: str) -> dt.date | None:
         """Return the most recent stored bar date for ``symbol``, or ``None``."""
