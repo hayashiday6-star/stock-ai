@@ -33,8 +33,10 @@ data/*.db
 data/*.sqlite
 data/*.sqlite3
 *.db-journal
-# プローブが書き出す生の応答。
+# プローブが書き出す生の応答（株価のみ。個人情報は含まない）。
 tachibana_history*.json
+# 当日の仮想URL。復号済みなので、これ自体が資格情報。
+tachibana_session*.json
 
 # --- IDE / OS ---
 .vscode/

@@ -35,10 +35,15 @@
     POST ではなく GET で送る。サンプルの既定は POST で、通常は切り替え不要。
     片方だけ塞がれている環境かどうかを切り分けたいときに使う。
 
+.PARAMETER Fresh
+    保存済みの当日セッションを捨て、ログインからやり直す。仮想ＵＲＬは当日限り
+    なので、2回目以降は既定で保存分を使い回してログインを重ねない。
+
 .EXAMPLE
     .\scripts\tachibana-probe.ps1
     .\scripts\tachibana-probe.ps1 -Symbol 7203
     .\scripts\tachibana-probe.ps1 -Demo
+    .\scripts\tachibana-probe.ps1 -Fresh
 #>
 [CmdletBinding()]
 param(
@@ -47,7 +52,8 @@ param(
     [string]$Symbol = '6501',
     [string]$PrivateKey = 'tachibana_private.pem',
     [switch]$Demo,
-    [switch]$UseGet
+    [switch]$UseGet,
+    [switch]$Fresh
 )
 
 $ErrorActionPreference = 'Continue'
@@ -77,6 +83,8 @@ if ($Keygen -or -not $hasKey) {
     Write-Host '  3. このファイルをもう一度ダブルクリックする'
     Write-Host ''
     Write-Host "秘密鍵 $PrivateKey は .env と同じ扱いです。人に渡さないでください。" -ForegroundColor Yellow
+    Write-Host '同じ扱いのファイルがもう1つ、実行後に tachibana_session.json として' -ForegroundColor Yellow
+    Write-Host 'できます。その日の仮想URLが復号済みで入っています。' -ForegroundColor Yellow
     Exit-WithPause 0
 }
 
@@ -100,6 +108,7 @@ Write-Section "Tachibana: probe ($label)"
 $probeArgs = @('probe', '--symbol', $Symbol, '--private', $PrivateKey)
 if ($Demo) { $probeArgs += '--demo' }
 if ($UseGet) { $probeArgs += '--get' }
+if ($Fresh) { $probeArgs += '--fresh' }
 
 uv run python tools\tachibana_probe.py @probeArgs
 $code = $LASTEXITCODE

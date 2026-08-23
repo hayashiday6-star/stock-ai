@@ -125,21 +125,77 @@ def decrypt_url(blob: str, private_path: pathlib.Path) -> str:
     return plain.decode("ascii").strip()
 
 
+class Session:
+    """仮想ＵＲＬと ``p_no`` を当日中だけ持ち越す。公式サンプルの挙動に合わせる。
+
+    サンプルは ``YYYYMMDD_e_api_sample.txt`` に両方を書き、ファイルがある限り
+    ログインし直さない。これは省力化ではなく仕様の要求である。
+
+    - **仮想ＵＲＬは当日限り。** ログインのたびに発行されるので、要求のたびに
+      ログインする作りにはしない。
+    - **``p_no`` はプロセスをまたいで続く通番。** 毎回 1 から振り直すと、同じ日に
+      2回目を走らせた時点で番号が重なる。サンプルが採番のたびに保存しているのは
+      そのため。
+
+    **このファイルは資格情報である。** 復号済みの仮想ＵＲＬがそのまま入っており、
+    持っている者はその日の口座機能を叩ける。``.gitignore`` 済みで、POSIX では
+    0600 を立てる。中身は表示しない。
+    """
+
+    def __init__(self, path: pathlib.Path) -> None:
+        """保存先を決める。読み込みは :meth:`load` で行う。"""
+        self.path = path
+        self.p_no = 0
+        self.urls: dict[str, str] = {}
+
+    def load(self) -> bool:
+        """当日分があれば読み込む。使えるものが無ければ ``False``。"""
+        try:
+            saved = json.loads(self.path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return False
+        if saved.get("date") != f"{dt.date.today():%Y%m%d}":
+            return False  # 日付が変われば仮想ＵＲＬは失効している
+        urls = saved.get("urls") or {}
+        if not urls.get("sUrlPrice"):
+            return False
+        self.p_no = int(saved.get("p_no", 0))
+        self.urls = urls
+        return True
+
+    def save(self) -> None:
+        """現在の ``p_no`` と仮想ＵＲＬを書き出す。"""
+        self.path.write_text(
+            json.dumps(
+                {"date": f"{dt.date.today():%Y%m%d}", "p_no": self.p_no, "urls": self.urls},
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        if os.name == "posix":
+            self.path.chmod(0o600)
+
+    def discard(self) -> None:
+        """保存済みセッションを捨てる。次回はログインからやり直す。"""
+        self.path.unlink(missing_ok=True)
+
+
 class Client:
     """ｅ支店・ＡＰＩへの1セッション。要求の組み立てを公式サンプルに合わせる。"""
 
-    def __init__(self, base: str, *, use_post: bool = True) -> None:
+    def __init__(self, base: str, session: Session, *, use_post: bool = True) -> None:
         """接続先と送信方法を決める。
 
         Args:
             base: ｅ支店・ＡＰＩ専用ＵＲＬ。
+            session: ``p_no`` と仮想ＵＲＬの持ち越し先。
             use_post: ``True`` で POST（サンプルの既定）、``False`` で GET。
         """
         import httpx
 
         self.base = base.rstrip("/")
         self.use_post = use_post
-        self._p_no = 0
+        self.session = session
         # リダイレクトは追わない。GET のとき認証ＩＤが要求のクエリ文字列に入るので、
         # 追従すると Location が指す先へそのまま再送されることになる。相手がどこで
         # あれ、秘密を黙って転送するより 302 を観測して報告する方が正しい。
@@ -154,10 +210,15 @@ class Client:
         self._client.close()
 
     def _payload(self, fields: dict[str, str]) -> str:
-        """共通ヘッダを足した要求 JSON を、サンプルと同じ並びで組み立てる。"""
-        self._p_no += 1
+        """共通ヘッダを足した要求 JSON を、サンプルと同じ並びで組み立てる。
+
+        採番のたびに保存する。プロセスが途中で落ちても番号が巻き戻らないように、
+        という理由でサンプルもそうしている。
+        """
+        self.session.p_no += 1
+        self.session.save()
         body = {
-            "p_no": str(self._p_no),
+            "p_no": str(self.session.p_no),
             "p_sd_date": _sd_date(),
             "sJsonOfmt": "5",
             **fields,
@@ -207,6 +268,59 @@ class Client:
         return None
 
 
+def _login(client: Client, auth_id: str, private_path: pathlib.Path) -> str | None:
+    """ログインし、仮想ＵＲＬを復号してセッションに入れる。失敗なら ``None``。"""
+    print("--- ログイン ---")
+    try:
+        login, _ = client.request(
+            f"{client.base}/auth/",
+            {"sCLMID": "CLMAuthLoginRequest", "sAuthId": auth_id},
+        )
+    except RuntimeError as exc:
+        print(f"失敗: {exc}")
+        return None
+
+    for field in _SAFE_LOGIN_FIELDS:
+        if field in login:
+            print(f"  {field} = {login[field]!r}")
+    problem = Client.check(login)
+    if problem:
+        print(f"\n{problem}")
+        return None
+    if login.get("sKinsyouhouMidokuFlg") == "1":
+        print("\n金商法交付書面が未読です。この場合、仮想ＵＲＬは発行されません。")
+        print("e支店Webサイトで書面を確認してから、もう一度実行してください。")
+        return None
+
+    print("\n--- 仮想ＵＲＬの復号 (RSA-OAEP / SHA256) ---")
+    urls: dict[str, str] = {}
+    for field in _URL_FIELDS:
+        blob = login.get(field)
+        if not blob:
+            print(f"  {field}: （空）")
+            continue
+        try:
+            plain = decrypt_url(blob, private_path)
+        except Exception as exc:  # noqa: BLE001 - 原因を観測して報告したい
+            print(f"  {field}: 復号できません — {type(exc).__name__}: {exc}")
+            continue
+        # URL に見えることまで確かめる。復号が「通った」ことだけを成功の判定に
+        # 使うと、鍵や方式を取り違えたまま先へ進んでしまう。
+        shape = "OK" if plain.startswith("http") else f"URLに見えません {plain[:16]!r}"
+        print(f"  {field}: {shape}  指紋 {_fingerprint(plain)}  {len(plain)}字")
+        if plain.startswith("http"):
+            urls[field] = plain
+
+    if not urls.get("sUrlPrice"):
+        print("\n時価情報の仮想ＵＲＬ (sUrlPrice) を復号できませんでした。")
+        print("利用設定画面に登録した公開鍵と、いま使っている秘密鍵が対か確認してください。")
+        return None
+
+    client.session.urls = urls
+    client.session.save()
+    return urls["sUrlPrice"]
+
+
 def probe(
     base: str,
     auth_id: str,
@@ -215,6 +329,8 @@ def probe(
     out: pathlib.Path,
     *,
     use_post: bool,
+    session_path: pathlib.Path,
+    fresh: bool = False,
 ) -> int:
     """ログインから株価履歴1銘柄までを通し、観測結果を報告する。"""
     if not private_path.exists():
@@ -224,53 +340,21 @@ def probe(
     print(f"接続先: {base.rstrip('/')}   送信方法: {method}")
     print(f"認証ID 指紋: {_fingerprint(auth_id)}  (値そのものは表示しません)\n")
 
-    with Client(base, use_post=use_post) as client:
-        # --- 1. ログイン -----------------------------------------------------
-        print("--- ログイン ---")
-        try:
-            login, _ = client.request(
-                f"{client.base}/auth/",
-                {"sCLMID": "CLMAuthLoginRequest", "sAuthId": auth_id},
-            )
-        except RuntimeError as exc:
-            print(f"失敗: {exc}")
-            return 1
+    session = Session(session_path)
+    if fresh:
+        session.discard()
+    reused = session.load()
 
-        for field in _SAFE_LOGIN_FIELDS:
-            if field in login:
-                print(f"  {field} = {login[field]!r}")
-        problem = Client.check(login)
-        if problem:
-            print(f"\n{problem}")
-            return 1
-        if login.get("sKinsyouhouMidokuFlg") == "1":
-            print("\n金商法交付書面が未読です。この場合、仮想ＵＲＬは発行されません。")
-            print("e支店Webサイトで書面を確認してから、もう一度実行してください。")
-            return 1
-
-        # --- 2. 仮想ＵＲＬの復号 ---------------------------------------------
-        print("\n--- 仮想ＵＲＬの復号 (RSA-OAEP / SHA256) ---")
-        price_url: str | None = None
-        for field in _URL_FIELDS:
-            blob = login.get(field)
-            if not blob:
-                print(f"  {field}: （空）")
-                continue
-            try:
-                plain = decrypt_url(blob, private_path)
-            except Exception as exc:  # noqa: BLE001 - 原因を観測して報告したい
-                print(f"  {field}: 復号できません — {type(exc).__name__}: {exc}")
-                continue
-            # URL に見えることまで確かめる。復号が「通った」ことだけを成功の判定に
-            # 使うと、鍵や方式を取り違えたまま先へ進んでしまう。
-            shape = "OK" if plain.startswith("http") else f"URLに見えません {plain[:16]!r}"
-            print(f"  {field}: {shape}  指紋 {_fingerprint(plain)}  {len(plain)}字")
-            if field == "sUrlPrice" and plain.startswith("http"):
-                price_url = plain
+    with Client(base, session, use_post=use_post) as client:
+        if reused:
+            # 仮想ＵＲＬは当日限り。同じ日に何度も走らせてログインを重ねない。
+            print(f"--- 当日のセッションを再利用 ({session_path}) ---")
+            print(f"  次に使う p_no: {session.p_no + 1}")
+            price_url: str | None = session.urls.get("sUrlPrice")
+        else:
+            price_url = _login(client, auth_id, private_path)
 
         if not price_url:
-            print("\n時価情報の仮想ＵＲＬ (sUrlPrice) を復号できませんでした。")
-            print("利用設定画面に登録した公開鍵と、いま使っている秘密鍵が対か確認してください。")
             return 1
 
         # --- 3. 株価履歴を1銘柄だけ取得 ---------------------------------------
