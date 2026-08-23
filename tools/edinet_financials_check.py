@@ -23,6 +23,7 @@ import dataclasses
 import hashlib
 import os
 import sys
+import unicodedata
 
 from dotenv import load_dotenv
 from pydantic import SecretStr
@@ -52,12 +53,32 @@ def _fingerprint(secret: str) -> str:
     return hashlib.sha256(secret.encode("utf-8")).hexdigest()[:12]
 
 
-def _amount(value: float | None) -> str:
-    return "―" if value is None else f"{value / OKU:>12,.0f}"
+def _width(text: str) -> int:
+    """コンソール上の桁数。日本語は1文字で2桁を占める。
+
+    ``str.rjust`` は**文字数**で揃えるので、日本語の見出しを混ぜた表は必ずずれる。
+    ずれた表は、隣の列の値をその列の値として読ませる。
+    """
+    return sum(2 if unicodedata.east_asian_width(c) in "WF" else 1 for c in text)
 
 
-def _ratio(value: float | None) -> str:
-    return "―" if value is None else f"{value:>6.1%}"
+def _cell(text: str, width: int) -> str:
+    """右詰め。桁数は表示幅で数える。"""
+    return " " * max(0, width - _width(text)) + text
+
+
+def _amount(value: float | None, width: int = 14) -> str:
+    """億円。値が無ければダッシュ――**幅は同じ**にする。
+
+    ここを詰めずに返すと列が左へ寄り、隣の列の数字がその列の値に見える。
+    実際に起きた: 三菱UFJで純利益が取れなかった回、自己資本の 179,882 が
+    純利益の位置に出て、売上が空欄に見えた。
+    """
+    return _cell("―" if value is None else f"{value / OKU:,.0f}", width)
+
+
+def _ratio(value: float | None, width: int = 8) -> str:
+    return _cell("―" if value is None else f"{value:.1%}", width)
 
 
 def check(sec_code: str, days: int) -> int:

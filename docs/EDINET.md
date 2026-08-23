@@ -14,7 +14,8 @@ J-Quants の有料プランをやめるための、日本株の財務諸表の�
 
 ## 確定していること（すべて実データで確認済み）
 
-観測対象は日立製作所 6501、docID `S100YGBO`、2026年6月22日提出、2026年3月期。
+観測対象は2社。日立製作所 6501（**IFRS**、docID `S100YGBO`、2026年3月期）と、
+三菱UFJフィナンシャル・グループ 8306（**日本基準**、docID `S100YJQO`、2026年3月期）。
 
 | 項目 | 値 |
 |---|---|
@@ -25,7 +26,8 @@ J-Quants の有料プランをやめるための、日本株の財務諸表の�
 | `type=5` | **XBRL を CSV に変換したものの ZIP。243 KB・3ファイル** |
 | `type=5` の中身 | `XBRL_TO_CSV/jpcrp…csv`（本体）＋ `jpaud…csv` 2本（監査報告書） |
 | CSV の形式 | **UTF-16LE + BOM、タブ区切り、全項目を引用符で囲む、CRLF** |
-| 本体 CSV の行数 | 2,776 行（うち「主要な経営指標等」は 160 行、`jpdei` が 27 行） |
+| 本体 CSV の行数 | 6501 は 2,776 行（「主要な経営指標等」160行、`jpdei` 27行） |
+| ZIP の大きさ | 6501 は 243 KB、8306 は 285 KB |
 | 有報の `docTypeCode` | `120`。訂正有報は `130` |
 
 `type=5` があるので、**XBRL の構文解析は要らない**。これが実装量を桁で変えた。
@@ -37,7 +39,7 @@ EDINET は拒否した要求にも 200 を返し、本文だけを JSON のエ�
 見ないと、下流が「ZIP ではありません」と言うだけになり、鍵が無いのか書類が無いのか
 分からなくなる。
 
-## 数字を取り違える5つの罠
+## 数字を取り違える7つの罠
 
 どれも**例外は出ない**。5期ぶんのそれらしい表が出てきて、中身が違う。
 
@@ -99,7 +101,37 @@ EDINET は拒否した要求にも 200 を返し、本文だけを JSON のエ�
 | 前期 | 前期末 |
 | 当期 | 当期末 |
 
-### 5. 要素名が意味を保証しない
+### 5. 最上段の収益は業種で名前が変わる。銀行に売上高は無い
+
+三菱UFJの有報には `NetSalesSummaryOfBusinessResults`（売上高）が**1行も無い**。
+銀行の最上段は**経常収益** `OrdinaryIncomeSummaryOfBusinessResults`（60,758億）。
+
+| 業種 | 要素名 | 項目名 |
+|---|---|---|
+| 一般事業会社（IFRS） | `RevenueIFRSSummaryOfBusinessResults` | 売上収益 |
+| 一般事業会社（日本基準） | `NetSalesSummaryOfBusinessResults` | 売上高 |
+| 証券・不動産など | `OperatingRevenue1SummaryOfBusinessResults` | 営業収益 |
+| 銀行・保険 | `OrdinaryIncomeSummaryOfBusinessResults` | 経常収益 |
+
+1社の中で年をまたいで名前が変わることはないので、成長率は正しく出る。業種を
+またいだ「売上の絶対額」の比較は元から意味を持たない。
+
+**`OrdinaryIncome…`（経常収益）と `OrdinaryIncomeLoss…`（経常利益）は別物で、
+同じ表に並んでいる。** 三菱UFJで 60,758億 と 15,376億、4倍違う。要素名の比較は
+名前空間を落とした**完全一致**にしてある。部分一致だとここで事故る。
+
+### 6. 日本基準の連結純利益は別の要素名
+
+`NetIncomeLossSummaryOfBusinessResults` は日立でも三菱UFJでも**提出会社単体**の
+欄だった。日本基準の連結は
+`ProfitLossAttributableToOwnersOfParentSummaryOfBusinessResults`
+（親会社株主に帰属する当期純利益）。三菱UFJで 11,308億 対 5,718億、2倍違う。
+
+どちらを取ったかは、有報が報告している ROE で裏が取れる。連結
+11,308億 ÷ 自己資本 179,882億 = 6.3%、報告値は 6.7%（期中平均を使うので少し高い）。
+単体 5,718億 なら 3.2% にしかならない。
+
+### 7. 要素名が意味を保証しない
 
 日立の `EquityToAssetRatioIFRSSummaryOfBusinessResults` の項目名は
 **「１株当たり親会社所有者帰属持分（IFRS）」= BPS** で、値は 897.78 円。
@@ -140,15 +172,17 @@ uv run stock-ai statements 6501 --source edinet
 
 ## まだ確認していないこと
 
-- **日本基準の会社の要素名**。上の表はすべて IFRS 適用会社1本から起こしたもの。
-  `NetSalesSummaryOfBusinessResults`（売上高）は日立の有報には**1行も出てこない**。
-  コンテキストで絞る実装にしたので原理的には通るはずだが、実物で確かめていない。
-  `9-EDINET財務確認.bat` が 8306（三菱UFJ、日本基準）を読んで、表に出てくる要素を
-  全部並べる。印の付かない行が埋めるべき穴。
+- **一般事業会社の日本基準**。確認したのは IFRS の製造業（6501）と日本基準の
+  銀行（8306）の2本。日本基準で `NetSalesSummaryOfBusinessResults`（売上高）を
+  使う会社――トヨタ、JR東日本のような普通の事業会社――の有報はまだ読んでいない。
+  `9-EDINET財務確認.bat -SecCode 9020` で確かめられる。
 - **営業利益**。日本基準には `OrdinaryIncomeLossSummaryOfBusinessResults`（経常利益）、
   IFRS には `ProfitLossBeforeTaxIFRSSummaryOfBusinessResults`（税引前利益）がある。
   **この2つは別物**なので、`FinancialReport.operating_income` に混ぜて入れていない。
   どちらか一方に寄せるか、列を分けるかは決めていない。
+- **総資産と ROE は保存していない**。`AnnualFigures` は読むが、
+  `FinancialStatement` にその列が無いので `to_reports` で落ちる。ROE は
+  純利益 ÷ 自己資本 で戻せるが、総資産はスキーマを足さないと持てない。
 - **四半期**。四半期報告書（`140`）にも「主要な経営指標等」があるが、見ていない。
 - **複数の `jpcrp` CSV**。`S100YGBO` には1本しか無かった。2本以上ある有報が
   存在するかは分からない。あった場合は警告して先頭を使う。

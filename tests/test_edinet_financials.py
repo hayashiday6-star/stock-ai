@@ -32,6 +32,7 @@ from stock_ai.ir.edinet_financials import (
     NON_CONSOLIDATED,
     AnnualFigures,
     FilingHeader,
+    element_name,
     fetch_annual_reports,
     fetch_document,
     is_consolidated,
@@ -820,3 +821,136 @@ def test_fetch_annual_reports_says_when_the_window_is_too_narrow() -> None:
     )
     with pytest.raises(DataError, match="直近 7 日"):
         fetch_annual_reports("6501", source=source)
+
+
+# --- 日本基準の会社（8306 三菱UFJ） ---------------------------------------
+#
+# ここから下の固定値は、8306 に対して tools/edinet_financials_check.py を実際に
+# 走らせた出力（docID S100YJQO, 2026年3月期）から取った。フィクスチャは有報全体
+# ではなく、その出力に現れた23要素の四期前ぶんを、実物と同じ形式で組み直したもの。
+# 要素名・連結単体の別・項目名・値はすべて実データ。
+
+JGAAP_FIXTURE = pathlib.Path(__file__).parent / "fixtures" / "edinet_8306_summary.tsv"
+
+
+@pytest.fixture(scope="module")
+def jgaap_rows() -> list[dict[str, str]]:
+    return read_csv_zip(make_zip(JGAAP_FIXTURE.read_bytes()))
+
+
+@pytest.fixture(scope="module")
+def jgaap(jgaap_rows: list[dict[str, str]]) -> AnnualFigures:
+    (only,) = parse_summary(jgaap_rows)
+    return only
+
+
+def test_a_japanese_gaap_filer_is_recognised(jgaap_rows: list[dict[str, str]]) -> None:
+    """IFRS 名の要素が1つも無い有報。会計基準は jpdei が言う。"""
+    header = parse_header(jgaap_rows)
+    assert header.accounting_standard == "Japan GAAP"
+    assert header.symbol == "8306"
+    assert not any("IFRS" in element_name(r) for r in jgaap_rows)
+
+
+def test_the_bank_reports_revenue_as_ordinary_income(jgaap: AnnualFigures) -> None:
+    """銀行に売上高は無い。最上段は経常収益。
+
+    一般事業会社は売上高、証券・不動産などは営業収益、銀行・保険は経常収益。
+    どれも無い会社だと revenue が空になり、成長率の画面から丸ごと消える。
+    """
+    assert jgaap.revenue == 6_075_887_000_000.0
+
+
+def test_ordinary_income_is_not_confused_with_ordinary_profit(
+    jgaap_rows: list[dict[str, str]], jgaap: AnnualFigures
+) -> None:
+    """経常収益と経常利益は、要素名が1語違うだけで同じ表に並んでいる。
+
+    部分一致で探すと取り違える。60,758億 と 15,376億 で4倍違う。
+    """
+    names = {element_name(r) for r in jgaap_rows}
+    assert {
+        "OrdinaryIncomeSummaryOfBusinessResults",
+        "OrdinaryIncomeLossSummaryOfBusinessResults",
+    } <= names
+    assert jgaap.revenue == 6_075_887_000_000.0  # 経常収益
+    assert jgaap.revenue != 1_537_649_000_000.0  # 経常利益
+
+
+def test_japanese_gaap_consolidated_net_income_has_its_own_element(jgaap: AnnualFigures) -> None:
+    """日本基準の連結は ProfitLossAttributableToOwnersOfParent…。
+
+    NetIncomeLoss… は提出会社単体の欄で、11,308億 対 5,718億 と2倍違う。日立
+    （IFRS）では単体側にしか無かった要素なので、日本基準の有報を1本読むまで
+    この名前は分からなかった。
+    """
+    assert jgaap.net_income == 1_130_840_000_000.0
+    assert jgaap.net_income != 571_859_000_000.0
+
+
+def test_the_reported_roe_agrees_with_the_consolidated_net_income(jgaap: AnnualFigures) -> None:
+    """どちらの純利益を取ったかは、有報が報告している ROE で裏が取れる。
+
+    連結 11,308億 ÷ 自己資本 179,882億 = 6.3%。報告値は 6.7%（期中平均を使うので
+    少し高い）。単体 5,718億 なら 3.2% で、報告値の半分にしかならない。
+    """
+    assert jgaap.roe == pytest.approx(0.0668)
+    assert jgaap.net_income / jgaap.equity == pytest.approx(0.063, abs=0.005)
+    assert 571_859_000_000.0 / jgaap.equity == pytest.approx(0.032, abs=0.005)
+
+
+def test_the_same_element_names_carry_both_bases(jgaap_rows: list[dict[str, str]]) -> None:
+    """日本基準では連結と単体が同じ要素名を使う。分かれるのはコンテキストだけ。
+
+    日立（IFRS）では連結に IFRS が付くので名前で分かれて見えたが、それは IFRS
+    適用会社に限った話だった、という予想がそのまま出ている。
+    """
+    rows = summary_rows(jgaap_rows)
+    assert not any("IFRS" in element_name(r) for r in rows)
+    bases = {element_name(r): is_consolidated(r) for r in rows}
+    assert bases["ProfitLossAttributableToOwnersOfParentSummaryOfBusinessResults"] is True
+    assert bases["NetIncomeLossSummaryOfBusinessResults"] is False
+
+
+def test_the_remaining_figures_come_through(jgaap: AnnualFigures) -> None:
+    """自己資本・総資産・株式数。連結で絞った後も残る。"""
+    assert jgaap.equity == 17_988_245_000_000.0
+    assert jgaap.total_assets == 373_731_910_000_000.0
+    assert jgaap.shares_outstanding == 13_281_995_120.0
+
+
+# --- 年度はラベルが決める（並び順ではない） ------------------------------
+
+
+def test_the_fiscal_year_comes_from_the_label_not_the_position(
+    jgaap_rows: list[dict[str, str]],
+) -> None:
+    """1期しか無い有報でも、四期前は四期前の年に着く。
+
+    並び順から数えていた頃は、これが当期（2026年度）になっていた。値が1つも
+    取れない期は落としてあるので、途中に穴が空くとその前が全部1年ずれる。
+    例外は出ない。
+    """
+    (report,) = to_reports(parse_header(jgaap_rows), parse_summary(jgaap_rows))
+    assert report.fiscal_year == 2022
+
+
+def test_a_gap_in_the_middle_does_not_shift_the_older_years() -> None:
+    """前期だけ空でも、前々期は前々期の年に留まる。"""
+    header = FilingHeader(symbol="9999", fiscal_year_end=dt.date(2026, 3, 31))
+    figures = [
+        AnnualFigures(year="前々期", revenue=1.0),
+        AnnualFigures(year="当期", revenue=3.0),
+    ]
+    assert [r.fiscal_year for r in to_reports(header, figures)] == [2024, 2026]
+
+
+def test_an_unknown_relative_year_is_dropped_with_a_warning(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """知らないラベルに年を当てるくらいなら落とす。"""
+    header = FilingHeader(symbol="9999", fiscal_year_end=dt.date(2026, 3, 31))
+    with caplog.at_level(logging.WARNING):
+        reports = to_reports(header, [AnnualFigures(year="五期前", revenue=1.0)])
+    assert reports == []
+    assert "五期前" in caplog.text

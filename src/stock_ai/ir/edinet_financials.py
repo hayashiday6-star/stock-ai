@@ -118,12 +118,23 @@ _BLANKS = frozenset(("", "-", "－", "―"))
 #: 使われている確証はまだない。``tools/edinet_financials_check.py`` が、実際の有報に
 #: 出てくる要素とここを突き合わせて穴を出す。
 ELEMENTS: dict[str, tuple[str, ...]] = {
+    # 最上段の収益。業種で名前が変わる。一般事業会社は売上高、証券・不動産などは
+    # 営業収益、銀行・保険は経常収益。1社の中で年をまたいで名前が変わることはない
+    # ので、成長率は正しく出る。業種をまたいだ「売上の絶対額」の比較は元から
+    # 意味を持たない。
     "revenue": (
         "RevenueIFRSSummaryOfBusinessResults",
         "NetSalesSummaryOfBusinessResults",
+        "OperatingRevenue1SummaryOfBusinessResults",
+        "OrdinaryIncomeSummaryOfBusinessResults",
     ),
+    # 日本基準の連結は ProfitLossAttributableToOwnersOfParent…（親会社株主に帰属
+    # する当期純利益）。NetIncomeLoss… は提出会社単体の欄で、三菱UFJでは
+    # 11,308億 対 5,718億 と2倍違う。連結で絞る実装なら後者は届かないが、連結
+    # 財務諸表を作っていない会社のために残してある。
     "net_income": (
         "ProfitLossAttributableToOwnersOfParentIFRSSummaryOfBusinessResults",
+        "ProfitLossAttributableToOwnersOfParentSummaryOfBusinessResults",
         "NetIncomeLossSummaryOfBusinessResults",
     ),
     "equity": (
@@ -253,6 +264,15 @@ def read_csv_zip(body: bytes) -> list[dict[str, str]]:
     return list(csv.DictReader(io.StringIO(text), delimiter="\t"))
 
 
+def element_name(row: dict[str, str]) -> str:
+    """名前空間の接頭辞を落とした要素名。
+
+    ``jpcrp_cor:`` のこともあれば ``jpcrp030000-asr_E01737-000:`` のような会社
+    独自の接頭辞のこともある。名前で選ぶ以上、比べるのはこの部分。
+    """
+    return row.get(ELEMENT, "").split(":")[-1]
+
+
 def is_consolidated(row: dict[str, str]) -> bool:
     """その行が連結の数字か。単体なら ``False``。
 
@@ -283,12 +303,18 @@ def consolidated_rows(rows: list[dict[str, str]]) -> list[dict[str, str]]:
 def _pick(rows: list[dict[str, str]], names: tuple[str, ...], year: str) -> float | None:
     """``names`` を優先順に探し、``year`` の値を返す。
 
-    連結で絞った後の第二の防御線。IFRS 適用会社の表には日本基準名の要素も残る
-    ことがあるので、順序で IFRS を先に見る。
+    連結で絞った後の第二の防御線。会計基準や業種によって使う要素が違うので、
+    順序で優先を付ける。
+
+    比べるのは名前空間を落とした**完全一致**。部分一致にすると
+    ``OrdinaryIncomeSummaryOfBusinessResults``（経常収益）を探して
+    ``OrdinaryIncomeLossSummaryOfBusinessResults``（経常利益）を掴む類の事故が
+    起きる。三菱UFJではその2つが同じ表に並んでいて、60,758億 と 15,376億 で
+    4倍違う。
     """
     for name in names:
         for row in rows:
-            if not row.get(ELEMENT, "").endswith(name):
+            if element_name(row) != name:
                 continue
             if row.get(RELATIVE_YEAR) != year:
                 continue
@@ -335,8 +361,12 @@ def to_reports(
     おかないと同じ決算期が2行に分かれる（``(security, fiscal_year, period)`` が
     一意キー）。3月期なら 2026-03-31 は 2026 年度。
 
-    そこから1期につき1年ずつ遡る。決算期を変更した会社ではずれるが、有報の表は
-    相対年度しか持たないので、これ以上のことは1本の有報からは分からない。
+    そこから1期につき1年ずつ遡る。遡る幅は**相対年度のラベル**が決める。並び順
+    から数えてはいけない――値が1つも取れない期は落としてあるので、途中に穴が
+    空いた有報では、その前の期が全部1年ずれる。例外は出ない。
+
+    決算期を変更した会社ではずれるが、有報の表は相対年度しか持たないので、これ
+    以上のことは1本の有報からは分からない。
 
     Args:
         header: ``parse_header`` の結果。決算日が無ければ何も返せない。
@@ -353,8 +383,15 @@ def to_reports(
         raise DataError(f"{code}: 有報から決算日を読めず、相対年度を年度に直せません。")
 
     latest = header.fiscal_year_end.year
+    # ラベル -> 当期から何年遡るか。当期が 0、四期前が 4。
+    offsets = {duration: len(YEAR_LABELS) - 1 - n for n, (duration, _) in enumerate(YEAR_LABELS)}
+
     reports = []
-    for offset, entry in enumerate(reversed(figures)):
+    for entry in figures:
+        offset = offsets.get(entry.year)
+        if offset is None:
+            logger.warning("知らない相対年度です。飛ばします: %r", entry.year)
+            continue
         reports.append(
             FinancialReport(
                 symbol=code,
@@ -366,7 +403,6 @@ def to_reports(
                 shares_outstanding=entry.shares_outstanding,
             )
         )
-    reports.reverse()
     return reports
 
 
