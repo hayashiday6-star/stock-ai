@@ -43,6 +43,23 @@ class Settings(BaseSettings):
     jquants_api_key: SecretStr | None = Field(default=None, validation_alias="JQUANTS_API_KEY")
     edinet_api_key: SecretStr | None = Field(default=None, validation_alias="EDINET_API_KEY")
 
+    # 立花証券・ｅ支店・ＡＰＩ。認証ＩＤは秘密だが、秘密鍵のパスと版は秘密ではない。
+    # 版を固定値で持たないのは、旧版が後継の並行リリースから約60日で停止するため
+    # (docs/TACHIBANA.md)。空にしておけば、その日の既定が使われる。
+    tachibana_auth_id: SecretStr | None = Field(default=None, validation_alias="TACHIBANA_AUTH_ID")
+    tachibana_private_key: str = Field(
+        default="tachibana_private.pem", validation_alias="TACHIBANA_PRIVATE_KEY"
+    )
+    tachibana_api_version: str | None = Field(
+        default=None, validation_alias="TACHIBANA_API_VERSION"
+    )
+    tachibana_base_url: str | None = Field(default=None, validation_alias="TACHIBANA_BASE_URL")
+    tachibana_session_file: str = Field(
+        default="tachibana_session.json", validation_alias="TACHIBANA_SESSION_FILE"
+    )
+    # 日本株の株価をどこから取るか。J-Quants の有料プランをやめるなら 'tachibana'。
+    jp_price_source: str = Field(default="jquants", validation_alias="JP_PRICE_SOURCE")
+
     # --- AI providers (Phase 6) ---
     #: Which provider the commands use when none is named on the command line.
     #: It defaults to ``dummy`` so a fresh checkout runs without an API key,

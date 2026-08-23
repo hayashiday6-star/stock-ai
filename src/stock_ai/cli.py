@@ -69,6 +69,7 @@ from stock_ai.data.jquants_profile import JQuantsProfileProvider
 from stock_ai.data.jquants_provider import JQuantsPriceProvider
 from stock_ai.data.markets import split_by_market, to_yahoo_symbol
 from stock_ai.data.service import FundamentalsService, IngestionService, IngestResult
+from stock_ai.data.tachibana import TachibanaPriceProvider
 from stock_ai.data.types import Importance
 from stock_ai.data.universe import JQuantsUniverse, Segment
 from stock_ai.data.yfinance_provider import (
@@ -200,7 +201,9 @@ def fetch(
     start: str | None = typer.Option(None, help="ISO start date YYYY-MM-DD."),
     end: str | None = typer.Option(None, help="ISO end date; defaults to today."),
     lookback: int = typer.Option(365, help="Backfill days when a symbol has no data."),
-    source: str = typer.Option("yfinance", help="Data source: yfinance (US) | jquants (JP)."),
+    source: str = typer.Option(
+        "yfinance", help="Data source: yfinance (US) | jquants, tachibana (JP)."
+    ),
     symbols_file: Path | None = typer.Option(
         None, "--symbols-file", help="Text file of symbols, one per line (# comments allowed)."
     ),
@@ -225,7 +228,7 @@ def fetch(
     # is stored under ヒューリック's name. Nothing about that looks wrong later.
     results = []
     for market_code, group in split_by_market(targets).items():
-        resolved = "jquants" if market_code == "JP" else "yfinance"
+        resolved = _source_for_market(market_code, source, settings)
         if resolved != source.lower():
             console.print(
                 f"[yellow]{', '.join(group)} are {market_code} listings; "
@@ -321,6 +324,12 @@ def _resolve_symbols(symbols: list[str] | None, symbols_file: Path | None) -> li
     return [sym for sym in combined if not (sym in seen or seen.add(sym))]
 
 
+#: Sources that can price a Japanese listing. yfinance can too, via ``.T``, but
+#: it is not offered here: it has no listing endpoint to enumerate the market
+#: from, so it cannot serve ``bulk-fetch``.
+JP_SOURCES = ("jquants", "tachibana")
+
+
 def _price_source(source: str, settings: Settings) -> tuple[PriceProvider, str]:
     """Return the price provider and market code for a data source name."""
     key = source.lower()
@@ -328,7 +337,36 @@ def _price_source(source: str, settings: Settings) -> tuple[PriceProvider, str]:
         return YFinancePriceProvider(), "US"
     if key == "jquants":
         return JQuantsPriceProvider(api_key=settings.jquants_api_key), "JP"
-    raise typer.BadParameter(f"Unknown source {source!r}; use 'yfinance' or 'jquants'.")
+    if key == "tachibana":
+        return (
+            TachibanaPriceProvider(
+                settings.tachibana_auth_id,
+                settings.tachibana_private_key,
+                version=settings.tachibana_api_version,
+                base=settings.tachibana_base_url,
+                session_file=settings.tachibana_session_file,
+            ),
+            "JP",
+        )
+    raise typer.BadParameter(
+        f"Unknown source {source!r}; use 'yfinance', 'jquants' or 'tachibana'."
+    )
+
+
+def _source_for_market(market_code: str, requested: str, settings: Settings) -> str:
+    """Which source actually serves ``market_code``.
+
+    A ticker decides its market, and the market decides the source - but for
+    Japan there is now a choice between J-Quants and Tachibana. An explicit
+    ``--source`` naming one of them wins; otherwise ``JP_PRICE_SOURCE`` does.
+    That way switching the whole system over is one line in ``.env``, and a
+    single run can still be pointed elsewhere without changing the setting.
+    """
+    if market_code != "JP":
+        return "yfinance"
+    if requested.lower() in JP_SOURCES:
+        return requested.lower()
+    return settings.jp_price_source.lower()
 
 
 @app.command()

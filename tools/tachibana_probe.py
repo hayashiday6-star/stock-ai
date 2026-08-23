@@ -35,9 +35,16 @@ import hashlib
 import json
 import os
 import pathlib
-import re
 import sys
 from typing import Any
+
+from stock_ai.data.tachibana import (
+    Session,
+    base_url,
+    decrypt_url,
+    default_version,
+    version_warning,
+)
 
 #: ログイン応答のうち、診断に必要でかつ口座の中身を明かさない項目だけ。
 _SAFE_LOGIN_FIELDS = (
@@ -52,63 +59,6 @@ _SAFE_LOGIN_FIELDS = (
 #: 仮想ＵＲＬの項目名。値は復号の前も後も秘密。
 _URL_FIELDS = ("sUrlRequest", "sUrlMaster", "sUrlPrice", "sUrlEvent", "sUrlEventWebSocket")
 
-#: 本番と検証のホスト。版はパスの Prefix (``e_api_vNrN``) で切り替わる。
-_HOSTS = {
-    "production": "https://kabuka.e-shiten.jp",
-    "demo": "https://demo-kabuka.e-shiten.jp",
-}
-
-#: 版ごとの (公開日, 廃止日)。廃止日は「その日から停止」の意味。
-#:
-#: 版は固定値として埋めない。旧版は後継版の並行リリースからおよそ60日で
-#: 停止する運びで、実際 v4r9 は 2026-09-27 に止まる。埋め込んでしまうと、
-#: その日から「原因不明の通信エラー」として現れることになる。
-_VERSIONS: dict[str, tuple[dt.date, dt.date | None]] = {
-    "v4r9": (dt.date(2026, 5, 16), dt.date(2026, 9, 27)),
-    "v4r10": (dt.date(2026, 8, 29), None),
-}
-
-#: いま既定にする版。v4r10 の公開日を過ぎたら、そちらへ切り替える。
-_DEFAULT_VERSION = "v4r9"
-
-
-def default_version(today: dt.date | None = None) -> str:
-    """その日に使うべき版を返す。
-
-    v4r10 は 2026-08-29 公開、v4r9 は 2026-09-27 停止。公開日を過ぎたら
-    新しい版を既定にする。並行リリース期間があるので、切り替えても
-    v4r9 が使えなくなるわけではない。
-    """
-    now = today or dt.date.today()
-    released = [name for name, (start, _end) in _VERSIONS.items() if start <= now]
-    if not released:
-        return _DEFAULT_VERSION
-    # 数字の大きい方が新しい。"v4r10" > "v4r9" は文字列比較では偽になる。
-    return max(released, key=lambda name: [int(n) for n in re.findall(r"\d+", name)])
-
-
-def base_url(version: str, *, demo: bool = False) -> str:
-    """版とホストから専用ＵＲＬを組み立てる。"""
-    return f"{_HOSTS['demo' if demo else 'production']}/e_api_{version}"
-
-
-def version_warning(version: str, today: dt.date | None = None) -> str | None:
-    """使っている版が期限に近い、または新しい版が出ていれば知らせる。"""
-    now = today or dt.date.today()
-    known = _VERSIONS.get(version)
-    if known is None:
-        return f"{version} は把握していない版です。停止予定日を確認してください。"
-    _start, end = known
-    newest = default_version(now)
-    if end is not None and now >= end:
-        return f"{version} は {end} に停止済みです。{newest} へ移行してください。"
-    if end is not None:
-        left = (end - now).days
-        if newest != version:
-            return f"{version} は {end} に停止します（あと {left} 日）。{newest} が公開済みです。"
-        return f"{version} は {end} に停止します（あと {left} 日）。"
-    return None
-
 
 def _fingerprint(value: str) -> str:
     """秘密そのものではなく、同一性だけを比べられる短い指紋を返す。"""
@@ -116,11 +66,7 @@ def _fingerprint(value: str) -> str:
 
 
 def _sd_date() -> str:
-    """``p_sd_date``（``yyyy.mm.dd-hh:mn:ss.ttt``）を返す。
-
-    公式サンプルはミリ秒を ``.000`` 固定で送っている。実時刻を入れて弾かれる
-    余地を残す理由がないので、ここでも合わせる。
-    """
+    """``p_sd_date``。ミリ秒は公式サンプルに合わせて ``.000`` 固定。"""
     return f"{dt.datetime.now():%Y.%m.%d-%H:%M:%S}.000"
 
 
@@ -138,8 +84,6 @@ def write_public_formats(private_path: pathlib.Path, out: pathlib.Path) -> None:
 
     ファイルは CRLF で書く。古いメモ帳は LF だけの行を折り返さない。
     """
-    import base64
-
     from cryptography.hazmat.primitives import serialization
 
     key = serialization.load_pem_private_key(private_path.read_bytes(), password=None)
@@ -225,79 +169,6 @@ def keygen(private_path: pathlib.Path, public_path: pathlib.Path, bits: int = 20
     print("  このファイルを開いて、中の値をコピーしてください。")
 
 
-def decrypt_url(blob: str, private_path: pathlib.Path) -> str:
-    r"""暗号化された仮想ＵＲＬを復号する。
-
-    方式は公式サンプルどおり RSA-OAEP（MGF1-SHA256 / SHA256）。平文には改行が
-    付いてくるので落とす。ここを ``strip()`` し忘れると、以降の要求URLの末尾に
-    ``\\r\\n`` が残り、原因の見えない失敗になる。
-    """
-    from cryptography.hazmat.primitives import hashes, serialization
-    from cryptography.hazmat.primitives.asymmetric import padding
-
-    key = serialization.load_pem_private_key(private_path.read_bytes(), password=None)
-    plain = key.decrypt(
-        base64.b64decode(blob),
-        padding.OAEP(mgf=padding.MGF1(hashes.SHA256()), algorithm=hashes.SHA256(), label=None),
-    )
-    return plain.decode("ascii").strip()
-
-
-class Session:
-    """仮想ＵＲＬと ``p_no`` を当日中だけ持ち越す。公式サンプルの挙動に合わせる。
-
-    サンプルは ``YYYYMMDD_e_api_sample.txt`` に両方を書き、ファイルがある限り
-    ログインし直さない。これは省力化ではなく仕様の要求である。
-
-    - **仮想ＵＲＬは当日限り。** ログインのたびに発行されるので、要求のたびに
-      ログインする作りにはしない。
-    - **``p_no`` はプロセスをまたいで続く通番。** 毎回 1 から振り直すと、同じ日に
-      2回目を走らせた時点で番号が重なる。サンプルが採番のたびに保存しているのは
-      そのため。
-
-    **このファイルは資格情報である。** 復号済みの仮想ＵＲＬがそのまま入っており、
-    持っている者はその日の口座機能を叩ける。``.gitignore`` 済みで、POSIX では
-    0600 を立てる。中身は表示しない。
-    """
-
-    def __init__(self, path: pathlib.Path) -> None:
-        """保存先を決める。読み込みは :meth:`load` で行う。"""
-        self.path = path
-        self.p_no = 0
-        self.urls: dict[str, str] = {}
-
-    def load(self) -> bool:
-        """当日分があれば読み込む。使えるものが無ければ ``False``。"""
-        try:
-            saved = json.loads(self.path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            return False
-        if saved.get("date") != f"{dt.date.today():%Y%m%d}":
-            return False  # 日付が変われば仮想ＵＲＬは失効している
-        urls = saved.get("urls") or {}
-        if not urls.get("sUrlPrice"):
-            return False
-        self.p_no = int(saved.get("p_no", 0))
-        self.urls = urls
-        return True
-
-    def save(self) -> None:
-        """現在の ``p_no`` と仮想ＵＲＬを書き出す。"""
-        self.path.write_text(
-            json.dumps(
-                {"date": f"{dt.date.today():%Y%m%d}", "p_no": self.p_no, "urls": self.urls},
-                ensure_ascii=False,
-            ),
-            encoding="utf-8",
-        )
-        if os.name == "posix":
-            self.path.chmod(0o600)
-
-    def discard(self) -> None:
-        """保存済みセッションを捨てる。次回はログインからやり直す。"""
-        self.path.unlink(missing_ok=True)
-
-
 class Client:
     """ｅ支店・ＡＰＩへの1セッション。要求の組み立てを公式サンプルに合わせる。"""
 
@@ -347,16 +218,23 @@ class Client:
         """1要求を投げ、(応答, 生テキスト) を返す。
 
         Raises:
-            RuntimeError: HTTP が 200 以外、または本文が JSON として読めない。
+            RuntimeError: 接続できない、HTTP が 200 以外、本文が JSON として読めない。
         """
         payload = self._payload(fields)
-        if self.use_post:
-            response = self._client.post(
-                url, content=payload.encode("utf-8"), headers={"Content-Type": "application/json"}
-            )
-        else:
-            # GET では ``?`` の後ろに生の JSON を置く。percent-encode しない。
-            response = self._client.get(f"{url}?{payload}")
+        try:
+            if self.use_post:
+                response = self._client.post(
+                    url,
+                    content=payload.encode("utf-8"),
+                    headers={"Content-Type": "application/json"},
+                )
+            else:
+                # GET では ``?`` の後ろに生の JSON を置く。percent-encode しない。
+                response = self._client.get(f"{url}?{payload}")
+        except Exception as exc:  # noqa: BLE001 - 到達性そのものを観測している
+            # 生の traceback は、このプローブの目的（何が起きたかを報告する）に
+            # 反する。接続できなかったこと自体が観測結果なので、そう伝える。
+            raise RuntimeError(f"接続できません: {type(exc).__name__}: {exc}") from None
 
         if response.is_redirect:
             location = response.headers.get("location", "(なし)")
@@ -418,7 +296,7 @@ def _login(client: Client, auth_id: str, private_path: pathlib.Path) -> str | No
             print(f"  {field}: （空）")
             continue
         try:
-            plain = decrypt_url(blob, private_path)
+            plain = decrypt_url(blob, private_path.read_bytes())
         except Exception as exc:  # noqa: BLE001 - 原因を観測して報告したい
             print(f"  {field}: 復号できません — {type(exc).__name__}: {exc}")
             continue
