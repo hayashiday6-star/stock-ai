@@ -1,7 +1,15 @@
-"""yfinance-backed :class:`~stock_ai.data.base.PriceProvider` (US equities).
+"""yfinance-backed providers for prices, fundamentals and profiles.
 
 The network call is isolated behind an injectable ``downloader`` callable so the
 provider can be unit-tested without touching the network.
+
+Every symbol is translated by :func:`~stock_ai.data.markets.to_yahoo_symbol`
+before it is sent. Yahoo needs the ``.T`` suffix to mean a Tokyo listing, and a
+bare four-digit code is **not** an unknown ticker to it - Tadawul lists in the
+same range, so ``3003`` answers for City Cement rather than failing. That is the
+expensive shape of this mistake: it returns a full, plausible series for the
+wrong company. The news source was already bitten by it; these three were the
+same bug waiting for the first Japanese symbol to reach them.
 """
 
 from __future__ import annotations
@@ -18,12 +26,23 @@ import pandas as pd
 
 from stock_ai.core.exceptions import DataError, NoDataError
 from stock_ai.core.logging import get_logger, redact
+from stock_ai.data.markets import market_for_symbol, to_yahoo_symbol
 from stock_ai.data.sanity import plausible_dividend_yield
 from stock_ai.data.schema import normalize_ohlcv
 from stock_ai.data.sectors import from_yfinance
 from stock_ai.data.types import Fundamentals, SecurityProfile
 
 logger = get_logger(__name__)
+
+
+def _named(symbol: str, queried: str) -> str:
+    """Describe a symbol, naming the Yahoo ticker too when it differs.
+
+    A failure for ``7203`` and a failure for ``7203.T`` are different
+    failures, and only the second one is a statement about Toyota.
+    """
+    return repr(symbol) if queried == symbol else f"{symbol!r} (as {queried!r})"
+
 
 # A downloader takes (symbol, start, end) and returns a raw yfinance frame.
 Downloader = Callable[[str, date, date], pd.DataFrame]
@@ -89,7 +108,7 @@ def _default_download(symbol: str, start: date, end: date) -> pd.DataFrame:
 
 
 class YFinancePriceProvider:
-    """Fetch US equity OHLCV bars via yfinance."""
+    """Fetch OHLCV bars via yfinance, for either market."""
 
     def __init__(self, downloader: Downloader | None = None) -> None:
         """Create the provider.
@@ -105,15 +124,18 @@ class YFinancePriceProvider:
         if start > end:
             raise DataError(f"start ({start}) must not be after end ({end}).")
 
-        logger.debug("Fetching prices for %s: %s..%s", symbol, start, end)
-        raw = self._download(symbol, start, end)
+        queried = to_yahoo_symbol(symbol)
+        logger.debug("Fetching prices for %s: %s..%s", _named(symbol, queried), start, end)
+        raw = self._download(queried, start, end)
         if raw is None or raw.empty:
             # Empty is the normal answer outside trading hours; the caller
             # decides whether that is a fault for this symbol.
-            raise NoDataError(f"No price data returned for {symbol!r} in {start}..{end}.")
+            raise NoDataError(
+                f"No price data returned for {_named(symbol, queried)} in {start}..{end}."
+            )
 
         prices = normalize_ohlcv(raw)
-        logger.info("Fetched %d bars for %s", len(prices), symbol)
+        logger.info("Fetched %d bars for %s", len(prices), _named(symbol, queried))
         return prices
 
 
@@ -176,9 +198,10 @@ class YFinanceFundamentalsProvider:
 
     def fetch_fundamentals(self, symbol: str) -> Fundamentals:
         """Fetch and normalize fundamentals for ``symbol``."""
-        info = self._info(symbol)
+        queried = to_yahoo_symbol(symbol)
+        info = self._info(queried)
         if not info:
-            raise DataError(f"No fundamentals returned for {symbol!r}.")
+            raise DataError(f"No fundamentals returned for {_named(symbol, queried)}.")
 
         return Fundamentals(
             symbol=symbol,
@@ -208,13 +231,17 @@ class YFinanceProfileProvider:
 
     def fetch_profile(self, symbol: str) -> SecurityProfile:
         """Fetch and normalize the profile for ``symbol``."""
-        info = self._info(symbol)
+        queried = to_yahoo_symbol(symbol)
+        info = self._info(queried)
         if not info:
-            raise DataError(f"No profile returned for {symbol!r}.")
+            raise DataError(f"No profile returned for {_named(symbol, queried)}.")
 
         return SecurityProfile(
             symbol=symbol,
-            market="US",
+            # Decided from the ticker, not assumed. Hardcoding "US" here filed
+            # every Japanese profile under the wrong market, and market is what
+            # the cross-market ranking splits on.
+            market=market_for_symbol(symbol),
             name=info.get("longName") or info.get("shortName"),
             sector=str(from_yfinance(info.get("sector"))),
             industry=info.get("industry"),

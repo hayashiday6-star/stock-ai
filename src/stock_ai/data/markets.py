@@ -1,9 +1,15 @@
 """Which market a ticker belongs to, decided from the ticker itself.
 
-A price source serves one market. yfinance cannot price ``7203`` and J-Quants
-cannot price ``AAPL``, so any command that takes a free-form symbol list has to
-split it before choosing a provider - otherwise a single ``--source`` flag is
-silently applied to symbols it cannot serve.
+A price source serves one market. J-Quants cannot price ``AAPL``, and Yahoo
+needs ``7203`` spelled ``7203.T``, so any command that takes a free-form symbol
+list has to split it before choosing a provider - otherwise a single
+``--source`` flag is silently applied to symbols it cannot serve.
+
+The two halves of that are different problems and have different fixes.
+:func:`split_by_market` routes a symbol to a provider that can answer for it.
+:func:`to_yahoo_symbol` makes Yahoo's answer be about the right company, which
+is the sharper of the two: a bare ``3003`` is not rejected by Yahoo, it is
+answered by a Saudi cement maker listed under the same number.
 
 That has already happened once in this project: ``bulk-fetch --segment stored``
 sent US tickers to J-Quants because it did not distinguish markets. The failure

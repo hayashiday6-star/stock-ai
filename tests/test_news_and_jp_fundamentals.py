@@ -194,3 +194,84 @@ def test_yahoo_symbol_leaves_anything_it_cannot_place_alone() -> None:
     assert to_yahoo_symbol("3003.JP") == "3003.T"
     assert to_yahoo_symbol("BRK.B") == "BRK.B"
     assert to_yahoo_symbol("AAPL") == "AAPL"
+
+
+def test_price_provider_asks_yahoo_for_the_tokyo_listing() -> None:
+    """A bare four-digit code must not be sent to Yahoo as-is.
+
+    Tadawul lists in the same range, so ``3003`` is answered - by City Cement.
+    The provider would then return a complete, plausible price series for a
+    Saudi cement maker under a Japanese symbol, and nothing downstream could
+    tell. The news source was fixed for this; the price path was not.
+    """
+    import pandas as pd
+
+    from stock_ai.data.yfinance_provider import YFinancePriceProvider
+
+    asked: list[str] = []
+
+    def downloader(symbol: str, start: dt.date, end: dt.date) -> pd.DataFrame:
+        asked.append(symbol)
+        return pd.DataFrame(
+            {
+                "Open": [1.0],
+                "High": [1.0],
+                "Low": [1.0],
+                "Close": [1.0],
+                "Adj Close": [1.0],
+                "Volume": [1],
+            },
+            index=pd.DatetimeIndex([pd.Timestamp("2024-06-28")], name="Date"),
+        )
+
+    provider = YFinancePriceProvider(downloader=downloader)
+    for symbol in ("3003", "7203.T", "AAPL"):
+        provider.fetch_prices(symbol, dt.date(2024, 6, 1), _TODAY)
+
+    assert asked == ["3003.T", "7203.T", "AAPL"]
+
+
+def test_fundamentals_provider_asks_yahoo_for_the_tokyo_listing() -> None:
+    """Same translation, and the snapshot keeps the caller's own symbol."""
+    from stock_ai.data.yfinance_provider import YFinanceFundamentalsProvider
+
+    asked: list[str] = []
+
+    def info(symbol: str) -> dict[str, Any]:
+        asked.append(symbol)
+        return {"trailingPE": 10.0}
+
+    provider = YFinanceFundamentalsProvider(info_fetcher=info, clock=lambda: _TODAY)
+    snapshot = provider.fetch_fundamentals("3003")
+
+    assert asked == ["3003.T"]
+    # Stored under the symbol the rest of the system uses, not Yahoo's spelling.
+    assert snapshot.symbol == "3003"
+
+
+def test_profile_provider_reads_the_market_off_the_ticker() -> None:
+    """``market`` was hardcoded to US, which is what the ranking splits on."""
+    from stock_ai.data.yfinance_provider import YFinanceProfileProvider
+
+    asked: list[str] = []
+
+    def info(symbol: str) -> dict[str, Any]:
+        asked.append(symbol)
+        return {"longName": "Hulic Co., Ltd.", "sector": "Real Estate"}
+
+    profile = YFinanceProfileProvider(info_fetcher=info).fetch_profile("3003")
+
+    assert asked == ["3003.T"]
+    assert profile.market == "JP"
+    assert profile.symbol == "3003"
+
+
+def test_missing_data_error_names_the_ticker_actually_queried() -> None:
+    """Otherwise the message blames ``3003`` for a ``3003.T`` request."""
+    from stock_ai.data.yfinance_provider import YFinanceProfileProvider
+
+    provider = YFinanceProfileProvider(info_fetcher=lambda _symbol: {})
+    with pytest.raises(DataError) as excinfo:
+        provider.fetch_profile("3003")
+
+    assert "3003.T" in str(excinfo.value)
