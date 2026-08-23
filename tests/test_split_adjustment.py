@@ -29,9 +29,12 @@ def frame(rows: list[tuple[str, float, float, float, float, float]]) -> pd.DataF
     """(日付, 始値, 高値, 安値, 終値, 調整後終値) から OHLCV を作る。"""
     return pd.DataFrame(
         {
-            OPEN: [r[1] for r in rows], HIGH: [r[2] for r in rows],
-            LOW: [r[3] for r in rows], CLOSE: [r[4] for r in rows],
-            ADJ_CLOSE: [r[5] for r in rows], VOLUME: [100] * len(rows),
+            OPEN: [r[1] for r in rows],
+            HIGH: [r[2] for r in rows],
+            LOW: [r[3] for r in rows],
+            CLOSE: [r[4] for r in rows],
+            ADJ_CLOSE: [r[5] for r in rows],
+            VOLUME: [100] * len(rows),
         },
         index=pd.DatetimeIndex(pd.to_datetime([r[0] for r in rows]), name="date"),
     )
@@ -89,8 +92,10 @@ def test_the_input_frame_is_not_modified() -> None:
 def test_a_series_without_splits_is_untouched() -> None:
     """調整が要らない銘柄に副作用を出さない。"""
     plain = frame(
-        [("2024-01-04", 100.0, 105.0, 99.0, 102.0, 102.0),
-         ("2024-01-05", 102.0, 108.0, 101.0, 107.0, 107.0)]
+        [
+            ("2024-01-04", 100.0, 105.0, 99.0, 102.0, 102.0),
+            ("2024-01-05", 102.0, 108.0, 101.0, 107.0, 107.0),
+        ]
     )
     adjusted = split_adjusted(plain)
     for column in (OPEN, HIGH, LOW, CLOSE):
@@ -100,9 +105,11 @@ def test_a_series_without_splits_is_untouched() -> None:
 def test_a_zero_close_does_not_produce_infinities() -> None:
     """売買が成立しなかった行が混じっても、系列全体を壊さない。"""
     with_gap = frame(
-        [("2020-09-30", 3614.0, 3641.0, 3543.0, 3543.0, 708.6),
-         ("2020-10-01", 0.0, 0.0, 0.0, 0.0, 0.0),
-         ("2020-10-02", 3543.0, 3597.0, 3488.0, 3508.0, 701.6)]
+        [
+            ("2020-09-30", 3614.0, 3641.0, 3543.0, 3543.0, 708.6),
+            ("2020-10-01", 0.0, 0.0, 0.0, 0.0, 0.0),
+            ("2020-10-02", 3543.0, 3597.0, 3488.0, 3508.0, 701.6),
+        ]
     )
     adjusted = split_adjusted(with_gap)
 
