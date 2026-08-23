@@ -443,3 +443,70 @@ def test_the_version_lives_in_the_path() -> None:
     """ホスト名ではなくパスの Prefix にある。"""
     assert base_url("v4r10") == "https://kabuka.e-shiten.jp/e_api_v4r10"
     assert base_url("v4r10", demo=True) == "https://demo-kabuka.e-shiten.jp/e_api_v4r10"
+
+
+# --- 保存 ---------------------------------------------------------------------
+
+
+def test_a_full_25_year_series_can_actually_be_stored(tmp_path) -> None:
+    """1文にまとめると SQLite のバインド変数上限を超える。
+
+    6,278 行 × 8 列 = 50,224 個で、Windows の既定 32,766 を超えて実行が落ちた。
+    J-Quants の5年分（約 9,600 個）では届いていなかったため、25年分を初めて
+    保存した瞬間まで表面化しなかった。
+
+        OperationalError: too many SQL variables
+
+    上限はビルドによって 999 / 32,766 / 250,000 と異なる。開発環境が大きい値を
+    返すと、そこでは分割が起きず利用者の環境でだけ落ちる。だからこのテストは、
+    件数の多さそのものを通す。
+    """
+    import pandas as pd
+
+    from stock_ai.database.engine import Database
+    from stock_ai.database.repository import PriceRepository
+
+    database = Database(url=f"sqlite:///{tmp_path / 'big.db'}")
+    database.create_all()
+
+    days = pd.bdate_range("2001-01-04", periods=6278)
+    frame = pd.DataFrame(
+        {
+            "open": 1.0,
+            "high": 2.0,
+            "low": 0.5,
+            "close": 1.5,
+            "adj_close": 1.5,
+            "volume": 100,
+        },
+        index=pd.DatetimeIndex(days, name="date"),
+    )
+
+    with database.session() as session:
+        written = PriceRepository(session).upsert_prices("6501", frame, market="JP")
+    assert written == 6278
+
+    with database.session() as session:
+        stored = PriceRepository(session).get_prices("6501")
+    assert len(stored) == 6278
+
+    # 再実行しても増えない（upsert であること）。
+    with database.session() as session:
+        PriceRepository(session).upsert_prices("6501", frame, market="JP")
+    with database.session() as session:
+        assert len(PriceRepository(session).get_prices("6501")) == 6278
+
+
+def test_the_batch_size_stays_under_the_portable_limit() -> None:
+    """開発環境が大きい上限を返しても、分割の挙動は変わってはいけない。"""
+    from stock_ai.database.repository import chunked, max_bound_parameters
+
+    assert max_bound_parameters() <= 32766
+
+    columns = 8
+    batches = list(chunked([{"n": i} for i in range(6278)], columns))
+    assert sum(len(b) for b in batches) == 6278
+    assert max(len(b) for b in batches) * columns < 32766
+
+    assert list(chunked([], columns)) == []
+    assert [len(b) for b in chunked([{"n": 1}], columns)] == [1]

@@ -8,6 +8,7 @@ the latest stored date, which is what makes daily updates cheap and idempotent.
 from __future__ import annotations
 
 import datetime as dt
+import logging
 from dataclasses import dataclass
 
 from stock_ai.core.exceptions import NoDataError, StockAIError
@@ -19,6 +20,23 @@ from stock_ai.database.repository import FundamentalsRepository, PriceRepository
 logger = get_logger(__name__)
 
 _DEFAULT_LOOKBACK_DAYS = 365
+
+#: How much of a provider or database error to keep in a result row.
+#:
+#: A failed bulk upsert carries the entire statement in its message - tens of
+#: thousands of ``?`` placeholders plus every bound value. Printed in a results
+#: table it buries the one line that says what went wrong, and on a 1,500-symbol
+#: run it would do that once per symbol. The first sentence is the finding; the
+#: rest belongs in the log.
+_ERROR_SUMMARY_CHARS = 200
+
+
+def _summarize(error: Exception) -> str:
+    """Collapse an exception into one readable line."""
+    text = " ".join(str(error).split())
+    if len(text) <= _ERROR_SUMMARY_CHARS:
+        return text
+    return f"{text[:_ERROR_SUMMARY_CHARS]}… (全文はログを参照)"
 
 
 @dataclass(frozen=True)
@@ -108,11 +126,20 @@ class IngestionService:
                 logger.info("Ingested %d bars for %s", rows, symbol)
                 return IngestResult(symbol, rows, ok=True)
         except StockAIError as exc:
-            logger.warning("Ingest failed for %s: %s", symbol, exc)
-            return IngestResult(symbol, 0, ok=False, error=str(exc))
+            logger.warning("Ingest failed for %s: %s", symbol, _summarize(exc))
+            return IngestResult(symbol, 0, ok=False, error=_summarize(exc))
         except Exception as exc:  # provider/network errors must not abort a batch
-            logger.exception("Unexpected ingest error for %s", symbol)
-            return IngestResult(symbol, 0, ok=False, error=str(exc))
+            # The traceback is kept for DEBUG. At INFO it would print the whole
+            # failed statement, which is how one bad upsert filled a console.
+            logger.error(
+                "Unexpected ingest error for %s: %s: %s",
+                symbol,
+                type(exc).__name__,
+                _summarize(exc),
+                exc_info=logger.isEnabledFor(logging.DEBUG),
+            )
+            detail = f"{type(exc).__name__}: {_summarize(exc)}"
+            return IngestResult(symbol, 0, ok=False, error=detail)
 
     def ingest_many(
         self,

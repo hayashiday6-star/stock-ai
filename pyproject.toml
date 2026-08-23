@@ -110,6 +110,7 @@ extend-immutable-calls = ["typer.Argument", "typer.Option"]
 # Japanese docstrings end with "。", which D415 does not recognize as terminal.
 "src/stock_ai/dashboard/app.py" = ["D415"]
 "src/stock_ai/data/tachibana.py" = ["D415"]
+"src/stock_ai/database/repository.py" = ["D415"]
 "tools/*" = ["D415"]
 
 [tool.black]

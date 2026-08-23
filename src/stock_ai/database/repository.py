@@ -9,6 +9,9 @@ duplicating them.
 from __future__ import annotations
 
 import datetime as dt
+import functools
+from collections.abc import Iterator
+from typing import Any
 
 import pandas as pd
 from sqlalchemy import delete, func, select
@@ -155,6 +158,51 @@ def get_or_create_security(
     return security
 
 
+#: 環境が何を返しても、これ以上は1文に詰めない。
+#:
+#: SQLite の上限はビルドによって違う。3.32 より前は 999、以降の既定は 32,766、
+#: そして自前ビルドは 250,000 を返すこともある（この開発環境がそう）。実測値を
+#: そのまま使うと、開発機では分割が起きず利用者の環境でだけ落ちる――実際その形で
+#: 表面化した。立花の 6,278 行 × 8 列 = 50,224 個が Windows の 32,766 を超え、
+#: J-Quants の5年分（約 9,600 個）では届いていなかった。
+#:
+#: どこでも同じ経路を通すために、報告値と この上限の小さい方を採る。
+_PORTABLE_PARAMETER_CAP = 32766
+
+
+@functools.cache
+def max_bound_parameters() -> int:
+    """SQLite が1文で受け付けるバインド変数の数。決め打ちにしない。
+
+    ``with sqlite3.connect(...)`` は接続を閉じない。あれはトランザクションの
+    文脈管理であって、クローズではない。閉じ忘れると呼ぶたびに接続が漏れる
+    （テストが ResourceWarning を 467 件出して気付いた）。値はプロセス内で
+    変わらないので、ついでに一度だけ調べる。
+    """
+    import contextlib
+    import sqlite3
+
+    try:
+        with contextlib.closing(sqlite3.connect(":memory:")) as conn:
+            reported = int(conn.getlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER))
+    except (AttributeError, sqlite3.Error):  # pragma: no cover - 古い実装向けの保険
+        return 999
+    return min(reported, _PORTABLE_PARAMETER_CAP)
+
+
+def chunked(records: list[dict[str, Any]], columns_per_row: int) -> Iterator[list[dict[str, Any]]]:
+    """バインド変数の上限に収まる大きさに切って返す。
+
+    余白を持たせるのは、実行時に SQLAlchemy が変数を足すことがあるため。
+    """
+    if not records:
+        return
+    limit = int(max_bound_parameters() * 0.9)
+    size = max(1, limit // max(columns_per_row, 1))
+    for start in range(0, len(records), size):
+        yield records[start : start + size]
+
+
 class PriceRepository:
     """Persist and query :class:`PriceBar` rows keyed by symbol and date."""
 
@@ -192,12 +240,15 @@ class PriceRepository:
             for row in frame.to_dict("records")
         ]
 
-        stmt = sqlite_insert(PriceBar).values(records)
-        stmt = stmt.on_conflict_do_update(
-            index_elements=["security_id", "date"],
-            set_={col: getattr(stmt.excluded, col) for col in _UPSERT_COLUMNS},
-        )
-        self.session.execute(stmt)
+        # 1文にまとめない。SQLite にはバインド変数の上限があり、25年分の
+        # 日足はそれを超える。
+        for batch in chunked(records, len(_UPSERT_COLUMNS) + 2):
+            stmt = sqlite_insert(PriceBar).values(batch)
+            stmt = stmt.on_conflict_do_update(
+                index_elements=["security_id", "date"],
+                set_={col: getattr(stmt.excluded, col) for col in _UPSERT_COLUMNS},
+            )
+            self.session.execute(stmt)
         return len(records)
 
     def get_prices(
@@ -347,12 +398,15 @@ class FinancialStatementRepository:
             for report in by_period.values()
         ]
 
-        stmt = sqlite_insert(FinancialStatement).values(records)
-        stmt = stmt.on_conflict_do_update(
-            index_elements=["security_id", "fiscal_year", "period"],
-            set_={col: getattr(stmt.excluded, col) for col in _STATEMENT_COLUMNS},
-        )
-        self.session.execute(stmt)
+        # 価格と同じ理由で分割する（:func:`chunked` 参照）。EDINET の XBRL から
+        # 全期間を入れるようになれば、こちらも上限に届きうる。
+        for batch in chunked(records, len(_STATEMENT_COLUMNS) + 3):
+            stmt = sqlite_insert(FinancialStatement).values(batch)
+            stmt = stmt.on_conflict_do_update(
+                index_elements=["security_id", "fiscal_year", "period"],
+                set_={col: getattr(stmt.excluded, col) for col in _STATEMENT_COLUMNS},
+            )
+            self.session.execute(stmt)
         return len(records)
 
     def get_reports(
