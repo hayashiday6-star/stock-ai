@@ -1019,8 +1019,22 @@ def inspect(
         # Forecasts, listed so they read as separate from the actuals above.
         "FSales",
         "FOP",
+        "FOdP",
         "FNP",
         "FEPS",
+        # Next fiscal year's forecast, issued alongside the full-year results.
+        # These decide whether a forecast revision at 1Q is detectable at all:
+        # the year's first F* value has nothing to compare against unless the
+        # NxF* issued at the previous full-year announcement seeded it. Both
+        # spellings of the profit field are listed because the published
+        # column list writes FNP but NxFNp - only the one that exists prints,
+        # so this says which is real rather than guessing.
+        "NxFSales",
+        "NxFOP",
+        "NxFOdP",
+        "NxFNp",
+        "NxFNP",
+        "NxFEPS",
     ]
     table = Table(title=f"{symbol}: key fields")
     table.add_column("field", style="cyan")
