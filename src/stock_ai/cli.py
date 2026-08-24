@@ -1823,7 +1823,6 @@ def disclosure_impact(
         return
 
     n_symbols = len(stock_prices_by_symbol)
-    _warn_if_concentrated(database, sorted(stock_prices_by_symbol))
     table = Table(title=f"excess return by disclosure type ({n_symbols} symbol(s), {years}y)")
     table.add_column("doc_type", style="cyan", overflow="fold")
     table.add_column("n", justify="right")
@@ -1877,6 +1876,10 @@ def disclosure_impact(
         "or a filer publishing no earnings forecast at all (8306 discloses only "
         "a dividend forecast). Do not read 'no_forecast' as guidance held.[/]"
     )
+    # Printed below the tables, not above them: a caveat that scrolls off the
+    # top of a long run is a caveat nobody reads, and this one decides what
+    # the numbers mean.
+    _warn_if_concentrated(database, sorted(stock_prices_by_symbol))
     console.print(
         "[dim]Read 'symbols' next to 'n': each company files one disclosure of "
         "each type per year, so a three-year window turns a handful of "

@@ -927,3 +927,61 @@ def test_exactly_half_one_sector_still_warns(capsys) -> None:
 def test_missing_sectors_say_so_rather_than_claiming_a_spread(capsys) -> None:
     out = _warn_output({"1": None, "2": None}, capsys)
     assert "No sectors stored" in out
+
+
+def test_the_sector_caveat_prints_below_the_tables() -> None:
+    """A caveat that scrolls off the top of a long run is one nobody reads.
+
+    This one decides what the numbers mean, so it belongs beside them at the
+    point the reader stops - not above a pair of thirty-row tables.
+    """
+    import datetime as dt
+    from unittest.mock import patch
+
+    from typer.testing import CliRunner
+
+    from stock_ai.cli import app
+
+    today = dt.date.today()
+    disclosed = today - dt.timedelta(days=100)
+    statements = {
+        symbol: [
+            {
+                "DiscDate": disclosed.isoformat(),
+                "DiscTime": "15:30",
+                "DocType": "1QFinancialStatements_Consolidated_JP",
+                "CurFYEn": f"{today.year + 1}-03-31",
+                "FNP": "1000",
+            }
+        ]
+        for symbol in ("1801", "1802", "1301")
+    }
+    days = pd.bdate_range(today - dt.timedelta(days=400), today)
+    topix = pd.DataFrame({CLOSE: [2000.0] * len(days)}, index=days)
+    topix.index.name = DATE
+    prices = pd.DataFrame({ADJ_CLOSE: [1000.0] * len(days)}, index=days)
+    prices.index.name = DATE
+
+    class _Repo:
+        def __init__(self, session: object) -> None:
+            pass
+
+        def get_prices(self, symbol: str) -> pd.DataFrame:
+            return prices
+
+    sectors = {"1801": "Industrials", "1802": "Industrials", "1301": "Consumer Staples"}
+    with (
+        patch("stock_ai.cli.Database") as database,
+        patch("stock_ai.cli.PriceRepository", _Repo),
+        patch("stock_ai.cli.list_securities", return_value=[(s, "JP") for s in statements]),
+        patch("stock_ai.cli.sectors_for", return_value=sectors),
+        patch("stock_ai.cli.fetch_topix", return_value=topix),
+        patch(
+            "stock_ai.data.jquants_fundamentals._default_fetcher",
+            return_value=lambda symbol: statements.get(symbol, []),
+        ),
+    ):
+        database.return_value.session.return_value = _FakeSession()
+        output = CliRunner().invoke(app, ["disclosure-impact", "1801,1802,1301"]).output
+
+    assert output.index("Industrials") > output.index("excess return by disclosure type")
