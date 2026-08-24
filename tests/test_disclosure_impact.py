@@ -17,6 +17,8 @@ import pytest
 
 from stock_ai.backtest.disclosure_impact import (
     FORECAST_METRICS,
+    INTERIM_METRICS,
+    TRACKED_METRICS,
     build_disclosure_events,
     disclosure_frame,
     label_disclosures,
@@ -372,10 +374,10 @@ def test_cut_profit_forecast_reads_as_down() -> None:
 
 
 def test_unrevised_disclosure_reads_as_flat_not_unmeasurable() -> None:
-    """A forecast that existed on both sides and held is 'flat', not 'n/a'."""
+    """A forecast that existed on both sides and held is 'flat', not 'no_forecast'."""
     events = build_disclosure_events("1234", _revision_pair("1000", "1000"))
     assert events[1].revision_direction == "flat"
-    # The comparison was possible - that is what separates flat from n/a.
+    # The comparison was possible - that is what separates flat from no_forecast.
     assert events[1].direction_metric() == "NP"
     assert events[1].is_revision is False
 
@@ -435,7 +437,7 @@ def test_dividend_only_revision_is_a_revision_but_has_no_earnings_direction() ->
     assert events[1].is_revision is True  # it did revise something
     # ...but no earnings forecast exists to give it a direction. This is the
     # 8306 case: a filer that publishes a dividend forecast and nothing else.
-    assert events[1].revision_direction == "n/a"
+    assert events[1].revision_direction == "no_forecast"
     assert events[1].direction_metric() is None
 
 
@@ -444,7 +446,7 @@ def test_disclosure_frame_carries_direction_columns() -> None:
     frame = disclosure_frame(events)
     # The first disclosure of a fiscal year has no prior value: unmeasurable,
     # not unchanged.
-    assert list(frame["revision_direction"]) == ["n/a", "up"]
+    assert list(frame["revision_direction"]) == ["no_forecast", "up"]
     # pandas stores the absent metric as NaN, not None, in an object column.
     assert pd.isna(frame["direction_metric"].iloc[0])
     assert frame["direction_metric"].iloc[1] == "NP"
@@ -557,7 +559,7 @@ def test_first_quarter_raise_is_detected_against_next_year_guidance() -> None:
     # Issuing guidance is not revising it, and the year it reports is over,
     # so it carries no current-year forecast to compare either.
     assert full_year.is_revision is False
-    assert full_year.revision_direction == "n/a"
+    assert full_year.revision_direction == "no_forecast"
 
     assert first_quarter.is_revision is True
     assert first_quarter.revision_direction == "up"
@@ -643,7 +645,7 @@ def test_a_filer_publishing_only_a_dividend_forecast_never_reads_as_flat() -> No
 
     Taken from a live payload - 8306 discloses FDivAnn and NxFDivAnn and no
     consolidated earnings forecast at all. Every such disclosure must read
-    "n/a", because reporting it as "flat" would put "this company publishes
+    "no_forecast", because reporting it as "flat" would put "this company publishes
     no guidance" into the same bucket as "this company held its guidance".
     """
     records = [
@@ -663,7 +665,7 @@ def test_a_filer_publishing_only_a_dividend_forecast_never_reads_as_flat() -> No
         },
     ]
     events = build_disclosure_events("8306", records)
-    assert [event.revision_direction for event in events] == ["n/a", "n/a"]
+    assert [event.revision_direction for event in events] == ["no_forecast", "no_forecast"]
     # The dividend raise is still recorded as a revision, just not as an
     # earnings direction.
     assert events[1].is_revision is True
@@ -696,7 +698,7 @@ def test_flat_and_unmeasurable_land_in_separate_summary_rows() -> None:
         zip(summary["revision_direction"], summary["median_excess_return"], strict=True)
     )
     assert directions["flat"] == pytest.approx(0.05)
-    assert directions["n/a"] == pytest.approx(-0.05)
+    assert directions["no_forecast"] == pytest.approx(-0.05)
 
 
 def test_symbols_column_counts_companies_not_observations() -> None:
@@ -723,3 +725,131 @@ def test_symbols_column_counts_companies_not_observations() -> None:
     summary = summarize_by_doc_type(label_disclosures(events, {"AAAA": prices}, topix))
     assert int(summary.loc[0, "n"]) == 3
     assert int(summary.loc[0, "symbols"]) == 1  # three observations, one company
+
+
+# ---------------------------------------------------------------------------
+# Interim (half-year) forecasts as a direction fallback
+# ---------------------------------------------------------------------------
+
+
+def test_an_interim_only_revision_gets_a_direction() -> None:
+    """The EarnForecastRevision/'flat' case: full year held, half year raised."""
+    records = [
+        {
+            "DiscDate": "2024-05-10",
+            "DiscTime": "15:30",
+            "DocType": "FYFinancialStatements_Consolidated_JP",
+            "CurFYEn": "2025-03-31",
+            "FNP": "1000",
+            "FNP2Q": "400",
+        },
+        {
+            "DiscDate": "2024-07-12",
+            "DiscTime": "16:00",
+            "DocType": "EarnForecastRevision",
+            "CurFYEn": "2025-03-31",
+            "FNP": "1000",  # full year untouched
+            "FNP2Q": "500",  # first half raised
+        },
+    ]
+    events = build_disclosure_events("1234", records)
+    assert events[1].revision_direction == "up"
+    assert events[1].direction_metric() == "NP2Q"
+    assert events[1].revised_from == {"NP2Q": 400.0}
+
+
+def test_the_full_year_outranks_the_interim_when_both_moved() -> None:
+    # Half year raised, full year cut: the full year is the headline, so the
+    # disclosure reads "down". Reading the interim first would invert it.
+    records = [
+        {
+            "DiscDate": "2024-05-10",
+            "DiscTime": "15:30",
+            "CurFYEn": "2025-03-31",
+            "FNP": "1000",
+            "FNP2Q": "400",
+        },
+        {
+            "DiscDate": "2024-07-12",
+            "DiscTime": "16:00",
+            "CurFYEn": "2025-03-31",
+            "FNP": "800",
+            "FNP2Q": "500",
+        },
+    ]
+    events = build_disclosure_events("1234", records)
+    assert events[1].direction_metric() == "NP"
+    assert events[1].revision_direction == "down"
+
+
+def test_an_unchanged_interim_still_reads_flat_not_up() -> None:
+    records = [
+        {"DiscDate": "2024-05-10", "DiscTime": "15:30", "CurFYEn": "2025-03-31", "FNP2Q": "400"},
+        {"DiscDate": "2024-07-12", "DiscTime": "16:00", "CurFYEn": "2025-03-31", "FNP2Q": "400"},
+    ]
+    events = build_disclosure_events("1234", records)
+    assert events[1].revision_direction == "flat"
+    assert events[1].direction_metric() == "NP2Q"
+
+
+def test_next_year_interim_guidance_seeds_the_following_first_quarter() -> None:
+    """NxFNp2Q carries the lowercase-p spelling, like NxFNp."""
+    records = [
+        {
+            "DiscDate": "2024-05-10",
+            "DiscTime": "15:30",
+            "DocType": "FYFinancialStatements_Consolidated_JP",
+            "CurFYEn": "2024-03-31",
+            "NxtFYEn": "2025-03-31",
+            "NxFNp2Q": "400",
+        },
+        {
+            "DiscDate": "2024-08-09",
+            "DiscTime": "15:30",
+            "DocType": "1QFinancialStatements_Consolidated_JP",
+            "CurFYEn": "2025-03-31",
+            "FNP2Q": "500",
+        },
+    ]
+    events = build_disclosure_events("1234", records)
+    assert events[1].revision_direction == "up"
+    assert events[1].revised_from == {"NP2Q": 400.0}
+
+
+def test_interim_metrics_do_not_disturb_the_full_year_metric_set() -> None:
+    # The full-year names stay exactly as documented; the interim ones are a
+    # separate family sharing the F{metric} rule.
+    assert set(FORECAST_METRICS) == {"Sales", "OP", "OdP", "NP", "EPS", "DivAnn"}
+    assert set(INTERIM_METRICS) == {"Sales2Q", "OP2Q", "OdP2Q", "NP2Q", "EPS2Q"}
+    assert set(TRACKED_METRICS) == set(FORECAST_METRICS) | set(INTERIM_METRICS)
+    # DivAnn has no interim counterpart: FDiv2Q is a per-quarter dividend.
+    assert "DivAnn2Q" not in TRACKED_METRICS
+
+
+def test_disclosure_frame_carries_before_after_for_interim_metrics() -> None:
+    records = [
+        {"DiscDate": "2024-05-10", "DiscTime": "15:30", "CurFYEn": "2025-03-31", "FNP2Q": "400"},
+        {"DiscDate": "2024-07-12", "DiscTime": "16:00", "CurFYEn": "2025-03-31", "FNP2Q": "500"},
+    ]
+    frame = disclosure_frame(build_disclosure_events("1234", records))
+    assert frame["NP2Q_before"].iloc[1] == 400.0
+    assert frame["NP2Q_after"].iloc[1] == 500.0
+
+
+def test_direction_labels_survive_a_csv_round_trip(tmp_path) -> None:
+    """No label may collide with a pandas NA string.
+
+    ``n/a`` - the obvious spelling for the unmeasurable bucket - is one of
+    pandas' default NA values, so an exported CSV read back would turn it
+    into NaN and lose the distinction the bucket exists to draw. So are
+    ``None`` and ``null``.
+    """
+    from pandas._libs.parsers import STR_NA_VALUES
+
+    labels = {"up", "down", "flat", "no_forecast"}
+    assert not labels & set(STR_NA_VALUES)
+
+    frame = pd.DataFrame({"revision_direction": sorted(labels)})
+    path = tmp_path / "labels.csv"
+    frame.to_csv(path, index=False)
+    assert set(pd.read_csv(path)["revision_direction"]) == labels

@@ -77,16 +77,49 @@ SESSION_CLOSE = dt.time(15, 0)
 #: disclosure (e.g. ``NP`` -> ``FNP``).
 FORECAST_METRICS: tuple[str, ...] = ("Sales", "OP", "OdP", "NP", "EPS", "DivAnn")
 
-_FORECAST_FIELD = {metric: f"F{metric}" for metric in FORECAST_METRICS}
+#: Interim (half-year) forecast metrics, tracked alongside the full-year set.
+#:
+#: A company may revise only its first-half outlook and leave the full year
+#: standing, and reading the full year alone files that as "no revision".
+#: Measured: of 154 disclosures typed ``EarnForecastRevision`` across 45
+#: symbols, 44 read ``flat`` on the full year - and their median excess
+#: return was **+1.70%**, against -0.50% to -0.98% for the genuinely
+#: unchanged guidance in the quarterly rows. A bucket that is supposed to
+#: mean "nothing changed" does not behave like a mild upward revision unless
+#: it is holding real revisions.
+#:
+#: The names follow the same ``F{metric}`` rule as the full-year set, so
+#: ``NP2Q`` reads ``FNP2Q``.
+INTERIM_METRICS: tuple[str, ...] = ("Sales2Q", "OP2Q", "OdP2Q", "NP2Q", "EPS2Q")
 
-#: Order in which a revised metric decides the revision's direction. Profit
-#: leads because a Japanese 業績予想修正 is read on 純利益 first, and the
-#: metrics genuinely disagree - a revenue cut alongside a profit raise is a
-#: margin story, and calling that "down" would file it against its own sign.
-#: ``DivAnn`` is absent on purpose: a dividend revision is a separate event,
-#: not an earnings direction (see
+#: Every metric carried on an event. ``DivAnn`` has no interim counterpart:
+#: ``FDiv2Q`` is the second-quarter *dividend*, not a half-year earnings
+#: forecast, and pairing them would compare a per-quarter payout against an
+#: annual one.
+TRACKED_METRICS: tuple[str, ...] = FORECAST_METRICS + INTERIM_METRICS
+
+_FORECAST_FIELD = {metric: f"F{metric}" for metric in TRACKED_METRICS}
+
+#: Order in which a metric decides the revision's direction. Profit leads
+#: because a Japanese 業績予想修正 is read on 純利益 first, and the metrics
+#: genuinely disagree - a revenue cut alongside a profit raise is a margin
+#: story, and calling that "down" would file it against its own sign.
+#:
+#: The full year outranks the interim throughout: it is the headline figure,
+#: so the interim only decides direction for a disclosure that left the full
+#: year alone. ``DivAnn`` is absent on purpose - a dividend revision is a
+#: separate event, not an earnings direction (see
 #: :attr:`DisclosureEvent.revision_direction`).
-DIRECTION_PRIORITY: tuple[str, ...] = ("NP", "OP", "Sales", "EPS")
+DIRECTION_PRIORITY: tuple[str, ...] = (
+    "NP",
+    "OP",
+    "Sales",
+    "EPS",
+    "NP2Q",
+    "OP2Q",
+    "Sales2Q",
+    "EPS2Q",
+)
 
 #: Next-fiscal-year forecast fields, per metric. Verified against a live
 #: payload (7203, 2026-08): the full-year announcement leaves every ``F*``
@@ -102,6 +135,12 @@ _NEXT_FORECAST_FIELDS: dict[str, tuple[str, ...]] = {
     "NP": ("NxFNp", "NxFNP"),
     "EPS": ("NxFEPS",),
     "DivAnn": ("NxFDivAnn",),
+    # The interim set carries the same lowercase-p quirk on NP.
+    "Sales2Q": ("NxFSales2Q",),
+    "OP2Q": ("NxFOP2Q",),
+    "OdP2Q": ("NxFOdP2Q",),
+    "NP2Q": ("NxFNp2Q", "NxFNP2Q"),
+    "EPS2Q": ("NxFEPS2Q",),
 }
 
 
@@ -164,7 +203,7 @@ class DisclosureEvent:
     forecast" regardless of which quarter's actuals the row also carries."""
     is_after_hours: bool
     forecasts: dict[str, float | None]
-    """Current-as-of-this-disclosure value per :data:`FORECAST_METRICS`."""
+    """Current-as-of-this-disclosure value per :data:`TRACKED_METRICS`."""
     previous_forecasts: dict[str, float]
     """The running forecast for this fiscal year *before* this disclosure,
     per metric that had one. A metric absent here had no earlier value to be
@@ -193,54 +232,79 @@ class DisclosureEvent:
 
         - ``"up"`` / ``"down"`` - the forecast was raised or cut.
         - ``"flat"`` - a forecast exists on both sides and did not move.
-        - ``"n/a"`` - **there was nothing to compare.** Either this
+        - ``"no_forecast"`` - **there was nothing to compare.** Either this
           disclosure carries no earnings forecast (a full-year announcement,
           whose year is already over), or the filer publishes none at all.
           8306 is the second case: every ``F*`` earnings field is empty on
           every record, and only a dividend forecast is disclosed.
 
-        The ``flat``/``n/a`` split exists because merging them repeats, one
+        The label is spelled ``no_forecast`` rather than the ``n/a`` it
+        reads as, because ``n/a`` is one of pandas' default NA strings: an
+        exported CSV read back with ``read_csv`` would turn it into ``NaN``,
+        making "no forecast to compare" indistinguishable from a value that
+        was never written. ``None`` and ``null`` are on that list too.
+
+        The ``flat``/``no_forecast`` split exists because merging them repeats, one
         level over, the error that made every 1Q read as "no revision":
         "guidance held" and "guidance unmeasurable" are different findings,
         and averaging an excess return over both describes neither.
 
-        Direction is read off the first *comparable* metric in
-        :data:`DIRECTION_PRIORITY` order - profit before revenue, because a
-        Japanese 業績予想修正 is judged on 純利益 first and the metrics can
-        disagree (revenue cut while profit is raised on a margin
-        improvement). :func:`direction_metric` reports which one decided it.
+        Direction is read off the first metric that **moved**, in
+        :data:`DIRECTION_PRIORITY` order - profit before revenue, and the
+        full year before the interim, because a Japanese 業績予想修正 is
+        judged on 純利益 first and the metrics can disagree (revenue cut
+        while profit is raised on a margin improvement).
+        :func:`direction_metric` reports which one decided it.
+
+        The priority ranks the metrics that *moved*, not merely the ones
+        present. A metric that held steady has no direction to contribute,
+        so it must not shadow one that did move: ranking by presence alone
+        let an unchanged full-year figure hide a raised half-year forecast
+        beneath it, which is the whole case this fallback exists for. Only
+        when nothing moved does presence decide, and then solely to separate
+        ``"flat"`` from ``"no_forecast"``.
 
         Deliberately not a plain revised/not-revised boolean: lumping upward
         and downward revisions together cancels them against each other,
         which is the same averaging error that flattens the by-``DocType``
         view one level up.
 
-        A dividend-only revision reads ``"n/a"`` or ``"flat"`` here
+        A dividend-only revision reads ``"no_forecast"`` or ``"flat"`` here
         depending on whether an earnings forecast was comparable, because a
         dividend revision is a different event from an earnings revision.
         :attr:`is_revision` still reports it as a revision.
         """
         metric = self.direction_metric()
         if metric is None:
-            return "n/a"
+            return "no_forecast"
         current = self.forecasts[metric]
         previous = self.previous_forecasts[metric]
         if current is None:  # unreachable: direction_metric requires a value
-            return "n/a"
+            return "no_forecast"
         if current == previous:
             return "flat"
         return "up" if current > previous else "down"
 
     def direction_metric(self) -> str | None:
-        """The first metric with values on both sides, in priority order.
+        """Which metric decided the direction, in :data:`DIRECTION_PRIORITY` order.
 
-        ``None`` means no earnings forecast could be compared at all, which
-        is what separates ``"n/a"`` from ``"flat"``.
+        The first metric that actually moved wins. Failing that, the first
+        metric that could be compared at all - that one carries no direction,
+        but its presence is what makes the disclosure ``"flat"`` rather than
+        ``"no_forecast"``.
+
+        ``None`` means no earnings forecast could be compared on either
+        count, which is what ``"no_forecast"`` reports.
         """
-        for metric in DIRECTION_PRIORITY:
-            if metric in self.previous_forecasts and self.forecasts.get(metric) is not None:
+        comparable = [
+            metric
+            for metric in DIRECTION_PRIORITY
+            if metric in self.previous_forecasts and self.forecasts.get(metric) is not None
+        ]
+        for metric in comparable:
+            if self.forecasts[metric] != self.previous_forecasts[metric]:
                 return metric
-        return None
+        return comparable[0] if comparable else None
 
 
 def _target_fiscal_year(record: dict[str, Any]) -> int | None:
@@ -363,7 +427,7 @@ def disclosure_frame(events: list[DisclosureEvent]) -> pd.DataFrame:
     """Flatten :class:`DisclosureEvent` rows into a DataFrame for analysis.
 
     One row per disclosure, with a ``{metric}_before`` / ``{metric}_after``
-    column pair per :data:`FORECAST_METRICS` - populated only where that
+    column pair per :data:`TRACKED_METRICS` - populated only where that
     disclosure actually revised the metric, ``NaN`` everywhere else.
     """
     rows: list[dict[str, Any]] = []
@@ -379,7 +443,7 @@ def disclosure_frame(events: list[DisclosureEvent]) -> pd.DataFrame:
             "revision_direction": event.revision_direction,
             "direction_metric": event.direction_metric(),
         }
-        for metric in FORECAST_METRICS:
+        for metric in TRACKED_METRICS:
             row[f"{metric}_after"] = (
                 event.forecasts.get(metric) if metric in event.revised_from else np.nan
             )
@@ -395,7 +459,7 @@ def disclosure_frame(events: list[DisclosureEvent]) -> pd.DataFrame:
         "is_revision",
         "revision_direction",
         "direction_metric",
-        *(f"{m}_{suffix}" for m in FORECAST_METRICS for suffix in ("before", "after")),
+        *(f"{m}_{suffix}" for m in TRACKED_METRICS for suffix in ("before", "after")),
     ]
     return pd.DataFrame(rows, columns=columns)
 

@@ -1697,6 +1697,11 @@ def disclosure_impact(
         "7203,6758; default is every stored JP security.",
     ),
     years: int = typer.Option(3, help="Lookback window in years, from today."),
+    export: Path | None = typer.Option(
+        None,
+        "--export",
+        help="Write the per-disclosure labels to this CSV, one row per disclosure.",
+    ),
 ) -> None:
     """Label J-Quants disclosures with excess return vs TOPIX, by disclosure type.
 
@@ -1798,10 +1803,10 @@ def disclosure_impact(
     revision_table.add_column("symbols", justify="right")
     revision_table.add_column("median", justify="right")
     revision_table.add_column("std", justify="right")
-    # n/a is yellow, not dim: those rows are unmeasurable rather than
+    # no_forecast is yellow, not dim: those rows are unmeasurable rather than
     # unchanged, and reading them as "guidance held" is the mistake this
     # column was split to prevent.
-    direction_style = {"up": "green", "down": "red", "flat": "dim", "n/a": "yellow"}
+    direction_style = {"up": "green", "down": "red", "flat": "dim", "no_forecast": "yellow"}
     for row in by_revision.itertuples(index=False):
         std_text = f"{row.std_excess_return:.2%}" if pd.notna(row.std_excess_return) else "-"
         style = direction_style.get(row.revision_direction, "dim")
@@ -1817,10 +1822,10 @@ def disclosure_impact(
     console.print(
         "[dim]'up'/'down' read off the revised full-year forecast (net profit "
         "first, then operating profit, sales, EPS). 'flat' means a forecast "
-        "existed on both sides and did not move. [yellow]'n/a' means there was "
+        "existed on both sides and did not move. [yellow]'no_forecast' means there was "
         "nothing to compare[/] - a full-year announcement, whose year is over, "
         "or a filer publishing no earnings forecast at all (8306 discloses only "
-        "a dividend forecast). Do not read 'n/a' as guidance held.[/]"
+        "a dividend forecast). Do not read 'no_forecast' as guidance held.[/]"
     )
     console.print(
         "[dim]Read 'symbols' next to 'n': each company files one disclosure of "
@@ -1829,6 +1834,16 @@ def disclosure_impact(
         "same companies rather than adding independent ones, so a row with a "
         "single-digit 'symbols' is thinner than its 'n' suggests.[/]"
     )
+
+    if export is not None:
+        # The summaries answer "which disclosure type", but every judgement
+        # about *why* a row reads the way it does needs the disclosures
+        # themselves - which symbol, which forecast moved, from what to what.
+        # Reconstructing that from the tables is impossible, so it is written
+        # out whole rather than sampled.
+        export.parent.mkdir(parents=True, exist_ok=True)
+        labeled.to_csv(export, index=False, encoding="utf-8-sig")
+        console.print(f"Wrote {len(labeled)} labeled disclosure(s) to [cyan]{export}[/].")
 
     excluded = int(labeled["exclude_reason"].notna().sum())
     total = len(labeled)
