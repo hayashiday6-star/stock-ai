@@ -33,12 +33,17 @@ from stock_ai.core.version import describe
 from stock_ai.ir.edinet import EdinetDisclosureSource
 from stock_ai.ir.edinet_financials import (
     ANNUAL_REPORT_TYPES,
+    CONTEXT,
     ELEMENT,
     ELEMENTS,
+    INSTANT_FIELDS,
     LABEL,
+    PERIOD_KIND,
     RELATIVE_YEAR,
+    UNIT,
     VALUE,
     AnnualFigures,
+    element_name,
     fetch_document,
     is_consolidated,
     parse_header,
@@ -55,13 +60,22 @@ def _fingerprint(secret: str) -> str:
     return hashlib.sha256(secret.encode("utf-8")).hexdigest()[:12]
 
 
+#: 全角として数える East Asian Width の区分。
+#:
+#: ``W``（Wide）と ``F``（Fullwidth）は当然として、``A``（Ambiguous）も入れる。
+#: この表を読むのは日本語 Windows のコンソール（cp932）で、そこでは Ambiguous は
+#: 全角で描かれる。値なしに使っている ``―``（U+2015）がまさに ``A`` で、1桁と
+#: 数えると空欄の行だけ1桁ずつ左にずれる。
+_WIDE = frozenset("WFA")
+
+
 def _width(text: str) -> int:
     """コンソール上の桁数。日本語は1文字で2桁を占める。
 
     ``str.rjust`` は**文字数**で揃えるので、日本語の見出しを混ぜた表は必ずずれる。
     ずれた表は、隣の列の値をその列の値として読ませる。
     """
-    return sum(2 if unicodedata.east_asian_width(c) in "WF" else 1 for c in text)
+    return sum(2 if unicodedata.east_asian_width(c) in _WIDE else 1 for c in text)
 
 
 def _cell(text: str, width: int) -> str:
@@ -84,15 +98,45 @@ def _ratio(value: float | None, width: int = 8) -> str:
 
 
 #: 空欄になった項目を埋めうる語。CSV 全体の項目名をこれで引く。
+#: 項目名に含まれていたら候補から外す語。株価収益率が「収益」で引っ掛かるため。
+GAP_EXCLUDE = ("率",)
+
 GAP_HINTS: dict[str, tuple[str, ...]] = {
-    # 「収益」だけだと株価収益率が引っ掛かる。語を絞る。
-    "revenue": ("売上", "営業収益", "経常収益", "純収益", "総収益", "営業収入"),
+    "revenue": ("売上", "収益", "収入"),
     "net_income": ("当期純利益", "当期利益", "親会社"),
     "equity": ("純資産", "持分", "自己資本"),
     "total_assets": ("総資産", "資産合計"),
     "roe": ("自己資本利益率", "持分利益率"),
     "shares_outstanding": ("発行済株式",),
 }
+
+
+def _largest_consolidated(
+    rows: list[dict[str, str]], kind: str, top: int = 12
+) -> list[tuple[str, tuple[float, str, str]]]:
+    """連結・円建ての金額を大きい順に。項目名の当てずっぽうに頼らない一覧。
+
+    探している項目名を知っていないと引けない、という前提を外すためにある。売上は
+    損益計算書でほぼ必ず最大の金額なので、上位に出れば要素名がその場で分かる。
+
+    セグメント別の行は外す。コンテキストIDに ``_`` が付くのがそれで、混ぜると
+    上位が同じ項目の内訳で埋まる。
+    """
+    seen: dict[str, tuple[float, str, str]] = {}
+    for row in rows:
+        context = row.get(CONTEXT, "")
+        if "_" in context or not context or row.get(PERIOD_KIND) != kind:
+            continue
+        if row.get(UNIT) != "円":
+            continue
+        try:
+            value = float((row.get(VALUE) or "").strip())
+        except ValueError:
+            continue
+        name = element_name(row)
+        if name not in seen or abs(value) > abs(seen[name][0]):
+            seen[name] = (value, row.get(LABEL, ""), row.get(RELATIVE_YEAR, ""))
+    return sorted(seen.items(), key=lambda kv: -abs(kv[1][0]))[:top]
 
 
 def _report_gaps(rows: list[dict[str, str]], figures: list[AnnualFigures]) -> None:
@@ -117,15 +161,23 @@ def _report_gaps(rows: list[dict[str, str]], figures: list[AnnualFigures]) -> No
             label = row.get(LABEL, "")
             if not any(h in label for h in hints):
                 continue
+            if any(x in label for x in GAP_EXCLUDE):
+                continue
             name = row.get(ELEMENT, "").split(":")[-1]
             if name not in found:
                 basis = "連結" if is_consolidated(row) else "単体"
                 found[name] = (basis, label, row.get(RELATIVE_YEAR, ""), row.get(VALUE, ""))
-        print(f"\n  [{field}] 候補 {len(found)} 件")
-        for name, (basis, label, year, value) in sorted(found.items())[:25]:
-            print(f"    {basis} {name:<58} {label[:28]}  [{year}={value[:24]}]")
-        if len(found) > 25:
-            print(f"    …ほか {len(found) - 25} 件")
+        print(f"\n  [{field}] 項目名で引いた候補 {len(found)} 件")
+        for name, (basis, label, year, value) in sorted(found.items())[:20]:
+            print(f"    {basis} {name:<56} {label[:26]}  [{year}={value[:22]}]")
+        if len(found) > 20:
+            print(f"    …ほか {len(found) - 20} 件")
+
+        kind = "時点" if field in INSTANT_FIELDS else "期間"
+        largest = _largest_consolidated(rows, kind)
+        print(f"    -- 連結・{kind}・円 の金額が大きい順（項目名に頼らない一覧） --")
+        for name, (value, label, year) in largest:
+            print(f"    連結 {name:<56} {label[:26]}  [{year}={value / OKU:,.0f}億]")
 
 
 def check(sec_code: str, days: int) -> int:
