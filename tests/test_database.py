@@ -87,3 +87,94 @@ def test_empty_frame_writes_nothing(db: Database) -> None:
     with db.session() as s:
         written = PriceRepository(s).upsert_prices("AAPL", pd.DataFrame())
     assert written == 0
+
+
+# --- 取得元をまたいで同じ決算期を書くとき ---------------------------------
+
+
+def test_a_blank_does_not_erase_a_stored_value() -> None:
+    """取得元によって埋まる列が違う。空で上書きすると、無言で消える。
+
+    J-Quants は EPS・BPS・1株配当・営業利益を持ち、EDINET の「主要な経営指標等」は
+    どれも持たない。JP_STATEMENT_SOURCE を切り替えただけで配当履歴が消えると、
+    配当の画面は例外を出さずに何も返さなくなる。実測値は日立の2026年3月期。
+    """
+    import datetime as dt
+
+    from stock_ai.data.types import FinancialReport
+    from stock_ai.database.engine import Database
+    from stock_ai.database.repository import FinancialStatementRepository, get_or_create_security
+
+    database = Database("sqlite:///:memory:")
+    database.create_all()
+    with database.session() as session:
+        get_or_create_security(session, "6501", market="JP")
+        repo = FinancialStatementRepository(session)
+        repo.upsert_reports(
+            "6501",
+            [
+                FinancialReport(
+                    symbol="6501",
+                    fiscal_year=2026,
+                    disclosed_on=dt.date(2026, 4, 27),
+                    revenue=10_586_781_000_000.0,
+                    operating_income=1_199_275_000_000.0,
+                    net_income=802_368_000_000.0,
+                    equity=6_772_607_000_000.0,
+                    eps=176.76,
+                    bps=1459.71,
+                    dividend_per_share=50.0,
+                )
+            ],
+            market="JP",
+        )
+        # EDINET から同じ期を入れ直す。埋まるのは4項目だけ。
+        repo.upsert_reports(
+            "6501",
+            [
+                FinancialReport(
+                    symbol="6501",
+                    fiscal_year=2026,
+                    revenue=10_586_781_000_000.0,
+                    net_income=802_368_000_000.0,
+                    equity=6_568_369_000_000.0,
+                    shares_outstanding=4_535_560_000.0,
+                )
+            ],
+            market="JP",
+        )
+        (stored,) = repo.get_reports("6501")
+
+    # EDINET が持っている項目は更新される。自己資本の定義差 3.11% がここに出る。
+    assert stored.equity == 6_568_369_000_000.0
+    assert stored.shares_outstanding == 4_535_560_000.0
+    # 持っていない項目は残る。
+    assert stored.eps == 176.76
+    assert stored.bps == 1459.71
+    assert stored.dividend_per_share == 50.0
+    assert stored.operating_income == 1_199_275_000_000.0
+    assert stored.disclosed_on == dt.date(2026, 4, 27)
+    database.dispose()
+
+
+def test_a_restatement_still_overwrites() -> None:
+    """値が入ってくるなら上書きする。訂正が反映されないほうが困る。"""
+    from stock_ai.data.types import FinancialReport
+    from stock_ai.database.engine import Database
+    from stock_ai.database.repository import FinancialStatementRepository, get_or_create_security
+
+    database = Database("sqlite:///:memory:")
+    database.create_all()
+    with database.session() as session:
+        get_or_create_security(session, "6501", market="JP")
+        repo = FinancialStatementRepository(session)
+        repo.upsert_reports(
+            "6501", [FinancialReport(symbol="6501", fiscal_year=2026, revenue=1.0)], market="JP"
+        )
+        repo.upsert_reports(
+            "6501", [FinancialReport(symbol="6501", fiscal_year=2026, revenue=2.0)], market="JP"
+        )
+        (stored,) = repo.get_reports("6501")
+
+    assert stored.revenue == 2.0
+    database.dispose()

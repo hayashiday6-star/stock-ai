@@ -392,6 +392,18 @@ class FinancialStatementRepository:
         A restated disclosure for a period already stored overwrites it, so
         re-ingesting the same history is idempotent.
 
+        **A value already stored is never replaced by a blank.** Two sources
+        cover different columns for the same fiscal year: J-Quants carries EPS,
+        BPS, the dividend and operating income, while EDINET's 「主要な経営指標等」
+        carries none of them. A plain overwrite would mean that changing
+        ``JP_STATEMENT_SOURCE`` silently erased the dividend history the
+        dividend screens read - no error, just columns going empty. Incoming
+        ``None`` therefore leaves the stored value alone.
+
+        The cost is that a genuine correction *to* blank cannot be expressed
+        here. Disclosures restate figures; they do not withdraw them into
+        nothing, so that trade is one-sided in practice.
+
         Returns:
             The number of rows written.
         """
@@ -417,7 +429,12 @@ class FinancialStatementRepository:
             stmt = sqlite_insert(FinancialStatement).values(batch)
             stmt = stmt.on_conflict_do_update(
                 index_elements=["security_id", "fiscal_year", "period"],
-                set_={col: getattr(stmt.excluded, col) for col in _STATEMENT_COLUMNS},
+                set_={
+                    col: func.coalesce(
+                        getattr(stmt.excluded, col), getattr(FinancialStatement, col)
+                    )
+                    for col in _STATEMENT_COLUMNS
+                },
             )
             self.session.execute(stmt)
         return len(records)
