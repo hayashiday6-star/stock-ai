@@ -740,6 +740,23 @@ class EdinetDisclosureSource:
             )
         return matches[:limit]
 
+    @staticmethod
+    def _offers_csv(record: dict[str, Any]) -> bool:
+        """Whether the index says a CSV conversion exists for this filing.
+
+        EDINET's document list carries a ``csvFlag`` alongside ``xbrlFlag`` and
+        ``pdfFlag``. A filing whose flag is ``"0"`` has no ``type=5`` to fetch,
+        and asking for one spends a request to be told so in a 200 response
+        whose body is an error.
+
+        A **missing** flag is not a "no". This code has never seen a live
+        payload confirming the field's name, and treating absence as absence of
+        the file would silently return nothing at all - the failure mode that
+        costs a round trip to diagnose. Only an explicit ``"0"`` excludes.
+        """
+        raw = record.get("csvFlag")
+        return raw is None or str(raw).strip() != "0"
+
     def find_documents(self, symbol: str, doc_types: Sequence[str], limit: int = 1) -> list[str]:
         """Return ``docID``s of ``symbol``'s filings of the given types, newest first.
 
@@ -765,10 +782,14 @@ class EdinetDisclosureSource:
                 if str(record.get("docTypeCode") or "").strip() not in wanted:
                     continue
                 doc_id = str(record.get("docID") or "").strip()
-                if doc_id:
-                    found.append(doc_id)
-                    if len(found) >= limit:
-                        return found
+                if not doc_id:
+                    continue
+                if not self._offers_csv(record):
+                    logger.info("%s: csvFlag=0 のため飛ばします (%s)", symbol, doc_id)
+                    continue
+                found.append(doc_id)
+                if len(found) >= limit:
+                    return found
         return found
 
     def clear_cache(self) -> None:

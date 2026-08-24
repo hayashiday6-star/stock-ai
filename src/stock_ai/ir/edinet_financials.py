@@ -134,9 +134,10 @@ ELEMENTS: dict[str, tuple[str, ...]] = {
         "NetSalesSummaryOfBusinessResults",
         "OperatingRevenue1SummaryOfBusinessResults",
         "OrdinaryIncomeSummaryOfBusinessResults",
-        # 別ファミリー。日立では提出会社単体の売上収益がここにしか無い。連結で
-        # 絞る実装なので、連結を持たない会社でだけ届く。
+        # 別ファミリー。日立では提出会社単体の売上収益、トヨタでは**連結**の
+        # 営業収益がこちらに入っている。SUMMARY_FAMILIES を参照。
         "RevenueKeyFinancialData",
+        "OperatingRevenuesIFRSKeyFinancialData",
     ),
     # 日本基準の連結は ProfitLossAttributableToOwnersOfParent…（親会社株主に帰属
     # する当期純利益）。NetIncomeLoss… は提出会社単体の欄で、三菱UFJでは
@@ -161,6 +162,31 @@ ELEMENTS: dict[str, tuple[str, ...]] = {
     ),
     "shares_outstanding": ("TotalNumberOfIssuedSharesSummaryOfBusinessResults",),
 }
+
+#: 完全一致で連結の売上が見つからなかったときに、要素名の形で探すための語。
+#:
+#: 会社独自の拡張要素には**項目名が入っていない**（日立の実ファイルで、項目名が
+#: 空の84行はすべて拡張要素、標準タクソノミの2,692行はすべて項目名あり）。名前で
+#: 探すしか方法がなく、その名前は会社ごとに違う。トヨタの連結売上は
+#: ``OperatingRevenuesIFRSKeyFinancialData``（50.7兆）で、標準の ``RevenueIFRS…``
+#: も ``NetSales…`` も連結側には持っていない。
+#:
+#: 探す範囲は ``SUMMARY_FAMILIES`` の連結行だけ。財務諸表本体まで広げると、同じ
+#: 金額の別要素（トヨタなら ``TotalNetRevenuesIFRS`` など3つ）が並んで選べなくなる。
+REVENUE_PATTERNS = ("Revenue", "NetSales", "OperatingIncome")
+
+#: 上の語を含んでいても売上ではないもの。
+REVENUE_ANTIPATTERNS = (
+    "PerShare",
+    "Ratio",
+    "Cost",
+    "Intersegment",
+    "FromExternalCustomers",
+    "Deferred",
+    "Unearned",
+    "Growth",
+    "Loss",  # OrdinaryIncomeLoss（経常利益）は売上ではない
+)
 
 #: 時点の項目。相対年度が「当期末」側のラベルになる。残りは期間の項目。
 INSTANT_FIELDS = frozenset({"equity", "total_assets", "shares_outstanding"})
@@ -341,6 +367,38 @@ def _pick(rows: list[dict[str, str]], names: tuple[str, ...], year: str) -> floa
     return None
 
 
+def _revenue_by_pattern(rows: list[dict[str, str]], year: str) -> float | None:
+    """要素名の形で連結の売上を探す。完全一致で見つからなかったときだけ。
+
+    候補が複数あれば最大を採る。売上は最上段で、内訳や部分より小さくなることは
+    ない。どれを採ったかは必ずログに残す――推測で選んだ値だという事実は、後から
+    数字だけ見ても分からない。
+    """
+    best: tuple[float, str] | None = None
+    for row in rows:
+        name = element_name(row)
+        if not any(p in name for p in REVENUE_PATTERNS):
+            continue
+        if any(a in name for a in REVENUE_ANTIPATTERNS):
+            continue
+        if row.get(RELATIVE_YEAR) != year:
+            continue
+        raw = (row.get(VALUE) or "").strip()
+        if raw in _BLANKS:
+            continue
+        try:
+            value = float(raw)
+        except ValueError:
+            continue
+        if best is None or value > best[0]:
+            best = (value, name)
+
+    if best is None:
+        return None
+    logger.info("%s の売上を要素名の形から選びました: %s", year, best[1])
+    return best[0]
+
+
 def parse_summary(rows: list[dict[str, str]]) -> list[AnnualFigures]:
     """「主要な経営指標等」を、古い順の決算期の並びにする。
 
@@ -359,6 +417,8 @@ def parse_summary(rows: list[dict[str, str]]) -> list[AnnualFigures]:
             )
             for field, names in ELEMENTS.items()
         }
+        if values["revenue"] is None:
+            values["revenue"] = _revenue_by_pattern(group, duration)
         entry = AnnualFigures(year=duration, **values)
         if not entry.is_empty():
             figures.append(entry)

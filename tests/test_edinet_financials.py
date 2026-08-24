@@ -1064,8 +1064,8 @@ def toyota_rows() -> list[dict[str, str]]:
 
 @pytest.fixture(scope="module")
 def toyota(toyota_rows: list[dict[str, str]]) -> AnnualFigures:
-    (only,) = parse_summary(toyota_rows)
-    return only
+    """四期前。連結売上以外の項目は、この期のぶんを観測している。"""
+    return next(f for f in parse_summary(toyota_rows) if f.year == "四期前")
 
 
 def test_net_sales_finally_appears_but_only_as_the_parent_company(
@@ -1080,22 +1080,60 @@ def test_net_sales_finally_appears_but_only_as_the_parent_company(
     assert not is_consolidated(row)
 
 
-def test_an_ifrs_filer_can_lack_a_consolidated_revenue_element(
-    toyota_rows: list[dict[str, str]], toyota: AnnualFigures
+def test_an_ifrs_filer_can_lack_every_standard_revenue_element(
+    toyota_rows: list[dict[str, str]],
 ) -> None:
-    """トヨタは IFRS なのに RevenueIFRS… を持たない。連結の売上が表に無い。
+    """トヨタは IFRS なのに RevenueIFRS… を持たず、NetSales… は単体。
 
-    候補のどれも連結では見つからないので revenue は空になる。単体の売上高
-    12.6兆 を代わりに入れないことがここの要点――連結 48兆 のつもりで 12.6兆 を
-    使えば、成長率も PSR も別の会社の話になる。
+    標準タクソノミの名前を完全一致で探す限り、連結の売上は1つも見つからない。
+    単体の売上高 12.6兆 を代わりに入れないことがここの要点――連結 50.7兆 の
+    つもりで 12.6兆 を使えば、成長率も PSR も別の会社の話になる。
     """
     names = {element_name(r) for r in toyota_rows}
     assert "RevenueIFRSSummaryOfBusinessResults" not in names
-    assert toyota.revenue is None
+    for row in toyota_rows:
+        if element_name(row) == "NetSalesSummaryOfBusinessResults":
+            assert not is_consolidated(row)
+
+
+def test_a_company_extension_element_carries_the_consolidated_revenue(
+    toyota_rows: list[dict[str, str]],
+) -> None:
+    """トヨタの連結売上は会社独自の拡張要素にある。50.7兆。
+
+    ``OperatingRevenuesIFRSKeyFinancialData``。標準タクソノミには無い名前なので、
+    完全一致の候補表に前もって書いておくことはできない。要素名の形で拾う。
+
+    値は確認ツールが表示した「506,850億」から復元したもので、有報の正確な値では
+    ない。ここで確かめているのは**どの要素を選んだか**であって、金額そのものでは
+    ない。
+    """
+    current = next(f for f in parse_summary(toyota_rows) if f.year == "当期")
+    assert current.revenue == 50_685_000_000_000.0
+
+    (row,) = [r for r in toyota_rows if element_name(r) == "OperatingRevenuesIFRSKeyFinancialData"]
+    assert is_consolidated(row)
+
+
+def test_the_label_column_can_be_empty(rows: list[dict[str, str]]) -> None:
+    """項目名は空になりうる。だから項目名で探す方法は取りこぼす。
+
+    日立の実ファイル 2,776行のうち項目名が空の84行は、すべて会社独自の拡張要素
+    （``jpcrp030000-asr_E01737-000:``）だった。標準タクソノミの2,692行はすべて
+    項目名を持っていた。トヨタの連結売上を項目名で探して見つからなかったのは
+    これが理由。
+
+    「項目名が空なら必ず拡張要素」と言い切れるかは、有報1本で確かめた範囲を
+    超える。ここで留めるのは**空になりうる**という事実だけで、実装もそれしか
+    前提にしていない（要素名で探す）。
+    """
+    blank = [r for r in rows if not r.get("項目名", "").strip()]
+    assert blank
+    assert all(":" in r["要素ID"] for r in blank)
 
 
 def test_everything_else_is_the_consolidated_ifrs_figure(toyota: AnnualFigures) -> None:
-    """売上以外は連結が取れている。空になるのは1項目だけ。"""
+    """売上以外は標準タクソノミの連結要素から取れている。"""
     assert toyota.net_income == 2_850_110_000_000.0
     assert toyota.equity == 26_245_969_000_000.0
     assert toyota.total_assets == 67_688_771_000_000.0
@@ -1149,3 +1187,35 @@ def test_the_parent_revenue_does_not_displace_the_consolidated_one(
     assert parent["値"] == "1843173000000"
     assert not is_consolidated(parent)
     assert years["当期"].revenue == 10_586_781_000_000.0
+
+
+# --- 書類一覧が持つ csvFlag -----------------------------------------------
+
+
+def test_a_filing_without_a_csv_conversion_is_skipped(
+    fake_http: type[_Client], fixture_bytes: bytes
+) -> None:
+    """``csvFlag=0`` の書類に ``type=5`` は無い。要求するだけ無駄。
+
+    落とすのは訂正のほうで、元の有報が残る。
+    """
+    fake_http.response = _Response(make_zip(fixture_bytes))
+    source = source_over(
+        calendar={
+            FILED_ON: [annual_report()],
+            dt.date(2026, 7, 15): [annual_report("S100ZZZZ", doc_type="130") | {"csvFlag": "0"}],
+        }
+    )
+    fetch_annual_reports("6501", source=source)
+    assert fake_http.last["url"].endswith("/documents/S100YGBO")
+
+
+def test_a_missing_flag_is_not_treated_as_a_no() -> None:
+    """フラグの綴りを実データで確認できていない。
+
+    無いことを「CSV が無い」と読むと、全部が黙って落ちる――エラーではなく
+    「有報がありません」として。明示的な ``0`` だけを除外する。
+    """
+    assert source_over(annual_report()).find_documents("6501", ("120",)) == ["S100YGBO"]
+    with_flag = annual_report() | {"csvFlag": "1"}
+    assert source_over(with_flag).find_documents("6501", ("120",)) == ["S100YGBO"]
