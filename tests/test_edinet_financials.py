@@ -23,7 +23,7 @@ from typing import Any
 import pytest
 from pydantic import SecretStr
 
-from stock_ai.core.exceptions import DataError
+from stock_ai.core.exceptions import DataError, RateLimitError
 from stock_ai.data.types import FiscalPeriod
 from stock_ai.ir.edinet import EdinetDisclosureSource
 from stock_ai.ir.edinet_financials import (
@@ -622,11 +622,21 @@ def test_is_empty_only_looks_at_the_numbers() -> None:
 
 
 class _Response:
-    """``httpx.Response`` のうち、この経路が読む分だけ。"""
+    """``httpx.Response`` のうち、この経路が読む分だけ。
 
-    def __init__(self, content: bytes, status_code: int = 200) -> None:
+    ``Content-Type`` は既定で ZIP 成功時の値。仕様書がエラー検知の公式な手段として
+    案内しているのがこのヘッダなので、テストでも実物と同じように付ける。
+    """
+
+    def __init__(
+        self,
+        content: bytes,
+        status_code: int = 200,
+        content_type: str = "application/octet-stream",
+    ) -> None:
         self.content = content
         self.status_code = status_code
+        self.headers = {"content-type": content_type}
 
 
 class _Client:
@@ -695,21 +705,29 @@ def test_fetch_document_catches_the_200_that_is_an_error(fake_http: type[_Client
     ここで見ないと、下流が「ZIP ではありません」と言うだけになり、鍵が無いのか
     書類が無いのか分からない。
     """
-    fake_http.response = _Response(b'{"StatusCode":401,"message":"Access denied"}')
+    fake_http.response = _Response(
+        b'{"StatusCode":401,"message":"Access denied"}',
+        content_type="application/json; charset=utf-8",
+    )
     with pytest.raises(DataError, match="Access denied"):
         fetch_document("S100YGBO", SecretStr("k"))
 
 
 def test_a_missing_key_is_named_in_the_error(fake_http: type[_Client]) -> None:
     """鍵未設定は原因が分かっている数少ないケース。そう言う。"""
-    fake_http.response = _Response(b'{"StatusCode":401}')
+    fake_http.response = _Response(
+        b'{"StatusCode":401}', content_type="application/json; charset=utf-8"
+    )
     with pytest.raises(DataError, match="EDINET_API_KEY"):
         fetch_document("S100YGBO")
 
 
 def test_the_key_is_not_in_the_error_text(fake_http: type[_Client]) -> None:
     """例外文はログにもコンソールにも出る。鍵を混ぜない。"""
-    fake_http.response = _Response(b'{"StatusCode":401,"message":"Access denied"}')
+    fake_http.response = _Response(
+        b'{"StatusCode":401,"message":"Access denied"}',
+        content_type="application/json; charset=utf-8",
+    )
     with pytest.raises(DataError) as raised:
         fetch_document("S100YGBO", SecretStr("s3cret"))
     assert "s3cret" not in str(raised.value)
@@ -1219,3 +1237,56 @@ def test_a_missing_flag_is_not_treated_as_a_no() -> None:
     assert source_over(annual_report()).find_documents("6501", ("120",)) == ["S100YGBO"]
     with_flag = annual_report() | {"csvFlag": "1"}
     assert source_over(with_flag).find_documents("6501", ("120",)) == ["S100YGBO"]
+
+
+# --- 仕様書が案内しているエラー検知 ---------------------------------------
+#
+# 「レスポンス上は HTTP ステータスが "200"、かつ出力データ内容に何らかのデータが
+# 出力されるため、これらの情報だけではエラーを検知することは困難です。従って書類
+# 取得APIでは、リクエストの成功/エラーに応じたレスポンスヘッダの "Content-Type"
+# を設定しています」――EDINET API 仕様書(Version 2) 3-2-2。
+
+
+def test_a_json_content_type_is_an_error_even_with_a_zip_body(
+    fake_http: type[_Client],
+) -> None:
+    """ヘッダが JSON なら、中身が何であれ失敗。仕様書が定めた判定はこれ。"""
+    fake_http.response = _Response(
+        b"PK\x03\x04not-really", content_type="application/json; charset=utf-8"
+    )
+    with pytest.raises(DataError, match="ZIP ではなく"):
+        fetch_document("S100YGBO", SecretStr("k"))
+
+
+def test_a_pdf_means_the_filing_is_not_disclosed(fake_http: type[_Client]) -> None:
+    """不開示の書類は、CSV を頼んでも「不開示です」という PDF が返る。
+
+    仕様書いわく「不開示となった書類は、書類取得API で取得すると不開示となった旨を
+    示すPDFファイルが取得されます」。ZIP でないと言うだけでは、鍵の問題と区別が
+    付かない。
+    """
+    fake_http.response = _Response(b"%PDF-1.4 ...", content_type="application/pdf")
+    with pytest.raises(DataError, match="不開示"):
+        fetch_document("S100YGBO", SecretStr("k"))
+
+
+def test_too_many_requests_is_not_an_ordinary_failure(fake_http: type[_Client]) -> None:
+    """429 は走行そのものの問題。同じ調子で残りを回しても同じ断りを集めるだけ。
+
+    ``RateLimitError`` は ``DataError`` の一種なので、区別しない呼び出し側は
+    これまでどおり1銘柄の失敗として扱える。
+    """
+    fake_http.response = _Response(b"", status_code=429)
+    with pytest.raises(RateLimitError, match="429"):
+        fetch_document("S100YGBO", SecretStr("k"))
+    assert issubclass(RateLimitError, DataError)
+
+
+def test_a_zip_with_an_unexpected_content_type_is_still_read(
+    fake_http: type[_Client], fixture_bytes: bytes, caplog: pytest.LogCaptureFixture
+) -> None:
+    """中身が ZIP ならヘッダが違っても読む。読めるものを捨てない。"""
+    fake_http.response = _Response(make_zip(fixture_bytes), content_type="application/zip")
+    with caplog.at_level(logging.WARNING):
+        assert len(read_csv_zip(fetch_document("S100YGBO"))) == 192
+    assert "application/zip" in caplog.text

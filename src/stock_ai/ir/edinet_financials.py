@@ -59,7 +59,7 @@ import zipfile
 
 from pydantic import SecretStr
 
-from stock_ai.core.exceptions import DataError
+from stock_ai.core.exceptions import DataError, RateLimitError
 from stock_ai.core.logging import get_logger
 from stock_ai.data.types import FinancialReport, FiscalPeriod
 from stock_ai.ir.edinet import CURRENT_PLACEMENT, EdinetDisclosureSource, key_placements
@@ -503,15 +503,32 @@ def parse_filing(body: bytes, symbol: str | None = None) -> list[FinancialReport
     return reports
 
 
+#: 書類取得APIが返す Content-Type と、その意味。仕様書 3-2-2 の表そのまま。
+#:
+#: 「レスポンス上は HTTP ステータスが "200"、かつ出力データ内容に何らかのデータが
+#: 出力されるため、これらの情報だけではエラーを検知することは困難です。従って書類
+#: 取得APIでは、リクエストの成功/エラーに応じたレスポンスヘッダの "Content-Type"
+#: を設定しています」――EDINET API 仕様書(Version 2)。
+_ZIP_TYPE = "application/octet-stream"
+_PDF_TYPE = "application/pdf"
+_ERROR_TYPE = "application/json"
+
+
 def fetch_document(doc_id: str, api_key: SecretStr | None = None, timeout: float = 60.0) -> bytes:
     """``type=5`` の ZIP をそのまま落とす。
 
     EDINET は断った要求にも **HTTP 200** を返し、本文を JSON のエラーにする。
-    ここで ZIP かどうかを見ないと、``read_csv_zip`` が「ZIP ではありません」と
-    言うだけになり、鍵が無いのか書類が無いのか分からなくなる。
+    仕様書が公式に案内している見分け方は ``Content-Type`` で、``application/json``
+    なら失敗。ここではそれに加えて先頭バイトも見る――ヘッダと中身が食い違うほうが、
+    どちらか一方だけを信じて黙って進むより扱いやすい。
+
+    ``application/pdf`` が返るのは**不開示**の書類。仕様書いわく「不開示となった
+    書類は、書類取得API で取得すると不開示となった旨を示すPDFファイルが取得され
+    ます」。CSV を頼んで PDF が返った時点で、その書類からは何も読めない。
 
     Raises:
-        DataError: HTTP エラー、または ZIP 以外が返った。
+        RateLimitError: HTTP 429。呼ぶ間隔を空ける必要がある。
+        DataError: その他の HTTP エラー、または ZIP 以外が返った。
     """
     import httpx
 
@@ -525,15 +542,31 @@ def fetch_document(doc_id: str, api_key: SecretStr | None = None, timeout: float
     url = _DOCUMENT_URL.format(doc_id=doc_id)
     with httpx.Client(timeout=timeout, follow_redirects=True) as client:
         response = client.get(url, params=params, headers=headers)
+
+    if response.status_code == 429:
+        # 1銘柄の失敗ではなく、走行そのものの問題。同じ調子で残りを回しても
+        # 同じ断りを集めるだけになる。
+        raise RateLimitError(
+            f"{doc_id}: EDINET から HTTP 429（大量リクエスト）。間隔を空けてください。"
+        )
     if response.status_code >= 400:
         raise DataError(f"{doc_id}: EDINET が HTTP {response.status_code} を返しました。")
 
+    content_type = response.headers.get("content-type", "").lower()
     body = response.content
-    if body[:2] != b"PK":
-        # 200 で返ってくるエラー本文。鍵が無い / 書類が無い / type が違う のどれか。
+
+    if content_type.startswith(_PDF_TYPE):
+        raise DataError(
+            f"{doc_id}: CSV を要求して PDF が返りました。不開示の書類の可能性があります。"
+        )
+    if content_type.startswith(_ERROR_TYPE) or body[:2] != b"PK":
         detail = body[:200].decode("utf-8", errors="replace").strip()
         hint = "" if api_key is not None else " EDINET_API_KEY が未設定です。"
-        raise DataError(f"{doc_id}: ZIP ではなく {detail!r} が返りました。{hint}")
+        kind = content_type or "(型不明)"
+        raise DataError(f"{doc_id}: ZIP ではなく {kind} の {detail!r} が返りました。{hint}")
+    if content_type and not content_type.startswith(_ZIP_TYPE):
+        # 中身は ZIP だがヘッダが違う。読めるので進めるが、仕様との差は残す。
+        logger.warning("%s: 中身は ZIP ですが Content-Type が %s です。", doc_id, content_type)
 
     logger.info("%s: type=%s を %d バイト取得しました", doc_id, CSV_TYPE, len(body))
     return body

@@ -42,7 +42,7 @@ from typing import Any
 
 from pydantic import SecretStr
 
-from stock_ai.core.exceptions import DataError
+from stock_ai.core.exceptions import DataError, RateLimitError
 from stock_ai.core.logging import get_logger
 from stock_ai.data.types import Disclosure
 
@@ -595,6 +595,13 @@ def _default_day_fetcher(api_key: SecretStr | None) -> DayFetcher:
 
         with httpx.Client(timeout=30.0) as client:
             response = client.get(_DOCUMENTS_URL, params=params, headers=headers)
+            if response.status_code == 429:
+                # 仕様書の定める「大量リクエスト」。一日ぶんの失敗ではなく走行
+                # そのものの問題で、残りの日付を同じ調子で叩いても同じ断りが返る。
+                raise RateLimitError(
+                    f"EDINET returned HTTP 429 (too many requests) for {day}; "
+                    "space the calls out and retry."
+                )
             if response.status_code >= 400:
                 raise DataError(f"EDINET returned HTTP {response.status_code} for {day}.")
             payload = response.json()
@@ -744,15 +751,17 @@ class EdinetDisclosureSource:
     def _offers_csv(record: dict[str, Any]) -> bool:
         """Whether the index says a CSV conversion exists for this filing.
 
-        EDINET's document list carries a ``csvFlag`` alongside ``xbrlFlag`` and
-        ``pdfFlag``. A filing whose flag is ``"0"`` has no ``type=5`` to fetch,
-        and asking for one spends a request to be told so in a 200 response
-        whose body is an error.
+        The API specification (Version 2) defines field 39 as ``csvFlag``:
+        "書類に CSV ファイルがある場合は "1"、それ以外は "0" が出力されます", and
+        names it as the precondition for the document endpoint's ``type=5``:
+        "No39.CSV 有無フラグが "１"（あり）の場合に取得可能です". A filing whose
+        flag is ``"0"`` therefore has no CSV to fetch, and asking for one spends
+        a request to be told so in a 200 response whose body is an error.
 
-        A **missing** flag is not a "no". This code has never seen a live
-        payload confirming the field's name, and treating absence as absence of
-        the file would silently return nothing at all - the failure mode that
-        costs a round trip to diagnose. Only an explicit ``"0"`` excludes.
+        A **missing** flag is still not a "no". Treating absence as absence of
+        the file would turn any future change in the payload into "this company
+        filed nothing" - a wrong answer that looks like a real one. Only an
+        explicit ``"0"`` excludes.
         """
         raw = record.get("csvFlag")
         return raw is None or str(raw).strip() != "0"
