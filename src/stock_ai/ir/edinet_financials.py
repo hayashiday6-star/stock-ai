@@ -100,6 +100,13 @@ _SECURITY_CODE = "SecurityCodeDEI"
 _ACCOUNTING_STANDARD = "AccountingStandardsDEI"
 _FILER_NAME = "FilerNameInJapaneseDEI"
 
+#: 「主要な経営指標等」を構成する要素ファミリー。要素名の末尾に付く。
+#:
+#: ほとんどは ``SummaryOfBusinessResults`` だが、日立の提出会社単体の売上収益は
+#: ``RevenueKeyFinancialData`` という別ファミリーの要素で入っている。片方しか見て
+#: いないと、そこにしか無い項目が丸ごと落ちる――列が空欄になるだけで例外は出ない。
+SUMMARY_FAMILIES = ("SummaryOfBusinessResults", "KeyFinancialData")
+
 #: コンテキストIDに付く、提出会社単体を表す接尾辞。
 #:
 #: ``CurrentYearDuration_NonConsolidatedMember`` のように付く。「連結・個別」列は
@@ -127,6 +134,9 @@ ELEMENTS: dict[str, tuple[str, ...]] = {
         "NetSalesSummaryOfBusinessResults",
         "OperatingRevenue1SummaryOfBusinessResults",
         "OrdinaryIncomeSummaryOfBusinessResults",
+        # 別ファミリー。日立では提出会社単体の売上収益がここにしか無い。連結で
+        # 絞る実装なので、連結を持たない会社でだけ届く。
+        "RevenueKeyFinancialData",
     ),
     # 日本基準の連結は ProfitLossAttributableToOwnersOfParent…（親会社株主に帰属
     # する当期純利益）。NetIncomeLoss… は提出会社単体の欄で、三菱UFJでは
@@ -283,8 +293,11 @@ def is_consolidated(row: dict[str, str]) -> bool:
 
 
 def summary_rows(rows: list[dict[str, str]]) -> list[dict[str, str]]:
-    """「主要な経営指標等」の行だけにする。"""
-    return [r for r in rows if "SummaryOfBusinessResults" in r.get(ELEMENT, "")]
+    """「主要な経営指標等」の行だけにする。
+
+    ファミリーは1つではない。``SUMMARY_FAMILIES`` を参照。
+    """
+    return [r for r in rows if any(f in r.get(ELEMENT, "") for f in SUMMARY_FAMILIES)]
 
 
 def consolidated_rows(rows: list[dict[str, str]]) -> list[dict[str, str]]:

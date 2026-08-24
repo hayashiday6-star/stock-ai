@@ -132,8 +132,12 @@ def csv_text(*entries: tuple[str, ...]) -> str:
 
 
 def test_read_csv_zip_reads_the_body(fixture_bytes: bytes) -> None:
-    """本体 CSV の全行が読める。"""
-    assert len(read_csv_zip(make_zip(fixture_bytes))) == 187
+    """本体 CSV の全行が読める。
+
+    「主要な経営指標等」の2ファミリー（160行）と ``jpdei``（27行）、そして
+    ``KeyFinancialData``（5行）。
+    """
+    assert len(read_csv_zip(make_zip(fixture_bytes))) == 192
 
 
 def test_read_csv_zip_ignores_the_audit_reports(fixture_bytes: bytes) -> None:
@@ -144,7 +148,7 @@ def test_read_csv_zip_ignores_the_audit_reports(fixture_bytes: bytes) -> None:
     assert AUDIT_CSV < MAIN_CSV
     audit = utf16(csv_text(("NetSalesSummaryOfBusinessResults", "当期", "1")))
     body = make_zip(audit, audit, fixture_bytes, names=(AUDIT_CSV, AUDIT_CSV2, MAIN_CSV))
-    assert len(read_csv_zip(body)) == 187
+    assert len(read_csv_zip(body)) == 192
 
 
 def test_read_csv_zip_warns_when_the_body_is_ambiguous(
@@ -155,7 +159,7 @@ def test_read_csv_zip_warns_when_the_body_is_ambiguous(
     with caplog.at_level(logging.WARNING):
         assert (
             len(read_csv_zip(make_zip(fixture_bytes, fixture_bytes, names=(MAIN_CSV, other))))
-            == 187
+            == 192
         )
     assert "本体候補が 2 件" in caplog.text
 
@@ -1113,3 +1117,35 @@ def test_total_assets_needs_the_context_here_too(toyota_rows: list[dict[str, str
     bases = {element_name(r): is_consolidated(r) for r in summary_rows(toyota_rows)}
     assert bases["TotalAssetsIFRSSummaryOfBusinessResults"] is True
     assert bases["TotalAssetsSummaryOfBusinessResults"] is False
+
+
+# --- 要素ファミリーが1つではない ------------------------------------------
+
+
+def test_the_key_financial_data_family_is_read_too(rows: list[dict[str, str]]) -> None:
+    """日立の提出会社単体の売上収益は ``RevenueKeyFinancialData`` にしか無い。
+
+    ``SummaryOfBusinessResults`` だけを見ていると、このファミリーにしか無い項目が
+    丸ごと落ちる。列が空欄になるだけで例外は出ない。
+    """
+    families = {element_name(r) for r in summary_rows(rows)}
+    assert "RevenueKeyFinancialData" in families
+    assert "RevenueIFRSSummaryOfBusinessResults" in families
+
+
+def test_the_parent_revenue_does_not_displace_the_consolidated_one(
+    rows: list[dict[str, str]], years: dict[str, AnnualFigures]
+) -> None:
+    """別ファミリーを読んでも、連結の絞り込みが先に効く。
+
+    日立の単体売上収益は 18,431億、連結は 105,868億。ファミリーを広げたことで
+    単体が候補に入るが、コンテキストで落ちるので取られない。
+    """
+    (parent,) = [
+        r
+        for r in summary_rows(rows)
+        if element_name(r) == "RevenueKeyFinancialData" and r["相対年度"] == "当期"
+    ]
+    assert parent["値"] == "1843173000000"
+    assert not is_consolidated(parent)
+    assert years["当期"].revenue == 10_586_781_000_000.0
