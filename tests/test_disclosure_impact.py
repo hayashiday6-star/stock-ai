@@ -476,3 +476,148 @@ def test_summarize_by_revision_columns_and_empty_input() -> None:
         "std_excess_return",
     ]
     assert summary.empty
+
+
+# ---------------------------------------------------------------------------
+# Next-year guidance seeding, against figures taken from a live 7203 payload
+# ---------------------------------------------------------------------------
+
+# Fields as returned by /fins/summary for 7203 on the dates shown. The
+# full-year rows carry no F* at all - their guidance for the coming year is
+# in NxF* - which is exactly what makes the seeding necessary.
+_TOYOTA_FY_2026 = {
+    "DiscDate": "2026-05-08",
+    "DiscTime": "15:30",
+    "DocType": "FYFinancialStatements_Consolidated_IFRS",
+    "CurPerType": "FY",
+    "CurFYEn": "2026-03-31",
+    "NxtFYEn": "2027-03-31",
+    "NxFSales": "51000000000000",
+    "NxFOP": "3000000000000",
+    "NxFNp": "3000000000000",
+    "NxFEPS": "251.25",
+}
+_TOYOTA_1Q_2027 = {
+    "DiscDate": "2026-08-04",
+    "DiscTime": "15:30",
+    "DocType": "1QFinancialStatements_Consolidated_IFRS",
+    "CurPerType": "1Q",
+    "CurFYEn": "2027-03-31",
+    "NxtFYEn": "2028-03-31",
+    "FSales": "54000000000000",
+    "FOP": "3400000000000",
+    "FNP": "3250000000000",
+    "FEPS": "272.17",
+}
+_TOYOTA_FY_2025 = {
+    "DiscDate": "2025-05-08",
+    "DiscTime": "15:30",
+    "DocType": "FYFinancialStatements_Consolidated_IFRS",
+    "CurPerType": "FY",
+    "CurFYEn": "2025-03-31",
+    "NxtFYEn": "2026-03-31",
+    "NxFSales": "48500000000000",
+    "NxFOP": "3800000000000",
+    "NxFNp": "3100000000000",
+    "NxFEPS": "237.57",
+}
+_TOYOTA_1Q_2026 = {
+    "DiscDate": "2025-08-07",
+    "DiscTime": "15:30",
+    "DocType": "1QFinancialStatements_Consolidated_IFRS",
+    "CurPerType": "1Q",
+    "CurFYEn": "2026-03-31",
+    "NxtFYEn": "2027-03-31",
+    "FSales": "48500000000000",
+    "FOP": "3200000000000",
+    "FNP": "2660000000000",
+    "FEPS": "204.09",
+}
+
+
+def test_first_quarter_raise_is_detected_against_next_year_guidance() -> None:
+    """7203 raised FY2027 net profit guidance at 1Q: 3.00兆 -> 3.25兆."""
+    events = build_disclosure_events("7203", [_TOYOTA_FY_2026, _TOYOTA_1Q_2027])
+    full_year, first_quarter = events
+
+    # Issuing guidance is not revising it.
+    assert full_year.is_revision is False
+    assert full_year.revision_direction == "none"
+
+    assert first_quarter.is_revision is True
+    assert first_quarter.revision_direction == "up"
+    assert first_quarter.direction_metric() == "NP"
+    assert first_quarter.revised_from["NP"] == 3_000_000_000_000.0
+    assert first_quarter.forecasts["NP"] == 3_250_000_000_000.0
+    # +8.3%, computed independently of the code under test.
+    raise_pct = first_quarter.forecasts["NP"] / first_quarter.revised_from["NP"] - 1
+    assert raise_pct == pytest.approx(0.0833, abs=1e-4)
+
+
+def test_first_quarter_cut_is_detected_against_next_year_guidance() -> None:
+    """7203 cut FY2026 net profit guidance at 1Q: 3.10兆 -> 2.66兆."""
+    events = build_disclosure_events("7203", [_TOYOTA_FY_2025, _TOYOTA_1Q_2026])
+    _full_year, first_quarter = events
+
+    assert first_quarter.revision_direction == "down"
+    assert first_quarter.revised_from["NP"] == 3_100_000_000_000.0
+    assert first_quarter.forecasts["NP"] == 2_660_000_000_000.0
+    # -14.2%.
+    cut_pct = first_quarter.forecasts["NP"] / first_quarter.revised_from["NP"] - 1
+    assert cut_pct == pytest.approx(-0.1419, abs=1e-4)
+
+
+def test_operating_profit_and_sales_revisions_are_seeded_too() -> None:
+    events = build_disclosure_events("7203", [_TOYOTA_FY_2025, _TOYOTA_1Q_2026])
+    first_quarter = events[1]
+    # OP cut 3.80兆 -> 3.20兆; Sales guidance unchanged at 48.5兆, so absent.
+    assert first_quarter.revised_from["OP"] == 3_800_000_000_000.0
+    assert "Sales" not in first_quarter.revised_from
+
+
+def test_seeding_uses_nxtfyen_rather_than_adding_a_year() -> None:
+    """A company changing its fiscal year end must not have guidance misfiled."""
+    records = [
+        {
+            "DiscDate": "2024-05-10",
+            "DiscTime": "15:30",
+            "CurFYEn": "2024-03-31",
+            # A 9-month transition period ending in the same calendar year.
+            "NxtFYEn": "2024-12-31",
+            "NxFNp": "1000",
+        },
+        {
+            "DiscDate": "2024-08-09",
+            "DiscTime": "15:30",
+            "CurFYEn": "2024-12-31",
+            "FNP": "1200",
+        },
+    ]
+    events = build_disclosure_events("1234", records)
+    # Adding a year would have filed the guidance under 2025 and missed this.
+    assert events[1].revision_direction == "up"
+    assert events[1].revised_from["NP"] == 1000.0
+
+
+def test_seeding_falls_back_to_the_following_year_without_nxtfyen() -> None:
+    records = [
+        {"DiscDate": "2024-05-10", "DiscTime": "15:30", "CurFYEn": "2024-03-31", "NxFNp": "1000"},
+        {"DiscDate": "2024-08-09", "DiscTime": "15:30", "CurFYEn": "2025-03-31", "FNP": "900"},
+    ]
+    events = build_disclosure_events("1234", records)
+    assert events[1].revision_direction == "down"
+
+
+def test_uppercase_next_profit_spelling_is_accepted_as_a_fallback() -> None:
+    records = [
+        {"DiscDate": "2024-05-10", "DiscTime": "15:30", "CurFYEn": "2024-03-31", "NxFNP": "1000"},
+        {"DiscDate": "2024-08-09", "DiscTime": "15:30", "CurFYEn": "2025-03-31", "FNP": "1100"},
+    ]
+    events = build_disclosure_events("1234", records)
+    assert events[1].revision_direction == "up"
+
+
+def test_guidance_with_no_following_disclosure_produces_no_revision() -> None:
+    events = build_disclosure_events("7203", [_TOYOTA_FY_2026])
+    assert len(events) == 1
+    assert events[0].is_revision is False

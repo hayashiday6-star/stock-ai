@@ -16,8 +16,21 @@ Scope and the two design decisions this rests on:
   target of ``F*``, not the reporting period ``CurPerType``, so a Q2 actuals
   release and a same-week revision-only notice land in the same group), sort
   by disclosure time, and diff each row against the previous one in the
-  group. The first disclosure of a fiscal year has no "before" and is never a
-  revision by construction.
+  group.
+
+  A fiscal year's opening forecast does **not** arrive in that year's own
+  ``F*`` fields. The full-year announcement leaves ``F*`` blank - the year it
+  reports is over - and issues its guidance for the coming year in ``NxF*``
+  instead (verified on 7203, 2026-08). So ``NxF*`` is carried forward as the
+  opening value of the year named by ``NxtFYEn``, and the next 1Q is measured
+  against it. Skipping that step is not a small loss: on 7203 it hid a +8.3%
+  raise and a -14.2% cut, one in each of the two years measured, and made
+  every 1Q in the sample read as "no revision".
+
+  Issuing guidance is not revising it, so a ``NxF*`` value only seeds - it is
+  never itself reported as a revision. A full-year announcement therefore
+  still reads as "none", correctly: it originates a forecast rather than
+  changing one.
 
 - After-hours disclosures (disclosed once the TSE session has closed) react
   on the next trading day; intraday disclosures (during the session) can
@@ -74,6 +87,22 @@ _FORECAST_FIELD = {metric: f"F{metric}" for metric in FORECAST_METRICS}
 #: not an earnings direction (see
 #: :attr:`DisclosureEvent.revision_direction`).
 DIRECTION_PRIORITY: tuple[str, ...] = ("NP", "OP", "Sales", "EPS")
+
+#: Next-fiscal-year forecast fields, per metric. Verified against a live
+#: payload (7203, 2026-08): the full-year announcement leaves every ``F*``
+#: blank and carries its new guidance in ``NxF*`` instead, so without these
+#: a fiscal year's first ``F*`` has nothing to compare against and every 1Q
+#: reads as "no revision". ``NP`` is spelled ``NxFNp`` - lowercase ``p``,
+#: unlike ``FNP`` - and the uppercase form is listed only as a fallback in
+#: case the payload is ever normalized.
+_NEXT_FORECAST_FIELDS: dict[str, tuple[str, ...]] = {
+    "Sales": ("NxFSales",),
+    "OP": ("NxFOP",),
+    "OdP": ("NxFOdP",),
+    "NP": ("NxFNp", "NxFNP"),
+    "EPS": ("NxFEPS",),
+    "DivAnn": ("NxFDivAnn",),
+}
 
 
 def _to_float(value: Any) -> float | None:
@@ -192,6 +221,30 @@ def _target_fiscal_year(record: dict[str, Any]) -> int | None:
     return end.year if end else None
 
 
+def _next_fiscal_year(record: dict[str, Any]) -> int | None:
+    """The fiscal year ``NxF*`` forecasts apply to.
+
+    Prefers the payload's own ``NxtFYEn`` over adding a year to ``CurFYEn``:
+    a company that moves its fiscal year end has a next year that is not
+    twelve months later, and arithmetic would file its guidance against a
+    year that does not exist.
+    """
+    explicit = _parse_date(_text(record, "NxtFYEn"))
+    if explicit is not None:
+        return explicit.year
+    current = _target_fiscal_year(record)
+    return current + 1 if current is not None else None
+
+
+def _first_float(record: dict[str, Any], keys: tuple[str, ...]) -> float | None:
+    """First parseable numeric value among ``keys``."""
+    for key in keys:
+        value = _to_float(record.get(key))
+        if value is not None:
+            return value
+    return None
+
+
 def build_disclosure_events(symbol: str, records: list[dict[str, Any]]) -> list[DisclosureEvent]:
     """Turn raw ``/fins/summary`` records into disclosure events with revisions.
 
@@ -244,6 +297,20 @@ def build_disclosure_events(symbol: str, records: list[dict[str, Any]]) -> list[
                 if previous is not None and previous != value:
                     revised_from[metric] = previous
                 last_forecast[key] = value
+
+        # Carry next-year guidance forward as the opening value for that year,
+        # so the year's first F* has something to be measured against. This
+        # only *seeds*: issuing guidance is not revising it, and the full-year
+        # announcement that carries NxF* has no earlier forecast of that year
+        # to differ from. Without this every 1Q reads as "no revision" - and
+        # on 7203 that hid a +8.3% raise and a -14.2% cut, one in each of the
+        # two years the window covers.
+        next_year = _next_fiscal_year(record)
+        if next_year is not None:
+            for metric, keys in _NEXT_FORECAST_FIELDS.items():
+                guidance = _first_float(record, keys)
+                if guidance is not None:
+                    last_forecast[(next_year, metric)] = guidance
 
         events.append(
             DisclosureEvent(
