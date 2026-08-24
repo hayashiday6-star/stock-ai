@@ -503,3 +503,90 @@ def test_the_edinet_window_is_wide_enough_for_an_annual_report() -> None:
         if hasattr(cell.cell_contents, "lookback_days")
     ]
     assert [s.lookback_days for s in sources] == [400]
+
+
+# --- 保存された財務諸表を見る ---------------------------------------------
+
+
+def _stored(database, symbol: str, reports) -> None:
+    from stock_ai.database.repository import FinancialStatementRepository, get_or_create_security
+
+    with database.session() as session:
+        get_or_create_security(session, symbol, market="JP")
+        FinancialStatementRepository(session).upsert_reports(symbol, reports, market="JP")
+
+
+def test_statements_show_prints_what_was_stored(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``statements`` は書くだけで、書いた結果を見る手段が無かった。
+
+    画面が何も返さないとき、データが無いのか閾値が厳しいのかを、ここを見ずに
+    区別できない。実測値は日立の2026年3月期（EDINET 経由）。
+    """
+    from stock_ai import cli
+    from stock_ai.data.types import FinancialReport
+    from stock_ai.database.engine import Database
+
+    database = Database("sqlite:///:memory:")
+    database.create_all()
+    _stored(
+        database,
+        "6501",
+        [
+            FinancialReport(
+                symbol="6501",
+                fiscal_year=2026,
+                revenue=10_586_781_000_000.0,
+                net_income=802_368_000_000.0,
+                equity=6_568_369_000_000.0,
+                shares_outstanding=4_535_560_000.0,
+            )
+        ],
+    )
+    monkeypatch.setattr(cli, "Database", lambda: database)
+
+    result = runner.invoke(cli.app, ["statements-show", "6501"])
+
+    assert result.exit_code == 0
+    assert "2026" in result.output
+    assert "105,868" in result.output  # 売上は億円
+    assert "4,536" in result.output  # 株式数は百万株
+    database.dispose()
+
+
+def test_statements_show_prints_empty_columns_too(monkeypatch: pytest.MonkeyPatch) -> None:
+    """埋まらなかった列も出す。空欄であること自体が知りたいこと。
+
+    EDINET から取ると 営業利益・EPS・BPS・1株配当 は空になる。黙って列ごと
+    消すと、取れていないのか元から無いのかが分からなくなる。
+    """
+    from stock_ai import cli
+    from stock_ai.data.types import FinancialReport
+    from stock_ai.database.engine import Database
+
+    database = Database("sqlite:///:memory:")
+    database.create_all()
+    _stored(database, "9020", [FinancialReport(symbol="9020", fiscal_year=2022, revenue=1.0)])
+    monkeypatch.setattr(cli, "Database", lambda: database)
+
+    result = runner.invoke(cli.app, ["statements-show", "9020"])
+
+    assert result.exit_code == 0
+    for label in ("営業利益", "EPS", "BPS", "1株配当"):
+        assert label in result.output
+    database.dispose()
+
+
+def test_statements_show_says_when_nothing_is_stored(monkeypatch: pytest.MonkeyPatch) -> None:
+    """空の表を出すより、無いと言う。"""
+    from stock_ai import cli
+    from stock_ai.database.engine import Database
+
+    database = Database("sqlite:///:memory:")
+    database.create_all()
+    monkeypatch.setattr(cli, "Database", lambda: database)
+
+    result = runner.invoke(cli.app, ["statements-show", "6501"])
+
+    assert result.exit_code == 1
+    assert "6501" in result.output
+    database.dispose()

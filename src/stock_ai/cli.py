@@ -487,6 +487,80 @@ def statements(
         raise typer.Exit(code=1)
 
 
+#: ``statements-show`` が並べる列。空の列も出す――取れていないことが見えるように。
+STATEMENT_COLUMNS: tuple[tuple[str, str], ...] = (
+    ("revenue", "売上"),
+    ("operating_income", "営業利益"),
+    ("net_income", "純利益"),
+    ("equity", "自己資本"),
+    ("shares_outstanding", "株式数"),
+    ("eps", "EPS"),
+    ("bps", "BPS"),
+    ("dividend_per_share", "1株配当"),
+)
+
+
+def _statement_cell(column: str, value: float | None) -> str:
+    """Render one cell: 億円 for amounts, 百万株 for share counts, yen as reported.
+
+    単位を混ぜたまま並べると、桁で異常に気付けなくなる。
+    """
+    if value is None:
+        return "-"
+    if column in ("eps", "bps", "dividend_per_share"):
+        return f"{value:,.2f}"
+    if column == "shares_outstanding":
+        return f"{value / 1e6:,.0f}"
+    return f"{value / 1e8:,.0f}"
+
+
+@app.command(name="statements-show")
+def statements_show(
+    symbols: list[str] = typer.Argument(..., help="Symbols to show, e.g. 6501 7203"),
+) -> None:
+    """Show the statement history already stored for SYMBOLS.
+
+    ``statements`` writes; this reads. Nothing else in the CLI shows what
+    landed in ``financial_statements`` - the screens consume it, but a screen
+    returning nothing does not say whether the data is absent or the threshold
+    is wrong. Amounts are in 億円, share counts in 百万株, per-share values as
+    reported.
+
+    Columns that were never filled are still printed. An empty column is a
+    finding: it says the source had nothing for it, which is what a silently
+    dropped element looks like.
+    """
+    settings = get_settings()
+    configure_logging(settings.log_level)
+
+    database = Database()
+    database.create_all()
+
+    missing: list[str] = []
+    for symbol in symbols:
+        with database.session() as session:
+            reports = FinancialStatementRepository(session).get_reports(symbol)
+        if not reports:
+            missing.append(symbol)
+            continue
+
+        table = Table(title=f"{symbol}: stored statements (億円 / 百万株)")
+        table.add_column("FY", style="cyan", justify="right")
+        for _column, label in STATEMENT_COLUMNS:
+            table.add_column(label, justify="right")
+        for report in reports:
+            table.add_row(
+                str(report.fiscal_year),
+                *(_statement_cell(c, getattr(report, c)) for c, _label in STATEMENT_COLUMNS),
+            )
+        console.print(table)
+
+    for symbol in missing:
+        console.print(f"[yellow]{symbol}: 保存された財務諸表がありません。[/]")
+    if missing:
+        raise typer.Exit(code=1)
+
+
 @app.command()
 def profile(
     symbols: list[str] = typer.Argument(..., help="Symbols whose sector to fetch."),
