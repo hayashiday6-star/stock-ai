@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import logging
 from typing import Any
 
 import pytest
@@ -28,7 +29,13 @@ _TODAY = dt.date(2024, 6, 30)
 
 
 def _statements() -> list[dict[str, Any]]:
-    """Records in the real V2 ``fins/summary`` shape (Sales/NP/Eq/EPS/BPS)."""
+    """Records in the real V2 ``fins/summary`` shape (Sales/NP/Eq/EPS/BPS).
+
+    数字は内部で整合させてある: 純利益 90,000 ÷ 株数 1,000 = EPS 90、純資産
+    600,000 ÷ 1,000 = BPS 600、配当総額 40,000 ÷ 1,000 = 1株配当 40。集計値から
+    出しても1株当たりから出しても同じ比率になるので、この整合が崩れているケース
+    （分割）を別のテストで扱える。
+    """
     return [
         {
             "DiscDate": "2024-02-14",
@@ -41,9 +48,10 @@ def _statements() -> list[dict[str, Any]]:
             "Sales": "1200000",
             "NP": "90000",
             "Eq": "600000",
-            "EPS": "100",
-            "BPS": "1000",
+            "EPS": "90",
+            "BPS": "600",
             "DivAnn": "40",
+            "DivTotalAnn": "40000",
             "ShOutFY": "1000",
         },
     ]
@@ -62,11 +70,82 @@ def test_normalize_statement_uses_latest_and_computes_roe() -> None:
 
 
 def test_normalize_statement_with_price_computes_ratios() -> None:
+    """整合した開示では、集計値から出しても1株当たりから出しても同じ値になる。"""
     result = normalize_statement("7203", _statements(), _TODAY, price=2000.0)
-    assert result.per == pytest.approx(2000 / 100)  # price / EPS
-    assert result.pbr == pytest.approx(2000 / 1000)  # price / BPS
-    assert result.dividend_yield == pytest.approx(40 / 2000)
     assert result.market_cap == pytest.approx(2000 * 1000)
+    assert result.per == pytest.approx(2_000_000 / 90_000) == pytest.approx(2000 / 90)
+    assert result.pbr == pytest.approx(2_000_000 / 600_000) == pytest.approx(2000 / 600)
+    assert result.dividend_yield == pytest.approx(40_000 / 2_000_000)
+
+
+def _after_a_split(factor: int) -> list[dict[str, Any]]:
+    """直近の通期開示のあとに ``factor`` 倍の分割があった状態。
+
+    株数だけが新しい尺度で、EPS・BPS・1株配当は開示時点のまま。価格は分割後。
+    実際にこうなっていた: 東京きらぼしの PER 1.228（実際は 11.56）、住友電工の
+    4.353（同 17.73）、花王の 12.324（同 24.23）。
+    """
+    records = _statements()
+    records[-1]["ShOutFY"] = str(1000 * factor)
+    return records
+
+
+def test_a_split_after_the_annual_disclosure_does_not_distort_the_ratios() -> None:
+    """1株当たりの値が古い尺度でも、比率は集計値どうしなので動かない。
+
+    分割で価格は 1/factor になる。株数は factor 倍。EPS・BPS・1株配当は据え置き。
+    """
+    result = normalize_statement("7203", _after_a_split(10), _TODAY, price=200.0)
+
+    assert result.market_cap == pytest.approx(2_000_000)  # 200 x 10,000 株
+    assert result.per == pytest.approx(2_000_000 / 90_000)  # 分割前と同じ
+    assert result.pbr == pytest.approx(2_000_000 / 600_000)
+    assert result.dividend_yield == pytest.approx(40_000 / 2_000_000)
+
+
+def test_the_per_share_route_is_what_went_wrong() -> None:
+    """1株当たりで出すと、まさに分割の倍率だけ小さく出る。
+
+    直す前の実装がこれで、銀行が PBR 0.14 倍として画面の先頭に並んでいた。
+    """
+    per_share_route = 200.0 / 90
+    aggregate_route = 2_000_000 / 90_000
+    assert per_share_route == pytest.approx(2.22, abs=0.01)  # PER 2.2 倍に見える
+    assert aggregate_route / per_share_route == pytest.approx(10.0)  # ずれは倍率そのもの
+
+
+def test_a_stale_per_share_figure_is_reported(caplog: pytest.LogCaptureFixture) -> None:
+    """黙って直すより、食い違いがあったことを言う。
+
+    差は分割の倍率そのものなので、同じ古い尺度の値が別の場所で使われていないかを
+    疑う手掛かりになる。
+    """
+    with caplog.at_level(logging.WARNING):
+        normalize_statement("7203", _after_a_split(10), _TODAY, price=200.0)
+    assert "株式分割" in caplog.text
+
+
+def test_no_warning_when_the_two_routes_agree(caplog: pytest.LogCaptureFixture) -> None:
+    """自己株式を除いた期中平均株数による1割程度のずれは正常。雑音にしない。"""
+    with caplog.at_level(logging.WARNING):
+        normalize_statement("7203", _statements(), _TODAY, price=2000.0)
+    assert "株式分割" not in caplog.text
+
+
+def test_per_share_values_are_the_fallback_when_aggregates_are_missing() -> None:
+    """集計値が無い開示もある。そのときだけ1株当たりから出す。"""
+    records = _statements()
+    records[-1].pop("NP")
+    records[-1].pop("Eq")
+    records[-1].pop("DivTotalAnn")
+    records[0].pop("NP")
+    records[0].pop("Eq")
+
+    result = normalize_statement("7203", records, _TODAY, price=2000.0)
+
+    assert result.per == pytest.approx(2000 / 90)
+    assert result.pbr == pytest.approx(2000 / 600)
+    assert result.dividend_yield == pytest.approx(40 / 2000)
 
 
 def test_normalize_statement_accepts_v1_field_names() -> None:

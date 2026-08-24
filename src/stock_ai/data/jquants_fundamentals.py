@@ -128,6 +128,46 @@ def _earnings_are_consistent(symbol: str, record: dict[str, Any]) -> bool:
     return True
 
 
+#: 集計値から出した比率と1株当たりから出した比率が、これ以上食い違ったら知らせる。
+#:
+#: 分割は倍率2以上で起きる。1割程度のずれは、自己株式を除いた期中平均株数で EPS が
+#: 計算されることによるもので、正常。
+_STALE_PER_SHARE_RATIO = 1.5
+
+
+def _ratio(numerator: float | None, denominator: float | None) -> float | None:
+    """``numerator / denominator``。分母が無い・0 なら ``None``。
+
+    0 除算だけでなく ``None`` も弾くので、集計値が欠けていれば呼び出し側は次の
+    候補へ落ちられる。
+    """
+    if numerator is None or not denominator:
+        return None
+    return numerator / denominator
+
+
+def _warn_if_per_share_is_stale(
+    symbol: str, aggregate: float | None, per_share: float | None
+) -> None:
+    """同じ比率が2通りで大きく食い違うなら、1株当たりの値が古い尺度にある。
+
+    値そのものは集計値のほうを使うので実害は無いが、この差は分割の倍率そのもので、
+    同じ古い尺度の値がどこか別の場所で使われていないかを疑う手掛かりになる。
+    """
+    if aggregate is None or per_share is None or aggregate <= 0 or per_share <= 0:
+        return
+    spread = max(aggregate, per_share) / min(aggregate, per_share)
+    if spread >= _STALE_PER_SHARE_RATIO:
+        logger.warning(
+            "%s: PER が集計値で %.2f、1株当たりで %.2f（%.1f倍の差）。"
+            "直近の通期開示のあとに株式分割があった可能性があります。集計値を使います。",
+            symbol,
+            aggregate,
+            per_share,
+            spread,
+        )
+
+
 def _latest_annual(records: list[dict[str, Any]]) -> dict[str, Any] | None:
     """Return the newest record covering a full fiscal year, if there is one.
 
@@ -197,6 +237,7 @@ def normalize_statement(
     equity = _newest_value(records, "Eq", "Equity")
     bps = _newest_value(records, "BPS")
     dividend = _newest_value(records, "DivAnn")
+    dividend_total = _newest_value(records, "DivTotalAnn")
     shares = _newest_value(records, "ShOutFY")
 
     # The exchange publishes its own ROE. Prefer it: it is computed against
@@ -206,12 +247,24 @@ def normalize_statement(
     roe = published_roe
     if roe is None and trustworthy and net_income is not None and equity:
         roe = net_income / equity
-    per = price / eps if (price is not None and eps) else None
-    pbr = price / bps if (price is not None and bps) else None
-    dividend_yield = plausible_dividend_yield(
-        dividend / price if (price and dividend is not None) else None, symbol
-    )
     market_cap = price * shares if (price is not None and shares) else None
+
+    # 比率は集計値どうしで出す。1株当たりの値は開示時点の株数で報告され、価格は
+    # 今日のもの。その間に分割が入ると、どちらも正しいまま比が桁で狂う。
+    #
+    # 実測（2026-08-10 の保存データ）: price/eps で出した PER は東京きらぼし
+    # 1.228（時価総額÷純利益では 11.56）、住友電工 4.353（同 17.73）、花王
+    # 12.324（同 24.23）。ずれの比 9.42 / 4.07 / 1.97 はそのまま分割の倍率で、
+    # 銀行が PBR 0.14 倍の万年割安株として画面の先頭に並んでいた。
+    #
+    # 時価総額・純利益・純資産・配当総額はどれも会社全体の量なので、株数を何倍に
+    # しても変わらない。
+    per = _ratio(market_cap, net_income) or _ratio(price, eps)
+    pbr = _ratio(market_cap, equity) or _ratio(price, bps)
+    dividend_yield = plausible_dividend_yield(
+        _ratio(dividend_total, market_cap) or _ratio(dividend, price), symbol
+    )
+    _warn_if_per_share_is_stale(symbol, per, _ratio(price, eps))
 
     if annual is None:
         logger.info(
