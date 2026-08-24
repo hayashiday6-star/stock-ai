@@ -71,6 +71,8 @@ from stock_ai.data.jquants_provider import JQuantsPriceProvider
 from stock_ai.data.markets import split_by_market, to_yahoo_symbol
 from stock_ai.data.service import FundamentalsService, IngestionService, IngestResult
 from stock_ai.data.tachibana import TachibanaPriceProvider
+from stock_ai.data.tachibana import default_version as tachibana_default_version
+from stock_ai.data.tachibana import version_warning as tachibana_version_warning
 from stock_ai.data.types import FinancialReport, Importance
 from stock_ai.data.universe import JQuantsUniverse, Segment
 from stock_ai.data.yfinance_provider import (
@@ -187,6 +189,18 @@ def info() -> None:
     # make a single call. Both halves are needed, so both are shown, and the
     # one that goes missing on its own is the one that is easy to overlook.
     table.add_row("anthropic sdk", _import_status("anthropic"))
+    # 日本株のデータが全部どこから来るかを決める2つ。ここに出ていないと、切り替えた
+    # つもりで切り替わっていないことに、数字が変わらないという形でしか気付けない。
+    for label, chosen, allowed in (
+        ("jp_price_source", settings.jp_price_source, JP_SOURCES),
+        ("jp_statement_source", settings.jp_statement_source, STATEMENT_SOURCES),
+    ):
+        note = "" if chosen.strip().lower() in allowed else "  [red](未対応の値)[/]"
+        table.add_row(label, f"{chosen or '(未設定)'}{note}")
+    if settings.jp_price_source.strip().lower() == "tachibana":
+        version = settings.tachibana_api_version or tachibana_default_version()
+        warning = tachibana_version_warning(version)
+        table.add_row("tachibana version", f"{version}{'  ' + warning if warning else ''}")
     for label, value in _secret_status(settings):
         table.add_row(label, _secret_summary(value))
     console.print(table)

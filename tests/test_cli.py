@@ -5,6 +5,7 @@ from typer.testing import CliRunner
 
 from stock_ai import __version__
 from stock_ai.cli import app
+from stock_ai.config.settings import get_settings
 
 runner = CliRunner()
 
@@ -590,3 +591,75 @@ def test_statements_show_says_when_nothing_is_stored(monkeypatch: pytest.MonkeyP
     assert result.exit_code == 1
     assert "6501" in result.output
     database.dispose()
+
+
+# --- info が取得元を出す ---------------------------------------------------
+
+
+def test_info_shows_where_japanese_data_comes_from(monkeypatch: pytest.MonkeyPatch) -> None:
+    """日本株のデータが全部どこから来るかを決める2つを出す。
+
+    ここに出ていないと、切り替えたつもりで切り替わっていないことに、数字が変わら
+    ないという形でしか気付けない。
+    """
+    monkeypatch.setenv("JP_PRICE_SOURCE", "tachibana")
+    monkeypatch.setenv("JP_STATEMENT_SOURCE", "edinet")
+    get_settings.cache_clear()
+
+    result = runner.invoke(app, ["info"])
+
+    assert result.exit_code == 0
+    assert "jp_price_source" in result.output
+    assert "tachibana" in result.output
+    assert "jp_statement_source" in result.output
+    assert "edinet" in result.output
+    get_settings.cache_clear()
+
+
+def test_info_flags_a_source_name_that_is_not_supported(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """綴り違いは黙って既定に落ちる形では出さない。
+
+    ``fetch`` は実行時に弾くが、それは実行して初めて分かる。設定を見る場所で
+    見えるほうが早い。
+    """
+    monkeypatch.setenv("JP_PRICE_SOURCE", "tachibna")
+    get_settings.cache_clear()
+
+    result = runner.invoke(app, ["info"])
+
+    assert result.exit_code == 0
+    assert "未対応" in result.output
+    get_settings.cache_clear()
+
+
+def test_info_shows_the_tachibana_deadline_when_it_is_selected(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """版には停止日がある。使うと決めた時点で見えるべきもの。
+
+    v4r9 は 2026-09-27 に停止する。切り替えた日にこれが目に入らないと、停止日に
+    株価取得が黙って止まる。
+    """
+    monkeypatch.setenv("JP_PRICE_SOURCE", "tachibana")
+    get_settings.cache_clear()
+
+    result = runner.invoke(app, ["info"])
+
+    assert "tachibana version" in result.output
+    assert "2026-09-27" in result.output
+    get_settings.cache_clear()
+
+
+def test_info_stays_quiet_about_tachibana_when_it_is_not_used(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """使っていない API の期限は雑音。"""
+    monkeypatch.setenv("JP_PRICE_SOURCE", "jquants")
+    get_settings.cache_clear()
+
+    result = runner.invoke(app, ["info"])
+
+    assert "tachibana version" not in result.output
+    get_settings.cache_clear()
