@@ -324,7 +324,13 @@ def test_summarize_by_doc_type_drops_excluded_rows() -> None:
 
 def test_summarize_by_doc_type_empty_input() -> None:
     summary = summarize_by_doc_type(pd.DataFrame())
-    assert list(summary.columns) == ["doc_type", "n", "median_excess_return", "std_excess_return"]
+    assert list(summary.columns) == [
+        "doc_type",
+        "n",
+        "symbols",
+        "median_excess_return",
+        "std_excess_return",
+    ]
     assert summary.empty
 
 
@@ -479,6 +485,7 @@ def test_summarize_by_revision_columns_and_empty_input() -> None:
         "doc_type",
         "revision_direction",
         "n",
+        "symbols",
         "median_excess_return",
         "std_excess_return",
     ]
@@ -690,3 +697,29 @@ def test_flat_and_unmeasurable_land_in_separate_summary_rows() -> None:
     )
     assert directions["flat"] == pytest.approx(0.05)
     assert directions["n/a"] == pytest.approx(-0.05)
+
+
+def test_symbols_column_counts_companies_not_observations() -> None:
+    """A row's n can be comfortable while resting on very few companies.
+
+    Three years of one company's 1Q reports is n=3 from a single name, and
+    a standard error computed on n=3 would treat one company's habit of
+    always raising guidance as three independent findings.
+    """
+    records = [
+        {
+            "DiscDate": f"{year}-05-10",
+            "DiscTime": "15:30",
+            "DocType": "T",
+            "CurFYEn": f"{year}-03-31",
+        }
+        for year in (2024, 2025, 2026)
+    ]
+    events = build_disclosure_events("AAAA", records)
+    days = ["2024-05-10", "2024-05-13", "2025-05-12", "2025-05-13", "2026-05-11", "2026-05-12"]
+    prices = _bars([(d, 1000.0) for d in days])
+    topix = _topix([(d, 2000.0) for d in days])
+
+    summary = summarize_by_doc_type(label_disclosures(events, {"AAAA": prices}, topix))
+    assert int(summary.loc[0, "n"]) == 3
+    assert int(summary.loc[0, "symbols"]) == 1  # three observations, one company

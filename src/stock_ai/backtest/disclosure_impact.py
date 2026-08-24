@@ -567,9 +567,9 @@ def summarize_by_doc_type(labeled: pd.DataFrame) -> pd.DataFrame:
     as a zero-impact observation, which would understate the spread.
 
     Returns:
-        Columns ``doc_type, n, median_excess_return, std_excess_return``,
-        sorted by ``n`` descending. Empty input yields an empty frame with
-        these columns.
+        Columns ``doc_type, n, symbols, median_excess_return,
+        std_excess_return``, sorted by ``n`` descending. Empty input yields an
+        empty frame with these columns.
     """
     return _summarize_by(labeled, ["doc_type"])
 
@@ -591,20 +591,34 @@ def summarize_by_revision(labeled: pd.DataFrame) -> pd.DataFrame:
     :attr:`DisclosureEvent.revision_direction` for how direction is decided.
 
     Returns:
-        Columns ``doc_type, revision_direction, n, median_excess_return,
-        std_excess_return``, sorted by ``n`` descending.
+        Columns ``doc_type, revision_direction, n, symbols,
+        median_excess_return, std_excess_return``, sorted by ``n`` descending.
     """
     return _summarize_by(labeled, ["doc_type", "revision_direction"])
 
 
 def _summarize_by(labeled: pd.DataFrame, keys: list[str]) -> pd.DataFrame:
-    """Aggregate excess return over ``keys``, dropping unlabeled rows."""
-    columns = [*keys, "n", "median_excess_return", "std_excess_return"]
+    """Aggregate excess return over ``keys``, dropping unlabeled rows.
+
+    ``symbols`` sits beside ``n`` because the two differ in a way that
+    decides how much a row supports. Each company contributes one
+    observation per disclosure type per year, so a three-year window turns
+    12 companies into 36 observations - and those 36 are not 36 independent
+    draws: a company that keeps raising guidance contributes the same story
+    three times. The honest denominator for a standard error is nearer
+    ``symbols`` than ``n``, so a row whose ``n`` looks comfortable while its
+    ``symbols`` is single-digit is thinner than it appears.
+    """
+    columns = [*keys, "n", "symbols", "median_excess_return", "std_excess_return"]
     usable = labeled[labeled["excess_return"].notna()] if not labeled.empty else labeled
     if usable.empty:
         return pd.DataFrame(columns=columns)
 
-    grouped = usable.groupby(keys, dropna=False)["excess_return"]
-    summary = grouped.agg(n="count", median_excess_return="median", std_excess_return="std")
+    summary = usable.groupby(keys, dropna=False).agg(
+        n=("excess_return", "count"),
+        symbols=("symbol", "nunique"),
+        median_excess_return=("excess_return", "median"),
+        std_excess_return=("excess_return", "std"),
+    )
     summary = summary.reset_index().sort_values("n", ascending=False, ignore_index=True)
     return summary[columns]

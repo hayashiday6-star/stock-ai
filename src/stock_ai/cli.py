@@ -1772,12 +1772,17 @@ def disclosure_impact(
     table = Table(title=f"excess return by disclosure type ({n_symbols} symbol(s), {years}y)")
     table.add_column("doc_type", style="cyan", overflow="fold")
     table.add_column("n", justify="right")
+    table.add_column("symbols", justify="right")
     table.add_column("median", justify="right")
     table.add_column("std", justify="right")
     for row in summary.itertuples(index=False):
         std_text = f"{row.std_excess_return:.2%}" if pd.notna(row.std_excess_return) else "-"
         table.add_row(
-            row.doc_type or "(unknown)", str(row.n), f"{row.median_excess_return:+.2%}", std_text
+            row.doc_type or "(unknown)",
+            str(row.n),
+            str(row.symbols),
+            f"{row.median_excess_return:+.2%}",
+            std_text,
         )
     console.print(table)
 
@@ -1790,6 +1795,7 @@ def disclosure_impact(
     revision_table.add_column("doc_type", style="cyan", overflow="fold")
     revision_table.add_column("revision", justify="left")
     revision_table.add_column("n", justify="right")
+    revision_table.add_column("symbols", justify="right")
     revision_table.add_column("median", justify="right")
     revision_table.add_column("std", justify="right")
     # n/a is yellow, not dim: those rows are unmeasurable rather than
@@ -1803,6 +1809,7 @@ def disclosure_impact(
             row.doc_type or "(unknown)",
             f"[{style}]{row.revision_direction}[/]",
             str(row.n),
+            str(row.symbols),
             f"{row.median_excess_return:+.2%}",
             std_text,
         )
@@ -1814,6 +1821,13 @@ def disclosure_impact(
         "nothing to compare[/] - a full-year announcement, whose year is over, "
         "or a filer publishing no earnings forecast at all (8306 discloses only "
         "a dividend forecast). Do not read 'n/a' as guidance held.[/]"
+    )
+    console.print(
+        "[dim]Read 'symbols' next to 'n': each company files one disclosure of "
+        "each type per year, so a three-year window turns a handful of "
+        "companies into a comfortable-looking n. Those observations repeat the "
+        "same companies rather than adding independent ones, so a row with a "
+        "single-digit 'symbols' is thinner than its 'n' suggests.[/]"
     )
 
     excluded = int(labeled["exclude_reason"].notna().sum())
