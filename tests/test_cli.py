@@ -442,3 +442,20 @@ def test_fetch_routes_japanese_codes_away_from_yfinance(monkeypatch) -> None:
     assert routed["yfinance"] == ("AAPL",)
     # And it says so, rather than quietly overriding the flag it was given.
     assert "rather than yfinance" in result.stdout
+
+
+def test_symbol_tokens_accept_commas_spaces_and_a_mix() -> None:
+    """A comma-separated list must not reach a provider as one combined code.
+
+    ``bulk-fetch --symbols`` is comma-separated, so pasting the same list into
+    a space-separated positional argument is the obvious thing to try. Before
+    this split, ``7203,6758`` went out as a single J-Quants ``code`` and came
+    back as an HTTP 400.
+    """
+    from stock_ai.cli import _parse_symbol_tokens
+
+    assert _parse_symbol_tokens(["7203,6758,9984"]) == ["7203", "6758", "9984"]
+    assert _parse_symbol_tokens(["7203", "6758"]) == ["7203", "6758"]
+    assert _parse_symbol_tokens(["7203,6758", "9984"]) == ["7203", "6758", "9984"]
+    # Stray whitespace and empty segments are dropped rather than sent on.
+    assert _parse_symbol_tokens([" 7203 , ,6758 "]) == ["7203", "6758"]

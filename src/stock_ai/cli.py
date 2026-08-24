@@ -1665,7 +1665,9 @@ def seasonality_scan(
 @app.command(name="disclosure-impact")
 def disclosure_impact(
     symbols: list[str] | None = typer.Argument(
-        None, help="JP security codes; default is every stored JP security."
+        None,
+        help="JP security codes, space- or comma-separated, e.g. 7203 6758 or "
+        "7203,6758; default is every stored JP security.",
     ),
     years: int = typer.Option(3, help="Lookback window in years, from today."),
 ) -> None:
@@ -1685,7 +1687,7 @@ def disclosure_impact(
     database.create_all()
     with database.session() as session:
         stored_jp = [s for s, market in list_securities(session) if market == "JP"]
-    target_symbols = list(symbols) if symbols else stored_jp
+    target_symbols = _parse_symbol_tokens(symbols) if symbols else stored_jp
     if not target_symbols:
         console.print(
             "[yellow]No stored JP securities; run 'fetch' first, or pass symbols explicitly.[/]"
@@ -1841,6 +1843,18 @@ def _factor_preset(name: str, fx: FxConverter) -> tuple[list[WeightedFactor], bo
     if key == "tenbagger":
         return tenbagger_weighted_factors(fx=fx), True
     raise typer.BadParameter(f"Unknown preset {name!r}; use 'default' or 'tenbagger'.")
+
+
+def _parse_symbol_tokens(tokens: list[str]) -> list[str]:
+    """Split space- and/or comma-separated symbol tokens into individual codes.
+
+    ``bulk-fetch --symbols`` takes one comma-separated string; ``fetch`` and
+    ``disclosure-impact`` take space-separated positional arguments. Splitting
+    each token on commas too means either convention (or a mix) works,
+    instead of ``"7203,6758"`` silently becoming one combined code that a
+    provider then rejects.
+    """
+    return [code.strip() for token in tokens for code in token.split(",") if code.strip()]
 
 
 def _parse_fx_rates(pairs: list[str]) -> dict[str, float]:
