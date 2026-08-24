@@ -66,6 +66,15 @@ FORECAST_METRICS: tuple[str, ...] = ("Sales", "OP", "OdP", "NP", "EPS", "DivAnn"
 
 _FORECAST_FIELD = {metric: f"F{metric}" for metric in FORECAST_METRICS}
 
+#: Order in which a revised metric decides the revision's direction. Profit
+#: leads because a Japanese 業績予想修正 is read on 純利益 first, and the
+#: metrics genuinely disagree - a revenue cut alongside a profit raise is a
+#: margin story, and calling that "down" would file it against its own sign.
+#: ``DivAnn`` is absent on purpose: a dividend revision is a separate event,
+#: not an earnings direction (see
+#: :attr:`DisclosureEvent.revision_direction`).
+DIRECTION_PRIORITY: tuple[str, ...] = ("NP", "OP", "Sales", "EPS")
+
 
 def _to_float(value: Any) -> float | None:
     """Parse a J-Quants numeric field (strings, blanks) to ``float`` or ``None``."""
@@ -127,15 +136,54 @@ class DisclosureEvent:
     is_after_hours: bool
     forecasts: dict[str, float | None]
     """Current-as-of-this-disclosure value per :data:`FORECAST_METRICS`."""
-    revised_from: dict[str, float | None]
+    revised_from: dict[str, float]
     """Prior disclosure's value per metric, for metrics that changed. A
     metric absent here either did not change or there was no prior
-    disclosure of the same target fiscal year to compare against."""
+    disclosure of the same target fiscal year to compare against. Values are
+    never ``None``: a metric only enters here once a comparable earlier value
+    exists."""
 
     @property
     def is_revision(self) -> bool:
         """Whether at least one tracked forecast metric changed here."""
         return bool(self.revised_from)
+
+    @property
+    def revision_direction(self) -> str:
+        """``"up"``, ``"down"``, or ``"none"`` for this disclosure.
+
+        Direction is read off the first revised metric in
+        :data:`DIRECTION_PRIORITY` order - profit before revenue, because a
+        Japanese 業績予想修正 is judged on 純利益 first and the metrics can
+        disagree (revenue cut while profit is raised on a margin
+        improvement). The metric that decided it is reported separately by
+        :func:`direction_metric` so a row can be traced back.
+
+        Deliberately **not** a simple ``is_revision`` boolean: lumping upward
+        and downward revisions together cancels them against each other,
+        which is the same averaging error that flattens the by-``DocType``
+        view one level up.
+
+        A disclosure that revised only the dividend forecast reads ``"none"``
+        here - a dividend revision is a different event from an earnings
+        revision, and calling it an earnings direction would misfile it.
+        ``is_revision`` still reports it as a revision.
+        """
+        metric = self.direction_metric()
+        if metric is None:
+            return "none"
+        after = self.forecasts.get(metric)
+        before = self.revised_from[metric]
+        if after is None:  # unreachable: a revised metric always has a value
+            return "none"
+        return "up" if after > before else "down"
+
+    def direction_metric(self) -> str | None:
+        """Which metric :attr:`revision_direction` was decided on, if any."""
+        for metric in DIRECTION_PRIORITY:
+            if metric in self.revised_from:
+                return metric
+        return None
 
 
 def _target_fiscal_year(record: dict[str, Any]) -> int | None:
@@ -172,7 +220,7 @@ def build_disclosure_events(symbol: str, records: list[dict[str, Any]]) -> list[
     # Tracks the last-seen value per (fiscal_year, metric); reset is
     # unnecessary because a (fiscal_year, metric) key is only ever compared
     # to its own history.
-    last_forecast: dict[tuple[int, str], float | None] = {}
+    last_forecast: dict[tuple[int, str], float] = {}
 
     events: list[DisclosureEvent] = []
     for disc_date, disc_time, record in dated:
@@ -184,14 +232,16 @@ def build_disclosure_events(symbol: str, records: list[dict[str, Any]]) -> list[
             metric: _to_float(record.get(field)) for metric, field in _FORECAST_FIELD.items()
         }
 
-        revised_from: dict[str, float | None] = {}
+        revised_from: dict[str, float] = {}
         if fiscal_year is not None:
             for metric, value in forecasts.items():
                 if value is None:
                     continue
                 key = (fiscal_year, metric)
                 previous = last_forecast.get(key)
-                if key in last_forecast and previous != value:
+                # ``previous`` is only ever a float: None-valued metrics are
+                # skipped above, so nothing None is ever stored to compare to.
+                if previous is not None and previous != value:
                     revised_from[metric] = previous
                 last_forecast[key] = value
 
@@ -227,6 +277,8 @@ def disclosure_frame(events: list[DisclosureEvent]) -> pd.DataFrame:
             "target_fiscal_year": event.target_fiscal_year,
             "is_after_hours": event.is_after_hours,
             "is_revision": event.is_revision,
+            "revision_direction": event.revision_direction,
+            "direction_metric": event.direction_metric(),
         }
         for metric in FORECAST_METRICS:
             row[f"{metric}_after"] = (
@@ -242,6 +294,8 @@ def disclosure_frame(events: list[DisclosureEvent]) -> pd.DataFrame:
         "target_fiscal_year",
         "is_after_hours",
         "is_revision",
+        "revision_direction",
+        "direction_metric",
         *(f"{m}_{suffix}" for m in FORECAST_METRICS for suffix in ("before", "after")),
     ]
     return pd.DataFrame(rows, columns=columns)
@@ -418,12 +472,40 @@ def summarize_by_doc_type(labeled: pd.DataFrame) -> pd.DataFrame:
         sorted by ``n`` descending. Empty input yields an empty frame with
         these columns.
     """
-    columns = ["doc_type", "n", "median_excess_return", "std_excess_return"]
+    return _summarize_by(labeled, ["doc_type"])
+
+
+def summarize_by_revision(labeled: pd.DataFrame) -> pd.DataFrame:
+    """Count / median / std of excess return, by disclosure type *and* revision.
+
+    The by-``DocType`` view alone cannot separate "a 2Q result that raised
+    the full-year forecast" from "a 2Q result that left it alone", because
+    Japanese large caps usually fold a revision into the quarterly
+    announcement instead of disclosing it on its own. Those two events plausibly
+    move the price in opposite directions, so averaging them inside one
+    ``DocType`` cancels them against each other - which is the most likely
+    reason every ``DocType`` row sits near zero.
+
+    Splitting on the *direction* rather than a mere revised/not-revised flag
+    matters for the same reason one level down: upward and downward revisions
+    filed together would cancel just as thoroughly. See
+    :attr:`DisclosureEvent.revision_direction` for how direction is decided.
+
+    Returns:
+        Columns ``doc_type, revision_direction, n, median_excess_return,
+        std_excess_return``, sorted by ``n`` descending.
+    """
+    return _summarize_by(labeled, ["doc_type", "revision_direction"])
+
+
+def _summarize_by(labeled: pd.DataFrame, keys: list[str]) -> pd.DataFrame:
+    """Aggregate excess return over ``keys``, dropping unlabeled rows."""
+    columns = [*keys, "n", "median_excess_return", "std_excess_return"]
     usable = labeled[labeled["excess_return"].notna()] if not labeled.empty else labeled
     if usable.empty:
         return pd.DataFrame(columns=columns)
 
-    grouped = usable.groupby("doc_type", dropna=False)["excess_return"]
+    grouped = usable.groupby(keys, dropna=False)["excess_return"]
     summary = grouped.agg(n="count", median_excess_return="median", std_excess_return="std")
     summary = summary.reset_index().sort_values("n", ascending=False, ignore_index=True)
     return summary[columns]

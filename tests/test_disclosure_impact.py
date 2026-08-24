@@ -23,6 +23,7 @@ from stock_ai.backtest.disclosure_impact import (
     label_excess_return,
     reference_dates,
     summarize_by_doc_type,
+    summarize_by_revision,
 )
 from stock_ai.data.schema import ADJ_CLOSE, CLOSE, DATE
 
@@ -324,4 +325,154 @@ def test_summarize_by_doc_type_drops_excluded_rows() -> None:
 def test_summarize_by_doc_type_empty_input() -> None:
     summary = summarize_by_doc_type(pd.DataFrame())
     assert list(summary.columns) == ["doc_type", "n", "median_excess_return", "std_excess_return"]
+    assert summary.empty
+
+
+# ---------------------------------------------------------------------------
+# Revision direction, and the doc_type x revision split
+# ---------------------------------------------------------------------------
+
+
+def _revision_pair(first_np: str, second_np: str, **second_extra: str) -> list[dict[str, str]]:
+    """Two disclosures of the same fiscal year, the second revising FNP."""
+    return [
+        {
+            "DiscDate": "2024-05-10",
+            "DiscTime": "15:30",
+            "DocType": "FYFinancialStatements_Consolidated_JP",
+            "CurFYEn": "2025-03-31",
+            "FNP": first_np,
+        },
+        {
+            "DiscDate": "2024-08-09",
+            "DiscTime": "15:30",
+            "DocType": "1QFinancialStatements_Consolidated_JP",
+            "CurFYEn": "2025-03-31",
+            "FNP": second_np,
+            **second_extra,
+        },
+    ]
+
+
+def test_raised_profit_forecast_reads_as_up() -> None:
+    events = build_disclosure_events("1234", _revision_pair("1000", "1200"))
+    assert events[1].revision_direction == "up"
+    assert events[1].direction_metric() == "NP"
+
+
+def test_cut_profit_forecast_reads_as_down() -> None:
+    events = build_disclosure_events("1234", _revision_pair("1000", "800"))
+    assert events[1].revision_direction == "down"
+
+
+def test_unrevised_disclosure_reads_as_none() -> None:
+    events = build_disclosure_events("1234", _revision_pair("1000", "1000"))
+    assert events[1].revision_direction == "none"
+    assert events[1].direction_metric() is None
+
+
+def test_a_loss_forecast_narrowing_is_an_upward_revision() -> None:
+    # -100 -> -50 is an improvement, and a naive abs() or sign test would
+    # call it a cut. Plain numeric comparison gets it right.
+    events = build_disclosure_events("1234", _revision_pair("-100", "-50"))
+    assert events[1].revision_direction == "up"
+
+
+def test_a_forecast_falling_into_loss_is_a_downward_revision() -> None:
+    events = build_disclosure_events("1234", _revision_pair("100", "-50"))
+    assert events[1].revision_direction == "down"
+
+
+def test_profit_outranks_revenue_when_the_two_disagree() -> None:
+    # Revenue cut, profit raised: a margin story. Filed on profit, per
+    # DIRECTION_PRIORITY, rather than on whichever field is read first.
+    records = [
+        {
+            "DiscDate": "2024-05-10",
+            "DiscTime": "15:30",
+            "CurFYEn": "2025-03-31",
+            "FNP": "1000",
+            "FSales": "10000",
+        },
+        {
+            "DiscDate": "2024-08-09",
+            "DiscTime": "15:30",
+            "CurFYEn": "2025-03-31",
+            "FNP": "1200",
+            "FSales": "9000",
+        },
+    ]
+    events = build_disclosure_events("1234", records)
+    assert events[1].direction_metric() == "NP"
+    assert events[1].revision_direction == "up"
+
+
+def test_operating_profit_decides_when_net_profit_is_absent() -> None:
+    records = [
+        {"DiscDate": "2024-05-10", "DiscTime": "15:30", "CurFYEn": "2025-03-31", "FOP": "500"},
+        {"DiscDate": "2024-08-09", "DiscTime": "15:30", "CurFYEn": "2025-03-31", "FOP": "400"},
+    ]
+    events = build_disclosure_events("1234", records)
+    assert events[1].direction_metric() == "OP"
+    assert events[1].revision_direction == "down"
+
+
+def test_dividend_only_revision_is_a_revision_but_has_no_earnings_direction() -> None:
+    records = [
+        {"DiscDate": "2024-05-10", "DiscTime": "15:30", "CurFYEn": "2025-03-31", "FDivAnn": "50"},
+        {"DiscDate": "2024-08-09", "DiscTime": "15:30", "CurFYEn": "2025-03-31", "FDivAnn": "60"},
+    ]
+    events = build_disclosure_events("1234", records)
+    assert events[1].is_revision is True  # it did revise something
+    assert events[1].revision_direction == "none"  # but not an earnings figure
+    assert events[1].direction_metric() is None
+
+
+def test_disclosure_frame_carries_direction_columns() -> None:
+    events = build_disclosure_events("1234", _revision_pair("1000", "1200"))
+    frame = disclosure_frame(events)
+    assert list(frame["revision_direction"]) == ["none", "up"]
+    # pandas stores the absent metric as NaN, not None, in an object column.
+    assert pd.isna(frame["direction_metric"].iloc[0])
+    assert frame["direction_metric"].iloc[1] == "NP"
+
+
+def test_summarize_by_revision_separates_directions_that_would_otherwise_cancel() -> None:
+    """The whole point: +5% and -5% under one DocType must not read as 0%."""
+    up = build_disclosure_events("AAAA", _revision_pair("1000", "1200"))[1:]
+    down = build_disclosure_events("BBBB", _revision_pair("1000", "800"))[1:]
+    events = up + down
+
+    # AAAA rises 5%, BBBB falls 5%, TOPIX flat, over the same window.
+    stock_prices = {
+        "AAAA": _bars([("2024-08-09", 1000), ("2024-08-13", 1050)]),
+        "BBBB": _bars([("2024-08-09", 1000), ("2024-08-13", 950)]),
+    }
+    topix = _topix([("2024-08-09", 2000), ("2024-08-13", 2000)])
+
+    labeled = label_disclosures(events, stock_prices, topix)
+
+    # Grouped by DocType alone the two cancel to roughly zero...
+    by_doc_type = summarize_by_doc_type(labeled)
+    assert int(by_doc_type.loc[0, "n"]) == 2
+    assert by_doc_type.loc[0, "median_excess_return"] == pytest.approx(0.0)
+
+    # ...and split by direction the signal is visible again.
+    by_revision = summarize_by_revision(labeled)
+    directions = dict(
+        zip(by_revision["revision_direction"], by_revision["median_excess_return"], strict=True)
+    )
+    assert directions["up"] == pytest.approx(0.05)
+    assert directions["down"] == pytest.approx(-0.05)
+
+
+def test_summarize_by_revision_columns_and_empty_input() -> None:
+    summary = summarize_by_revision(pd.DataFrame())
+    assert list(summary.columns) == [
+        "doc_type",
+        "revision_direction",
+        "n",
+        "median_excess_return",
+        "std_excess_return",
+    ]
     assert summary.empty

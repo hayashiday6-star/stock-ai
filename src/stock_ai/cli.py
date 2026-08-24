@@ -42,6 +42,7 @@ from stock_ai.backtest.disclosure_impact import (
     build_disclosure_events,
     label_disclosures,
     summarize_by_doc_type,
+    summarize_by_revision,
 )
 from stock_ai.backtest.engine import BacktestEngine
 from stock_ai.backtest.factor_test import (
@@ -1753,6 +1754,36 @@ def disclosure_impact(
             row.doc_type or "(unknown)", str(row.n), f"{row.median_excess_return:+.2%}", std_text
         )
     console.print(table)
+
+    # The same rows split by whether the disclosure moved the full-year
+    # forecast, and which way. A revision folded into a quarterly release is
+    # invisible in the table above - it is filed under the quarter, alongside
+    # the releases that changed nothing.
+    by_revision = summarize_by_revision(labeled)
+    revision_table = Table(title="the same disclosures, split by forecast revision")
+    revision_table.add_column("doc_type", style="cyan", overflow="fold")
+    revision_table.add_column("revision", justify="left")
+    revision_table.add_column("n", justify="right")
+    revision_table.add_column("median", justify="right")
+    revision_table.add_column("std", justify="right")
+    direction_style = {"up": "green", "down": "red"}
+    for row in by_revision.itertuples(index=False):
+        std_text = f"{row.std_excess_return:.2%}" if pd.notna(row.std_excess_return) else "-"
+        style = direction_style.get(row.revision_direction, "dim")
+        revision_table.add_row(
+            row.doc_type or "(unknown)",
+            f"[{style}]{row.revision_direction}[/]",
+            str(row.n),
+            f"{row.median_excess_return:+.2%}",
+            std_text,
+        )
+    console.print(revision_table)
+    console.print(
+        "[dim]'up'/'down' read off the revised full-year forecast (net profit "
+        "first, then operating profit, sales, EPS); 'none' means this "
+        "disclosure left every tracked forecast unchanged. A dividend-only "
+        "revision reads 'none' here - it is not an earnings revision.[/]"
+    )
 
     excluded = int(labeled["exclude_reason"].notna().sum())
     total = len(labeled)
