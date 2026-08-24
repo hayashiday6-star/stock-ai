@@ -38,6 +38,11 @@ from stock_ai.ai.estimate import estimate_disclosure_run
 from stock_ai.ai.factory import get_ai_provider
 from stock_ai.ai.pricing import RunEstimate, UsageLedger
 from stock_ai.ai.query import parse_query, run_query
+from stock_ai.backtest.disclosure_impact import (
+    build_disclosure_events,
+    label_disclosures,
+    summarize_by_doc_type,
+)
 from stock_ai.backtest.engine import BacktestEngine
 from stock_ai.backtest.factor_test import (
     FactorTestResult,
@@ -65,6 +70,7 @@ from stock_ai.data.base import PriceProvider
 from stock_ai.data.bulk import BulkIngester, Dataset, store_universe
 from stock_ai.data.fx import FxConverter
 from stock_ai.data.jquants_fundamentals import JQuantsFundamentalsProvider
+from stock_ai.data.jquants_index import fetch_topix
 from stock_ai.data.jquants_profile import JQuantsProfileProvider
 from stock_ai.data.jquants_provider import JQuantsPriceProvider
 from stock_ai.data.markets import split_by_market, to_yahoo_symbol
@@ -1654,6 +1660,106 @@ def seasonality_scan(
             "reading anything into an individual name: [cyan]bulk-fetch --what "
             "prices --segment stored --lookback 5000[/]"
         )
+
+
+@app.command(name="disclosure-impact")
+def disclosure_impact(
+    symbols: list[str] | None = typer.Argument(
+        None, help="JP security codes; default is every stored JP security."
+    ),
+    years: int = typer.Option(3, help="Lookback window in years, from today."),
+) -> None:
+    """Label J-Quants disclosures with excess return vs TOPIX, by disclosure type.
+
+    This is a measurement foundation, not a score: it answers "how much did
+    the stock move relative to TOPIX around each disclosure", grouped by
+    ``DocType``. Nothing here ranks companies or feeds ``rank``.
+
+    Requires stored prices for every symbol involved (run ``fetch``/
+    ``bulk-fetch`` first) - statement history and TOPIX are fetched live.
+    """
+    settings = get_settings()
+    configure_logging(settings.log_level)
+
+    database = Database()
+    database.create_all()
+    with database.session() as session:
+        stored_jp = [s for s, market in list_securities(session) if market == "JP"]
+    target_symbols = list(symbols) if symbols else stored_jp
+    if not target_symbols:
+        console.print(
+            "[yellow]No stored JP securities; run 'fetch' first, or pass symbols explicitly.[/]"
+        )
+        return
+
+    from stock_ai.data.jquants_fundamentals import _default_fetcher as _statement_fetcher
+
+    fetch_statements = _statement_fetcher(settings.jquants_api_key)
+    cutoff = dt.date.today() - dt.timedelta(days=365 * years)
+
+    events = []
+    stock_prices_by_symbol: dict[str, pd.DataFrame] = {}
+    with database.session() as session:
+        repo = PriceRepository(session)
+        for symbol in target_symbols:
+            try:
+                records = fetch_statements(symbol)
+            except DataError as exc:
+                console.print(f"[yellow]{symbol}: {exc}[/]")
+                continue
+            symbol_events = [
+                event
+                for event in build_disclosure_events(symbol, records)
+                if event.disc_date >= cutoff
+            ]
+            if not symbol_events:
+                continue
+            prices = repo.get_prices(symbol)
+            if prices.empty:
+                console.print(f"[yellow]{symbol}: no stored prices; skipping.[/]")
+                continue
+            events.extend(symbol_events)
+            stock_prices_by_symbol[symbol] = prices
+
+    if not events:
+        console.print("[yellow]No disclosures found in the lookback window.[/]")
+        return
+
+    topix_start = min(event.disc_date for event in events) - dt.timedelta(days=14)
+    try:
+        topix_prices = fetch_topix(topix_start, dt.date.today(), api_key=settings.jquants_api_key)
+    except DataError as exc:
+        console.print(f"[red]Failed to fetch TOPIX: {exc}[/]")
+        raise typer.Exit(code=1) from exc
+
+    labeled = label_disclosures(events, stock_prices_by_symbol, topix_prices)
+    summary = summarize_by_doc_type(labeled)
+
+    if summary.empty:
+        console.print("[yellow]No disclosure could be labeled (missing prices for every row).[/]")
+        return
+
+    n_symbols = len(stock_prices_by_symbol)
+    table = Table(title=f"excess return by disclosure type ({n_symbols} symbol(s), {years}y)")
+    table.add_column("doc_type", style="cyan", overflow="fold")
+    table.add_column("n", justify="right")
+    table.add_column("median", justify="right")
+    table.add_column("std", justify="right")
+    for row in summary.itertuples(index=False):
+        std_text = f"{row.std_excess_return:.2%}" if pd.notna(row.std_excess_return) else "-"
+        table.add_row(
+            row.doc_type or "(unknown)", str(row.n), f"{row.median_excess_return:+.2%}", std_text
+        )
+    console.print(table)
+
+    excluded = int(labeled["exclude_reason"].notna().sum())
+    total = len(labeled)
+    console.print(
+        f"[dim]{total - excluded} of {total} disclosure(s) labeled; {excluded} excluded "
+        "for missing price data or a disclosure date past the stored calendar. "
+        "This is a labeling foundation, not a score - read n before the percentages "
+        "on any thin row.[/]"
+    )
 
 
 @app.command()
