@@ -8,6 +8,17 @@ caller is expected to have filtered to one period type (which
 
 Every function returns ``None`` when the series cannot support the answer,
 rather than a zero that reads as a real measurement.
+
+**1株当たりの値は、比べる前に分割の尺度を揃える。** 開示は各期の当時の株数で
+報告されるので、分割をまたぐと系列が不連続に飛ぶ。実測（日立 6501, 保存済み
+データ）:
+
+- 2024年度の1株配当 180円 と 2025年度の 43円 を並べると増配率 **-76.1%**。
+  1:5分割を挟んでいるだけで、実際は **+19.4% の増配**。
+- 連続増配年数が **1** と出る。分割の年で系列が切れるため。
+- EPS の4年 CAGR が **-26.4%**。
+
+どれも例外は出ない。数字が変わるだけで、減配した会社として画面に出る。
 """
 
 from __future__ import annotations
@@ -16,6 +27,86 @@ import math
 from collections.abc import Callable, Sequence
 
 from stock_ai.data.types import FinancialReport
+
+#: 当時の株数で報告される項目。年をまたぐ前に尺度を揃える必要がある。
+PER_SHARE_FIELDS = frozenset({"eps", "bps", "dividend_per_share"})
+
+#: 株式数の比がこれ以上動いたときだけ分割を疑う。
+#:
+#: 自社株買いや新株発行でも株数は動く。そちらは**実際の**1株当たりの増減なので、
+#: 均してはいけない。日立の分割以外の年の比は 0.97〜0.99 に収まっており、実際の
+#: 分割は 5.0 だった。1.5 はその間に十分な幅で入る。
+_SPLIT_THRESHOLD = 1.5
+
+#: 検出した比が「きれいな倍率」からどれだけ離れてよいか。
+#:
+#: 分割と自社株買いが同じ年に起きると比はぴったりにならない。日立の 4.94 は
+#: 5 から 1.2% ずれている。
+_SPLIT_TOLERANCE = 0.05
+
+
+def split_factor(previous_shares: float | None, current_shares: float | None) -> float | None:
+    """2期の株式数から分割の倍率を読む。分割でなければ ``None``。
+
+    整数倍（またはその逆数）に十分近いときだけ分割とみなす。数％の増減は自社株買い
+    や新株発行で、それによる1株当たりの変化は現実のものだから均さない。
+    """
+    if not _usable(previous_shares) or not _usable(current_shares):
+        return None
+    if previous_shares <= 0 or current_shares <= 0:  # type: ignore[operator]
+        return None
+
+    ratio = current_shares / previous_shares  # type: ignore[operator]
+    if ratio >= _SPLIT_THRESHOLD:
+        candidate = float(round(ratio))
+    elif ratio <= 1.0 / _SPLIT_THRESHOLD:
+        divisor = round(1.0 / ratio)
+        candidate = 1.0 / divisor if divisor else 0.0
+    else:
+        return None
+
+    if candidate <= 0:
+        return None
+    if abs(ratio - candidate) / candidate > _SPLIT_TOLERANCE:
+        # きれいな倍率から遠い。合併に伴う大量発行などで、分割ではない。
+        return None
+    return candidate
+
+
+def restated(reports: Sequence[FinancialReport]) -> list[FinancialReport]:
+    """1株当たりの値を、**最新期の株数の尺度**に揃えた並びを返す。
+
+    絶対額（売上・純利益・自己資本）はそのまま。分割で変わらないものを触ると、
+    直したつもりで別の誤差を入れることになる。
+
+    日立で検算できる: 2024年度の EPS 634.57 を5で割ると 126.91 で、EDINET が
+    同じ期を「前々期」として報告している restated EPS と一致する。
+    """
+    if len(reports) < 2:
+        return list(reports)
+
+    scales = [1.0] * len(reports)
+    cumulative = 1.0
+    for index in range(len(reports) - 1, 0, -1):
+        factor = split_factor(
+            reports[index - 1].shares_outstanding, reports[index].shares_outstanding
+        )
+        if factor is not None:
+            cumulative *= factor
+        scales[index - 1] = cumulative
+
+    return [
+        report.model_copy(
+            update={
+                field: value / scale
+                for field in PER_SHARE_FIELDS
+                if (value := getattr(report, field)) is not None
+            }
+        )
+        if scale != 1.0
+        else report
+        for report, scale in zip(reports, scales, strict=True)
+    ]
 
 
 def _usable(value: float | None) -> bool:
@@ -56,8 +147,11 @@ def profit_growth(reports: Sequence[FinancialReport], periods: int = 1) -> float
 
 
 def dividend_growth(reports: Sequence[FinancialReport], periods: int = 1) -> float | None:
-    """Dividend-per-share growth over the last ``periods`` fiscal years (増配率)."""
-    return _field_growth(reports, "dividend_per_share", periods)
+    """Dividend-per-share growth over the last ``periods`` fiscal years (増配率).
+
+    分割の尺度を揃えてから比べる。揃えないと、分割した会社が減配した会社に見える。
+    """
+    return _field_growth(restated(reports), "dividend_per_share", periods)
 
 
 def cagr(reports: Sequence[FinancialReport], field: str, years: int) -> float | None:
@@ -68,6 +162,8 @@ def cagr(reports: Sequence[FinancialReport], field: str, years: int) -> float | 
     """
     if years <= 0 or len(reports) <= years:
         return None
+    if field in PER_SHARE_FIELDS:
+        reports = restated(reports)
     start = getattr(reports[-1 - years], field)
     end = getattr(reports[-1], field)
     if not _usable(start) or not _usable(end) or start <= 0 or end <= 0:
@@ -82,6 +178,7 @@ def _streak(reports: Sequence[FinancialReport], holds: Callable[[float, float], 
     first pair that cannot be compared, so a gap in the data ends the streak
     rather than being counted through.
     """
+    reports = restated(reports)
     count = 0
     for current, previous in zip(reversed(reports), reversed(reports[:-1]), strict=False):
         current_value = current.dividend_per_share

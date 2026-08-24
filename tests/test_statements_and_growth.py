@@ -24,7 +24,9 @@ from stock_ai.fundamental.growth import (
     dividend_growth,
     latest_payout_ratio,
     profit_growth,
+    restated,
     revenue_growth,
+    split_factor,
 )
 from stock_ai.screening.base import All
 from stock_ai.screening.conditions import (
@@ -740,3 +742,137 @@ def test_both_providers_reject_the_same_impossible_yield() -> None:
 
     assert us(737.6) is None
     assert us(28.0) == pytest.approx(0.028)
+
+
+# --- 分割をまたぐ1株当たりの値 -------------------------------------------
+#
+# 保存済みの日立 6501 の実データ。J-Quants が各期の当時の株数で報告したもので、
+# 2024年度と2025年度のあいだに1:5の分割が入っている。
+
+
+def hitachi() -> list[FinancialReport]:
+    """(年度, 1株配当, EPS, 発行済株式数) — 保存された実データそのまま。"""
+    rows = [
+        (2022, 125.0, 603.75, 968_234_000),
+        (2023, 145.0, 684.55, 938_083_000),
+        (2024, 180.0, 634.57, 927_167_000),
+        (2025, 43.0, 133.85, 4_580_341_000),
+        (2026, 50.0, 176.76, 4_535_560_000),
+    ]
+    return [
+        FinancialReport(
+            symbol="6501",
+            fiscal_year=year,
+            dividend_per_share=dps,
+            eps=eps,
+            shares_outstanding=float(shares),
+        )
+        for year, dps, eps, shares in rows
+    ]
+
+
+def test_the_restated_eps_matches_what_edinet_reports() -> None:
+    """揃えた後の EPS が、EDINET の5期分と**完全に**一致する。
+
+    J-Quants は各期の当時の株数で EPS を報告し、EDINET の「主要な経営指標等」は
+    提出時点の株数に直したものを載せている。株式数から復元した倍率が正しければ、
+    前者を直したものは後者に一致するはず――そして5期とも一致した。
+
+    この検算があるので、倍率5は当てずっぽうではない。
+    """
+    edinet_reported = [120.75, 136.91, 126.91, 133.85, 176.76]
+    assert [round(r.eps, 2) for r in restated(hitachi())] == edinet_reported
+
+
+def test_a_split_does_not_look_like_a_dividend_cut() -> None:
+    """1株配当 180 -> 43 は減配ではない。分割を挟んでいるだけ。
+
+    直す前は増配率 -76.1% と出ていた。実際は +19.4% の増配。
+    """
+    assert dividend_growth(hitachi()[:4]) == pytest.approx(0.194, abs=0.001)
+
+
+def test_the_dividend_streak_survives_a_split() -> None:
+    """連続増配年数が分割の年で切れない。
+
+    直す前は 1 と出ていた。揃えた配当は 25 / 29 / 36 / 43 / 50 で、4年連続の増配。
+    """
+    assert consecutive_dividend_increases(hitachi()) == 4
+    assert [round(r.dividend_per_share) for r in restated(hitachi())] == [25, 29, 36, 43, 50]
+
+
+def test_eps_cagr_changes_sign() -> None:
+    """EPS の4年 CAGR が -26.4% から +10.0% になる。評価が反転する。"""
+    assert cagr(hitachi(), "eps", 4) == pytest.approx(0.100, abs=0.001)
+
+
+# --- 分割と、分割でないものの区別 ----------------------------------------
+
+
+def test_a_buyback_is_not_a_split() -> None:
+    """自社株買いによる1株当たりの増加は現実のもの。均してはいけない。
+
+    5%減の自社株買いで EPS が 5.3% 上がるのは、本当に1株の取り分が増えている。
+    """
+    assert split_factor(1_000_000_000, 950_000_000) is None
+
+
+@pytest.mark.parametrize(
+    ("previous", "current", "expected"),
+    [
+        (927_167_000, 4_580_341_000, 5.0),  # 日立の実データ。比は 4.940
+        (1_000_000_000, 2_000_000_000, 2.0),
+        (1_000_000_000, 3_000_000_000, 3.0),
+        (1_000_000_000, 200_000_000, 0.2),  # 1:5 の併合
+        (1_000_000_000, 100_000_000, 0.1),
+    ],
+)
+def test_clean_ratios_are_read_as_splits(previous: int, current: int, expected: float) -> None:
+    """整数倍とその逆数に十分近ければ分割とみなす。"""
+    assert split_factor(float(previous), float(current)) == pytest.approx(expected)
+
+
+def test_a_large_issuance_that_is_not_a_clean_ratio_is_left_alone() -> None:
+    """合併に伴う大量発行は分割ではない。きれいな倍率から遠いことで見分ける。"""
+    assert split_factor(1_000_000_000, 1_700_000_000) is None
+
+
+def test_absolute_amounts_are_never_touched() -> None:
+    """売上・純利益・自己資本は分割で変わらない。触れば別の誤差が入る。"""
+    reports = [
+        FinancialReport(
+            symbol="6501",
+            fiscal_year=2024,
+            revenue=9.7e12,
+            net_income=5.9e11,
+            equity=5.7e12,
+            eps=634.57,
+            shares_outstanding=927_167_000.0,
+        ),
+        FinancialReport(
+            symbol="6501",
+            fiscal_year=2025,
+            revenue=9.8e12,
+            net_income=6.2e11,
+            equity=5.8e12,
+            eps=133.85,
+            shares_outstanding=4_580_341_000.0,
+        ),
+    ]
+    older, newer = restated(reports)
+    assert (older.revenue, older.net_income, older.equity) == (9.7e12, 5.9e11, 5.7e12)
+    assert older.eps == pytest.approx(126.914)
+    assert newer.eps == 133.85
+
+
+def test_a_missing_share_count_leaves_the_scale_alone() -> None:
+    """株式数が無ければ倍率は分からない。当てずっぽうで割らない。"""
+    reports = [
+        FinancialReport(symbol="6501", fiscal_year=2024, eps=634.57),
+        FinancialReport(symbol="6501", fiscal_year=2025, eps=133.85, shares_outstanding=4.58e9),
+    ]
+    assert [r.eps for r in restated(reports)] == [634.57, 133.85]
+
+
+def test_a_single_year_needs_no_restatement() -> None:
+    assert len(restated([FinancialReport(symbol="6501", fiscal_year=2026, eps=176.76)])) == 1
