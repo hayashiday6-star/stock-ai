@@ -165,12 +165,20 @@ class DisclosureEvent:
     is_after_hours: bool
     forecasts: dict[str, float | None]
     """Current-as-of-this-disclosure value per :data:`FORECAST_METRICS`."""
-    revised_from: dict[str, float]
-    """Prior disclosure's value per metric, for metrics that changed. A
-    metric absent here either did not change or there was no prior
-    disclosure of the same target fiscal year to compare against. Values are
-    never ``None``: a metric only enters here once a comparable earlier value
-    exists."""
+    previous_forecasts: dict[str, float]
+    """The running forecast for this fiscal year *before* this disclosure,
+    per metric that had one. A metric absent here had no earlier value to be
+    measured against - the fiscal year's first disclosure, or a filer that
+    does not publish that forecast at all."""
+
+    @property
+    def revised_from(self) -> dict[str, float]:
+        """Prior value per metric that this disclosure actually changed."""
+        return {
+            metric: previous
+            for metric, previous in self.previous_forecasts.items()
+            if (current := self.forecasts.get(metric)) is not None and current != previous
+        }
 
     @property
     def is_revision(self) -> bool:
@@ -179,38 +187,58 @@ class DisclosureEvent:
 
     @property
     def revision_direction(self) -> str:
-        """``"up"``, ``"down"``, or ``"none"`` for this disclosure.
+        """How this disclosure moved the full-year earnings forecast.
 
-        Direction is read off the first revised metric in
+        One of:
+
+        - ``"up"`` / ``"down"`` - the forecast was raised or cut.
+        - ``"flat"`` - a forecast exists on both sides and did not move.
+        - ``"n/a"`` - **there was nothing to compare.** Either this
+          disclosure carries no earnings forecast (a full-year announcement,
+          whose year is already over), or the filer publishes none at all.
+          8306 is the second case: every ``F*`` earnings field is empty on
+          every record, and only a dividend forecast is disclosed.
+
+        The ``flat``/``n/a`` split exists because merging them repeats, one
+        level over, the error that made every 1Q read as "no revision":
+        "guidance held" and "guidance unmeasurable" are different findings,
+        and averaging an excess return over both describes neither.
+
+        Direction is read off the first *comparable* metric in
         :data:`DIRECTION_PRIORITY` order - profit before revenue, because a
         Japanese 業績予想修正 is judged on 純利益 first and the metrics can
         disagree (revenue cut while profit is raised on a margin
-        improvement). The metric that decided it is reported separately by
-        :func:`direction_metric` so a row can be traced back.
+        improvement). :func:`direction_metric` reports which one decided it.
 
-        Deliberately **not** a simple ``is_revision`` boolean: lumping upward
+        Deliberately not a plain revised/not-revised boolean: lumping upward
         and downward revisions together cancels them against each other,
         which is the same averaging error that flattens the by-``DocType``
         view one level up.
 
-        A disclosure that revised only the dividend forecast reads ``"none"``
-        here - a dividend revision is a different event from an earnings
-        revision, and calling it an earnings direction would misfile it.
-        ``is_revision`` still reports it as a revision.
+        A dividend-only revision reads ``"n/a"`` or ``"flat"`` here
+        depending on whether an earnings forecast was comparable, because a
+        dividend revision is a different event from an earnings revision.
+        :attr:`is_revision` still reports it as a revision.
         """
         metric = self.direction_metric()
         if metric is None:
-            return "none"
-        after = self.forecasts.get(metric)
-        before = self.revised_from[metric]
-        if after is None:  # unreachable: a revised metric always has a value
-            return "none"
-        return "up" if after > before else "down"
+            return "n/a"
+        current = self.forecasts[metric]
+        previous = self.previous_forecasts[metric]
+        if current is None:  # unreachable: direction_metric requires a value
+            return "n/a"
+        if current == previous:
+            return "flat"
+        return "up" if current > previous else "down"
 
     def direction_metric(self) -> str | None:
-        """Which metric :attr:`revision_direction` was decided on, if any."""
+        """The first metric with values on both sides, in priority order.
+
+        ``None`` means no earnings forecast could be compared at all, which
+        is what separates ``"n/a"`` from ``"flat"``.
+        """
         for metric in DIRECTION_PRIORITY:
-            if metric in self.revised_from:
+            if metric in self.previous_forecasts and self.forecasts.get(metric) is not None:
                 return metric
         return None
 
@@ -285,7 +313,11 @@ def build_disclosure_events(symbol: str, records: list[dict[str, Any]]) -> list[
             metric: _to_float(record.get(field)) for metric, field in _FORECAST_FIELD.items()
         }
 
-        revised_from: dict[str, float] = {}
+        # The running forecast as it stood *before* this disclosure. Recorded
+        # for every metric that had one, not only the ones that changed:
+        # telling "held steady" apart from "never published" needs to know
+        # that a comparison was possible at all.
+        previous_forecasts: dict[str, float] = {}
         if fiscal_year is not None:
             for metric, value in forecasts.items():
                 if value is None:
@@ -294,8 +326,8 @@ def build_disclosure_events(symbol: str, records: list[dict[str, Any]]) -> list[
                 previous = last_forecast.get(key)
                 # ``previous`` is only ever a float: None-valued metrics are
                 # skipped above, so nothing None is ever stored to compare to.
-                if previous is not None and previous != value:
-                    revised_from[metric] = previous
+                if previous is not None:
+                    previous_forecasts[metric] = previous
                 last_forecast[key] = value
 
         # Carry next-year guidance forward as the opening value for that year,
@@ -321,7 +353,7 @@ def build_disclosure_events(symbol: str, records: list[dict[str, Any]]) -> list[
                 target_fiscal_year=fiscal_year,
                 is_after_hours=is_after_hours,
                 forecasts=forecasts,
-                revised_from=revised_from,
+                previous_forecasts=previous_forecasts,
             )
         )
     return events

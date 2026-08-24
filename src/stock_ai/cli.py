@@ -1046,9 +1046,21 @@ def inspect(
             table.add_row(field, *values)
     console.print(table)
 
+    # Only fields that actually carry a value. Listing the whole schema made
+    # this line useless: J-Quants returns every column on every record, so it
+    # printed an identical ~70-name list for every symbol and answered nothing
+    # about which fields a given filer populates - which is the one question
+    # this command exists to settle.
     seen = {key for record in newest for key in record}
-    extra = sorted(seen - set(key_fields))
-    console.print(f"[dim]Other fields present: {', '.join(extra) if extra else '(none)'}[/]")
+    populated = {
+        key for record in newest for key, value in record.items() if value not in (None, "")
+    }
+    extra = sorted(populated - set(key_fields))
+    listed = ", ".join(extra) if extra else "(none)"
+    console.print(f"[dim]Other fields carrying a value: {listed}[/]")
+    blank = len(seen) - len(populated)
+    if blank:
+        console.print(f"[dim]{blank} further field(s) were returned empty on all {len(newest)}.[/]")
 
 
 @app.command()
@@ -1780,7 +1792,10 @@ def disclosure_impact(
     revision_table.add_column("n", justify="right")
     revision_table.add_column("median", justify="right")
     revision_table.add_column("std", justify="right")
-    direction_style = {"up": "green", "down": "red"}
+    # n/a is yellow, not dim: those rows are unmeasurable rather than
+    # unchanged, and reading them as "guidance held" is the mistake this
+    # column was split to prevent.
+    direction_style = {"up": "green", "down": "red", "flat": "dim", "n/a": "yellow"}
     for row in by_revision.itertuples(index=False):
         std_text = f"{row.std_excess_return:.2%}" if pd.notna(row.std_excess_return) else "-"
         style = direction_style.get(row.revision_direction, "dim")
@@ -1794,9 +1809,11 @@ def disclosure_impact(
     console.print(revision_table)
     console.print(
         "[dim]'up'/'down' read off the revised full-year forecast (net profit "
-        "first, then operating profit, sales, EPS); 'none' means this "
-        "disclosure left every tracked forecast unchanged. A dividend-only "
-        "revision reads 'none' here - it is not an earnings revision.[/]"
+        "first, then operating profit, sales, EPS). 'flat' means a forecast "
+        "existed on both sides and did not move. [yellow]'n/a' means there was "
+        "nothing to compare[/] - a full-year announcement, whose year is over, "
+        "or a filer publishing no earnings forecast at all (8306 discloses only "
+        "a dividend forecast). Do not read 'n/a' as guidance held.[/]"
     )
 
     excluded = int(labeled["exclude_reason"].notna().sum())

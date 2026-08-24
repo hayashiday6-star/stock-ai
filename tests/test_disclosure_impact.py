@@ -365,10 +365,13 @@ def test_cut_profit_forecast_reads_as_down() -> None:
     assert events[1].revision_direction == "down"
 
 
-def test_unrevised_disclosure_reads_as_none() -> None:
+def test_unrevised_disclosure_reads_as_flat_not_unmeasurable() -> None:
+    """A forecast that existed on both sides and held is 'flat', not 'n/a'."""
     events = build_disclosure_events("1234", _revision_pair("1000", "1000"))
-    assert events[1].revision_direction == "none"
-    assert events[1].direction_metric() is None
+    assert events[1].revision_direction == "flat"
+    # The comparison was possible - that is what separates flat from n/a.
+    assert events[1].direction_metric() == "NP"
+    assert events[1].is_revision is False
 
 
 def test_a_loss_forecast_narrowing_is_an_upward_revision() -> None:
@@ -424,14 +427,18 @@ def test_dividend_only_revision_is_a_revision_but_has_no_earnings_direction() ->
     ]
     events = build_disclosure_events("1234", records)
     assert events[1].is_revision is True  # it did revise something
-    assert events[1].revision_direction == "none"  # but not an earnings figure
+    # ...but no earnings forecast exists to give it a direction. This is the
+    # 8306 case: a filer that publishes a dividend forecast and nothing else.
+    assert events[1].revision_direction == "n/a"
     assert events[1].direction_metric() is None
 
 
 def test_disclosure_frame_carries_direction_columns() -> None:
     events = build_disclosure_events("1234", _revision_pair("1000", "1200"))
     frame = disclosure_frame(events)
-    assert list(frame["revision_direction"]) == ["none", "up"]
+    # The first disclosure of a fiscal year has no prior value: unmeasurable,
+    # not unchanged.
+    assert list(frame["revision_direction"]) == ["n/a", "up"]
     # pandas stores the absent metric as NaN, not None, in an object column.
     assert pd.isna(frame["direction_metric"].iloc[0])
     assert frame["direction_metric"].iloc[1] == "NP"
@@ -540,9 +547,10 @@ def test_first_quarter_raise_is_detected_against_next_year_guidance() -> None:
     events = build_disclosure_events("7203", [_TOYOTA_FY_2026, _TOYOTA_1Q_2027])
     full_year, first_quarter = events
 
-    # Issuing guidance is not revising it.
+    # Issuing guidance is not revising it, and the year it reports is over,
+    # so it carries no current-year forecast to compare either.
     assert full_year.is_revision is False
-    assert full_year.revision_direction == "none"
+    assert full_year.revision_direction == "n/a"
 
     assert first_quarter.is_revision is True
     assert first_quarter.revision_direction == "up"
@@ -621,3 +629,64 @@ def test_guidance_with_no_following_disclosure_produces_no_revision() -> None:
     events = build_disclosure_events("7203", [_TOYOTA_FY_2026])
     assert len(events) == 1
     assert events[0].is_revision is False
+
+
+def test_a_filer_publishing_only_a_dividend_forecast_never_reads_as_flat() -> None:
+    """The 8306 shape: every F* earnings field empty on every record.
+
+    Taken from a live payload - 8306 discloses FDivAnn and NxFDivAnn and no
+    consolidated earnings forecast at all. Every such disclosure must read
+    "n/a", because reporting it as "flat" would put "this company publishes
+    no guidance" into the same bucket as "this company held its guidance".
+    """
+    records = [
+        {
+            "DiscDate": "2025-08-04",
+            "DiscTime": "15:30",
+            "DocType": "1QFinancialStatements_Consolidated_JP",
+            "CurFYEn": "2026-03-31",
+            "FDivAnn": "70.0",
+        },
+        {
+            "DiscDate": "2025-11-14",
+            "DiscTime": "15:30",
+            "DocType": "2QFinancialStatements_Consolidated_JP",
+            "CurFYEn": "2026-03-31",
+            "FDivAnn": "74.0",
+        },
+    ]
+    events = build_disclosure_events("8306", records)
+    assert [event.revision_direction for event in events] == ["n/a", "n/a"]
+    # The dividend raise is still recorded as a revision, just not as an
+    # earnings direction.
+    assert events[1].is_revision is True
+    assert events[1].revised_from == {"DivAnn": 70.0}
+
+
+def test_flat_and_unmeasurable_land_in_separate_summary_rows() -> None:
+    held = build_disclosure_events("AAAA", _revision_pair("1000", "1000"))[1:]
+    unmeasurable = build_disclosure_events(
+        "BBBB",
+        [
+            {
+                "DiscDate": "2024-08-09",
+                "DiscTime": "15:30",
+                "DocType": "1QFinancialStatements_Consolidated_JP",
+                "CurFYEn": "2025-03-31",
+                "FDivAnn": "70.0",
+            }
+        ],
+    )
+    events = held + unmeasurable
+    stock_prices = {
+        "AAAA": _bars([("2024-08-09", 1000), ("2024-08-13", 1050)]),
+        "BBBB": _bars([("2024-08-09", 1000), ("2024-08-13", 950)]),
+    }
+    topix = _topix([("2024-08-09", 2000), ("2024-08-13", 2000)])
+
+    summary = summarize_by_revision(label_disclosures(events, stock_prices, topix))
+    directions = dict(
+        zip(summary["revision_direction"], summary["median_excess_return"], strict=True)
+    )
+    assert directions["flat"] == pytest.approx(0.05)
+    assert directions["n/a"] == pytest.approx(-0.05)
