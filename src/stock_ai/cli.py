@@ -93,6 +93,7 @@ from stock_ai.database.repository import (
     get_profile,
     list_securities,
     price_history_spans,
+    sectors_for,
     upsert_profile,
 )
 from stock_ai.ir.edinet import (
@@ -1689,6 +1690,54 @@ def seasonality_scan(
         )
 
 
+def _warn_if_concentrated(database: Database, symbols: list[str]) -> None:
+    """Say which sectors the sample spans, loudly when it spans almost none.
+
+    TSE assigns codes by sector, so any code-ordered slice of the listing is
+    a single-industry sample wearing a market-wide table's clothes. That is
+    exactly what ``universe --segment prime --limit N`` produces, and it is
+    invisible in a by-disclosure-type summary: the first such run returned
+    59 symbols numbered 1301-1929, of which 48 were construction, and every
+    percentage in it described the construction cycle rather than the market.
+
+    Sector concentration also breaks the statistics twice over. One
+    industry's companies revise guidance on the same cycle and move on the
+    same news, so the observations are correlated far beyond the repeated
+    -company effect the ``symbols`` column already warns about - and their
+    excess return over TOPIX carries a whole sector's drift, which the
+    benchmark cannot remove because it is not what makes them differ.
+    """
+    with database.session() as session:
+        by_symbol = sectors_for(session, symbols)
+    known = [sector for sector in by_symbol.values() if sector]
+    if not known:
+        console.print(
+            "[dim]No sectors stored for these symbols, so the sample's spread "
+            "could not be checked. Run 'universe' to store profiles.[/]"
+        )
+        return
+
+    counts = Counter(known)
+    spread = ", ".join(f"{sector} {count}" for sector, count in counts.most_common(5))
+    top_sector, top_count = counts.most_common(1)[0]
+    share = top_count / len(known)
+    if share >= 0.5:
+        console.print(
+            f"\n[yellow]This sample is {share:.0%} {top_sector} "
+            f"({top_count} of {len(known)} symbols).[/] Every percentage above "
+            "describes that industry, not the market: its companies revise "
+            "guidance on one cycle and move on the same news, so they are far "
+            "from independent observations, and their excess return over TOPIX "
+            "carries a sector drift the benchmark cannot remove.\n"
+            "[yellow]TSE numbers listings by sector, so a code-ordered slice - "
+            "which is what [cyan]universe --limit N[/] returns - is a "
+            "single-industry sample.[/] Store the whole segment instead: "
+            "[cyan]universe --segment prime[/] with no --limit."
+        )
+    else:
+        console.print(f"[dim]Sectors represented: {spread}.[/]")
+
+
 @app.command(name="disclosure-impact")
 def disclosure_impact(
     symbols: list[str] | None = typer.Argument(
@@ -1774,6 +1823,7 @@ def disclosure_impact(
         return
 
     n_symbols = len(stock_prices_by_symbol)
+    _warn_if_concentrated(database, sorted(stock_prices_by_symbol))
     table = Table(title=f"excess return by disclosure type ({n_symbols} symbol(s), {years}y)")
     table.add_column("doc_type", style="cyan", overflow="fold")
     table.add_column("n", justify="right")

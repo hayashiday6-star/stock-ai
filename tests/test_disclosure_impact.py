@@ -853,3 +853,77 @@ def test_direction_labels_survive_a_csv_round_trip(tmp_path) -> None:
     path = tmp_path / "labels.csv"
     frame.to_csv(path, index=False)
     assert set(pd.read_csv(path)["revision_direction"]) == labels
+
+
+# ---------------------------------------------------------------------------
+# Sector-concentration warning
+# ---------------------------------------------------------------------------
+
+
+class _FakeSession:
+    def __enter__(self):  # noqa: ANN204 - test double
+        return self
+
+    def __exit__(self, *args: object) -> bool:
+        return False
+
+
+class _FakeDatabase:
+    def session(self):  # noqa: ANN201 - test double
+        return _FakeSession()
+
+
+def _warn_output(mapping: dict[str, str | None], capsys) -> str:
+    from unittest.mock import patch
+
+    from stock_ai.cli import _warn_if_concentrated
+
+    with patch("stock_ai.cli.sectors_for", return_value=mapping):
+        _warn_if_concentrated(_FakeDatabase(), sorted(mapping))
+    return capsys.readouterr().out
+
+
+def test_a_single_sector_sample_is_called_out(capsys) -> None:
+    """The 1301-1929 case: a code-ordered slice is one industry.
+
+    TSE numbers listings by sector, so `universe --limit N` returns a
+    single-industry sample that a by-disclosure-type table cannot reveal.
+    """
+    mapping: dict[str, str | None] = {f"18{i:02d}": "Industrials" for i in range(48)}
+    mapping.update({f"13{i:02d}": "Consumer Staples" for i in range(11)})
+
+    out = _warn_output(mapping, capsys)
+    assert "81%" in out
+    assert "Industrials" in out
+    assert "--limit" in out  # names the cause
+
+
+def test_a_spread_sample_reports_the_mix_without_warning(capsys) -> None:
+    mapping: dict[str, str | None] = {
+        "1": "Industrials",
+        "2": "Tech",
+        "3": "Health Care",
+        "4": "Financials",
+        "5": "Energy",
+    }
+    out = _warn_output(mapping, capsys)
+    assert "Sectors represented" in out
+    assert "%" not in out  # no concentration warning
+
+
+def test_exactly_half_one_sector_still_warns(capsys) -> None:
+    # The boundary is inclusive: half a sample being one industry is already
+    # enough to make the table describe that industry more than the market.
+    mapping: dict[str, str | None] = {
+        "1": "Industrials",
+        "2": "Industrials",
+        "3": "Tech",
+        "4": "Energy",
+    }
+    out = _warn_output(mapping, capsys)
+    assert "50%" in out
+
+
+def test_missing_sectors_say_so_rather_than_claiming_a_spread(capsys) -> None:
+    out = _warn_output({"1": None, "2": None}, capsys)
+    assert "No sectors stored" in out
