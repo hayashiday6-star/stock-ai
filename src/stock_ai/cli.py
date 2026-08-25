@@ -73,6 +73,7 @@ from stock_ai.backtest.factor_test import (
 from stock_ai.backtest.gap_continuation import (
     GAP_SHELLS,
     IS_START,
+    MAX_SIGNALS,
     SWEEP_GAP_MIN,
     SWEEP_VO_MIN,
     VO_SHELLS,
@@ -2081,6 +2082,7 @@ def _render_coverage(label: str, trades: pd.DataFrame) -> None:
     """The sample, and how much of it is one morning's trade."""
     counts = cluster_counts(trades)
     locked = int(trades["locked_open"].sum()) if "locked_open" in trades.columns else 0
+    sessions = trades["signal_date"].nunique()
     table = Table(title=f"{label}: what the sample is made of")
     table.add_column("measure", overflow="fold")
     table.add_column("value", justify="right")
@@ -2091,6 +2093,12 @@ def _render_coverage(label: str, trades: pd.DataFrame) -> None:
     table.add_row("effective sample (the scarcer)", str(counts.effective))
     table.add_row("opened locked (no range)", str(locked))
     console.print(table)
+    if counts.trades and counts.max_per_date < MAX_SIGNALS:
+        console.print(
+            f"[dim]The three-signal cap never bound: the busiest of the {sessions} "
+            f"firing session(s) produced {counts.max_per_date}. What limits the "
+            "trade count is the screen, not the cap.[/]"
+        )
 
 
 def _render_distribution(label: str, trades: pd.DataFrame) -> None:
@@ -2260,6 +2268,19 @@ def gap_continuation(
     if not prices_by_symbol:
         console.print("[yellow]No stored prices for any JP security.[/]")
         return
+
+    # The live screener asks the whole market on each date; this reads whatever
+    # the store holds. Said out loud, because a universe that covers part of
+    # the market produces proportionally fewer signals, and a sample that came
+    # up short for that reason looks exactly like a strategy that rarely fires.
+    console.print(
+        f"[dim]Universe: {len(prices_by_symbol)} symbol(s) with stored prices. The "
+        "production screener queries every listed name each day, so a store "
+        "holding part of the market yields proportionally fewer signals. Run "
+        "'universe --segment all' and 'bulk-fetch' to widen it. Delisted names "
+        "are absent either way, so trades in companies that later left the "
+        "exchange are missing from this measurement.[/]"
+    )
 
     spans = [frame.index.min() for frame in prices_by_symbol.values()]
     start = min(spans).date()
