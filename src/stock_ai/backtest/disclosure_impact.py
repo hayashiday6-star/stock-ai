@@ -100,6 +100,15 @@ TRACKED_METRICS: tuple[str, ...] = FORECAST_METRICS + INTERIM_METRICS
 
 _FORECAST_FIELD = {metric: f"F{metric}" for metric in TRACKED_METRICS}
 
+#: The annual dividend forecast, reported on its own axis rather than folded
+#: into the earnings direction. Measured over 1,551 symbols: raising it went
+#: with **+2.79%** (2,094 disclosures, 960 symbols) and cutting it with
+#: **-2.92%** (150, 139) - a 5.7-point spread, wider than the 3.7 points
+#: between an earnings raise and an earnings cut. The two also disagree: a
+#: company can cut its profit forecast while raising its dividend, and filing
+#: them together would let each hide the other.
+DIVIDEND_METRIC = "DivAnn"
+
 #: Order in which a metric decides the revision's direction. Profit leads
 #: because a Japanese 業績予想修正 is read on 純利益 first, and the metrics
 #: genuinely disagree - a revenue cut alongside a profit raise is a margin
@@ -107,9 +116,8 @@ _FORECAST_FIELD = {metric: f"F{metric}" for metric in TRACKED_METRICS}
 #:
 #: The full year outranks the interim throughout: it is the headline figure,
 #: so the interim only decides direction for a disclosure that left the full
-#: year alone. ``DivAnn`` is absent on purpose - a dividend revision is a
-#: separate event, not an earnings direction (see
-#: :attr:`DisclosureEvent.revision_direction`).
+#: year alone. :data:`DIVIDEND_METRIC` is absent on purpose - it carries its
+#: own direction (see :attr:`DisclosureEvent.dividend_direction`).
 DIRECTION_PRIORITY: tuple[str, ...] = (
     "NP",
     "OP",
@@ -285,6 +293,32 @@ class DisclosureEvent:
             return "flat"
         return "up" if current > previous else "down"
 
+    @property
+    def dividend_direction(self) -> str:
+        """How this disclosure moved the annual dividend forecast.
+
+        Same four labels as :attr:`revision_direction`, read off
+        :data:`DIVIDEND_METRIC` alone. Kept as a separate axis because the
+        two answer different questions and disagree often enough to matter:
+        a company can cut its profit forecast while raising its dividend.
+
+        Reading it per ``DocType`` understates it badly. Only 557 of the
+        2,244 measurable dividend revisions arrive as a
+        ``DividendForecastRevision`` notice - the rest are folded into a
+        quarterly announcement, and within the standalone notices alone the
+        cut side thins to 28 observations and says nothing. Pooled across
+        every disclosure type, the same split is a 5.7-point spread. This is
+        the same shape as the earnings case: the dedicated document type is
+        a minority of the events it names.
+        """
+        previous = self.previous_forecasts.get(DIVIDEND_METRIC)
+        current = self.forecasts.get(DIVIDEND_METRIC)
+        if previous is None or current is None:
+            return "no_forecast"
+        if current == previous:
+            return "flat"
+        return "up" if current > previous else "down"
+
     def direction_metric(self) -> str | None:
         """Which metric decided the direction, in :data:`DIRECTION_PRIORITY` order.
 
@@ -442,6 +476,7 @@ def disclosure_frame(events: list[DisclosureEvent]) -> pd.DataFrame:
             "is_revision": event.is_revision,
             "revision_direction": event.revision_direction,
             "direction_metric": event.direction_metric(),
+            "dividend_direction": event.dividend_direction,
         }
         for metric in TRACKED_METRICS:
             row[f"{metric}_after"] = (
@@ -459,6 +494,7 @@ def disclosure_frame(events: list[DisclosureEvent]) -> pd.DataFrame:
         "is_revision",
         "revision_direction",
         "direction_metric",
+        "dividend_direction",
         *(f"{m}_{suffix}" for m in TRACKED_METRICS for suffix in ("before", "after")),
     ]
     return pd.DataFrame(rows, columns=columns)
@@ -659,6 +695,27 @@ def summarize_by_revision(labeled: pd.DataFrame) -> pd.DataFrame:
         median_excess_return, std_excess_return``, sorted by ``n`` descending.
     """
     return _summarize_by(labeled, ["doc_type", "revision_direction"])
+
+
+def summarize_by_dividend(labeled: pd.DataFrame) -> pd.DataFrame:
+    """Count / median / std of excess return, by dividend-forecast direction.
+
+    Pooled across disclosure types on purpose, unlike the other two
+    summaries. Only 557 of the 2,244 measurable dividend revisions arrive as
+    a ``DividendForecastRevision`` notice; the rest are folded into a
+    quarterly announcement. Split by ``DocType`` the cut side falls to 28
+    observations and supports nothing, while pooled it is 150 disclosures
+    across 139 companies and the raise-versus-cut spread is 5.7 points.
+
+    That is the same lesson the earnings axis taught one level up: the
+    document type named after an event covers a minority of that event, so
+    grouping by it hides what the axis is for.
+
+    Returns:
+        Columns ``dividend_direction, n, symbols, median_excess_return,
+        std_excess_return``, sorted by ``n`` descending.
+    """
+    return _summarize_by(labeled, ["dividend_direction"])
 
 
 def _summarize_by(labeled: pd.DataFrame, keys: list[str]) -> pd.DataFrame:

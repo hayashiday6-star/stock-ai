@@ -44,6 +44,7 @@ from stock_ai.ai.query import parse_query, run_query
 from stock_ai.backtest.disclosure_impact import (
     build_disclosure_events,
     label_disclosures,
+    summarize_by_dividend,
     summarize_by_doc_type,
     summarize_by_revision,
 )
@@ -1976,6 +1977,38 @@ def disclosure_impact(
             std_text,
         )
     console.print(revision_table)
+    # A third axis, pooled rather than split by DocType: only a quarter of
+    # dividend revisions arrive as a DividendForecastRevision notice, so
+    # grouping by document type buries the very effect this measures.
+    dividends = summarize_by_dividend(labeled)
+    measurable = dividends[dividends["dividend_direction"] != "no_forecast"]
+    if not measurable.empty:
+        dividend_table = Table(title="the same disclosures, by dividend-forecast revision")
+        dividend_table.add_column("dividend", justify="left")
+        dividend_table.add_column("n", justify="right")
+        dividend_table.add_column("symbols", justify="right")
+        dividend_table.add_column("median", justify="right")
+        dividend_table.add_column("std", justify="right")
+        for row in dividends.itertuples(index=False):
+            std_text = f"{row.std_excess_return:.2%}" if pd.notna(row.std_excess_return) else "-"
+            style = direction_style.get(row.dividend_direction, "dim")
+            dividend_table.add_row(
+                f"[{style}]{row.dividend_direction}[/]",
+                str(row.n),
+                str(row.symbols),
+                f"{row.median_excess_return:+.2%}",
+                std_text,
+            )
+        console.print(dividend_table)
+        console.print(
+            "[dim]The dividend axis is pooled across every disclosure type, not "
+            "split by it: most dividend revisions are folded into a quarterly "
+            "announcement rather than filed as their own notice, so grouping "
+            "them by document type buries them. It is a separate question from "
+            "the earnings direction above - a company can cut its profit "
+            "forecast and raise its dividend in the same breath.[/]"
+        )
+
     console.print(
         "[dim]'up'/'down' read off the revised full-year forecast (net profit "
         "first, then operating profit, sales, EPS). 'flat' means a forecast "
