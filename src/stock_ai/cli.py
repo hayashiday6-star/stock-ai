@@ -1899,14 +1899,20 @@ def _render_segments(labeled: pd.DataFrame, years: int) -> None:
     # --- 3. magnitude ----------------------------------------------------
     magnitude_checks = []
     for column, label, absent in [
-        ("revision_magnitude", "earnings-forecast revision", "with no comparable revision"),
-        ("dividend_magnitude", "dividend-forecast revision", "with no comparable dividend"),
+        ("revision_magnitude", "earnings-forecast revision", "that revised nothing comparable"),
+        ("dividend_magnitude", "dividend-forecast revision", "that revised no dividend"),
     ]:
         binned = magnitude_bins(labeled, column)
         if binned.empty:
             continue
         console.print(_segment_table(f"by size of {label}", binned, "bin", "magnitude"))
         console.print(f"[bold]{monotonicity(binned).verdict}[/]")
+        console.print(
+            "[dim]Bins hold revisions only. A held forecast has a magnitude of "
+            "exactly zero, and there are thousands of them - left in, that spike "
+            "swallows the quantile edges and every cut ends up sharing the bottom "
+            "bin with every hold.[/]"
+        )
         magnitude_checks.append(reconcile(label, total, binned, residual_reason=absent))
 
     # --- 4. does a small company amplify the same revision? --------------

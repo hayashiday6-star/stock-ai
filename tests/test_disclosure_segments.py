@@ -387,3 +387,60 @@ def test_a_missing_side_gives_no_spread_rather_than_a_nan() -> None:
 
     assert np.isnan(comparison.close_to_close_spread)
     assert np.isnan(comparison.share_in_the_gap)
+
+
+def test_unrevised_rows_are_kept_out_of_the_magnitude_bins() -> None:
+    """A spike of zero-magnitude holds collapses the quantiles.
+
+    Measured on the TSE run: with holds included, the five requested bins
+    came back as three and every cut shared the bottom bin with every hold,
+    reporting a 3.45-point span where the revisions alone show 5.57.
+    """
+    revisions = [
+        {"symbol": f"r{i}", "revision_magnitude": value, CLOSE_TO_CLOSE: value / 10}
+        for i, value in enumerate(np.linspace(-0.5, 0.5, 50))
+        if value != 0
+    ]
+    holds = [
+        {"symbol": f"h{i}", "revision_magnitude": 0.0, CLOSE_TO_CLOSE: -0.005} for i in range(200)
+    ]
+    frame = _labeled(revisions + holds)
+
+    contaminated = magnitude_bins(frame, "revision_magnitude", exclude_unrevised=False)
+    clean = magnitude_bins(frame, "revision_magnitude", exclude_unrevised=True)
+
+    assert len(clean) == 5
+    assert len(contaminated) < len(clean)  # the spike collapsed the edges
+    assert clean["n"].sum() == len(revisions)  # every hold excluded, every revision kept
+    # And the gradient the collapse was hiding is wider.
+    assert monotonicity(clean).span > monotonicity(contaminated).span
+
+
+def test_the_size_cross_also_excludes_unrevised_rows() -> None:
+    """Otherwise the bottom row is contaminated in every size column at once."""
+    rows = []
+    for bucket, cap in {"small": 1e9, "mid": 1e11, "large": 1e13}.items():
+        for index, magnitude in enumerate(np.linspace(-0.5, 0.5, 40)):
+            rows.append(
+                {
+                    "symbol": f"{bucket}-{index}",
+                    "revision_magnitude": magnitude,
+                    "market_cap": cap,
+                    CLOSE_TO_CLOSE: magnitude * 0.3,
+                }
+            )
+        for index in range(60):
+            rows.append(
+                {
+                    "symbol": f"{bucket}-hold-{index}",
+                    "revision_magnitude": 0.0,
+                    "market_cap": cap,
+                    CLOSE_TO_CLOSE: -0.01,
+                }
+            )
+    by_size = magnitude_by_size(_labeled(rows), "revision_magnitude", "market_cap")
+    counted = by_size[[f"{n} n" for n in ["small", "mid", "large"]]].to_numpy().sum()
+
+    # 120 revisions kept, all 180 holds dropped. linspace over an even count
+    # never lands exactly on zero, so no revision is caught by the filter.
+    assert counted == 120

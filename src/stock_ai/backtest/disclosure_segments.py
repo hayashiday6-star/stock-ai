@@ -229,6 +229,7 @@ def magnitude_bins(
     magnitude_column: str,
     return_column: str = CLOSE_TO_CLOSE,
     bins: int = MAGNITUDE_BINS,
+    exclude_unrevised: bool = True,
 ) -> pd.DataFrame:
     """Median excess return per quantile of *signed* revision magnitude.
 
@@ -237,11 +238,35 @@ def magnitude_bins(
     largest raises sit at opposite ends. Binning on ``abs()`` would fold a
     -40% cut onto a +40% raise and flatten the very gradient being tested.
 
+    Disclosures that revised nothing are excluded by default, and that is
+    not a detail. A held forecast has a magnitude of exactly zero, and there
+    are thousands of them - 6,495 of 15,674 measurable rows in the TSE run.
+    Left in, that spike at zero swallows the quantile edges around it:
+    ``qcut`` drops the duplicated boundaries and the five requested bins
+    collapse to three, with every cut sharing the bottom bin with every
+    hold. Measured both ways on the same data, the contaminated bins
+    reported a 3.45-point span where the revisions alone show 5.57.
+
+    They are excluded rather than given their own bin because they are not a
+    smaller revision - they are the absence of one, and a dose-response
+    curve has no place for a row that took no dose. The by-direction tables
+    are where a held forecast is reported.
+
+    Args:
+        labeled: Labeled disclosures.
+        magnitude_column: Signed relative revision size.
+        return_column: Which return window to summarise.
+        bins: Quantiles requested. Fewer come back if the distribution
+            cannot be split that finely.
+        exclude_unrevised: Drop rows whose magnitude is exactly zero.
+
     Returns:
         Columns ``bin, n, symbols, median, std``, ordered from the most
         negative revision to the most positive.
     """
     usable = labeled[labeled[magnitude_column].notna() & labeled[return_column].notna()]
+    if exclude_unrevised:
+        usable = usable[pd.to_numeric(usable[magnitude_column], errors="coerce") != 0]
     if usable.empty:
         return pd.DataFrame(columns=["bin", "n", "symbols", "median", "std"])
 
@@ -309,6 +334,7 @@ def magnitude_by_size(
     return_column: str = CLOSE_TO_CLOSE,
     magnitude_bin_count: int = MAGNITUDE_BINS,
     size_bin_count: int = SIZE_BINS,
+    exclude_unrevised: bool = True,
 ) -> pd.DataFrame:
     """Median excess return by revision magnitude *and* company size.
 
@@ -329,6 +355,11 @@ def magnitude_by_size(
         & labeled[return_column].notna()
         & labeled[size_column].notna()
     ]
+    if exclude_unrevised:
+        # Same spike at zero as in magnitude_bins, and the same damage: the
+        # bottom bin would hold every cut alongside every held forecast,
+        # in every size column at once.
+        usable = usable[pd.to_numeric(usable[magnitude_column], errors="coerce") != 0]
     if usable.empty:
         return pd.DataFrame()
 
