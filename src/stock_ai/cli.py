@@ -2270,6 +2270,20 @@ def gap_continuation(
     )
     topix = fetch_topix(start, end, api_key=settings.jquants_api_key)
 
+    # The calendar and the benchmark both come from TOPIX, so the study can
+    # only run over the window the index covers - however much price history
+    # the store holds. Said out loud, because a window that quietly shrank is
+    # the kind of thing that turns up later as an unexplained sample size.
+    topix_start = topix.index.min().date()
+    topix_end = topix.index.max().date()
+    if topix_start > start:
+        console.print(
+            f"[yellow]Prices reach back to {start}, but the J-Quants plan covers "
+            f"TOPIX only from {topix_start}.[/] The study runs {topix_start} to "
+            f"{topix_end}: there is no benchmark to deduct before that, and a "
+            "return measured against nothing is not an excess return."
+        )
+
     trades = run_backtest(prices_by_symbol, topix)
     # Two widened passes, each moving one floor, purely to populate the bands
     # either side of the shipped ones. Uncapped, so competition for the

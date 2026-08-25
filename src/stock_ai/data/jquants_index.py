@@ -18,9 +18,10 @@ from typing import Any
 import pandas as pd
 from pydantic import SecretStr
 
-from stock_ai.core.exceptions import DataError, NoDataError
+from stock_ai.core.exceptions import DataError, NoDataError, RateLimitError
 from stock_ai.core.logging import get_logger
 from stock_ai.data.http import raise_for_status
+from stock_ai.data.jquants_provider import subscription_window
 from stock_ai.data.schema import CLOSE, DATE, HIGH, LOW, OPEN
 
 logger = get_logger(__name__)
@@ -71,9 +72,20 @@ def normalize_topix(records: list[dict[str, Any]]) -> pd.DataFrame:
 
 
 def _default_fetcher(api_key: SecretStr | None) -> TopixFetcher:
-    """Build a fetcher that calls the J-Quants V2 TOPIX daily-bars endpoint."""
+    """Build a fetcher that calls the J-Quants V2 TOPIX daily-bars endpoint.
 
-    def fetch(start: dt.date, end: dt.date) -> list[dict[str, Any]]:
+    A range wider than the subscription is refused outright, and the refusal
+    names the range the plan *would* serve. Taking that answer and asking
+    again is the difference between "the index is unavailable" and "the index
+    starts in 2021" - and it needs no configuration, because the answer
+    arrives with the refusal.
+
+    The price provider already does this per symbol. The index is one
+    request rather than a universe, so there is nothing to remember between
+    calls: narrow once, retry once.
+    """
+
+    def request(start: dt.date, end: dt.date) -> list[dict[str, Any]]:
         import httpx
 
         headers = {"x-api-key": api_key.get_secret_value()} if api_key else {}
@@ -93,6 +105,33 @@ def _default_fetcher(api_key: SecretStr | None) -> TopixFetcher:
                 if not pagination_key:
                     break
         return records
+
+    def fetch(start: dt.date, end: dt.date) -> list[dict[str, Any]]:
+        try:
+            return request(start, end)
+        except RateLimitError:
+            # A rate limit belongs to the run, not to the range. Narrowing the
+            # window would answer a question nobody asked.
+            raise
+        except DataError as exc:
+            window = subscription_window(str(exc))
+            if window is None:
+                raise
+            covered_start, covered_end = window
+            narrowed_start = max(start, covered_start)
+            narrowed_end = min(end, covered_end) if covered_end else end
+            if narrowed_start >= narrowed_end or (narrowed_start, narrowed_end) == (start, end):
+                raise
+            logger.warning(
+                "The J-Quants plan covers TOPIX from %s, not %s. Fetching %s to %s "
+                "instead; any study built on this index starts there, whatever "
+                "history the price store holds.",
+                covered_start,
+                start,
+                narrowed_start,
+                narrowed_end,
+            )
+            return request(narrowed_start, narrowed_end)
 
     return fetch
 
