@@ -64,7 +64,7 @@ import numpy as np
 import pandas as pd
 
 from stock_ai.core.logging import get_logger
-from stock_ai.data.schema import ADJ_CLOSE, CLOSE
+from stock_ai.data.schema import ADJ_CLOSE, CLOSE, OPEN, VOLUME
 
 logger = get_logger(__name__)
 
@@ -210,6 +210,15 @@ class DisclosureEvent:
     is tracked against, because ``F*`` always means "this fiscal year's
     forecast" regardless of which quarter's actuals the row also carries."""
     is_after_hours: bool
+    """Whether the reaction is measured on the next trading day. A disclosure
+    with no time reads ``True`` here - the safe assumption - which is why it
+    must not also be *reported* as after-hours; see :attr:`timing`."""
+    shares_outstanding: float | None
+    """Shares issued at the fiscal year end, net of treasury stock
+    (``ShOutFY`` - ``TrShFY``). Carried so market capitalisation can be
+    formed against the price standing *at the disclosure* rather than a
+    stored snapshot taken at some unrelated later date - the whole point of
+    sizing an event is to size it as it was."""
     forecasts: dict[str, float | None]
     """Current-as-of-this-disclosure value per :data:`TRACKED_METRICS`."""
     previous_forecasts: dict[str, float]
@@ -217,6 +226,61 @@ class DisclosureEvent:
     per metric that had one. A metric absent here had no earlier value to be
     measured against - the fiscal year's first disclosure, or a filer that
     does not publish that forecast at all."""
+
+    @property
+    def timing(self) -> str:
+        """``"after_hours"``, ``"intraday"``, or ``"time_unknown"``.
+
+        Three buckets, not two, because the base-date rule and the reporting
+        bucket answer different questions. :attr:`is_after_hours` has to
+        decide *something* for a disclosure with no ``DiscTime``, and the
+        safe answer is to treat it as after-hours. Reporting it that way as
+        well would quietly pad the after-hours table with rows whose timing
+        was assumed rather than read, so an unknown time is counted on its
+        own.
+        """
+        if self.disc_time is None:
+            return "time_unknown"
+        return "after_hours" if self.disc_time >= SESSION_CLOSE else "intraday"
+
+    @property
+    def revision_magnitude(self) -> float | None:
+        """Signed relative size of the earnings revision, or ``None``.
+
+        Measured on whichever metric :func:`direction_metric` settled on, so
+        magnitude and direction always describe the same figure. The
+        denominator is ``abs(before)``, which keeps the sign meaning
+        "improved" rather than "grew": a loss forecast narrowing from -100
+        to -50 is ``+0.5``, an improvement, where a plain ``before``
+        denominator would call it -0.5.
+
+        ``None`` when nothing was comparable, or when the prior figure was
+        exactly zero - a forecast moving off zero has no finite relative
+        size, and reporting one would put a division artefact in the top
+        bin.
+        """
+        metric = self.direction_metric()
+        if metric is None:
+            return None
+        before = self.previous_forecasts[metric]
+        after = self.forecasts[metric]
+        if after is None or before == 0:
+            return None
+        return (after - before) / abs(before)
+
+    @property
+    def dividend_magnitude(self) -> float | None:
+        """Signed relative size of the dividend-forecast revision, or ``None``.
+
+        Same convention as :attr:`revision_magnitude`. A company initiating
+        a dividend from zero reads ``None`` rather than infinity; it is a
+        real event, but not one this ratio can rank.
+        """
+        before = self.previous_forecasts.get(DIVIDEND_METRIC)
+        after = self.forecasts.get(DIVIDEND_METRIC)
+        if before is None or after is None or before == 0:
+            return None
+        return (after - before) / abs(before)
 
     @property
     def revised_from(self) -> dict[str, float]:
@@ -371,6 +435,23 @@ def _first_float(record: dict[str, Any], keys: tuple[str, ...]) -> float | None:
     return None
 
 
+def _shares_outstanding(record: dict[str, Any]) -> float | None:
+    """Shares issued net of treasury stock, for a market capitalisation.
+
+    ``ShOutFY`` counts issued shares, treasury included. Treasury stock has
+    no claim on earnings and no market value, so leaving it in overstates
+    every company that has bought back stock - and Japanese large caps hold
+    a great deal of it. ``TrShFY`` is subtracted where the payload carries
+    it; where it does not, the issued figure stands, slightly high.
+    """
+    issued = _to_float(record.get("ShOutFY"))
+    if issued is None:
+        return None
+    treasury = _to_float(record.get("TrShFY")) or 0.0
+    net = issued - treasury
+    return net if net > 0 else None
+
+
 def build_disclosure_events(symbol: str, records: list[dict[str, Any]]) -> list[DisclosureEvent]:
     """Turn raw ``/fins/summary`` records into disclosure events with revisions.
 
@@ -450,6 +531,7 @@ def build_disclosure_events(symbol: str, records: list[dict[str, Any]]) -> list[
                 doc_type=doc_type,
                 target_fiscal_year=fiscal_year,
                 is_after_hours=is_after_hours,
+                shares_outstanding=_shares_outstanding(record),
                 forecasts=forecasts,
                 previous_forecasts=previous_forecasts,
             )
@@ -474,9 +556,13 @@ def disclosure_frame(events: list[DisclosureEvent]) -> pd.DataFrame:
             "target_fiscal_year": event.target_fiscal_year,
             "is_after_hours": event.is_after_hours,
             "is_revision": event.is_revision,
+            "timing": event.timing,
             "revision_direction": event.revision_direction,
             "direction_metric": event.direction_metric(),
+            "revision_magnitude": event.revision_magnitude,
             "dividend_direction": event.dividend_direction,
+            "dividend_magnitude": event.dividend_magnitude,
+            "shares_outstanding": event.shares_outstanding,
         }
         for metric in TRACKED_METRICS:
             row[f"{metric}_after"] = (
@@ -491,10 +577,14 @@ def disclosure_frame(events: list[DisclosureEvent]) -> pd.DataFrame:
         "doc_type",
         "target_fiscal_year",
         "is_after_hours",
+        "timing",
         "is_revision",
         "revision_direction",
         "direction_metric",
+        "revision_magnitude",
         "dividend_direction",
+        "dividend_magnitude",
+        "shares_outstanding",
         *(f"{m}_{suffix}" for m in TRACKED_METRICS for suffix in ("before", "after")),
     ]
     return pd.DataFrame(rows, columns=columns)
@@ -549,6 +639,18 @@ class ExcessReturnLabel:
     topix_return: float | None
     excess_return: float | None
     exclude_reason: str | None
+    open_to_close_excess_return: float | None = None
+    """The same reaction measured from the base day's *open* instead of the
+    previous close, so the overnight gap is excluded.
+
+    Only computed for an after-hours disclosure, where the two windows
+    genuinely differ and the choice between them is a real decision: the
+    close-to-close window contains the gap the news actually opens, and the
+    open-to-close window contains only what happened once the market was
+    already trading on it. ``None`` for an intraday disclosure, where the
+    open precedes the news and the window would measure a stretch of the
+    session that had not heard it yet.
+    """
 
 
 def _price_column(prices: pd.DataFrame) -> str:
@@ -595,8 +697,99 @@ def label_excess_return(
     stock_return = float(stock_after / stock_before - 1.0)
     topix_return = float(topix_after / topix_before - 1.0)
     return ExcessReturnLabel(
-        base, prior, stock_return, topix_return, stock_return - topix_return, None
+        base,
+        prior,
+        stock_return,
+        topix_return,
+        stock_return - topix_return,
+        None,
+        _open_to_close_excess(base, is_after_hours, stock_prices, topix_prices),
     )
+
+
+def _open_to_close_excess(
+    base: pd.Timestamp,
+    is_after_hours: bool,
+    stock_prices: pd.DataFrame,
+    topix_prices: pd.DataFrame,
+) -> float | None:
+    """Excess return from the base day's open to its close, or ``None``.
+
+    Unadjusted ``open`` is paired with unadjusted ``close``, not the
+    split-adjusted close the other window uses. Both
+    sit on the same session, so whatever split factor applies applies to
+    both and cancels; mixing an unadjusted open against an adjusted close
+    would manufacture the split as a return.
+    """
+    if not is_after_hours:
+        return None
+    if OPEN not in stock_prices.columns or OPEN not in topix_prices.columns:
+        return None
+
+    stock_open = stock_prices.loc[base, OPEN]
+    stock_close = stock_prices.loc[base, CLOSE] if CLOSE in stock_prices.columns else None
+    topix_open = topix_prices.loc[base, OPEN]
+    topix_close = topix_prices.loc[base, CLOSE]
+    if stock_close is None:
+        return None
+    values = (stock_open, stock_close, topix_open, topix_close)
+    if any(pd.isna(value) for value in values) or stock_open == 0 or topix_open == 0:
+        return None
+
+    return float(stock_close / stock_open - 1.0) - float(topix_close / topix_open - 1.0)
+
+
+#: Trading days averaged into the liquidity figure. A quarter of a year:
+#: long enough that one frantic week does not define a name's normal
+#: turnover, short enough to still describe the company as it was at the
+#: disclosure rather than a year earlier.
+LIQUIDITY_WINDOW = 60
+
+
+def _market_cap(
+    event: DisclosureEvent, prior_date: pd.Timestamp | None, stock_prices: pd.DataFrame
+) -> float | None:
+    """Market capitalisation as it stood the day before the disclosure.
+
+    Priced at ``prior_date`` rather than today, because the question is how
+    large the company was when the market received this news. A single
+    present-day snapshot would rank a name by what it grew into, which for
+    an event study is look-ahead dressed as a control variable.
+    """
+    if prior_date is None or event.shares_outstanding is None:
+        return None
+    if prior_date not in stock_prices.index or CLOSE not in stock_prices.columns:
+        return None
+    price = stock_prices.loc[prior_date, CLOSE]
+    if pd.isna(price) or price <= 0:
+        return None
+    return float(price) * event.shares_outstanding
+
+
+def _avg_trading_value(prior_date: pd.Timestamp | None, stock_prices: pd.DataFrame) -> float | None:
+    """Mean daily turnover (close x volume) over the window ending at ``prior_date``.
+
+    Turnover rather than share volume: a 300-yen name and a 30,000-yen name
+    trading the same number of shares are not equally liquid, and it is the
+    money that has to move a price.
+
+    The window ends *before* the disclosure. Including the reaction day
+    would let the event set the liquidity it is then sorted by, which would
+    manufacture exactly the correlation this column exists to test.
+    """
+    if prior_date is None or VOLUME not in stock_prices.columns:
+        return None
+    history = stock_prices.loc[:prior_date]
+    if history.empty:
+        return None
+    window = history.tail(LIQUIDITY_WINDOW)
+    turnover = pd.to_numeric(window[CLOSE], errors="coerce") * pd.to_numeric(
+        window[VOLUME], errors="coerce"
+    )
+    turnover = turnover.dropna()
+    if turnover.empty:
+        return None
+    return float(turnover.mean())
 
 
 def label_disclosures(
@@ -626,26 +819,39 @@ def label_disclosures(
             "stock_return",
             "topix_return",
             "excess_return",
+            "open_to_close_excess_return",
+            "market_cap",
+            "avg_trading_value",
             "exclude_reason",
         ):
             frame[col] = pd.Series(dtype="object")
         return frame
 
     labels: list[ExcessReturnLabel] = []
+    market_caps: list[float | None] = []
+    liquidity: list[float | None] = []
     for event in events:
         stock_prices = stock_prices_by_symbol.get(event.symbol)
         if stock_prices is None or stock_prices.empty:
             labels.append(ExcessReturnLabel(None, None, None, None, None, "no_stock_prices"))
+            market_caps.append(None)
+            liquidity.append(None)
             continue
-        labels.append(
-            label_excess_return(event.disc_date, event.is_after_hours, stock_prices, topix_prices)
+        label = label_excess_return(
+            event.disc_date, event.is_after_hours, stock_prices, topix_prices
         )
+        labels.append(label)
+        market_caps.append(_market_cap(event, label.prior_date, stock_prices))
+        liquidity.append(_avg_trading_value(label.prior_date, stock_prices))
 
     frame["base_date"] = [label.base_date for label in labels]
     frame["prior_date"] = [label.prior_date for label in labels]
     frame["stock_return"] = [label.stock_return for label in labels]
     frame["topix_return"] = [label.topix_return for label in labels]
     frame["excess_return"] = [label.excess_return for label in labels]
+    frame["open_to_close_excess_return"] = [label.open_to_close_excess_return for label in labels]
+    frame["market_cap"] = market_caps
+    frame["avg_trading_value"] = liquidity
     frame["exclude_reason"] = [label.exclude_reason for label in labels]
 
     excluded = frame["exclude_reason"].notna().sum()

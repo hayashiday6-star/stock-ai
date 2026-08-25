@@ -48,6 +48,16 @@ from stock_ai.backtest.disclosure_impact import (
     summarize_by_doc_type,
     summarize_by_revision,
 )
+from stock_ai.backtest.disclosure_segments import (
+    amplification,
+    compare_return_windows,
+    magnitude_bins,
+    magnitude_by_size,
+    monotonicity,
+    reconcile,
+    summarize_by_timing,
+    summarize_by_timing_and_direction,
+)
 from stock_ai.backtest.engine import BacktestEngine
 from stock_ai.backtest.factor_test import (
     FactorTestResult,
@@ -1798,6 +1808,156 @@ def _warn_if_concentrated(database: Database, symbols: list[str]) -> None:
         console.print(f"[dim]Sectors represented: {spread}.[/]")
 
 
+def _pct(value: object) -> str:
+    """Format a fraction as a signed percentage, or a dash when absent."""
+    return f"{value:+.2%}" if pd.notna(value) else "-"
+
+
+def _segment_table(title: str, frame: pd.DataFrame, label_column: str, label_head: str) -> Table:
+    """One count / symbols / median / std table over a labelled partition."""
+    table = Table(title=title)
+    table.add_column(label_head, style="cyan", overflow="fold")
+    table.add_column("n", justify="right")
+    table.add_column("symbols", justify="right")
+    table.add_column("median", justify="right")
+    table.add_column("std", justify="right")
+    for row in frame.itertuples(index=False):
+        values = row._asdict()
+        table.add_row(
+            str(values[label_column]),
+            str(values["n"]),
+            str(values["symbols"]),
+            _pct(values["median"]),
+            f"{values['std']:.2%}" if pd.notna(values["std"]) else "-",
+        )
+    return table
+
+
+def _render_segments(labeled: pd.DataFrame, years: int) -> None:
+    """Print the timing, window, magnitude and size cuts, then reconcile them."""
+    total = int(labeled["excess_return"].notna().sum())
+
+    # --- 1. timing -------------------------------------------------------
+    timing = summarize_by_timing(labeled)
+    console.print(_segment_table(f"by disclosure timing ({years}y)", timing, "timing", "timing"))
+
+    unknown = timing[timing["timing"] == "time_unknown"]["n"].sum() if not timing.empty else 0
+    console.print(
+        f"[dim]'time_unknown' is {int(unknown)} disclosure(s) with no DiscTime. They are "
+        "measured on the next trading day - the safe assumption - but are counted "
+        "apart from after_hours so a real bucket is not padded with guessed ones.[/]"
+    )
+
+    split = summarize_by_timing_and_direction(labeled)
+    for bucket in ["after_hours", "intraday"]:
+        part = split[split["timing"] == bucket]
+        if part.empty:
+            continue
+        console.print(
+            _segment_table(
+                f"revision direction - {bucket}",
+                part.drop(columns=["timing"]),
+                "revision_direction",
+                "revision",
+            )
+        )
+
+    # --- 2. which window to adopt ---------------------------------------
+    windows = compare_return_windows(labeled)
+    if windows.rows_compared:
+        console.print(
+            _segment_table(
+                f"after-hours, prior close -> next close (n={windows.rows_compared})",
+                windows.close_to_close,
+                "revision_direction",
+                "revision",
+            )
+        )
+        console.print(
+            _segment_table(
+                f"after-hours, next open -> next close (n={windows.rows_compared})",
+                windows.open_to_close,
+                "revision_direction",
+                "revision",
+            )
+        )
+        full = windows.close_to_close_spread
+        after_open = windows.open_to_close_spread
+        if pd.notna(full) and pd.notna(after_open):
+            console.print(
+                f"[bold]up-minus-down spread: {full:+.2%} close-to-close vs "
+                f"{after_open:+.2%} open-to-close.[/] The overnight gap carried "
+                f"{windows.share_in_the_gap:.0%} of the reaction."
+            )
+        else:
+            console.print(
+                "[yellow]No up-minus-down spread: this set has no after-hours "
+                "disclosure on one of the two sides, so the windows cannot be "
+                "compared on it.[/]"
+            )
+
+    # --- 3. magnitude ----------------------------------------------------
+    magnitude_checks = []
+    for column, label, absent in [
+        ("revision_magnitude", "earnings-forecast revision", "with no comparable revision"),
+        ("dividend_magnitude", "dividend-forecast revision", "with no comparable dividend"),
+    ]:
+        binned = magnitude_bins(labeled, column)
+        if binned.empty:
+            continue
+        console.print(_segment_table(f"by size of {label}", binned, "bin", "magnitude"))
+        console.print(f"[bold]{monotonicity(binned).verdict}[/]")
+        magnitude_checks.append(reconcile(label, total, binned, residual_reason=absent))
+
+    # --- 4. does a small company amplify the same revision? --------------
+    for size_column, label in [
+        ("market_cap", "market cap"),
+        ("avg_trading_value", "average trading value"),
+    ]:
+        by_size = magnitude_by_size(labeled, "revision_magnitude", size_column)
+        if by_size.empty:
+            continue
+        # Read the bucket names off the frame. With too few distinct sizes to
+        # form tertiles it returns fewer, differently named columns, and
+        # hard-coding small/mid/large crashes on exactly the thin universe
+        # where the table is least worth trusting.
+        names = [c for c in by_size.columns if c != "bin" and not c.endswith(" n")]
+        table = Table(title=f"revision magnitude x {label}")
+        table.add_column("magnitude", style="cyan", overflow="fold")
+        for name in names:
+            table.add_column(name, justify="right")
+        # iterrows, not itertuples: the count columns are named "small n" and
+        # itertuples renames anything that is not a valid identifier, so the
+        # lookup by label would miss exactly those columns.
+        for _index, values in by_size.iterrows():
+            table.add_row(
+                str(values["bin"]),
+                *(f"{_pct(values[name])}\n[dim]{int(values[f'{name} n'])}[/]" for name in names),
+            )
+        console.print(table)
+
+        spreads = amplification(by_size, names)
+        if not spreads.empty:
+            summary = "  ".join(
+                f"{row.size} {row.spread:+.2%}" for row in spreads.itertuples(index=False)
+            )
+            console.print(f"[bold]top-bin minus bottom-bin spread:[/] {summary}")
+
+    # --- 5. does every partition still hold all the rows? ----------------
+    checks = [
+        reconcile("timing", total, timing),
+        reconcile("timing x direction", total, split),
+        *magnitude_checks,
+    ]
+    console.print("[dim]partition check - " + "; ".join(check.line for check in checks) + "[/]")
+    if any(not check.balances for check in checks):
+        console.print(
+            "[yellow]A partition lost rows. Every table above is a slice of the same "
+            "labeled set, so a median computed over a slice that silently shed rows "
+            "is not the median it claims to be.[/]"
+        )
+
+
 @app.command(name="disclosure-impact")
 def disclosure_impact(
     symbols: list[str] | None = typer.Argument(
@@ -2028,6 +2188,8 @@ def disclosure_impact(
         "same companies rather than adding independent ones, so a row with a "
         "single-digit 'symbols' is thinner than its 'n' suggests.[/]"
     )
+
+    _render_segments(labeled, years)
 
     if export is not None:
         # The summaries answer "which disclosure type", but every judgement
