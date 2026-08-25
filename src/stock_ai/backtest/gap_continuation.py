@@ -130,6 +130,20 @@ GAP_SHELLS: tuple[tuple[float, float], ...] = (
 #: criterion 2.
 PRODUCTION_SHELL = (8.0, 9.0)
 
+#: Floors the *sweep* runs at, below the production ones on purpose.
+#:
+#: A run screened at ``GAP_MIN`` never produces a trade that gapped 7%, so the
+#: band below the production band is empty by construction and criterion 2
+#: cannot be satisfied whatever the market did. Seeing the neighbourhood at
+#: all requires collecting trades the strategy would decline, which is exactly
+#: what "is 8% the top of a hill or an isolated spike" asks for.
+#:
+#: One factor moves at a time. The gap sweep holds the volume ratio at its
+#: production value and vice versa, so every band stays directly comparable to
+#: the production band rather than differing in two ways at once.
+SWEEP_GAP_MIN = 6.0
+SWEEP_VO_MIN = 3.0
+
 #: Disjoint volume-ratio bands, for the same reason.
 VO_SHELLS: tuple[tuple[float, float], ...] = (
     (3.0, 4.0),
@@ -237,6 +251,7 @@ def screen_day(
     prev_day: pd.Timestamp,
     gap_min: float = GAP_MIN,
     vo_ratio_min: float = VO_RATIO_MIN,
+    max_signals: int | None = MAX_SIGNALS,
 ) -> pd.DataFrame:
     """Run the screen over one session's bars.
 
@@ -317,7 +332,9 @@ def screen_day(
         return pd.DataFrame()
 
     selected["score"] = selected["gap_pct"] * selected["vo_ratio"]
-    return selected.nlargest(MAX_SIGNALS, "score")
+    if max_signals is None:
+        return selected.sort_values("score", ascending=False)
+    return selected.nlargest(max_signals, "score")
 
 
 def regime_ok(topix: pd.DataFrame, day: pd.Timestamp) -> bool:
@@ -445,6 +462,7 @@ def run_backtest(
     topix: pd.DataFrame,
     gap_min: float = GAP_MIN,
     vo_ratio_min: float = VO_RATIO_MIN,
+    max_signals: int | None = MAX_SIGNALS,
 ) -> pd.DataFrame:
     """Walk the trading calendar and price every signal the screen fires.
 
@@ -452,6 +470,13 @@ def run_backtest(
     are absent from it rather than because a weekday rule guessed at them.
     The production screener walks back by weekday only and lands on holidays,
     which is why it reported a false "market closed" on 2026-08-12.
+
+    ``max_signals`` is the production cap for the run the verdict is read
+    from, and ``None`` for a sweep. Capping a sweep would let a widened floor
+    change which trades the *production* band contains: the rank is gap times
+    volume ratio, so a 6.5% gap on twenty times volume outranks an 8.5% gap on
+    six, and would take a slot the strategy gave to the latter. Uncapped, each
+    band keeps its own full sample and the bands stay comparable.
     """
     panel = build_panel(prices_by_symbol)
     if panel[CLOSE].empty or topix.empty:
@@ -470,7 +495,7 @@ def run_backtest(
 
         if not regime_ok(topix, day):
             continue
-        signals = screen_day(inputs, day, prev_day, gap_min, vo_ratio_min)
+        signals = screen_day(inputs, day, prev_day, gap_min, vo_ratio_min, max_signals)
         if signals.empty:
             continue
 
@@ -825,8 +850,19 @@ class Verdict:
         return self.outcome == "undecidable"
 
 
-def verdict(trades: pd.DataFrame) -> Verdict:
+def verdict(trades: pd.DataFrame, gap_sweep: pd.DataFrame) -> Verdict:
     """Apply the three pre-registered criteria, coverage gate first.
+
+    ``trades`` is the production sample, screened at the shipped thresholds;
+    criteria 1 and 3 are read from it. ``gap_sweep`` is the widened sample
+    that reaches below :data:`GAP_MIN`, and only criterion 2 reads it - the
+    band below the production band does not exist in ``trades``, because the
+    screen rejected those setups before they could become trades.
+
+    It is a required argument rather than one defaulting to ``trades``: a
+    default would silently evaluate criterion 2 against a sample whose left
+    neighbour is empty, and score it a failure for a reason that has nothing
+    to do with the market.
 
     The gate runs before any return is touched and returns early when it
     fails, so a thin sample yields ``undecidable`` with no criteria computed
@@ -842,7 +878,7 @@ def verdict(trades: pd.DataFrame) -> Verdict:
         return Verdict("undecidable", coverage, None, None, None, None)
 
     distribution = describe(trades)
-    hill = hill_test(sweep_shells(trades))
+    hill = hill_test(sweep_shells(gap_sweep))
     sign = binding_sign_test(trades)
 
     passed = {

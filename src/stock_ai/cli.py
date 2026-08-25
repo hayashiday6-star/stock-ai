@@ -70,6 +70,19 @@ from stock_ai.backtest.factor_test import (
     suggest_formation,
     walk_forward,
 )
+from stock_ai.backtest.gap_continuation import (
+    GAP_SHELLS,
+    IS_START,
+    SWEEP_GAP_MIN,
+    SWEEP_VO_MIN,
+    VO_SHELLS,
+    cluster_counts,
+    describe,
+    run_backtest,
+    split_is_oos,
+    sweep_shells,
+    verdict,
+)
 from stock_ai.backtest.report import metrics_frame
 from stock_ai.backtest.seasonality import (
     DEFAULT_MIN_YEARS,
@@ -2052,6 +2065,267 @@ def _render_segments(labeled: pd.DataFrame, years: int) -> None:
             "[yellow]A partition lost rows. Every table above is a slice of the same "
             "labeled set, so a median computed over a slice that silently shed rows "
             "is not the median it claims to be.[/]"
+        )
+
+
+# ---------------------------------------------------------------------------
+# gap-continuation
+# ---------------------------------------------------------------------------
+
+
+def _verdict_style(outcome: str) -> str:
+    return {"pass": "green", "withdraw": "red"}.get(outcome, "yellow")
+
+
+def _render_coverage(label: str, trades: pd.DataFrame) -> None:
+    """The sample, and how much of it is one morning's trade."""
+    counts = cluster_counts(trades)
+    locked = int(trades["locked_open"].sum()) if "locked_open" in trades.columns else 0
+    table = Table(title=f"{label}: what the sample is made of")
+    table.add_column("measure", overflow="fold")
+    table.add_column("value", justify="right")
+    table.add_row("trades", str(counts.trades))
+    table.add_row("distinct symbols", str(counts.symbols))
+    table.add_row("distinct signal dates", str(counts.dates))
+    table.add_row("most signals on one date", str(counts.max_per_date))
+    table.add_row("effective sample (the scarcer)", str(counts.effective))
+    table.add_row("opened locked (no range)", str(locked))
+    console.print(table)
+
+
+def _render_distribution(label: str, trades: pd.DataFrame) -> None:
+    """The excess return, before and after the benchmark comes out."""
+    excess = describe(trades, "excess_return")
+    raw = describe(trades, "stock_return")
+    table = Table(title=f"{label}: return from the next open to the next close")
+    table.add_column("series", overflow="fold")
+    table.add_column("n", justify="right")
+    table.add_column("median", justify="right")
+    table.add_column("p25", justify="right")
+    table.add_column("p75", justify="right")
+    table.add_column("IQR", justify="right")
+    table.add_column("med/IQR", justify="right")
+    for name, stats in (("before TOPIX deduction", raw), ("TOPIX deducted", excess)):
+        table.add_row(
+            name,
+            str(stats.n),
+            _pct(stats.median),
+            _pct(stats.p25),
+            _pct(stats.p75),
+            f"{stats.iqr:.2%}" if pd.notna(stats.iqr) else "-",
+            f"{stats.median_over_iqr:+.3f}" if pd.notna(stats.median_over_iqr) else "-",
+        )
+    console.print(table)
+    console.print(
+        "[dim]The two rows answer whether the strategy was picking stocks or "
+        "riding a rising tape. A median that survives the deduction is the "
+        "only one that belongs to the strategy.[/]"
+    )
+
+
+def _render_shells(label: str, gap_sweep: pd.DataFrame, vo_sweep: pd.DataFrame) -> None:
+    """The disjoint bands, and whether 8% sits on a hill."""
+    for column, shells, name, trades in (
+        ("gap_pct", GAP_SHELLS, "gap", gap_sweep),
+        ("vo_ratio", VO_SHELLS, "volume ratio", vo_sweep),
+    ):
+        frame = sweep_shells(trades, shells, column)
+        if frame.empty or frame["n"].sum() == 0:
+            continue
+        table = Table(title=f"{label}: {name}, in disjoint bands")
+        table.add_column("band", overflow="fold")
+        table.add_column("n", justify="right")
+        table.add_column("symbols", justify="right")
+        table.add_column("median", justify="right")
+        table.add_column("IQR", justify="right")
+        table.add_column("med/IQR", justify="right")
+        for _, row in frame.iterrows():
+            table.add_row(
+                str(row["shell"]),
+                str(int(row["n"])),
+                str(int(row["symbols"])),
+                _pct(row["median"]),
+                f"{row['iqr']:.2%}" if pd.notna(row["iqr"]) else "-",
+                f"{row['median_over_iqr']:+.3f}" if pd.notna(row["median_over_iqr"]) else "-",
+            )
+        console.print(table)
+    console.print(
+        "[dim]Bands, not thresholds. Sweeping a floor nests the samples - the "
+        "10% set sits inside the 9% set inside the 8% set - so adjacent points "
+        "share most of their trades and the curve is smooth however the "
+        "underlying bands behave. These bands are disjoint, so a spike can "
+        "actually show. The sweep is diagnostic: a better-scoring neighbour is "
+        "not a reason to move the parameter.[/]"
+    )
+    console.print(
+        "[dim]The bands below the shipped floors hold setups the strategy "
+        "declines. They exist only so the neighbourhood can be seen at all - "
+        "screened at the shipped floor there is no band below it, and "
+        "'is 8% a hilltop' has no left-hand side to answer with. One floor "
+        "moves at a time, and the sweep takes every qualifying signal rather "
+        "than the top three, so a widened floor cannot displace a trade the "
+        "production run took.[/]"
+    )
+
+
+def _render_verdict(label: str, result) -> None:
+    """The pre-registered decision, criterion by criterion."""
+    style = _verdict_style(result.outcome)
+    if result.undecidable:
+        console.print(
+            f"[bold yellow]{label}: undecidable[/] - {result.coverage.reason}. "
+            "The three criteria were not computed: the floors were fixed in "
+            "advance precisely so a thin sample has nothing to pass."
+        )
+        return
+
+    table = Table(title=f"{label}: the three criteria, fixed before the numbers")
+    table.add_column("criterion", overflow="fold")
+    table.add_column("measured", justify="right")
+    table.add_column("verdict", justify="right")
+
+    distribution = result.distribution
+    hill = result.hill
+    sign = result.sign
+    measured = [
+        f"{distribution.median_over_iqr:+.3f}" if pd.notna(distribution.median_over_iqr) else "-",
+        f"{hill.left:+.3f} | {hill.band:+.3f} | {hill.right:+.3f}",
+        f"z = {sign.z:+.2f} on {sign.n} {sign.unit}(s)",
+    ]
+    for (criterion, ok), value in zip(result.passed.items(), measured, strict=True):
+        table.add_row(criterion, value, "[green]pass[/]" if ok else "[red]fail[/]")
+    console.print(table)
+
+    console.print(f"[bold {style}]{label}: {result.outcome.upper()}[/]")
+    if not hill.is_hill:
+        console.print(f"[dim]Band shape: {hill.reason}.[/]")
+    console.print(
+        f"[dim]Median {_pct(distribution.median)} against an IQR of "
+        f"{distribution.iqr:.2%}. Read the median too: a narrow distribution "
+        "can clear the ratio on a median that a round trip in an eight-percent "
+        "gapper would erase.[/]"
+    )
+
+
+@app.command(name="gap-continuation")
+def gap_continuation(
+    export: Path | None = typer.Option(
+        None, "--export", help="Write one row per trade to this CSV."
+    ),
+) -> None:
+    """Measure the gap-continuation screener against pre-registered criteria.
+
+    Screens after each session's close for a stock that gapped up at the open,
+    held the gain into the close, on heavily expanded volume; then holds from
+    the next open to the next close. Reads stored prices only - run
+    ``bulk-fetch`` first - and fetches TOPIX live for the calendar and the
+    benchmark deduction.
+
+    Takes no parameters. The thresholds are the production screener's, the
+    acceptance criteria and the in-sample boundary were fixed before any
+    number existed, and none of them is reachable from the command line: a
+    bar that can be passed in is a bar that can be moved once the numbers are
+    in.
+    """
+    settings = get_settings()
+    configure_logging(settings.log_level)
+
+    database = Database()
+    database.create_all()
+    with database.session() as session:
+        stored_jp = [s for s, market in list_securities(session) if market == "JP"]
+    if not stored_jp:
+        console.print("[yellow]No stored JP securities; run 'bulk-fetch' first.[/]")
+        return
+
+    prices_by_symbol: dict[str, pd.DataFrame] = {}
+    with database.session() as session:
+        repo = PriceRepository(session)
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            BarColumn(),
+            TaskProgressColumn(),
+            TimeRemainingColumn(),
+            console=console,
+        ) as progress:
+            task = progress.add_task("loading prices", total=len(stored_jp))
+            for index, symbol in enumerate(stored_jp):
+                progress.update(task, completed=index, description=f"prices {symbol}")
+                frame = repo.get_prices(symbol)
+                if not frame.empty:
+                    prices_by_symbol[symbol] = frame
+            progress.update(task, completed=len(stored_jp))
+
+    if not prices_by_symbol:
+        console.print("[yellow]No stored prices for any JP security.[/]")
+        return
+
+    spans = [frame.index.min() for frame in prices_by_symbol.values()]
+    start = min(spans).date()
+    end = max(frame.index.max() for frame in prices_by_symbol.values()).date()
+    console.print(
+        f"Loaded [bold]{len(prices_by_symbol)}[/] symbol(s), {start} to {end}. "
+        "Fetching TOPIX for the calendar and the benchmark..."
+    )
+    topix = fetch_topix(start, end, api_key=settings.jquants_api_key)
+
+    trades = run_backtest(prices_by_symbol, topix)
+    # Two widened passes, each moving one floor, purely to populate the bands
+    # either side of the shipped ones. Uncapped, so competition for the
+    # three daily slots cannot reshuffle which trades land in which band.
+    console.print("Sweeping the gap neighbourhood...")
+    gap_sweep = run_backtest(prices_by_symbol, topix, gap_min=SWEEP_GAP_MIN, max_signals=None)
+    console.print("Sweeping the volume-ratio neighbourhood...")
+    vo_sweep = run_backtest(prices_by_symbol, topix, vo_ratio_min=SWEEP_VO_MIN, max_signals=None)
+    if trades.empty:
+        console.print(
+            "[yellow]The screen fired on no session in this window.[/] That is a "
+            "result, not an error: with no trades the question cannot be "
+            "answered either way."
+        )
+        return
+
+    if export is not None:
+        trades.to_csv(export, index=False)
+        console.print(f"Wrote {len(trades)} trade(s) to {export}.")
+
+    out_of_sample, in_sample = split_is_oos(trades)
+    gap_oos, gap_is = split_is_oos(gap_sweep)
+    vo_oos, vo_is = split_is_oos(vo_sweep)
+    console.print(
+        f"\n[bold]Split at {IS_START}[/] - the first day of the window the "
+        f"production parameters were fitted on. Out of sample: "
+        f"{len(out_of_sample)} trade(s). In sample: {len(in_sample)} trade(s). "
+        "The verdict is read off the out-of-sample half; the in-sample half is "
+        "shown beside it, and the distance between them is the size of the "
+        "overfit."
+    )
+
+    halves = (
+        ("OUT OF SAMPLE", out_of_sample, gap_oos, vo_oos),
+        ("IN SAMPLE", in_sample, gap_is, vo_is),
+    )
+    for label, subset, gap_bands, vo_bands in halves:
+        if subset.empty:
+            console.print(f"\n[yellow]{label}: no trades in this half.[/]")
+            continue
+        console.print(f"\n[bold]{'=' * 12} {label} {'=' * 12}[/]")
+        _render_coverage(label, subset)
+        _render_distribution(label, subset)
+        _render_shells(label, gap_bands, vo_bands)
+        _render_verdict(label, verdict(subset, gap_bands))
+
+    locked = int(trades["locked_open"].sum())
+    if locked:
+        without = trades[~trades["locked_open"]]
+        console.print(
+            f"\n[dim]{locked} of {len(trades)} trade(s) opened with no range - "
+            "open, high and low identical - which is what a stock bid-limit at "
+            "the open looks like. A backtest fills there anyway; a person may "
+            "not have. Excluding them, the whole-sample TOPIX-deducted median "
+            f"moves from {_pct(describe(trades).median)} to "
+            f"{_pct(describe(without).median)}.[/]"
         )
 
 

@@ -21,6 +21,8 @@ from stock_ai.backtest.gap_continuation import (
     IS_START,
     MIN_SYMBOLS,
     MIN_TRADES,
+    SWEEP_GAP_MIN,
+    SWEEP_VO_MIN,
     VO_RATIO_MIN,
     ClusterCounts,
     _screen_inputs,
@@ -392,7 +394,7 @@ def test_a_thin_sample_is_undecidable_and_no_criterion_is_computed() -> None:
     The point of the gate is that the list is never reached.
     """
     thin = _sample(12, 12)
-    result = verdict(thin)
+    result = verdict(thin, thin)
 
     assert result.undecidable
     assert result.outcome == "undecidable"
@@ -405,7 +407,7 @@ def test_a_thin_sample_is_undecidable_and_no_criterion_is_computed() -> None:
 def test_enough_trades_but_too_few_symbols_is_still_undecidable() -> None:
     """Both floors bind, not just the trade count."""
     concentrated = _sample(MIN_TRADES + 20, symbols=MIN_SYMBOLS - 1)
-    result = verdict(concentrated)
+    result = verdict(concentrated, concentrated)
     assert result.undecidable
     assert "symbols" in result.coverage.reason
 
@@ -421,7 +423,7 @@ def test_the_gate_reads_counts_and_never_a_return() -> None:
 
 def test_a_sufficient_sample_reports_all_three_criteria() -> None:
     ample = _sample(MIN_TRADES + 50, symbols=MIN_SYMBOLS + 10)
-    result = verdict(ample)
+    result = verdict(ample, ample)
     assert not result.undecidable
     assert result.distribution is not None
     assert result.sign is not None
@@ -432,7 +434,7 @@ def test_a_sufficient_sample_reports_all_three_criteria() -> None:
 def test_one_failed_criterion_is_a_withdrawal() -> None:
     """All three must hold, as agreed before the numbers existed."""
     ample = _sample(MIN_TRADES + 50, symbols=MIN_SYMBOLS + 10)
-    result = verdict(ample)
+    result = verdict(ample, ample)
     # A constant series has a zero IQR, so criterion 1 cannot be met.
     assert result.passed is not None
     assert result.outcome == "withdraw"
@@ -576,3 +578,72 @@ def test_the_production_thresholds_are_the_defaults() -> None:
     """The sweep is diagnostic; the measured strategy is the shipped one."""
     assert GAP_MIN == 8.0
     assert VO_RATIO_MIN == 5.0
+
+
+# ---------------------------------------------------------------------------
+# The sweep has to reach below the shipped floor to have a neighbourhood
+# ---------------------------------------------------------------------------
+
+
+def test_the_sweep_floors_sit_below_the_shipped_ones() -> None:
+    """Otherwise the band below the production band cannot exist."""
+    assert SWEEP_GAP_MIN < GAP_MIN
+    assert SWEEP_VO_MIN < VO_RATIO_MIN
+
+
+def test_a_run_at_the_shipped_floor_has_no_band_beneath_it() -> None:
+    """The screen rejects a 7% gap, so no trade can ever land in ``[7,8)``.
+
+    Judging criterion 2 on the production sample would score it a failure for
+    a reason that has nothing to do with the market: the left neighbour is
+    empty by construction, not by result.
+    """
+    trades = pd.DataFrame(
+        {
+            "signal_date": [dt.date(2024, 1, 1) + dt.timedelta(days=i) for i in range(20)],
+            "symbol": [f"S{i}" for i in range(20)],
+            # Everything at or above the shipped floor, as a real run would be.
+            "gap_pct": np.linspace(8.1, 12.0, 20),
+            "excess_return": [0.02] * 20,
+        }
+    )
+    shells = sweep_shells(trades).set_index("shell")
+    assert shells.loc["[6,7)", "n"] == 0
+    assert shells.loc["[7,8)", "n"] == 0
+    assert hill_test(sweep_shells(trades)).is_hill is False
+
+
+def test_an_uncapped_sweep_keeps_every_qualifying_signal() -> None:
+    """Capping a widened run lets a low-gap setup take a slot from a high one.
+
+    The rank is gap times volume ratio, so a 6.5% gap on twenty times volume
+    outscores an 8.5% gap on six and would displace it - changing which trades
+    the *production* band contains.
+    """
+    dates = pd.bdate_range("2024-03-01", periods=4)
+    prices = {}
+    # Four qualifying setups on the same day, one of them a low-gap monster.
+    for name, gap, volume in (
+        ("AAAA", 1.085, 600_000),
+        ("BBBB", 1.090, 600_000),
+        ("CCCC", 1.095, 600_000),
+        ("DDDD", 1.065, 2_000_000),
+    ):
+        open_day = 1000.0 * gap
+        prices[name] = _bars(
+            dates,
+            open_=[1000.0, 1000.0, open_day, 1200.0],
+            high=[1000.0, 1000.0, open_day * 1.03, 1300.0],
+            low=[1000.0, 1000.0, open_day * 0.99, 1150.0],
+            close=[1000.0, 1000.0, open_day * 1.029, 1180.0],
+            volume=[100_000, 100_000, volume, 500_000],
+        )
+    inputs = _screen_inputs(build_panel(prices))
+
+    capped = screen_day(inputs, dates[2], dates[1], gap_min=SWEEP_GAP_MIN)
+    uncapped = screen_day(inputs, dates[2], dates[1], gap_min=SWEEP_GAP_MIN, max_signals=None)
+
+    assert len(capped) == 3
+    assert len(uncapped) == 4
+    # The 6.5% setup outranks a 9% one on score, and under a cap it evicts it.
+    assert "DDDD" in capped.index
