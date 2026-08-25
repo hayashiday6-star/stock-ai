@@ -51,6 +51,10 @@ from stock_ai.backtest.disclosure_impact import (
 from stock_ai.backtest.disclosure_segments import (
     amplification,
     compare_return_windows,
+    horizon_coverage,
+    horizon_magnitude_bins,
+    horizon_spreads,
+    horizons_by_direction,
     magnitude_bins,
     magnitude_by_size,
     monotonicity,
@@ -1833,6 +1837,90 @@ def _segment_table(title: str, frame: pd.DataFrame, label_column: str, label_hea
     return table
 
 
+def _render_horizons(labeled: pd.DataFrame) -> None:
+    """The +1d / +5d / +20d question: does waiting recover the gap?"""
+    by_direction = horizons_by_direction(labeled)
+    if by_direction.empty:
+        return
+
+    coverage = horizon_coverage(labeled)
+    if not coverage.rows.empty:
+        table = Table(title="how many disclosures each horizon can answer for")
+        table.add_column("horizon", justify="right")
+        table.add_column("n", justify="right")
+        table.add_column("too recent", justify="right")
+        table.add_column("no price", justify="right")
+        for row in coverage.rows.itertuples(index=False):
+            table.add_row(
+                f"+{row.horizon}d", str(row.n), str(row.too_recent), str(row.missing_price)
+            )
+        console.print(table)
+        console.print(
+            "[dim]The counts differ between horizons on purpose. A window that runs "
+            "past the end of the data has no answer yet - a different fact from a "
+            "missing price, and the only one that shrinks as the window ages. "
+            "Forcing a common row set would drop every recent disclosure from the "
+            "short horizons too, answering a narrower question than the one asked.[/]"
+        )
+
+    table = Table(title="from the next open, by holding period")
+    table.add_column("horizon", justify="right")
+    table.add_column("revision", overflow="fold")
+    table.add_column("n", justify="right")
+    table.add_column("median", justify="right")
+    table.add_column("p25", justify="right")
+    table.add_column("p75", justify="right")
+    table.add_column("IQR", justify="right")
+    table.add_column("med/IQR", justify="right")
+    direction_style = {"up": "green", "down": "red", "flat": "dim", "no_forecast": "yellow"}
+    for row in by_direction.itertuples(index=False):
+        style = direction_style.get(row.revision_direction, "dim")
+        table.add_row(
+            f"+{row.horizon}d",
+            f"[{style}]{row.revision_direction}[/]",
+            str(row.n),
+            _pct(row.median),
+            _pct(row.p25),
+            _pct(row.p75),
+            f"{row.iqr:.2%}" if pd.notna(row.iqr) else "-",
+            f"{row.median_over_iqr:+.3f}" if pd.notna(row.median_over_iqr) else "-",
+        )
+    console.print(table)
+
+    spreads = horizon_spreads(by_direction)
+    if not spreads.empty:
+        spread_table = Table(title="up-minus-down, against the spread it sits in")
+        spread_table.add_column("horizon", justify="right")
+        spread_table.add_column("up-down", justify="right")
+        spread_table.add_column("up median", justify="right")
+        spread_table.add_column("up IQR", justify="right")
+        spread_table.add_column("med/IQR", justify="right")
+        for row in spreads.itertuples(index=False):
+            spread_table.add_row(
+                f"+{row.horizon}d",
+                _pct(row.spread),
+                _pct(row.up_median),
+                f"{row.up_iqr:.2%}" if pd.notna(row.up_iqr) else "-",
+                f"{row.up_median_over_iqr:+.3f}" if pd.notna(row.up_median_over_iqr) else "-",
+            )
+        console.print(spread_table)
+        console.print(
+            "[dim]Read med/IQR, not the median. Holding longer raises the median and "
+            "widens the distribution at the same time, and only the ratio says which "
+            "grew faster. A bigger edge inside a much bigger spread is a worse bet.[/]"
+        )
+
+    for horizon, binned in horizon_magnitude_bins(labeled).items():
+        if binned.empty:
+            continue
+        console.print(
+            _segment_table(
+                f"revision magnitude, +{horizon}d from the open", binned, "bin", "magnitude"
+            )
+        )
+        console.print(f"[bold]+{horizon}d: {monotonicity(binned).verdict}[/]")
+
+
 def _render_segments(labeled: pd.DataFrame, years: int) -> None:
     """Print the timing, window, magnitude and size cuts, then reconcile them."""
     total = int(labeled["excess_return"].notna().sum())
@@ -1895,6 +1983,9 @@ def _render_segments(labeled: pd.DataFrame, years: int) -> None:
                 "disclosure on one of the two sides, so the windows cannot be "
                 "compared on it.[/]"
             )
+
+    # --- 2b. how far past the open the edge survives ---------------------
+    _render_horizons(labeled)
 
     # --- 3. magnitude ----------------------------------------------------
     magnitude_checks = []

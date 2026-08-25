@@ -15,8 +15,10 @@ import pytest
 from stock_ai.backtest.disclosure_segments import (
     CLOSE_TO_CLOSE,
     OPEN_TO_CLOSE,
+    _stats,
     amplification,
     compare_return_windows,
+    horizon_coverage,
     magnitude_bins,
     magnitude_by_size,
     monotonicity,
@@ -24,6 +26,15 @@ from stock_ai.backtest.disclosure_segments import (
     reconcile,
     summarize_by_timing,
     summarize_by_timing_and_direction,
+)
+from stock_ai.data.schema import (
+    ADJ_CLOSE,
+    CLOSE,
+    DATE,
+    HIGH,
+    LOW,
+    OPEN,
+    VOLUME,
 )
 
 
@@ -444,3 +455,148 @@ def test_the_size_cross_also_excludes_unrevised_rows() -> None:
     # 120 revisions kept, all 180 holds dropped. linspace over an even count
     # never lands exactly on zero, so no revision is caught by the filter.
     assert counted == 120
+
+
+# ---------------------------------------------------------------------------
+# Holding horizons measured from the next open
+# ---------------------------------------------------------------------------
+
+
+def _price_frame(closes: list[float], adj: list[float] | None = None) -> pd.DataFrame:
+    """Daily bars on consecutive business days; open equals the prior close."""
+
+    days = pd.bdate_range("2024-01-01", periods=len(closes))
+    opens = [closes[0]] + closes[:-1]
+    frame = pd.DataFrame(
+        {
+            OPEN: opens,
+            HIGH: closes,
+            LOW: opens,
+            CLOSE: closes,
+            ADJ_CLOSE: adj if adj is not None else closes,
+            VOLUME: [1_000_000] * len(closes),
+        },
+        index=days,
+    )
+    frame.index.name = DATE
+    return frame
+
+
+def _flat_topix(length: int) -> pd.DataFrame:
+    days = pd.bdate_range("2024-01-01", periods=length)
+    frame = pd.DataFrame({OPEN: 2000.0, CLOSE: 2000.0}, index=days)
+    frame.index.name = DATE
+    return frame
+
+
+def test_a_horizon_counts_holding_days_inclusive_of_the_base_session() -> None:
+    """+1d ends at the base day's own close, not the next one."""
+    from stock_ai.backtest.disclosure_impact import _forward_excess
+
+    # Open 100 on day 0, then closes 110, 120, 130, 140, 150.
+    stock = _price_frame([100.0, 110.0, 120.0, 130.0, 140.0, 150.0])
+    topix = _flat_topix(6)
+    base = stock.index[1]  # open here is 100 (the prior close)
+
+    one = _forward_excess(base, 1, True, stock, topix)
+    five = _forward_excess(base, 5, True, stock, topix)
+
+    # One day held: open 100 -> close 110 on the same session.
+    assert one == pytest.approx(0.10)
+    # Five days held: open 100 -> close of the fourth session after it, 150.
+    assert five == pytest.approx(0.50)
+
+
+def test_a_split_inside_the_window_is_not_booked_as_a_return() -> None:
+    """A 2-for-1 halves the raw prices; the adjusted series does not move.
+
+    Pairing a raw open against an adjusted close across that boundary would
+    report roughly -50% where nothing happened.
+    """
+    from stock_ai.backtest.disclosure_impact import _forward_excess
+
+    # Unsplit: a clean +10% over the window.
+    plain_closes = [100.0, 100.0, 105.0, 110.0]
+    plain = _price_frame(plain_closes)
+
+    # Same economics, but a 2-for-1 lands on the third bar: raw halves,
+    # adj_close keeps the unsplit scale.
+    split_raw = [100.0, 100.0, 52.5, 55.0]
+    split_adj = [100.0, 100.0, 105.0, 110.0]
+    split = _price_frame(split_raw, adj=split_adj)
+
+    topix = _flat_topix(4)
+    base = plain.index[1]
+
+    assert _forward_excess(base, 3, True, plain, topix) == pytest.approx(0.10)
+    assert _forward_excess(base, 3, True, split, topix) == pytest.approx(0.10)
+
+
+def test_a_window_past_the_end_of_the_calendar_has_no_answer() -> None:
+    """Not the same as a missing price - only this one shrinks as data arrives."""
+    from stock_ai.backtest.disclosure_impact import _forward_excess
+
+    stock = _price_frame([100.0, 110.0, 120.0])
+    topix = _flat_topix(3)
+    base = stock.index[1]
+
+    assert _forward_excess(base, 2, True, stock, topix) is not None
+    assert _forward_excess(base, 20, True, stock, topix) is None
+
+
+def test_coverage_separates_a_recent_disclosure_from_a_missing_price() -> None:
+    frame = _labeled(
+        [
+            # Reaches far enough, has the value.
+            {
+                "symbol": "1",
+                "timing": "after_hours",
+                "observable_horizon": 30,
+                "open_to_close_20d": 0.02,
+            },
+            # Reaches far enough but the price is absent: a real gap.
+            {
+                "symbol": "2",
+                "timing": "after_hours",
+                "observable_horizon": 30,
+                "open_to_close_20d": np.nan,
+            },
+            # Too recent for the window to exist at all.
+            {
+                "symbol": "3",
+                "timing": "after_hours",
+                "observable_horizon": 4,
+                "open_to_close_20d": np.nan,
+            },
+        ]
+    )
+    rows = horizon_coverage(frame).rows.set_index("horizon")
+
+    assert int(rows.loc[20, "n"]) == 1
+    assert int(rows.loc[20, "too_recent"]) == 1
+    assert int(rows.loc[20, "missing_price"]) == 1
+
+
+def test_quartiles_distinguish_a_tight_median_from_a_wide_one() -> None:
+    """Two series with the same median and very different bets."""
+    tight = _labeled(
+        [{"symbol": str(i), CLOSE_TO_CLOSE: v} for i, v in enumerate(np.linspace(0.0, 0.008, 101))]
+    )
+    wide = _labeled(
+        [
+            {"symbol": str(i), CLOSE_TO_CLOSE: v}
+            for i, v in enumerate(np.linspace(-0.20, 0.208, 101))
+        ]
+    )
+    tight_stats = _stats(tight, CLOSE_TO_CLOSE)
+    wide_stats = _stats(wide, CLOSE_TO_CLOSE)
+
+    assert tight_stats["median"] == pytest.approx(wide_stats["median"], abs=1e-9)
+    assert wide_stats["iqr"] > tight_stats["iqr"] * 10
+    # The ratio is what separates them, and it is the number to read.
+    assert tight_stats["median_over_iqr"] > wide_stats["median_over_iqr"] * 10
+
+
+def test_median_over_iqr_is_absent_rather_than_infinite_on_a_degenerate_spread() -> None:
+    same = _labeled([{"symbol": str(i), CLOSE_TO_CLOSE: 0.01} for i in range(5)])
+    assert np.isnan(_stats(same, CLOSE_TO_CLOSE)["median_over_iqr"])

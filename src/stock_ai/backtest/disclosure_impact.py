@@ -57,7 +57,7 @@ is excluded from the summary rather than counted as a zero.
 from __future__ import annotations
 
 import datetime as dt
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 import numpy as np
@@ -71,6 +71,19 @@ logger = get_logger(__name__)
 #: Regular TSE session close. A disclosure timestamped at or after this is
 #: treated as after-hours; before it, as intraday.
 SESSION_CLOSE = dt.time(15, 0)
+
+#: Holding horizons measured from the next open, in trading days inclusive
+#: of the base session. One day is the base day's own close; five and twenty
+#: ask whether waiting recovers what the overnight gap already took.
+FORWARD_HORIZONS: tuple[int, ...] = (1, 5, 20)
+
+#: Column name per horizon. The one-day series keeps its original name so
+#: the earlier two-window comparison keeps working unchanged.
+FORWARD_COLUMNS: dict[int, str] = {
+    1: "open_to_close_excess_return",
+    5: "open_to_close_5d",
+    20: "open_to_close_20d",
+}
 
 #: Forecast metrics tracked for revisions. Each maps to a ``F{metric}``
 #: J-Quants field carrying the current-fiscal-year forecast as of that
@@ -639,18 +652,29 @@ class ExcessReturnLabel:
     topix_return: float | None
     excess_return: float | None
     exclude_reason: str | None
-    open_to_close_excess_return: float | None = None
-    """The same reaction measured from the base day's *open* instead of the
-    previous close, so the overnight gap is excluded.
+    forward_excess: dict[int, float | None] = field(default_factory=dict)
+    """Excess return from the base day's *open* out to each horizon in
+    :data:`FORWARD_HORIZONS`, so the overnight gap is excluded.
 
-    Only computed for an after-hours disclosure, where the two windows
-    genuinely differ and the choice between them is a real decision: the
-    close-to-close window contains the gap the news actually opens, and the
-    open-to-close window contains only what happened once the market was
-    already trading on it. ``None`` for an intraday disclosure, where the
-    open precedes the news and the window would measure a stretch of the
+    Measured from the open because that is the first price actually
+    reachable by someone who read the disclosure: the close-to-close window
+    contains the gap the news opens on, and nobody can trade into it. The
+    horizons then ask whether waiting longer recovers what the gap took.
+
+    Only computed for an after-hours disclosure. For an intraday one the
+    open precedes the news, and the window would measure a stretch of the
     session that had not heard it yet.
+
+    A horizon is ``None`` either because the price was missing or because
+    the window runs past the end of the calendar - the second is what makes
+    a very recent disclosure unanswerable at 20 days, and it is counted
+    apart from the first.
     """
+
+    @property
+    def open_to_close_excess_return(self) -> float | None:
+        """The one-day horizon, under the name the earlier window comparison uses."""
+        return self.forward_excess.get(1)
 
 
 def _price_column(prices: pd.DataFrame) -> str:
@@ -703,40 +727,80 @@ def label_excess_return(
         topix_return,
         stock_return - topix_return,
         None,
-        _open_to_close_excess(base, is_after_hours, stock_prices, topix_prices),
+        {
+            horizon: _forward_excess(base, horizon, is_after_hours, stock_prices, topix_prices)
+            for horizon in FORWARD_HORIZONS
+        },
     )
 
 
-def _open_to_close_excess(
+def _forward_excess(
     base: pd.Timestamp,
+    horizon: int,
     is_after_hours: bool,
     stock_prices: pd.DataFrame,
     topix_prices: pd.DataFrame,
 ) -> float | None:
-    """Excess return from the base day's open to its close, or ``None``.
+    """Excess return from the base day's open to the close ``horizon`` days on.
 
-    Unadjusted ``open`` is paired with unadjusted ``close``, not the
-    split-adjusted close the other window uses. Both
-    sit on the same session, so whatever split factor applies applies to
-    both and cancels; mixing an unadjusted open against an adjusted close
-    would manufacture the split as a return.
+    ``horizon`` counts holding days inclusive of the base session, so 1 ends
+    at the base day's own close, 5 at the close four sessions later, and 20
+    at the close nineteen sessions later. Buying at an open and selling at
+    that same day's close is one day held, not two.
+
+    The open is put on the adjusted scale before use. Within a single
+    session the split factor cancels and this changes nothing, but a
+    twenty-day window can span a split, and pairing a raw open against an
+    adjusted close there would book the split itself as a return - a 2-for-1
+    would read as -50%.
+
+    ``None`` when the horizon runs past the end of the trading calendar,
+    which is what makes a disclosure too recent to have a twenty-day answer
+    yet - a different thing from a missing price, and counted separately.
     """
     if not is_after_hours:
         return None
     if OPEN not in stock_prices.columns or OPEN not in topix_prices.columns:
         return None
 
-    stock_open = stock_prices.loc[base, OPEN]
-    stock_close = stock_prices.loc[base, CLOSE] if CLOSE in stock_prices.columns else None
-    topix_open = topix_prices.loc[base, OPEN]
-    topix_close = topix_prices.loc[base, CLOSE]
-    if stock_close is None:
+    calendar = topix_prices.index
+    start = calendar.searchsorted(base)
+    end_index = start + horizon - 1
+    if end_index >= len(calendar):
+        return None  # not yet observable: the window extends past today
+    end = calendar[end_index]
+
+    if base not in stock_prices.index or end not in stock_prices.index:
         return None
-    values = (stock_open, stock_close, topix_open, topix_close)
-    if any(pd.isna(value) for value in values) or stock_open == 0 or topix_open == 0:
+    if CLOSE not in stock_prices.columns:
         return None
 
-    return float(stock_close / stock_open - 1.0) - float(topix_close / topix_open - 1.0)
+    stock_open = stock_prices.loc[base, OPEN]
+    raw_close = stock_prices.loc[base, CLOSE]
+    adjusted_close = (
+        stock_prices.loc[base, ADJ_CLOSE] if ADJ_CLOSE in stock_prices.columns else raw_close
+    )
+    end_close = (
+        stock_prices.loc[end, ADJ_CLOSE]
+        if ADJ_CLOSE in stock_prices.columns
+        else stock_prices.loc[end, CLOSE]
+    )
+    topix_open = topix_prices.loc[base, OPEN]
+    topix_close = topix_prices.loc[end, CLOSE]
+
+    values = (stock_open, raw_close, adjusted_close, end_close, topix_open, topix_close)
+    if any(pd.isna(value) for value in values):
+        return None
+    if stock_open == 0 or raw_close == 0 or topix_open == 0:
+        return None
+
+    # The factor that carries this session's raw prices onto the adjusted
+    # scale the closing series already lives on.
+    adjusted_open = float(stock_open) * float(adjusted_close) / float(raw_close)
+    if adjusted_open == 0:
+        return None
+
+    return float(end_close / adjusted_open - 1.0) - float(topix_close / topix_open - 1.0)
 
 
 #: Trading days averaged into the liquidity figure. A quarter of a year:
@@ -792,6 +856,22 @@ def _avg_trading_value(prior_date: pd.Timestamp | None, stock_prices: pd.DataFra
     return float(turnover.mean())
 
 
+def _observable_horizon(base: pd.Timestamp | None, calendar: pd.DatetimeIndex) -> int:
+    """Trading days the calendar covers from ``base`` onward, inclusive.
+
+    A disclosure two sessions before the data ends can answer a one-day
+    question but not a twenty-day one. Returning the reach, rather than a
+    per-horizon flag, lets a caller count exclusions at any horizon without
+    recomputing the calendar.
+    """
+    if base is None:
+        return 0
+    start = calendar.searchsorted(base)
+    if start >= len(calendar):
+        return 0
+    return int(len(calendar) - start)
+
+
 def label_disclosures(
     events: list[DisclosureEvent],
     stock_prices_by_symbol: dict[str, pd.DataFrame],
@@ -819,7 +899,8 @@ def label_disclosures(
             "stock_return",
             "topix_return",
             "excess_return",
-            "open_to_close_excess_return",
+            *FORWARD_COLUMNS.values(),
+            "observable_horizon",
             "market_cap",
             "avg_trading_value",
             "exclude_reason",
@@ -849,7 +930,14 @@ def label_disclosures(
     frame["stock_return"] = [label.stock_return for label in labels]
     frame["topix_return"] = [label.topix_return for label in labels]
     frame["excess_return"] = [label.excess_return for label in labels]
-    frame["open_to_close_excess_return"] = [label.open_to_close_excess_return for label in labels]
+    for horizon, column in FORWARD_COLUMNS.items():
+        frame[column] = [label.forward_excess.get(horizon) for label in labels]
+    # How far the calendar actually reaches past each disclosure. A window
+    # longer than this has no answer yet, which is a different fact from a
+    # price being absent and has to be countable on its own.
+    frame["observable_horizon"] = [
+        _observable_horizon(label.base_date, topix_prices.index) for label in labels
+    ]
     frame["market_cap"] = market_caps
     frame["avg_trading_value"] = liquidity
     frame["exclude_reason"] = [label.exclude_reason for label in labels]

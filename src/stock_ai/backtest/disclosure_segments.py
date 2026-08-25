@@ -48,16 +48,47 @@ SIZE_BINS = 3
 
 
 def _stats(frame: pd.DataFrame, column: str) -> dict[str, float | int]:
-    """Count, distinct symbols, median and dispersion of ``column``."""
+    """Count, symbols, median, quartiles, dispersion and median-over-IQR.
+
+    The quartiles are not decoration. A median of +0.4% describes a
+    different world depending on whether the middle half of the outcomes
+    spans one point or ten, and only the second number says which. The ratio
+    ``median / IQR`` puts the two together: it asks how large the typical
+    outcome is *relative to how uncertain it is*, which is the form the
+    question takes once a holding period is involved - a longer hold can
+    raise the median and still be a worse bet, because the spread grows
+    faster.
+    """
     values = pd.to_numeric(frame[column], errors="coerce").dropna()
     if values.empty:
-        return {"n": 0, "symbols": 0, "median": float("nan"), "std": float("nan")}
+        return {
+            "n": 0,
+            "symbols": 0,
+            "median": float("nan"),
+            "p25": float("nan"),
+            "p75": float("nan"),
+            "iqr": float("nan"),
+            "median_over_iqr": float("nan"),
+            "std": float("nan"),
+        }
+    median = float(values.median())
+    p25 = float(values.quantile(0.25))
+    p75 = float(values.quantile(0.75))
+    iqr = p75 - p25
     return {
         "n": int(values.size),
         "symbols": int(frame.loc[values.index, "symbol"].nunique()),
-        "median": float(values.median()),
+        "median": median,
+        "p25": p25,
+        "p75": p75,
+        "iqr": iqr,
+        "median_over_iqr": median / iqr if iqr > 0 else float("nan"),
         "std": float(values.std()),
     }
+
+
+#: Columns every summary carries, in reading order.
+STAT_COLUMNS = ["n", "symbols", "median", "p25", "p75", "iqr", "median_over_iqr", "std"]
 
 
 def summarize_by_timing(labeled: pd.DataFrame, column: str = CLOSE_TO_CLOSE) -> pd.DataFrame:
@@ -80,7 +111,7 @@ def summarize_by_timing(labeled: pd.DataFrame, column: str = CLOSE_TO_CLOSE) -> 
         if subset.empty:
             continue
         rows.append({"timing": timing, **_stats(subset, column)})
-    return pd.DataFrame(rows, columns=["timing", "n", "symbols", "median", "std"])
+    return pd.DataFrame(rows, columns=["timing", *STAT_COLUMNS])
 
 
 def summarize_by_timing_and_direction(
@@ -106,9 +137,7 @@ def summarize_by_timing_and_direction(
             rows.append(
                 {"timing": timing, "revision_direction": direction, **_stats(subset, column)}
             )
-    return pd.DataFrame(
-        rows, columns=["timing", "revision_direction", "n", "symbols", "median", "std"]
-    )
+    return pd.DataFrame(rows, columns=["timing", "revision_direction", *STAT_COLUMNS])
 
 
 @dataclass(frozen=True)
@@ -179,7 +208,159 @@ def _by_direction(frame: pd.DataFrame, column: str) -> pd.DataFrame:
         if subset.empty:
             continue
         rows.append({"revision_direction": direction, **_stats(subset, column)})
-    return pd.DataFrame(rows, columns=["revision_direction", "n", "symbols", "median", "std"])
+    return pd.DataFrame(rows, columns=["revision_direction", *STAT_COLUMNS])
+
+
+# ---------------------------------------------------------------------------
+# Holding horizons measured from the next open
+# ---------------------------------------------------------------------------
+
+#: Column per holding horizon, mirroring
+#: :data:`stock_ai.backtest.disclosure_impact.FORWARD_COLUMNS`.
+HORIZON_COLUMNS: dict[int, str] = {
+    1: "open_to_close_excess_return",
+    5: "open_to_close_5d",
+    20: "open_to_close_20d",
+}
+
+
+def horizons_by_direction(labeled: pd.DataFrame) -> pd.DataFrame:
+    """Every holding horizon, by revision direction, on after-hours rows.
+
+    Each horizon is measured over the rows that *have* it, not over their
+    intersection. The counts therefore differ between horizons, and that is
+    reported rather than hidden: forcing a common row set would silently
+    throw away every recent disclosure from the short horizons too, which
+    answers a narrower question than the one asked.
+    """
+    after_hours = labeled[labeled["timing"] == "after_hours"]
+    rows = []
+    for horizon, column in HORIZON_COLUMNS.items():
+        if column not in after_hours.columns:
+            continue
+        for direction in ["up", "flat", "down", "no_forecast"]:
+            subset = after_hours[after_hours["revision_direction"] == direction]
+            if subset.empty:
+                continue
+            rows.append(
+                {"horizon": horizon, "revision_direction": direction, **_stats(subset, column)}
+            )
+    return pd.DataFrame(rows, columns=["horizon", "revision_direction", *STAT_COLUMNS])
+
+
+def horizon_spreads(by_direction: pd.DataFrame) -> pd.DataFrame:
+    """Up-minus-down spread per horizon, beside the dispersion it sits in.
+
+    The spread alone would say a longer hold is better whenever the median
+    drifts up. ``median_over_iqr`` for the ``up`` leg is carried next to it
+    because the spread has to be read against how far apart the outcomes
+    are: a wider edge inside a much wider distribution is a worse bet, not a
+    better one.
+    """
+    rows = []
+    for horizon in sorted(by_direction["horizon"].unique()):
+        block = by_direction[by_direction["horizon"] == horizon].set_index("revision_direction")
+        if "up" not in block.index or "down" not in block.index:
+            continue
+        rows.append(
+            {
+                "horizon": int(horizon),
+                "spread": float(block.loc["up", "median"] - block.loc["down", "median"]),
+                "up_median": float(block.loc["up", "median"]),
+                "up_iqr": float(block.loc["up", "iqr"]),
+                "up_median_over_iqr": float(block.loc["up", "median_over_iqr"]),
+                "n_up": int(block.loc["up", "n"]),
+                "n_down": int(block.loc["down", "n"]),
+            }
+        )
+    return pd.DataFrame(
+        rows,
+        columns=[
+            "horizon",
+            "spread",
+            "up_median",
+            "up_iqr",
+            "up_median_over_iqr",
+            "n_up",
+            "n_down",
+        ],
+    )
+
+
+def horizon_magnitude_bins(
+    labeled: pd.DataFrame,
+    magnitude_column: str = "revision_magnitude",
+    bins: int = MAGNITUDE_BINS,
+) -> dict[int, pd.DataFrame]:
+    """Magnitude quantiles per holding horizon, on after-hours rows.
+
+    Binned once per horizon rather than once overall, because each horizon
+    covers a different set of rows: a shared cut would place a disclosure in
+    a bin using a row it does not have.
+    """
+    after_hours = labeled[labeled["timing"] == "after_hours"]
+    return {
+        horizon: magnitude_bins(after_hours, magnitude_column, column, bins)
+        for horizon, column in HORIZON_COLUMNS.items()
+        if column in after_hours.columns
+    }
+
+
+@dataclass(frozen=True)
+class HorizonCoverage:
+    """How many disclosures each horizon can actually answer for."""
+
+    rows: pd.DataFrame
+    after_hours_total: int
+
+    @property
+    def line(self) -> str:
+        """One sentence naming the recency cost of the longest horizon."""
+        if self.rows.empty:
+            return "No after-hours rows to cover."
+        longest = self.rows.iloc[-1]
+        return (
+            f"{int(longest['n'])} of {self.after_hours_total} after-hours disclosures "
+            f"reach {int(longest['horizon'])} trading days; "
+            f"{int(longest['too_recent'])} are too recent and "
+            f"{int(longest['missing_price'])} lack a price."
+        )
+
+
+def horizon_coverage(labeled: pd.DataFrame) -> HorizonCoverage:
+    """Split each horizon's absences into "too recent" and "no price".
+
+    Both arrive as a blank column, and conflating them would let a growing
+    hole in the data pass as a market fact. Only the first shrinks as the
+    window ages; the second never does.
+    """
+    after_hours = labeled[labeled["timing"] == "after_hours"]
+    # Without the reach column every absence has to be reported as a missing
+    # price. Guessing "too recent" from a frame that never recorded the
+    # calendar would invent the more forgivable of the two explanations.
+    if "observable_horizon" in after_hours.columns:
+        reach = pd.to_numeric(after_hours["observable_horizon"], errors="coerce")
+    else:
+        reach = pd.Series(np.inf, index=after_hours.index)
+
+    rows = []
+    for horizon, column in HORIZON_COLUMNS.items():
+        if column not in after_hours.columns:
+            continue
+        present = after_hours[column].notna()
+        too_recent = (reach < horizon).fillna(False)
+        rows.append(
+            {
+                "horizon": horizon,
+                "n": int(present.sum()),
+                "too_recent": int((~present & too_recent).sum()),
+                "missing_price": int((~present & ~too_recent).sum()),
+            }
+        )
+    return HorizonCoverage(
+        pd.DataFrame(rows, columns=["horizon", "n", "too_recent", "missing_price"]),
+        len(after_hours),
+    )
 
 
 def quantile_bins(values: pd.Series, bins: int) -> tuple[pd.Series, list[str]]:
@@ -268,7 +449,7 @@ def magnitude_bins(
     if exclude_unrevised:
         usable = usable[pd.to_numeric(usable[magnitude_column], errors="coerce") != 0]
     if usable.empty:
-        return pd.DataFrame(columns=["bin", "n", "symbols", "median", "std"])
+        return pd.DataFrame(columns=["bin", *STAT_COLUMNS])
 
     placed, labels = quantile_bins(usable[magnitude_column], bins)
     rows = []
@@ -277,7 +458,7 @@ def magnitude_bins(
         if subset.empty:
             continue
         rows.append({"bin": label, **_stats(subset, return_column)})
-    return pd.DataFrame(rows, columns=["bin", "n", "symbols", "median", "std"])
+    return pd.DataFrame(rows, columns=["bin", *STAT_COLUMNS])
 
 
 @dataclass(frozen=True)
