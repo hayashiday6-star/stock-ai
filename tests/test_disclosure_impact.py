@@ -985,3 +985,144 @@ def test_the_sector_caveat_prints_below_the_tables() -> None:
         output = CliRunner().invoke(app, ["disclosure-impact", "1801,1802,1301"]).output
 
     assert output.index("Industrials") > output.index("excess return by disclosure type")
+
+
+# ---------------------------------------------------------------------------
+# A rate limit belongs to the run, not to the symbol it lands on
+# ---------------------------------------------------------------------------
+
+
+def _run_against(fetcher, symbols: list[str], extra: list[str] | None = None):
+    """Invoke disclosure-impact over `symbols` with a stubbed statement fetch."""
+    import datetime as dt
+    from unittest.mock import patch
+
+    from typer.testing import CliRunner
+
+    from stock_ai.cli import app
+
+    today = dt.date.today()
+    days = pd.bdate_range(today - dt.timedelta(days=400), today)
+    topix = pd.DataFrame({CLOSE: [2000.0] * len(days)}, index=days)
+    topix.index.name = DATE
+    prices = pd.DataFrame({ADJ_CLOSE: [1000.0] * len(days)}, index=days)
+    prices.index.name = DATE
+
+    class _Repo:
+        def __init__(self, session: object) -> None:
+            pass
+
+        def get_prices(self, symbol: str) -> pd.DataFrame:
+            return prices
+
+    with (
+        patch("stock_ai.cli.Database") as database,
+        patch("stock_ai.cli.PriceRepository", _Repo),
+        patch("stock_ai.cli.list_securities", return_value=[(s, "JP") for s in symbols]),
+        patch("stock_ai.cli.sectors_for", return_value=dict.fromkeys(symbols, "Industrials")),
+        patch("stock_ai.cli.fetch_topix", return_value=topix),
+        patch("stock_ai.data.jquants_fundamentals._default_fetcher", return_value=fetcher),
+        patch("stock_ai.cli.time.sleep"),  # never wait out a backoff for real
+    ):
+        database.return_value.session.return_value = _FakeSession()
+        return CliRunner().invoke(
+            app, ["disclosure-impact", "--years", "3", "--throttle", "0", *(extra or [])]
+        )
+
+
+def _one_record() -> list[dict[str, str]]:
+    import datetime as dt
+
+    today = dt.date.today()
+    return [
+        {
+            "DiscDate": (today - dt.timedelta(days=100)).isoformat(),
+            "DiscTime": "15:30",
+            "DocType": "1QFinancialStatements_Consolidated_JP",
+            "CurFYEn": f"{today.year + 1}-03-31",
+            "FNP": "1000",
+        }
+    ]
+
+
+def test_a_rate_limit_aborts_instead_of_publishing_a_partial_universe() -> None:
+    """The bug this replaces: 1,570 symbols came back as 59 construction names.
+
+    RateLimitError subclasses DataError, so a per-symbol ``except DataError``
+    swallowed it and the run carried on collecting the same refusal. The
+    table then printed over whatever got through - and because symbols are
+    processed in code order and TSE numbers listings by sector, "whatever got
+    through" was one industry wearing a market-wide title.
+    """
+    from stock_ai.core.exceptions import RateLimitError
+
+    symbols = [f"1{i:03d}" for i in range(300, 360)] + [f"7{i:03d}" for i in range(200, 260)]
+    seen = {"n": 0}
+
+    def fetcher(symbol: str) -> list[dict[str, str]]:
+        seen["n"] += 1
+        if seen["n"] > 59:
+            raise RateLimitError("Rate limited by the provider.", retry_after=0.0)
+        return _one_record()
+
+    result = _run_against(fetcher, symbols)
+
+    assert result.exit_code == 1
+    assert "excess return by disclosure type" not in result.output
+    assert "Stopped after 59 of 120" in result.output
+
+
+def test_an_ordinary_per_symbol_failure_does_not_stop_the_run() -> None:
+    """A DataError that is not a rate limit really is about that one symbol."""
+    from stock_ai.core.exceptions import DataError
+
+    symbols = [f"1{i:03d}" for i in range(300, 310)]
+
+    def fetcher(symbol: str) -> list[dict[str, str]]:
+        if symbol == "1305":
+            raise DataError(f"HTTP 404 while fetching statements for {symbol}.")
+        return _one_record()
+
+    result = _run_against(fetcher, symbols)
+
+    assert result.exit_code == 0
+    assert "excess return by disclosure type" in result.output
+    assert "1 failed to fetch" in result.output  # counted, not silent
+
+
+def test_symbols_that_contributed_nothing_are_counted_in_the_output() -> None:
+    """A run that quietly loses most of its universe must say so."""
+    from stock_ai.core.exceptions import DataError
+
+    symbols = [f"1{i:03d}" for i in range(300, 310)]
+
+    def fetcher(symbol: str) -> list[dict[str, str]]:
+        if symbol > "1302":
+            raise DataError("HTTP 500")
+        return _one_record()
+
+    result = _run_against(fetcher, symbols)
+    assert "7 of 10 symbol(s) contributed nothing" in result.output
+
+
+def test_a_zero_retry_after_is_not_read_as_no_instruction() -> None:
+    """`or` would turn "Retry-After: 0" into the full default wait."""
+    from unittest.mock import patch
+
+    from stock_ai.cli import _fetch_statements_patiently
+    from stock_ai.core.exceptions import RateLimitError
+
+    attempts = {"n": 0}
+
+    def fetcher(symbol: str) -> list[dict[str, str]]:
+        attempts["n"] += 1
+        if attempts["n"] == 1:
+            raise RateLimitError("slow down", retry_after=0.0)
+        return _one_record()
+
+    with patch("stock_ai.cli.time.sleep") as slept:
+        result = _fetch_statements_patiently(fetcher, "1301", throttle=0.0)
+
+    assert len(result) == 1
+    waits = [call.args[0] for call in slept.call_args_list if call.args]
+    assert 60.0 not in waits  # the default must not stand in for an explicit 0

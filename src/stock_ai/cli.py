@@ -9,8 +9,11 @@ from __future__ import annotations
 import contextlib
 import datetime as dt
 import hashlib
+import logging
 import sys
+import time
 from collections import Counter
+from collections.abc import Callable
 from pathlib import Path
 
 import pandas as pd
@@ -64,12 +67,19 @@ from stock_ai.backtest.seasonality import (
 from stock_ai.backtest.strategy import BuyAndHold, Strategy, build_strategy
 from stock_ai.config.settings import Settings, get_settings
 from stock_ai.core.encoding import install as install_console_encoding
-from stock_ai.core.exceptions import AIError, BacktestError, DataError, NotificationError
+from stock_ai.core.exceptions import (
+    AIError,
+    BacktestError,
+    DataError,
+    NotificationError,
+    RateLimitError,
+)
 from stock_ai.core.logging import configure_logging
 from stock_ai.core.scheduler import DailyScheduler, JobResult
 from stock_ai.data.base import PriceProvider
 from stock_ai.data.bulk import BulkIngester, Dataset, store_universe
 from stock_ai.data.fx import FxConverter
+from stock_ai.data.http import DEFAULT_RETRY_AFTER
 from stock_ai.data.jquants_fundamentals import JQuantsFundamentalsProvider
 from stock_ai.data.jquants_index import fetch_topix
 from stock_ai.data.jquants_profile import JQuantsProfileProvider
@@ -1690,15 +1700,62 @@ def seasonality_scan(
         )
 
 
+class _RateLimitGaveUpError(Exception):
+    """The provider kept refusing after every retry this run allows."""
+
+
+def _fetch_statements_patiently(
+    fetch: Callable[[str], list[dict[str, object]]],
+    symbol: str,
+    throttle: float,
+    max_retries: int = 4,
+) -> list[dict[str, object]]:
+    """Fetch one symbol's statements, waiting out a rate limit rather than skipping it.
+
+    ``RateLimitError`` subclasses ``DataError``, so the obvious ``except
+    DataError: continue`` swallows it - and a rate limit is not a property of
+    the symbol it lands on. Treating it as one turns the rest of the universe
+    into a queue for the same refusal, silently, and whatever got through
+    before the wall becomes the "sample". Because symbols are processed in
+    code order and the TSE numbers listings by sector, that sample is also
+    one industry.
+
+    Waits the interval the provider asks for, doubling per attempt, and gives
+    up loudly rather than quietly.
+    """
+    for attempt in range(max_retries + 1):
+        try:
+            if throttle > 0:
+                time.sleep(throttle)
+            return fetch(symbol)
+        except RateLimitError as exc:
+            if attempt == max_retries:
+                raise _RateLimitGaveUpError(
+                    f"Still rate limited on {symbol} after {attempt + 1} attempts."
+                ) from exc
+            # `or` would read a provider's "Retry-After: 0" as "did not say"
+            # and wait the full default minute on an instruction to wait none.
+            asked = exc.retry_after if exc.retry_after is not None else DEFAULT_RETRY_AFTER
+            wait = asked * (2**attempt)
+            console.print(
+                f"[yellow]Rate limited on {symbol}; waiting {wait:.0f}s "
+                f"(attempt {attempt + 1}/{max_retries}).[/]"
+            )
+            time.sleep(wait)
+    raise AssertionError("unreachable")  # pragma: no cover
+
+
 def _warn_if_concentrated(database: Database, symbols: list[str]) -> None:
     """Say which sectors the sample spans, loudly when it spans almost none.
 
     TSE assigns codes by sector, so any code-ordered slice of the listing is
-    a single-industry sample wearing a market-wide table's clothes. That is
-    exactly what ``universe --segment prime --limit N`` produces, and it is
-    invisible in a by-disclosure-type summary: the first such run returned
-    59 symbols numbered 1301-1929, of which 48 were construction, and every
-    percentage in it described the construction cycle rather than the market.
+    a single-industry sample wearing a market-wide table's clothes - and
+    symbols are processed in code order, so *any* run that stops early
+    produces one. That is how the first real run came back as 59 symbols
+    numbered 1301-1929, 48 of them construction: a rate limit truncated a
+    1,570-symbol universe and was swallowed per symbol. Every percentage in
+    that table described the construction cycle rather than the market, and
+    nothing on screen said so.
 
     Sector concentration also breaks the statistics twice over. One
     industry's companies revise guidance on the same cycle and move on the
@@ -1729,10 +1786,12 @@ def _warn_if_concentrated(database: Database, symbols: list[str]) -> None:
             "guidance on one cycle and move on the same news, so they are far "
             "from independent observations, and their excess return over TOPIX "
             "carries a sector drift the benchmark cannot remove.\n"
-            "[yellow]TSE numbers listings by sector, so a code-ordered slice - "
-            "which is what [cyan]universe --limit N[/] returns - is a "
-            "single-industry sample.[/] Store the whole segment instead: "
-            "[cyan]universe --segment prime[/] with no --limit."
+            "[yellow]TSE numbers listings by sector and symbols are processed "
+            "in code order, so a run that covered only part of its universe - "
+            "or a universe built with [cyan]universe --limit N[/] - lands on "
+            "one industry.[/] Check the line above for symbols that "
+            "contributed nothing, and [cyan]stock-ai history[/] for what is "
+            "actually stored."
         )
     else:
         console.print(f"[dim]Sectors represented: {spread}.[/]")
@@ -1750,6 +1809,9 @@ def disclosure_impact(
         None,
         "--export",
         help="Write the per-disclosure labels to this CSV, one row per disclosure.",
+    ),
+    throttle: float = typer.Option(
+        0.2, help="Seconds to pause between symbols, to stay under the rate limit."
     ),
 ) -> None:
     """Label J-Quants disclosures with excess return vs TOPIX, by disclosure type.
@@ -1784,25 +1846,71 @@ def disclosure_impact(
     stock_prices_by_symbol: dict[str, pd.DataFrame] = {}
     with database.session() as session:
         repo = PriceRepository(session)
-        for symbol in target_symbols:
-            try:
-                records = fetch_statements(symbol)
-            except DataError as exc:
-                console.print(f"[yellow]{symbol}: {exc}[/]")
-                continue
-            symbol_events = [
-                event
-                for event in build_disclosure_events(symbol, records)
-                if event.disc_date >= cutoff
-            ]
-            if not symbol_events:
-                continue
-            prices = repo.get_prices(symbol)
-            if prices.empty:
-                console.print(f"[yellow]{symbol}: no stored prices; skipping.[/]")
-                continue
-            events.extend(symbol_events)
-            stock_prices_by_symbol[symbol] = prices
+        failed: list[str] = []
+        no_prices: list[str] = []
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            BarColumn(),
+            TaskProgressColumn(),
+            TimeRemainingColumn(),
+            console=console,
+        ) as progress:
+            task = progress.add_task("statements", total=len(target_symbols))
+            for index, symbol in enumerate(target_symbols):
+                progress.update(task, completed=index, description=f"statements {symbol}")
+                try:
+                    records = _fetch_statements_patiently(fetch_statements, symbol, throttle)
+                except _RateLimitGaveUpError as exc:
+                    # A rate limit belongs to the run, not to a symbol. Carrying
+                    # on would spend the rest of the universe collecting the
+                    # same refusal and then print a table over whatever got
+                    # through - which is exactly how a 1,570-symbol run came
+                    # back as 59 construction names wearing a market-wide title.
+                    progress.stop()
+                    console.print(f"[red]{exc}[/]")
+                    console.print(
+                        f"[yellow]Stopped after {len(stock_prices_by_symbol)} of "
+                        f"{len(target_symbols)} symbol(s).[/] No table is printed "
+                        "from a partial universe: the symbols that got through are "
+                        "the alphabetically first ones, not a sample of the market. "
+                        "Re-run later, or raise --throttle to pace the requests."
+                    )
+                    raise typer.Exit(code=1) from exc
+                except DataError as exc:
+                    failed.append(symbol)
+                    logger_message = f"{symbol}: {exc}"
+                    logging.getLogger(__name__).warning(logger_message)
+                    continue
+                symbol_events = [
+                    event
+                    for event in build_disclosure_events(symbol, records)
+                    if event.disc_date >= cutoff
+                ]
+                if not symbol_events:
+                    continue
+                prices = repo.get_prices(symbol)
+                if prices.empty:
+                    no_prices.append(symbol)
+                    continue
+                events.extend(symbol_events)
+                stock_prices_by_symbol[symbol] = prices
+            progress.update(task, completed=len(target_symbols))
+
+    if failed or no_prices:
+        # Printed as a count, not one line per symbol: at universe scale the
+        # per-symbol form is thousands of lines that push the tables off
+        # screen, and the number is the part that decides whether the run is
+        # worth reading.
+        parts = []
+        if failed:
+            parts.append(f"{len(failed)} failed to fetch (see the log)")
+        if no_prices:
+            parts.append(f"{len(no_prices)} had no stored prices")
+        console.print(
+            f"[yellow]{len(target_symbols) - len(stock_prices_by_symbol)} of "
+            f"{len(target_symbols)} symbol(s) contributed nothing: {', '.join(parts)}.[/]"
+        )
 
     if not events:
         console.print("[yellow]No disclosures found in the lookback window.[/]")
