@@ -856,20 +856,39 @@ def _avg_trading_value(prior_date: pd.Timestamp | None, stock_prices: pd.DataFra
     return float(turnover.mean())
 
 
-def _observable_horizon(base: pd.Timestamp | None, calendar: pd.DatetimeIndex) -> int:
-    """Trading days the calendar covers from ``base`` onward, inclusive.
+def _observable_horizon(
+    base: pd.Timestamp | None,
+    calendar: pd.DatetimeIndex,
+    stock_prices: pd.DataFrame | None = None,
+) -> int:
+    """Trading days that can be *priced* from ``base`` onward, inclusive.
 
     A disclosure two sessions before the data ends can answer a one-day
     question but not a twenty-day one. Returning the reach, rather than a
     per-horizon flag, lets a caller count exclusions at any horizon without
     recomputing the calendar.
+
+    The index calendar alone is not the limit. Each symbol carries its own
+    price history, and a store filled symbol by symbol leaves some of them
+    ending a few sessions short of the index. Measured against the index
+    only, those disclosures look like they should have a twenty-day answer
+    and merely lack a price - which reads as a hole in the data when the
+    truth is that the window has not finished yet. Capping the reach at the
+    symbol's last priced session puts them back in "too recent".
+
+    The cap is the symbol's *last* session, not membership in its index. A
+    gap in the middle of a series is a genuinely missing price and stays
+    counted as one.
     """
     if base is None:
         return 0
     start = calendar.searchsorted(base)
     if start >= len(calendar):
         return 0
-    return int(len(calendar) - start)
+    reach = calendar[start:]
+    if stock_prices is not None and not stock_prices.empty:
+        reach = reach[reach <= stock_prices.index.max()]
+    return int(len(reach))
 
 
 def label_disclosures(
@@ -911,12 +930,14 @@ def label_disclosures(
     labels: list[ExcessReturnLabel] = []
     market_caps: list[float | None] = []
     liquidity: list[float | None] = []
+    reaches: list[int] = []
     for event in events:
         stock_prices = stock_prices_by_symbol.get(event.symbol)
         if stock_prices is None or stock_prices.empty:
             labels.append(ExcessReturnLabel(None, None, None, None, None, "no_stock_prices"))
             market_caps.append(None)
             liquidity.append(None)
+            reaches.append(0)
             continue
         label = label_excess_return(
             event.disc_date, event.is_after_hours, stock_prices, topix_prices
@@ -924,6 +945,7 @@ def label_disclosures(
         labels.append(label)
         market_caps.append(_market_cap(event, label.prior_date, stock_prices))
         liquidity.append(_avg_trading_value(label.prior_date, stock_prices))
+        reaches.append(_observable_horizon(label.base_date, topix_prices.index, stock_prices))
 
     frame["base_date"] = [label.base_date for label in labels]
     frame["prior_date"] = [label.prior_date for label in labels]
@@ -932,12 +954,10 @@ def label_disclosures(
     frame["excess_return"] = [label.excess_return for label in labels]
     for horizon, column in FORWARD_COLUMNS.items():
         frame[column] = [label.forward_excess.get(horizon) for label in labels]
-    # How far the calendar actually reaches past each disclosure. A window
+    # How far the data actually reaches past each disclosure. A window
     # longer than this has no answer yet, which is a different fact from a
     # price being absent and has to be countable on its own.
-    frame["observable_horizon"] = [
-        _observable_horizon(label.base_date, topix_prices.index) for label in labels
-    ]
+    frame["observable_horizon"] = reaches
     frame["market_cap"] = market_caps
     frame["avg_trading_value"] = liquidity
     frame["exclude_reason"] = [label.exclude_reason for label in labels]

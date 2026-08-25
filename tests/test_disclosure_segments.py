@@ -600,3 +600,36 @@ def test_quartiles_distinguish_a_tight_median_from_a_wide_one() -> None:
 def test_median_over_iqr_is_absent_rather_than_infinite_on_a_degenerate_spread() -> None:
     same = _labeled([{"symbol": str(i), CLOSE_TO_CLOSE: 0.01} for i in range(5)])
     assert np.isnan(_stats(same, CLOSE_TO_CLOSE)["median_over_iqr"])
+
+
+def test_a_symbol_ending_short_of_the_index_is_recent_not_missing() -> None:
+    """A price store filled symbol by symbol leaves some series a few days short.
+
+    Measured against the index calendar alone those disclosures look like a
+    hole in the data. They are not: the window simply has not finished.
+    """
+    from stock_ai.backtest.disclosure_impact import _observable_horizon
+
+    calendar = pd.bdate_range("2024-01-01", periods=40)
+    stock = _price_frame([100.0] * 30)  # ends ten sessions before the index
+    base = calendar[25]
+
+    # Against the index there are fifteen sessions left; against the symbol,
+    # only the five it actually priced.
+    assert _observable_horizon(base, calendar) == 15
+    assert _observable_horizon(base, calendar, stock) == 5
+
+
+def test_a_gap_inside_a_series_stays_a_missing_price() -> None:
+    """The cap is the symbol's last session, not membership in the index.
+
+    A hole in the middle is a genuinely absent price and must not be
+    excused as the window running late.
+    """
+    from stock_ai.backtest.disclosure_impact import _observable_horizon
+
+    calendar = pd.bdate_range("2024-01-01", periods=40)
+    full = _price_frame([100.0] * 40)
+    holed = full.drop(full.index[30:35])
+
+    assert _observable_horizon(calendar[25], calendar, holed) == 15
