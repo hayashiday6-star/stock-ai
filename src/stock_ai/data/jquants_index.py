@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import datetime as dt
 from collections.abc import Callable
+from time import sleep
 from typing import Any
 
 import pandas as pd
@@ -20,11 +21,14 @@ from pydantic import SecretStr
 
 from stock_ai.core.exceptions import DataError, NoDataError, RateLimitError
 from stock_ai.core.logging import get_logger
-from stock_ai.data.http import raise_for_status
+from stock_ai.data.http import DEFAULT_RETRY_AFTER, raise_for_status
 from stock_ai.data.jquants_provider import subscription_window
 from stock_ai.data.schema import CLOSE, DATE, HIGH, LOW, OPEN
 
 logger = get_logger(__name__)
+
+#: How many times a rate-limited index request is retried before giving up.
+_RATE_LIMIT_RETRIES = 4
 
 # A fetcher takes (start, end) and returns raw TOPIX daily-bar records.
 TopixFetcher = Callable[[dt.date, dt.date], list[dict[str, Any]]]
@@ -106,12 +110,40 @@ def _default_fetcher(api_key: SecretStr | None) -> TopixFetcher:
                     break
         return records
 
+    def attempt(start: dt.date, end: dt.date) -> list[dict[str, Any]]:
+        """One request, waiting out a rate limit rather than failing on it.
+
+        Narrowing the window on a 429 would answer a question nobody asked -
+        the pace is the problem, not the range - but giving up on the first
+        refusal is worse. This is a single request for one index, so there is
+        no partial universe to truncate and nothing to lose by waiting: the
+        only outcomes are the bars or an honest failure after every attempt.
+
+        The index is usually fetched right after a heavy backfill has spent
+        the quota, which is exactly when one refusal is least informative.
+        """
+        for attempt_number in range(_RATE_LIMIT_RETRIES + 1):
+            try:
+                return request(start, end)
+            except RateLimitError as exc:
+                if attempt_number == _RATE_LIMIT_RETRIES:
+                    raise
+                wait = (exc.retry_after or DEFAULT_RETRY_AFTER) * (2**attempt_number)
+                logger.warning(
+                    "Rate limited fetching TOPIX; waiting %.0fs (attempt %d/%d).",
+                    wait,
+                    attempt_number + 1,
+                    _RATE_LIMIT_RETRIES,
+                )
+                sleep(wait)
+        raise AssertionError("unreachable")  # pragma: no cover
+
     def fetch(start: dt.date, end: dt.date) -> list[dict[str, Any]]:
         try:
-            return request(start, end)
+            return attempt(start, end)
         except RateLimitError:
-            # A rate limit belongs to the run, not to the range. Narrowing the
-            # window would answer a question nobody asked.
+            # Already retried to exhaustion above, and a 429 never names a
+            # subscription window - there is nothing left to narrow.
             raise
         except DataError as exc:
             window = subscription_window(str(exc))
@@ -131,7 +163,7 @@ def _default_fetcher(api_key: SecretStr | None) -> TopixFetcher:
                 narrowed_start,
                 narrowed_end,
             )
-            return request(narrowed_start, narrowed_end)
+            return attempt(narrowed_start, narrowed_end)
 
     return fetch
 

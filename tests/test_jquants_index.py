@@ -174,3 +174,90 @@ def test_the_plan_window_is_read_off_the_refusal_message() -> None:
     start, end = window
     assert start == dt.date(2021, 8, 26)
     assert end is None
+
+
+def test_a_rate_limited_index_request_waits_and_retries(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """One 429 must not end the command.
+
+    The index is usually fetched straight after a heavy backfill has spent the
+    quota, which is exactly when a single refusal says least. There is one
+    request and one index here, so there is no partial universe to truncate
+    and nothing to lose by waiting.
+    """
+    import httpx
+
+    from stock_ai.data.jquants_index import _default_fetcher
+
+    calls: list[int] = []
+
+    class _LimitedOnce(_FakeClient):
+        def get(self, _url: str, headers: dict[str, str], params: dict[str, str]):
+            calls.append(1)
+            if len(calls) == 1:
+                return _FakeResponse(429, {"message": "Too Many Requests"})
+            return _FakeResponse(
+                200,
+                {"data": [{"Date": "2024-01-10", "O": 2000, "H": 2010, "L": 1990, "C": 2005}]},
+            )
+
+    slept: list[float] = []
+    monkeypatch.setattr("stock_ai.data.jquants_index.sleep", slept.append)
+    monkeypatch.setattr(httpx, "Client", lambda **kw: _LimitedOnce([], **kw), raising=True)
+
+    records = _default_fetcher(None)(START, END)
+
+    assert len(calls) == 2
+    assert slept, "the retry must actually wait"
+    assert len(records) == 1
+
+
+def test_an_index_request_rate_limited_throughout_still_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Waiting is not the same as pretending. After every attempt, it raises."""
+    import httpx
+
+    from stock_ai.core.exceptions import RateLimitError
+    from stock_ai.data.jquants_index import _RATE_LIMIT_RETRIES, _default_fetcher
+
+    calls: list[int] = []
+
+    class _AlwaysLimited(_FakeClient):
+        def get(self, _url: str, headers: dict[str, str], params: dict[str, str]):
+            calls.append(1)
+            return _FakeResponse(429, {"message": "Too Many Requests"})
+
+    monkeypatch.setattr("stock_ai.data.jquants_index.sleep", lambda _s: None)
+    monkeypatch.setattr(httpx, "Client", lambda **kw: _AlwaysLimited([], **kw), raising=True)
+
+    with pytest.raises(RateLimitError):
+        _default_fetcher(None)(START, END)
+    assert len(calls) == _RATE_LIMIT_RETRIES + 1
+
+
+def test_a_rate_limit_is_never_read_as_a_plan_refusal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A 429 names no subscription window, so there is nothing to narrow."""
+    import httpx
+
+    from stock_ai.core.exceptions import RateLimitError
+    from stock_ai.data.jquants_index import _default_fetcher
+
+    asked: list[tuple[str, str]] = []
+
+    class _AlwaysLimited(_FakeClient):
+        def get(self, _url: str, headers: dict[str, str], params: dict[str, str]):
+            self.asked.append((params["from"], params["to"]))
+            return _FakeResponse(429, {"message": "Too Many Requests"})
+
+    monkeypatch.setattr("stock_ai.data.jquants_index.sleep", lambda _s: None)
+    monkeypatch.setattr(httpx, "Client", lambda **kw: _AlwaysLimited(asked, **kw), raising=True)
+
+    with pytest.raises(RateLimitError):
+        _default_fetcher(None)(dt.date(2001, 1, 4), dt.date(2026, 8, 25))
+
+    # Every attempt used the range as asked; none of them narrowed it.
+    assert set(asked) == {("2001-01-04", "2026-08-25")}
