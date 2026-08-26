@@ -9,8 +9,11 @@ from __future__ import annotations
 import contextlib
 import datetime as dt
 import hashlib
+import logging
 import sys
+import time
 from collections import Counter
+from collections.abc import Callable
 from pathlib import Path
 
 import pandas as pd
@@ -38,6 +41,27 @@ from stock_ai.ai.estimate import estimate_disclosure_run
 from stock_ai.ai.factory import get_ai_provider
 from stock_ai.ai.pricing import RunEstimate, UsageLedger
 from stock_ai.ai.query import parse_query, run_query
+from stock_ai.backtest.disclosure_impact import (
+    build_disclosure_events,
+    label_disclosures,
+    summarize_by_dividend,
+    summarize_by_doc_type,
+    summarize_by_revision,
+)
+from stock_ai.backtest.disclosure_segments import (
+    amplification,
+    compare_return_windows,
+    horizon_coverage,
+    horizon_magnitude_bins,
+    horizon_spreads,
+    horizons_by_direction,
+    magnitude_bins,
+    magnitude_by_size,
+    monotonicity,
+    reconcile,
+    summarize_by_timing,
+    summarize_by_timing_and_direction,
+)
 from stock_ai.backtest.engine import BacktestEngine
 from stock_ai.backtest.factor_test import (
     FactorTestResult,
@@ -45,6 +69,20 @@ from stock_ai.backtest.factor_test import (
     run_factor_test,
     suggest_formation,
     walk_forward,
+)
+from stock_ai.backtest.gap_continuation import (
+    GAP_SHELLS,
+    IS_START,
+    MAX_SIGNALS,
+    SWEEP_GAP_MIN,
+    SWEEP_VO_MIN,
+    VO_SHELLS,
+    cluster_counts,
+    describe,
+    run_backtest,
+    split_is_oos,
+    sweep_shells,
+    verdict,
 )
 from stock_ai.backtest.report import metrics_frame
 from stock_ai.backtest.seasonality import (
@@ -58,13 +96,21 @@ from stock_ai.backtest.seasonality import (
 from stock_ai.backtest.strategy import BuyAndHold, Strategy, build_strategy
 from stock_ai.config.settings import Settings, get_settings
 from stock_ai.core.encoding import install as install_console_encoding
-from stock_ai.core.exceptions import AIError, BacktestError, DataError, NotificationError
+from stock_ai.core.exceptions import (
+    AIError,
+    BacktestError,
+    DataError,
+    NotificationError,
+    RateLimitError,
+)
 from stock_ai.core.logging import configure_logging
 from stock_ai.core.scheduler import DailyScheduler, JobResult
 from stock_ai.data.base import PriceProvider
 from stock_ai.data.bulk import BulkIngester, Dataset, store_universe
 from stock_ai.data.fx import FxConverter
+from stock_ai.data.http import DEFAULT_RETRY_AFTER
 from stock_ai.data.jquants_fundamentals import JQuantsFundamentalsProvider
+from stock_ai.data.jquants_index import fetch_topix
 from stock_ai.data.jquants_profile import JQuantsProfileProvider
 from stock_ai.data.jquants_provider import JQuantsPriceProvider
 from stock_ai.data.markets import split_by_market, to_yahoo_symbol
@@ -86,6 +132,7 @@ from stock_ai.database.repository import (
     get_profile,
     list_securities,
     price_history_spans,
+    sectors_for,
     upsert_profile,
 )
 from stock_ai.ir.edinet import (
@@ -1012,8 +1059,22 @@ def inspect(
         # Forecasts, listed so they read as separate from the actuals above.
         "FSales",
         "FOP",
+        "FOdP",
         "FNP",
         "FEPS",
+        # Next fiscal year's forecast, issued alongside the full-year results.
+        # These decide whether a forecast revision at 1Q is detectable at all:
+        # the year's first F* value has nothing to compare against unless the
+        # NxF* issued at the previous full-year announcement seeded it. Both
+        # spellings of the profit field are listed because the published
+        # column list writes FNP but NxFNp - only the one that exists prints,
+        # so this says which is real rather than guessing.
+        "NxFSales",
+        "NxFOP",
+        "NxFOdP",
+        "NxFNp",
+        "NxFNP",
+        "NxFEPS",
     ]
     table = Table(title=f"{symbol}: key fields")
     table.add_column("field", style="cyan")
@@ -1025,9 +1086,21 @@ def inspect(
             table.add_row(field, *values)
     console.print(table)
 
+    # Only fields that actually carry a value. Listing the whole schema made
+    # this line useless: J-Quants returns every column on every record, so it
+    # printed an identical ~70-name list for every symbol and answered nothing
+    # about which fields a given filer populates - which is the one question
+    # this command exists to settle.
     seen = {key for record in newest for key in record}
-    extra = sorted(seen - set(key_fields))
-    console.print(f"[dim]Other fields present: {', '.join(extra) if extra else '(none)'}[/]")
+    populated = {
+        key for record in newest for key, value in record.items() if value not in (None, "")
+    }
+    extra = sorted(populated - set(key_fields))
+    listed = ", ".join(extra) if extra else "(none)"
+    console.print(f"[dim]Other fields carrying a value: {listed}[/]")
+    blank = len(seen) - len(populated)
+    if blank:
+        console.print(f"[dim]{blank} further field(s) were returned empty on all {len(newest)}.[/]")
 
 
 @app.command()
@@ -1656,6 +1729,894 @@ def seasonality_scan(
         )
 
 
+class _RateLimitGaveUpError(Exception):
+    """The provider kept refusing after every retry this run allows."""
+
+
+def _fetch_statements_patiently(
+    fetch: Callable[[str], list[dict[str, object]]],
+    symbol: str,
+    throttle: float,
+    max_retries: int = 4,
+) -> list[dict[str, object]]:
+    """Fetch one symbol's statements, waiting out a rate limit rather than skipping it.
+
+    ``RateLimitError`` subclasses ``DataError``, so the obvious ``except
+    DataError: continue`` swallows it - and a rate limit is not a property of
+    the symbol it lands on. Treating it as one turns the rest of the universe
+    into a queue for the same refusal, silently, and whatever got through
+    before the wall becomes the "sample". Because symbols are processed in
+    code order and the TSE numbers listings by sector, that sample is also
+    one industry.
+
+    Waits the interval the provider asks for, doubling per attempt, and gives
+    up loudly rather than quietly.
+    """
+    for attempt in range(max_retries + 1):
+        try:
+            if throttle > 0:
+                time.sleep(throttle)
+            return fetch(symbol)
+        except RateLimitError as exc:
+            if attempt == max_retries:
+                raise _RateLimitGaveUpError(
+                    f"Still rate limited on {symbol} after {attempt + 1} attempts."
+                ) from exc
+            # `or` would read a provider's "Retry-After: 0" as "did not say"
+            # and wait the full default minute on an instruction to wait none.
+            asked = exc.retry_after if exc.retry_after is not None else DEFAULT_RETRY_AFTER
+            wait = asked * (2**attempt)
+            console.print(
+                f"[yellow]Rate limited on {symbol}; waiting {wait:.0f}s "
+                f"(attempt {attempt + 1}/{max_retries}).[/]"
+            )
+            time.sleep(wait)
+    raise AssertionError("unreachable")  # pragma: no cover
+
+
+def _warn_if_concentrated(database: Database, symbols: list[str]) -> None:
+    """Say which sectors the sample spans, loudly when it spans almost none.
+
+    TSE assigns codes by sector, so any code-ordered slice of the listing is
+    a single-industry sample wearing a market-wide table's clothes - and
+    symbols are processed in code order, so *any* run that stops early
+    produces one. That is how the first real run came back as 59 symbols
+    numbered 1301-1929, 48 of them construction: a rate limit truncated a
+    1,570-symbol universe and was swallowed per symbol. Every percentage in
+    that table described the construction cycle rather than the market, and
+    nothing on screen said so.
+
+    Sector concentration also breaks the statistics twice over. One
+    industry's companies revise guidance on the same cycle and move on the
+    same news, so the observations are correlated far beyond the repeated
+    -company effect the ``symbols`` column already warns about - and their
+    excess return over TOPIX carries a whole sector's drift, which the
+    benchmark cannot remove because it is not what makes them differ.
+    """
+    with database.session() as session:
+        by_symbol = sectors_for(session, symbols)
+    known = [sector for sector in by_symbol.values() if sector]
+    if not known:
+        console.print(
+            "[dim]No sectors stored for these symbols, so the sample's spread "
+            "could not be checked. Run 'universe' to store profiles.[/]"
+        )
+        return
+
+    counts = Counter(known)
+    spread = ", ".join(f"{sector} {count}" for sector, count in counts.most_common(5))
+    top_sector, top_count = counts.most_common(1)[0]
+    share = top_count / len(known)
+    if share >= 0.5:
+        console.print(
+            f"\n[yellow]This sample is {share:.0%} {top_sector} "
+            f"({top_count} of {len(known)} symbols).[/] Every percentage above "
+            "describes that industry, not the market: its companies revise "
+            "guidance on one cycle and move on the same news, so they are far "
+            "from independent observations, and their excess return over TOPIX "
+            "carries a sector drift the benchmark cannot remove.\n"
+            "[yellow]TSE numbers listings by sector and symbols are processed "
+            "in code order, so a run that covered only part of its universe - "
+            "or a universe built with [cyan]universe --limit N[/] - lands on "
+            "one industry.[/] Check the line above for symbols that "
+            "contributed nothing, and [cyan]stock-ai history[/] for what is "
+            "actually stored."
+        )
+    else:
+        console.print(f"[dim]Sectors represented: {spread}.[/]")
+
+
+def _pct(value: object) -> str:
+    """Format a fraction as a signed percentage, or a dash when absent."""
+    return f"{value:+.2%}" if pd.notna(value) else "-"
+
+
+def _segment_table(title: str, frame: pd.DataFrame, label_column: str, label_head: str) -> Table:
+    """One count / symbols / median / std table over a labelled partition."""
+    table = Table(title=title)
+    table.add_column(label_head, style="cyan", overflow="fold")
+    table.add_column("n", justify="right")
+    table.add_column("symbols", justify="right")
+    table.add_column("median", justify="right")
+    table.add_column("std", justify="right")
+    for row in frame.itertuples(index=False):
+        values = row._asdict()
+        table.add_row(
+            str(values[label_column]),
+            str(values["n"]),
+            str(values["symbols"]),
+            _pct(values["median"]),
+            f"{values['std']:.2%}" if pd.notna(values["std"]) else "-",
+        )
+    return table
+
+
+def _render_horizons(labeled: pd.DataFrame) -> None:
+    """The +1d / +5d / +20d question: does waiting recover the gap?"""
+    by_direction = horizons_by_direction(labeled)
+    if by_direction.empty:
+        return
+
+    coverage = horizon_coverage(labeled)
+    if not coverage.rows.empty:
+        table = Table(title="how many disclosures each horizon can answer for")
+        table.add_column("horizon", justify="right")
+        table.add_column("n", justify="right")
+        table.add_column("too recent", justify="right")
+        table.add_column("no price", justify="right")
+        for row in coverage.rows.itertuples(index=False):
+            table.add_row(
+                f"+{row.horizon}d", str(row.n), str(row.too_recent), str(row.missing_price)
+            )
+        console.print(table)
+        console.print(
+            "[dim]The counts differ between horizons on purpose. A window that runs "
+            "past the end of the data has no answer yet - a different fact from a "
+            "missing price, and the only one that shrinks as the window ages. "
+            "Forcing a common row set would drop every recent disclosure from the "
+            "short horizons too, answering a narrower question than the one asked.[/]"
+        )
+
+    table = Table(title="from the next open, by holding period")
+    table.add_column("horizon", justify="right")
+    table.add_column("revision", overflow="fold")
+    table.add_column("n", justify="right")
+    table.add_column("median", justify="right")
+    table.add_column("p25", justify="right")
+    table.add_column("p75", justify="right")
+    table.add_column("IQR", justify="right")
+    table.add_column("med/IQR", justify="right")
+    direction_style = {"up": "green", "down": "red", "flat": "dim", "no_forecast": "yellow"}
+    for row in by_direction.itertuples(index=False):
+        style = direction_style.get(row.revision_direction, "dim")
+        table.add_row(
+            f"+{row.horizon}d",
+            f"[{style}]{row.revision_direction}[/]",
+            str(row.n),
+            _pct(row.median),
+            _pct(row.p25),
+            _pct(row.p75),
+            f"{row.iqr:.2%}" if pd.notna(row.iqr) else "-",
+            f"{row.median_over_iqr:+.3f}" if pd.notna(row.median_over_iqr) else "-",
+        )
+    console.print(table)
+
+    spreads = horizon_spreads(by_direction)
+    if not spreads.empty:
+        spread_table = Table(title="up-minus-down, against the spread it sits in")
+        spread_table.add_column("horizon", justify="right")
+        spread_table.add_column("up-down", justify="right")
+        spread_table.add_column("up median", justify="right")
+        spread_table.add_column("up IQR", justify="right")
+        spread_table.add_column("med/IQR", justify="right")
+        for row in spreads.itertuples(index=False):
+            spread_table.add_row(
+                f"+{row.horizon}d",
+                _pct(row.spread),
+                _pct(row.up_median),
+                f"{row.up_iqr:.2%}" if pd.notna(row.up_iqr) else "-",
+                f"{row.up_median_over_iqr:+.3f}" if pd.notna(row.up_median_over_iqr) else "-",
+            )
+        console.print(spread_table)
+        console.print(
+            "[dim]Read med/IQR, not the median. Holding longer raises the median and "
+            "widens the distribution at the same time, and only the ratio says which "
+            "grew faster. A bigger edge inside a much bigger spread is a worse bet.[/]"
+        )
+
+    for horizon, binned in horizon_magnitude_bins(labeled).items():
+        if binned.empty:
+            continue
+        console.print(
+            _segment_table(
+                f"revision magnitude, +{horizon}d from the open", binned, "bin", "magnitude"
+            )
+        )
+        console.print(f"[bold]+{horizon}d: {monotonicity(binned).verdict}[/]")
+
+
+def _render_segments(labeled: pd.DataFrame, years: int) -> None:
+    """Print the timing, window, magnitude and size cuts, then reconcile them."""
+    total = int(labeled["excess_return"].notna().sum())
+
+    # --- 1. timing -------------------------------------------------------
+    timing = summarize_by_timing(labeled)
+    console.print(_segment_table(f"by disclosure timing ({years}y)", timing, "timing", "timing"))
+
+    unknown = timing[timing["timing"] == "time_unknown"]["n"].sum() if not timing.empty else 0
+    console.print(
+        f"[dim]'time_unknown' is {int(unknown)} disclosure(s) with no DiscTime. They are "
+        "measured on the next trading day - the safe assumption - but are counted "
+        "apart from after_hours so a real bucket is not padded with guessed ones.[/]"
+    )
+
+    split = summarize_by_timing_and_direction(labeled)
+    for bucket in ["after_hours", "intraday"]:
+        part = split[split["timing"] == bucket]
+        if part.empty:
+            continue
+        console.print(
+            _segment_table(
+                f"revision direction - {bucket}",
+                part.drop(columns=["timing"]),
+                "revision_direction",
+                "revision",
+            )
+        )
+
+    # --- 2. which window to adopt ---------------------------------------
+    windows = compare_return_windows(labeled)
+    if windows.rows_compared:
+        console.print(
+            _segment_table(
+                f"after-hours, prior close -> next close (n={windows.rows_compared})",
+                windows.close_to_close,
+                "revision_direction",
+                "revision",
+            )
+        )
+        console.print(
+            _segment_table(
+                f"after-hours, next open -> next close (n={windows.rows_compared})",
+                windows.open_to_close,
+                "revision_direction",
+                "revision",
+            )
+        )
+        full = windows.close_to_close_spread
+        after_open = windows.open_to_close_spread
+        if pd.notna(full) and pd.notna(after_open):
+            console.print(
+                f"[bold]up-minus-down spread: {full:+.2%} close-to-close vs "
+                f"{after_open:+.2%} open-to-close.[/] The overnight gap carried "
+                f"{windows.share_in_the_gap:.0%} of the reaction."
+            )
+        else:
+            console.print(
+                "[yellow]No up-minus-down spread: this set has no after-hours "
+                "disclosure on one of the two sides, so the windows cannot be "
+                "compared on it.[/]"
+            )
+
+    # --- 2b. how far past the open the edge survives ---------------------
+    _render_horizons(labeled)
+
+    # --- 3. magnitude ----------------------------------------------------
+    magnitude_checks = []
+    for column, label, absent in [
+        ("revision_magnitude", "earnings-forecast revision", "that revised nothing comparable"),
+        ("dividend_magnitude", "dividend-forecast revision", "that revised no dividend"),
+    ]:
+        binned = magnitude_bins(labeled, column)
+        if binned.empty:
+            continue
+        console.print(_segment_table(f"by size of {label}", binned, "bin", "magnitude"))
+        console.print(f"[bold]{monotonicity(binned).verdict}[/]")
+        console.print(
+            "[dim]Bins hold revisions only. A held forecast has a magnitude of "
+            "exactly zero, and there are thousands of them - left in, that spike "
+            "swallows the quantile edges and every cut ends up sharing the bottom "
+            "bin with every hold.[/]"
+        )
+        magnitude_checks.append(reconcile(label, total, binned, residual_reason=absent))
+
+    # --- 4. does a small company amplify the same revision? --------------
+    for size_column, label in [
+        ("market_cap", "market cap"),
+        ("avg_trading_value", "average trading value"),
+    ]:
+        by_size = magnitude_by_size(labeled, "revision_magnitude", size_column)
+        if by_size.empty:
+            continue
+        # Read the bucket names off the frame. With too few distinct sizes to
+        # form tertiles it returns fewer, differently named columns, and
+        # hard-coding small/mid/large crashes on exactly the thin universe
+        # where the table is least worth trusting.
+        names = [c for c in by_size.columns if c != "bin" and not c.endswith(" n")]
+        table = Table(title=f"revision magnitude x {label}")
+        table.add_column("magnitude", style="cyan", overflow="fold")
+        for name in names:
+            table.add_column(name, justify="right")
+        # iterrows, not itertuples: the count columns are named "small n" and
+        # itertuples renames anything that is not a valid identifier, so the
+        # lookup by label would miss exactly those columns.
+        for _index, values in by_size.iterrows():
+            table.add_row(
+                str(values["bin"]),
+                *(f"{_pct(values[name])}\n[dim]{int(values[f'{name} n'])}[/]" for name in names),
+            )
+        console.print(table)
+
+        spreads = amplification(by_size, names)
+        if not spreads.empty:
+            summary = "  ".join(
+                f"{row.size} {row.spread:+.2%}" for row in spreads.itertuples(index=False)
+            )
+            console.print(f"[bold]top-bin minus bottom-bin spread:[/] {summary}")
+
+    # --- 5. does every partition still hold all the rows? ----------------
+    checks = [
+        reconcile("timing", total, timing),
+        reconcile("timing x direction", total, split),
+        *magnitude_checks,
+    ]
+    console.print("[dim]partition check - " + "; ".join(check.line for check in checks) + "[/]")
+    if any(not check.balances for check in checks):
+        console.print(
+            "[yellow]A partition lost rows. Every table above is a slice of the same "
+            "labeled set, so a median computed over a slice that silently shed rows "
+            "is not the median it claims to be.[/]"
+        )
+
+
+# ---------------------------------------------------------------------------
+# gap-continuation
+# ---------------------------------------------------------------------------
+
+
+def _verdict_style(outcome: str) -> str:
+    return {"pass": "green", "withdraw": "red"}.get(outcome, "yellow")
+
+
+def _render_coverage(label: str, trades: pd.DataFrame) -> None:
+    """The sample, and how much of it is one morning's trade."""
+    counts = cluster_counts(trades)
+    locked = int(trades["locked_open"].sum()) if "locked_open" in trades.columns else 0
+    sessions = trades["signal_date"].nunique()
+    table = Table(title=f"{label}: what the sample is made of")
+    table.add_column("measure", overflow="fold")
+    table.add_column("value", justify="right")
+    table.add_row("trades", str(counts.trades))
+    table.add_row("distinct symbols", str(counts.symbols))
+    table.add_row("distinct signal dates", str(counts.dates))
+    table.add_row("most signals on one date", str(counts.max_per_date))
+    table.add_row("effective sample (the scarcer)", str(counts.effective))
+    table.add_row("opened locked (no range)", str(locked))
+    console.print(table)
+    if counts.trades and counts.max_per_date < MAX_SIGNALS:
+        console.print(
+            f"[dim]The three-signal cap never bound: the busiest of the {sessions} "
+            f"firing session(s) produced {counts.max_per_date}. What limits the "
+            "trade count is the screen, not the cap.[/]"
+        )
+
+
+def _render_distribution(label: str, trades: pd.DataFrame) -> None:
+    """The excess return, before and after the benchmark comes out."""
+    excess = describe(trades, "excess_return")
+    raw = describe(trades, "stock_return")
+    table = Table(title=f"{label}: return from the next open to the next close")
+    table.add_column("series", overflow="fold")
+    table.add_column("n", justify="right")
+    table.add_column("median", justify="right")
+    table.add_column("p25", justify="right")
+    table.add_column("p75", justify="right")
+    table.add_column("IQR", justify="right")
+    table.add_column("med/IQR", justify="right")
+    for name, stats in (("before TOPIX deduction", raw), ("TOPIX deducted", excess)):
+        table.add_row(
+            name,
+            str(stats.n),
+            _pct(stats.median),
+            _pct(stats.p25),
+            _pct(stats.p75),
+            f"{stats.iqr:.2%}" if pd.notna(stats.iqr) else "-",
+            f"{stats.median_over_iqr:+.3f}" if pd.notna(stats.median_over_iqr) else "-",
+        )
+    console.print(table)
+    console.print(
+        "[dim]The two rows answer whether the strategy was picking stocks or "
+        "riding a rising tape. A median that survives the deduction is the "
+        "only one that belongs to the strategy.[/]"
+    )
+
+
+def _render_shells(label: str, gap_sweep: pd.DataFrame, vo_sweep: pd.DataFrame) -> None:
+    """The disjoint bands, and whether 8% sits on a hill."""
+    for column, shells, name, trades in (
+        ("gap_pct", GAP_SHELLS, "gap", gap_sweep),
+        ("vo_ratio", VO_SHELLS, "volume ratio", vo_sweep),
+    ):
+        frame = sweep_shells(trades, shells, column)
+        if frame.empty or frame["n"].sum() == 0:
+            continue
+        table = Table(title=f"{label}: {name}, in disjoint bands")
+        table.add_column("band", overflow="fold")
+        table.add_column("n", justify="right")
+        table.add_column("symbols", justify="right")
+        table.add_column("median", justify="right")
+        table.add_column("IQR", justify="right")
+        table.add_column("med/IQR", justify="right")
+        for _, row in frame.iterrows():
+            table.add_row(
+                str(row["shell"]),
+                str(int(row["n"])),
+                str(int(row["symbols"])),
+                _pct(row["median"]),
+                f"{row['iqr']:.2%}" if pd.notna(row["iqr"]) else "-",
+                f"{row['median_over_iqr']:+.3f}" if pd.notna(row["median_over_iqr"]) else "-",
+            )
+        console.print(table)
+    console.print(
+        "[dim]Bands, not thresholds. Sweeping a floor nests the samples - the "
+        "10% set sits inside the 9% set inside the 8% set - so adjacent points "
+        "share most of their trades and the curve is smooth however the "
+        "underlying bands behave. These bands are disjoint, so a spike can "
+        "actually show. The sweep is diagnostic: a better-scoring neighbour is "
+        "not a reason to move the parameter.[/]"
+    )
+    console.print(
+        "[dim]The bands below the shipped floors hold setups the strategy "
+        "declines. They exist only so the neighbourhood can be seen at all - "
+        "screened at the shipped floor there is no band below it, and "
+        "'is 8% a hilltop' has no left-hand side to answer with. One floor "
+        "moves at a time, and the sweep takes every qualifying signal rather "
+        "than the top three, so a widened floor cannot displace a trade the "
+        "production run took.[/]"
+    )
+
+
+def _render_verdict(label: str, result) -> None:
+    """The pre-registered decision, criterion by criterion."""
+    style = _verdict_style(result.outcome)
+    if result.undecidable:
+        console.print(
+            f"[bold yellow]{label}: undecidable[/] - {result.coverage.reason}. "
+            "The three criteria were not computed: the floors were fixed in "
+            "advance precisely so a thin sample has nothing to pass."
+        )
+        return
+
+    table = Table(title=f"{label}: the three criteria, fixed before the numbers")
+    table.add_column("criterion", overflow="fold")
+    table.add_column("measured", justify="right")
+    table.add_column("verdict", justify="right")
+
+    distribution = result.distribution
+    hill = result.hill
+    sign = result.sign
+    measured = [
+        f"{distribution.median_over_iqr:+.3f}" if pd.notna(distribution.median_over_iqr) else "-",
+        f"{hill.left:+.3f} | {hill.band:+.3f} | {hill.right:+.3f}",
+        f"z = {sign.z:+.2f} on {sign.n} {sign.unit}(s)",
+    ]
+    for (criterion, ok), value in zip(result.passed.items(), measured, strict=True):
+        table.add_row(criterion, value, "[green]pass[/]" if ok else "[red]fail[/]")
+    console.print(table)
+
+    console.print(f"[bold {style}]{label}: {result.outcome.upper()}[/]")
+    if not hill.is_hill:
+        console.print(f"[dim]Band shape: {hill.reason}.[/]")
+    console.print(
+        f"[dim]Median {_pct(distribution.median)} against an IQR of "
+        f"{distribution.iqr:.2%}. Read the median too: a narrow distribution "
+        "can clear the ratio on a median that a round trip in an eight-percent "
+        "gapper would erase.[/]"
+    )
+
+
+@app.command(name="gap-continuation")
+def gap_continuation(
+    export: Path | None = typer.Option(
+        None, "--export", help="Write one row per trade to this CSV."
+    ),
+) -> None:
+    """Measure the gap-continuation screener against pre-registered criteria.
+
+    Screens after each session's close for a stock that gapped up at the open,
+    held the gain into the close, on heavily expanded volume; then holds from
+    the next open to the next close. Reads stored prices only - run
+    ``bulk-fetch`` first - and fetches TOPIX live for the calendar and the
+    benchmark deduction.
+
+    Takes no parameters. The thresholds are the production screener's, the
+    acceptance criteria and the in-sample boundary were fixed before any
+    number existed, and none of them is reachable from the command line: a
+    bar that can be passed in is a bar that can be moved once the numbers are
+    in.
+    """
+    settings = get_settings()
+    configure_logging(settings.log_level)
+
+    database = Database()
+    database.create_all()
+    with database.session() as session:
+        stored_jp = [s for s, market in list_securities(session) if market == "JP"]
+    if not stored_jp:
+        console.print("[yellow]No stored JP securities; run 'bulk-fetch' first.[/]")
+        return
+
+    prices_by_symbol: dict[str, pd.DataFrame] = {}
+    with database.session() as session:
+        repo = PriceRepository(session)
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            BarColumn(),
+            TaskProgressColumn(),
+            TimeRemainingColumn(),
+            console=console,
+        ) as progress:
+            task = progress.add_task("loading prices", total=len(stored_jp))
+            for index, symbol in enumerate(stored_jp):
+                progress.update(task, completed=index, description=f"prices {symbol}")
+                frame = repo.get_prices(symbol)
+                if not frame.empty:
+                    prices_by_symbol[symbol] = frame
+            progress.update(task, completed=len(stored_jp))
+
+    if not prices_by_symbol:
+        console.print("[yellow]No stored prices for any JP security.[/]")
+        return
+
+    # The live screener asks the whole market on each date; this reads whatever
+    # the store holds. Said out loud, because a universe that covers part of
+    # the market produces proportionally fewer signals, and a sample that came
+    # up short for that reason looks exactly like a strategy that rarely fires.
+    console.print(
+        f"[dim]Universe: {len(prices_by_symbol)} symbol(s) with stored prices. The "
+        "production screener queries every listed name each day, so a store "
+        "holding part of the market yields proportionally fewer signals. Run "
+        "'universe --segment all' and 'bulk-fetch' to widen it. Delisted names "
+        "are absent either way, so trades in companies that later left the "
+        "exchange are missing from this measurement.[/]"
+    )
+
+    spans = [frame.index.min() for frame in prices_by_symbol.values()]
+    start = min(spans).date()
+    end = max(frame.index.max() for frame in prices_by_symbol.values()).date()
+    console.print(
+        f"Loaded [bold]{len(prices_by_symbol)}[/] symbol(s), {start} to {end}. "
+        "Fetching TOPIX for the calendar and the benchmark..."
+    )
+    topix = fetch_topix(start, end, api_key=settings.jquants_api_key)
+
+    # The calendar and the benchmark both come from TOPIX, so the study can
+    # only run over the window the index covers - however much price history
+    # the store holds. Said out loud, because a window that quietly shrank is
+    # the kind of thing that turns up later as an unexplained sample size.
+    topix_start = topix.index.min().date()
+    topix_end = topix.index.max().date()
+    if topix_start > start:
+        console.print(
+            f"[yellow]Prices reach back to {start}, but the J-Quants plan covers "
+            f"TOPIX only from {topix_start}.[/] The study runs {topix_start} to "
+            f"{topix_end}: there is no benchmark to deduct before that, and a "
+            "return measured against nothing is not an excess return."
+        )
+
+    trades = run_backtest(prices_by_symbol, topix)
+    # Two widened passes, each moving one floor, purely to populate the bands
+    # either side of the shipped ones. Uncapped, so competition for the
+    # three daily slots cannot reshuffle which trades land in which band.
+    console.print("Sweeping the gap neighbourhood...")
+    gap_sweep = run_backtest(prices_by_symbol, topix, gap_min=SWEEP_GAP_MIN, max_signals=None)
+    console.print("Sweeping the volume-ratio neighbourhood...")
+    vo_sweep = run_backtest(prices_by_symbol, topix, vo_ratio_min=SWEEP_VO_MIN, max_signals=None)
+    if trades.empty:
+        console.print(
+            "[yellow]The screen fired on no session in this window.[/] That is a "
+            "result, not an error: with no trades the question cannot be "
+            "answered either way."
+        )
+        return
+
+    if export is not None:
+        trades.to_csv(export, index=False)
+        console.print(f"Wrote {len(trades)} trade(s) to {export}.")
+
+    out_of_sample, in_sample = split_is_oos(trades)
+    gap_oos, gap_is = split_is_oos(gap_sweep)
+    vo_oos, vo_is = split_is_oos(vo_sweep)
+    console.print(
+        f"\n[bold]Split at {IS_START}[/] - the first day of the window the "
+        f"production parameters were fitted on. Out of sample: "
+        f"{len(out_of_sample)} trade(s). In sample: {len(in_sample)} trade(s). "
+        "The verdict is read off the out-of-sample half; the in-sample half is "
+        "shown beside it, and the distance between them is the size of the "
+        "overfit."
+    )
+
+    halves = (
+        ("OUT OF SAMPLE", out_of_sample, gap_oos, vo_oos),
+        ("IN SAMPLE", in_sample, gap_is, vo_is),
+    )
+    for label, subset, gap_bands, vo_bands in halves:
+        if subset.empty:
+            console.print(f"\n[yellow]{label}: no trades in this half.[/]")
+            continue
+        console.print(f"\n[bold]{'=' * 12} {label} {'=' * 12}[/]")
+        _render_coverage(label, subset)
+        _render_distribution(label, subset)
+        _render_shells(label, gap_bands, vo_bands)
+        _render_verdict(label, verdict(subset, gap_bands))
+
+    locked = int(trades["locked_open"].sum())
+    if locked:
+        without = trades[~trades["locked_open"]]
+        console.print(
+            f"\n[dim]{locked} of {len(trades)} trade(s) opened with no range - "
+            "open, high and low identical - which is what a stock bid-limit at "
+            "the open looks like. A backtest fills there anyway; a person may "
+            "not have. Excluding them, the whole-sample TOPIX-deducted median "
+            f"moves from {_pct(describe(trades).median)} to "
+            f"{_pct(describe(without).median)}.[/]"
+        )
+
+
+@app.command(name="disclosure-impact")
+def disclosure_impact(
+    symbols: list[str] | None = typer.Argument(
+        None,
+        help="JP security codes, space- or comma-separated, e.g. 7203 6758 or "
+        "7203,6758; default is every stored JP security.",
+    ),
+    years: int = typer.Option(3, help="Lookback window in years, from today."),
+    export: Path | None = typer.Option(
+        None,
+        "--export",
+        help="Write the per-disclosure labels to this CSV, one row per disclosure.",
+    ),
+    throttle: float = typer.Option(
+        0.2, help="Seconds to pause between symbols, to stay under the rate limit."
+    ),
+) -> None:
+    """Label J-Quants disclosures with excess return vs TOPIX, by disclosure type.
+
+    This is a measurement foundation, not a score: it answers "how much did
+    the stock move relative to TOPIX around each disclosure", grouped by
+    ``DocType``. Nothing here ranks companies or feeds ``rank``.
+
+    Requires stored prices for every symbol involved (run ``fetch``/
+    ``bulk-fetch`` first) - statement history and TOPIX are fetched live.
+    """
+    settings = get_settings()
+    configure_logging(settings.log_level)
+
+    database = Database()
+    database.create_all()
+    with database.session() as session:
+        stored_jp = [s for s, market in list_securities(session) if market == "JP"]
+    target_symbols = _parse_symbol_tokens(symbols) if symbols else stored_jp
+    if not target_symbols:
+        console.print(
+            "[yellow]No stored JP securities; run 'fetch' first, or pass symbols explicitly.[/]"
+        )
+        return
+
+    from stock_ai.data.jquants_fundamentals import _default_fetcher as _statement_fetcher
+
+    fetch_statements = _statement_fetcher(settings.jquants_api_key)
+    cutoff = dt.date.today() - dt.timedelta(days=365 * years)
+
+    events = []
+    stock_prices_by_symbol: dict[str, pd.DataFrame] = {}
+    with database.session() as session:
+        repo = PriceRepository(session)
+        failed: list[str] = []
+        no_prices: list[str] = []
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            BarColumn(),
+            TaskProgressColumn(),
+            TimeRemainingColumn(),
+            console=console,
+        ) as progress:
+            task = progress.add_task("statements", total=len(target_symbols))
+            for index, symbol in enumerate(target_symbols):
+                progress.update(task, completed=index, description=f"statements {symbol}")
+                try:
+                    records = _fetch_statements_patiently(fetch_statements, symbol, throttle)
+                except _RateLimitGaveUpError as exc:
+                    # A rate limit belongs to the run, not to a symbol. Carrying
+                    # on would spend the rest of the universe collecting the
+                    # same refusal and then print a table over whatever got
+                    # through - which is exactly how a 1,570-symbol run came
+                    # back as 59 construction names wearing a market-wide title.
+                    progress.stop()
+                    console.print(f"[red]{exc}[/]")
+                    console.print(
+                        f"[yellow]Stopped after {len(stock_prices_by_symbol)} of "
+                        f"{len(target_symbols)} symbol(s).[/] No table is printed "
+                        "from a partial universe: the symbols that got through are "
+                        "the alphabetically first ones, not a sample of the market. "
+                        "Re-run later, or raise --throttle to pace the requests."
+                    )
+                    raise typer.Exit(code=1) from exc
+                except DataError as exc:
+                    failed.append(symbol)
+                    logger_message = f"{symbol}: {exc}"
+                    logging.getLogger(__name__).warning(logger_message)
+                    continue
+                symbol_events = [
+                    event
+                    for event in build_disclosure_events(symbol, records)
+                    if event.disc_date >= cutoff
+                ]
+                if not symbol_events:
+                    continue
+                prices = repo.get_prices(symbol)
+                if prices.empty:
+                    no_prices.append(symbol)
+                    continue
+                events.extend(symbol_events)
+                stock_prices_by_symbol[symbol] = prices
+            progress.update(task, completed=len(target_symbols))
+
+    if failed or no_prices:
+        # Printed as a count, not one line per symbol: at universe scale the
+        # per-symbol form is thousands of lines that push the tables off
+        # screen, and the number is the part that decides whether the run is
+        # worth reading.
+        parts = []
+        if failed:
+            parts.append(f"{len(failed)} failed to fetch (see the log)")
+        if no_prices:
+            parts.append(f"{len(no_prices)} had no stored prices")
+        console.print(
+            f"[yellow]{len(target_symbols) - len(stock_prices_by_symbol)} of "
+            f"{len(target_symbols)} symbol(s) contributed nothing: {', '.join(parts)}.[/]"
+        )
+
+    if not events:
+        console.print("[yellow]No disclosures found in the lookback window.[/]")
+        return
+
+    topix_start = min(event.disc_date for event in events) - dt.timedelta(days=14)
+    try:
+        topix_prices = fetch_topix(topix_start, dt.date.today(), api_key=settings.jquants_api_key)
+    except DataError as exc:
+        console.print(f"[red]Failed to fetch TOPIX: {exc}[/]")
+        raise typer.Exit(code=1) from exc
+
+    labeled = label_disclosures(events, stock_prices_by_symbol, topix_prices)
+    summary = summarize_by_doc_type(labeled)
+
+    if summary.empty:
+        console.print("[yellow]No disclosure could be labeled (missing prices for every row).[/]")
+        return
+
+    n_symbols = len(stock_prices_by_symbol)
+    table = Table(title=f"excess return by disclosure type ({n_symbols} symbol(s), {years}y)")
+    table.add_column("doc_type", style="cyan", overflow="fold")
+    table.add_column("n", justify="right")
+    table.add_column("symbols", justify="right")
+    table.add_column("median", justify="right")
+    table.add_column("std", justify="right")
+    for row in summary.itertuples(index=False):
+        std_text = f"{row.std_excess_return:.2%}" if pd.notna(row.std_excess_return) else "-"
+        table.add_row(
+            row.doc_type or "(unknown)",
+            str(row.n),
+            str(row.symbols),
+            f"{row.median_excess_return:+.2%}",
+            std_text,
+        )
+    console.print(table)
+
+    # The same rows split by whether the disclosure moved the full-year
+    # forecast, and which way. A revision folded into a quarterly release is
+    # invisible in the table above - it is filed under the quarter, alongside
+    # the releases that changed nothing.
+    by_revision = summarize_by_revision(labeled)
+    revision_table = Table(title="the same disclosures, split by forecast revision")
+    revision_table.add_column("doc_type", style="cyan", overflow="fold")
+    revision_table.add_column("revision", justify="left")
+    revision_table.add_column("n", justify="right")
+    revision_table.add_column("symbols", justify="right")
+    revision_table.add_column("median", justify="right")
+    revision_table.add_column("std", justify="right")
+    # no_forecast is yellow, not dim: those rows are unmeasurable rather than
+    # unchanged, and reading them as "guidance held" is the mistake this
+    # column was split to prevent.
+    direction_style = {"up": "green", "down": "red", "flat": "dim", "no_forecast": "yellow"}
+    for row in by_revision.itertuples(index=False):
+        std_text = f"{row.std_excess_return:.2%}" if pd.notna(row.std_excess_return) else "-"
+        style = direction_style.get(row.revision_direction, "dim")
+        revision_table.add_row(
+            row.doc_type or "(unknown)",
+            f"[{style}]{row.revision_direction}[/]",
+            str(row.n),
+            str(row.symbols),
+            f"{row.median_excess_return:+.2%}",
+            std_text,
+        )
+    console.print(revision_table)
+    # A third axis, pooled rather than split by DocType: only a quarter of
+    # dividend revisions arrive as a DividendForecastRevision notice, so
+    # grouping by document type buries the very effect this measures.
+    dividends = summarize_by_dividend(labeled)
+    measurable = dividends[dividends["dividend_direction"] != "no_forecast"]
+    if not measurable.empty:
+        dividend_table = Table(title="the same disclosures, by dividend-forecast revision")
+        dividend_table.add_column("dividend", justify="left")
+        dividend_table.add_column("n", justify="right")
+        dividend_table.add_column("symbols", justify="right")
+        dividend_table.add_column("median", justify="right")
+        dividend_table.add_column("std", justify="right")
+        for row in dividends.itertuples(index=False):
+            std_text = f"{row.std_excess_return:.2%}" if pd.notna(row.std_excess_return) else "-"
+            style = direction_style.get(row.dividend_direction, "dim")
+            dividend_table.add_row(
+                f"[{style}]{row.dividend_direction}[/]",
+                str(row.n),
+                str(row.symbols),
+                f"{row.median_excess_return:+.2%}",
+                std_text,
+            )
+        console.print(dividend_table)
+        console.print(
+            "[dim]The dividend axis is pooled across every disclosure type, not "
+            "split by it: most dividend revisions are folded into a quarterly "
+            "announcement rather than filed as their own notice, so grouping "
+            "them by document type buries them. It is a separate question from "
+            "the earnings direction above - a company can cut its profit "
+            "forecast and raise its dividend in the same breath.[/]"
+        )
+
+    console.print(
+        "[dim]'up'/'down' read off the revised full-year forecast (net profit "
+        "first, then operating profit, sales, EPS). 'flat' means a forecast "
+        "existed on both sides and did not move. [yellow]'no_forecast' means there was "
+        "nothing to compare[/] - a full-year announcement, whose year is over, "
+        "or a filer publishing no earnings forecast at all (8306 discloses only "
+        "a dividend forecast). Do not read 'no_forecast' as guidance held.[/]"
+    )
+    # Printed below the tables, not above them: a caveat that scrolls off the
+    # top of a long run is a caveat nobody reads, and this one decides what
+    # the numbers mean.
+    _warn_if_concentrated(database, sorted(stock_prices_by_symbol))
+    console.print(
+        "[dim]Read 'symbols' next to 'n': each company files one disclosure of "
+        "each type per year, so a three-year window turns a handful of "
+        "companies into a comfortable-looking n. Those observations repeat the "
+        "same companies rather than adding independent ones, so a row with a "
+        "single-digit 'symbols' is thinner than its 'n' suggests.[/]"
+    )
+
+    _render_segments(labeled, years)
+
+    if export is not None:
+        # The summaries answer "which disclosure type", but every judgement
+        # about *why* a row reads the way it does needs the disclosures
+        # themselves - which symbol, which forecast moved, from what to what.
+        # Reconstructing that from the tables is impossible, so it is written
+        # out whole rather than sampled.
+        export.parent.mkdir(parents=True, exist_ok=True)
+        labeled.to_csv(export, index=False, encoding="utf-8-sig")
+        console.print(f"Wrote {len(labeled)} labeled disclosure(s) to [cyan]{export}[/].")
+
+    excluded = int(labeled["exclude_reason"].notna().sum())
+    total = len(labeled)
+    console.print(
+        f"[dim]{total - excluded} of {total} disclosure(s) labeled; {excluded} excluded "
+        "for missing price data or a disclosure date past the stored calendar. "
+        "This is a labeling foundation, not a score - read n before the percentages "
+        "on any thin row.[/]"
+    )
+
+
 @app.command()
 def rank(
     symbols: list[str] | None = typer.Argument(None, help="Symbols to rank; default is all."),
@@ -1735,6 +2696,18 @@ def _factor_preset(name: str, fx: FxConverter) -> tuple[list[WeightedFactor], bo
     if key == "tenbagger":
         return tenbagger_weighted_factors(fx=fx), True
     raise typer.BadParameter(f"Unknown preset {name!r}; use 'default' or 'tenbagger'.")
+
+
+def _parse_symbol_tokens(tokens: list[str]) -> list[str]:
+    """Split space- and/or comma-separated symbol tokens into individual codes.
+
+    ``bulk-fetch --symbols`` takes one comma-separated string; ``fetch`` and
+    ``disclosure-impact`` take space-separated positional arguments. Splitting
+    each token on commas too means either convention (or a mix) works,
+    instead of ``"7203,6758"`` silently becoming one combined code that a
+    provider then rejects.
+    """
+    return [code.strip() for token in tokens for code in token.split(",") if code.strip()]
 
 
 def _parse_fx_rates(pairs: list[str]) -> dict[str, float]:

@@ -269,6 +269,10 @@ class BulkIngester:
                 default_lookback_days=lookback_days,
                 backfill=backfill,
             )
+            # A RateLimitError propagates out of ingest_symbol rather than
+            # arriving as a result string, so _fetch_with_backoff can see it.
+            # Everything else still comes back captured, as one symbol's
+            # failure should.
             result = service.ingest_symbol(symbol, market="JP")
             if not result.ok:
                 raise RuntimeError(result.error or "ingest failed")

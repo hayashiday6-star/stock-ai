@@ -10,7 +10,7 @@ from __future__ import annotations
 import datetime as dt
 from dataclasses import dataclass
 
-from stock_ai.core.exceptions import NoDataError, StockAIError
+from stock_ai.core.exceptions import NoDataError, RateLimitError, StockAIError
 from stock_ai.core.logging import get_logger
 from stock_ai.data.base import FundamentalsProvider, PriceProvider
 from stock_ai.database.engine import Database
@@ -77,6 +77,11 @@ class IngestionService:
 
         Returns:
             An :class:`IngestResult`; failures are captured, never raised.
+
+        Raises:
+            RateLimitError: The provider refused for pace rather than for this
+                symbol. It is the one error the caller has to see, because only
+                the caller can wait or stop; every other failure is captured.
         """
         end = end or dt.date.today()
         try:
@@ -107,6 +112,15 @@ class IngestionService:
                 rows = repo.upsert_prices(symbol, prices, market=market)
                 logger.info("Ingested %d bars for %s", rows, symbol)
                 return IngestResult(symbol, rows, ok=True)
+        except RateLimitError:
+            # The one failure that is not about this symbol. A 429 says the
+            # *run* is going too fast, and the caller is the only layer that
+            # can slow down or stop. Flattened into a result string it becomes
+            # an ordinary per-symbol failure, the caller's backoff never runs,
+            # and the loop sprints through the rest of the universe collecting
+            # the same refusal - observed live as 3,501 "failed" symbols, of
+            # which almost none had really been attempted.
+            raise
         except StockAIError as exc:
             logger.warning("Ingest failed for %s: %s", symbol, exc)
             return IngestResult(symbol, 0, ok=False, error=str(exc))

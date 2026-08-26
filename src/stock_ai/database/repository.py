@@ -84,6 +84,24 @@ def list_securities(session: Session) -> list[tuple[str, str]]:
     return [(symbol, market) for symbol, market in rows]
 
 
+def sectors_for(session: Session, symbols: list[str]) -> dict[str, str | None]:
+    """Return ``{symbol: sector}`` for ``symbols`` that are stored.
+
+    Exists so an analysis can report the *spread* of its own sample. A study
+    whose universe is one industry measures that industry, and nothing on
+    screen says so unless something looks: TSE codes are assigned by sector,
+    so any code-ordered slice of the listing - which is what a ``--limit``
+    on the universe produces - is a single-sector sample that looks like a
+    market-wide one.
+    """
+    if not symbols:
+        return {}
+    rows = session.execute(
+        select(Security.symbol, Security.sector).where(Security.symbol.in_(symbols))
+    ).all()
+    return dict(rows)  # type: ignore[arg-type]
+
+
 def price_history_spans(session: Session) -> list[tuple[str, str, dt.date, dt.date, int]]:
     """Return ``(symbol, market, earliest, latest, bars)`` for every stored series.
 

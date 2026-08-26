@@ -427,3 +427,50 @@ def test_an_ordinary_failure_is_still_reported_for_a_stored_symbol() -> None:
     assert not result.ok
     assert "500" in (result.error or "")
     database.dispose()
+
+
+def test_a_rate_limit_escapes_instead_of_becoming_a_result_string(tmp_path) -> None:
+    """A 429 is about the run's pace, not about this symbol.
+
+    Captured as an ordinary failure it reads like a bad ticker, the caller's
+    backoff never runs, and the loop sprints through the rest of the universe
+    collecting the same refusal. That is what a real backfill did: 3,501
+    symbols "failed", almost none of them actually attempted.
+    """
+    import datetime as dt
+
+    from stock_ai.core.exceptions import RateLimitError
+    from stock_ai.data.service import IngestionService
+    from stock_ai.database.engine import Database
+
+    class _Limited:
+        def fetch_prices(self, symbol, start, end):
+            raise RateLimitError(f"Rate limited while fetching prices for {symbol}.")
+
+    database = Database(f"sqlite:///{tmp_path / 'x.db'}")
+    database.create_all()
+    service = IngestionService(_Limited(), database)
+
+    with pytest.raises(RateLimitError):
+        service.ingest_symbol("7203", end=dt.date(2024, 1, 4), market="JP")
+
+
+def test_an_ordinary_failure_is_still_captured(tmp_path) -> None:
+    """Only the rate limit escapes; one bad symbol must not end a batch."""
+    import datetime as dt
+
+    from stock_ai.core.exceptions import DataError
+    from stock_ai.data.service import IngestionService
+    from stock_ai.database.engine import Database
+
+    class _Broken:
+        def fetch_prices(self, symbol, start, end):
+            raise DataError("no such ticker")
+
+    database = Database(f"sqlite:///{tmp_path / 'y.db'}")
+    database.create_all()
+    result = IngestionService(_Broken(), database).ingest_symbol(
+        "9999", end=dt.date(2024, 1, 4), market="JP"
+    )
+    assert result.ok is False
+    assert "no such ticker" in (result.error or "")
