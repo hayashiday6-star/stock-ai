@@ -656,11 +656,22 @@ def capital_flow(
             is irrelevant to market data.
         symbol: Any form :func:`to_moomoo_code` accepts.
         period_type: One of :data:`PERIOD_TYPES`. ``INTRADAY`` ignores the dates.
-        start: ``YYYY-MM-DD``. Ignored for ``INTRADAY``; defaults to a year back.
-        end: ``YYYY-MM-DD``. Ignored for ``INTRADAY``; defaults to today.
+        start: ``YYYY-MM-DD``. Ignored for ``INTRADAY``. Given without ``end``,
+            the API reads it as a year forward from there; omitting both asks
+            for the last 365 days.
+        end: ``YYYY-MM-DD``. Ignored for ``INTRADAY``. Given without ``start``,
+            the API reads it as a year back from there.
         timeout: Seconds to wait for the port probe.
         handshake_timeout: Seconds to wait for OpenD to answer once the port is
             known to be open.
+
+    Note:
+        Documented limits, none of which surface as errors: at most 30 calls per
+        30 seconds; stocks, warrants, funds and crypto only; one year of history
+        for the dated periods and one day for ``INTRADAY``; and regular-session
+        data only, so pre- and post-market flow is absent rather than zero.
+        Two returned fields are period-dependent - ``main_in_flow`` is valid only
+        for the dated periods, ``last_valid_time`` only for ``INTRADAY``.
 
     Raises:
         BrokerError: If the client is missing, OpenD is unreachable or silent,
@@ -693,9 +704,11 @@ def capital_flow(
     try:
 
         def query() -> Any:
-            # security_firm is forwarded into the request. A JP account asking
-            # without it is asking as nobody in particular, which is one way a
-            # symbol you are entitled to comes back refused.
+            # security_firm is documented as applying only to *crypto* quote
+            # connections, so it is not what grants access to a JP stock. The
+            # client forwards it on this request all the same, so the configured
+            # entity is passed rather than the N/A default - harmless where it is
+            # ignored, correct where it is not.
             inner = moomoo.OpenQuoteContext(
                 host=config.host, port=config.port, security_firm=config.security_firm
             )

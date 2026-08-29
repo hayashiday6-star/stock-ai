@@ -760,7 +760,9 @@ It takes this project's own symbol forms (`9842`, `9842.T`, `AAPL`) and converts
 them to moomoo's market-first `JP.9842`, and it goes through the same port probe
 and handshake deadline, so a missing gateway is a message rather than a hang.
 Calling the client directly instead, note the argument names are `start`/`end` —
-`begin_time`/`end_time` raise `TypeError`.
+`begin_time`/`end_time` raise `TypeError` — and that `main_in_flow` is
+documented as valid only for the dated periods, so the command omits that
+column on intraday rather than printing a figure that reads as a real zero.
 
 Setup, from downloading OpenD to the first successful check, is in
 **[docs/MOOMOO_OPEND.md](docs/MOOMOO_OPEND.md)** (Japanese). Execution through

@@ -2645,43 +2645,53 @@ def moomoo_flow(
         )
         raise typer.Exit(1)
 
-    _render_capital_flow(frame, code)
+    _render_capital_flow(frame, code, period_type)
 
 
-def _render_capital_flow(frame: pd.DataFrame, code: str) -> None:
-    """Print the flow table, widest bucket first.
+def _render_capital_flow(frame: pd.DataFrame, code: str, period_type: str) -> None:
+    """Print the flow table, dropping the columns this period does not fill.
 
-    ``in_flow`` is the whole net figure and ``main_in_flow`` is the large-order
-    part of it, so the two are not additive with the buckets beside them. They
-    are separated in the table for that reason - reading them as one row of
-    components is the obvious mistake.
+    The API documents two fields as period-dependent: ``main_in_flow`` is valid
+    only for the historical periods (day/week/month) and ``last_valid_time``
+    only for intraday. A column that is present but meaningless is worse than an
+    absent one - it reads as a real zero - so ``Main`` is only shown where the
+    API says it means something.
     """
+    intraday = period_type == "INTRADAY"
     table = Table(title=f"Capital flow: {code} (net, in the listing currency)")
-    table.add_column("Date", style="cyan", no_wrap=True)
+    table.add_column("Time" if intraday else "Date", style="cyan", no_wrap=True)
     table.add_column("Net", justify="right")
-    table.add_column("Main", justify="right")
+    if not intraday:
+        table.add_column("Main", justify="right")
     table.add_column("Super", justify="right")
     table.add_column("Big", justify="right")
     table.add_column("Mid", justify="right")
     table.add_column("Small", justify="right")
 
     for row in frame.to_dict("records"):
+        # The timestamp is 'yyyy-MM-dd HH:mm:ss' whatever the period, so a daily
+        # row would otherwise carry a 00:00:00 that means nothing.
         when = str(row.get("capital_flow_item_time", ""))
-        table.add_row(
-            when,
-            _signed(row.get("in_flow")),
-            _signed(row.get("main_in_flow")),
+        cells = [when if intraday else when.split(" ")[0], _signed(row.get("in_flow"))]
+        if not intraday:
+            cells.append(_signed(row.get("main_in_flow")))
+        cells += [
             _signed(row.get("super_in_flow")),
             _signed(row.get("big_in_flow")),
             _signed(row.get("mid_in_flow")),
             _signed(row.get("sml_in_flow")),
-        )
+        ]
+        table.add_row(*cells)
     console.print(table)
-    console.print(
-        "[dim]Net = the whole flow; Main = the super + big part of it. The four "
-        "bucket columns are order-size bands and sum to Net, so Main is a subset "
-        "shown alongside, not another band.[/]"
+
+    note = (
+        "[dim]Net (in_flow) is the overall net figure; Super/Big/Mid/Small are "
+        "the order-size bands."
     )
+    if not intraday:
+        note += " Main (main_in_flow) is the large-order net figure the API "
+        note += "reports separately - it is not one of the bands."
+    console.print(note + " Regular session only: no pre- or post-market.[/]")
 
 
 def _signed(value: object) -> str:

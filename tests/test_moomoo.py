@@ -106,7 +106,7 @@ class FakeQuoteContext:
                     "mid_in_flow": -30_000.0,
                     "sml_in_flow": -35_433.0,
                     "main_in_flow": 1_300_000.0,
-                    "capital_flow_item_time": "2026-08-28",
+                    "capital_flow_item_time": "2026-08-28 00:00:00",
                 }
             ]
         )
@@ -650,6 +650,38 @@ def test_cli_flow_defaults_to_the_last_thirty_days_and_says_which(
     code, period, start, end = quote.flow_calls[0]
     assert (code, period) == ("JP.9842", "DAY")
     assert (dt.date.fromisoformat(end) - dt.date.fromisoformat(start)).days == 30
+
+
+def test_cli_flow_hides_main_on_intraday_where_the_api_does_not_fill_it(
+    monkeypatch: pytest.MonkeyPatch, open_port: int
+) -> None:
+    """main_in_flow is documented as valid only for the dated periods.
+
+    Shown anyway it reads as a real figure, which is worse than absent.
+    """
+    quote = FakeQuoteContext({"qot_logined": True, "trd_logined": True})
+    _install(monkeypatch, FakeMoomoo(quote, None))
+
+    daily = runner.invoke(cli.app, ["moomoo-flow", "9842", "--port", str(open_port)])
+    intraday = runner.invoke(
+        cli.app, ["moomoo-flow", "9842", "--port", str(open_port), "--period", "intraday"]
+    )
+
+    assert "Main" in daily.output
+    assert "Main" not in intraday.output
+
+
+def test_cli_flow_drops_the_meaningless_midnight_on_a_daily_row(
+    monkeypatch: pytest.MonkeyPatch, open_port: int
+) -> None:
+    """The API stamps every period 'yyyy-MM-dd HH:mm:ss', midnight included."""
+    quote = FakeQuoteContext({"qot_logined": True, "trd_logined": True})
+    _install(monkeypatch, FakeMoomoo(quote, None))
+
+    result = runner.invoke(cli.app, ["moomoo-flow", "9842", "--port", str(open_port)])
+
+    assert "2026-08-28" in result.output
+    assert "00:00:00" not in result.output
 
 
 def test_cli_flow_calls_an_empty_answer_ambiguous_rather_than_fine(
