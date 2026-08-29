@@ -462,21 +462,41 @@ def diagnose(
         result.accounts = _account_rows(acc_frame)
         wanted = [a for a in result.accounts if a.trd_env == config.trd_env]
         if not wanted:
-            seen = ", ".join(sorted({a.trd_env for a in result.accounts})) or "none at all"
+            # Two very different situations end up here and they need opposite
+            # advice, so they are told apart rather than sharing one message.
+            others = sorted({a.trd_env for a in result.accounts})
+            if others:
+                # The list came back full, just of another kind of account. A
+                # moomoo Japan login often has no paper side at all, so the
+                # SIMULATE default lands here on a completely healthy setup -
+                # and telling that user their entity is wrong sends them to
+                # re-check settings that were right the whole time.
+                other = others[0]
+                choice = "2" if other == "REAL" else "1"
+                detail = f"no {config.trd_env} account on this login; it has {other} instead"
+                hint = (
+                    "Nothing is wrong with the login or the settings. Re-run against "
+                    f"the account you actually have: choose {choice} in "
+                    f"moomoo接続確認.bat, or set MOOMOO_TRD_ENV={other} in .env. "
+                    "Reading a REAL account never places an order."
+                )
+            else:
+                detail = (
+                    f"no account at all for {config.security_firm} "
+                    f"with {config.trd_market} permission"
+                )
+                hint = (
+                    "This is the failure that looks like success: the login worked "
+                    "and the list came back empty. Either the entity or the market "
+                    "is wrong for this account, or the account is not approved for "
+                    "that market yet."
+                )
             result.stages.append(
                 Stage(
                     name="account visible",
                     status=StageStatus.FAILED,
-                    detail=(
-                        f"no {config.trd_env} account for {config.security_firm} "
-                        f"with {config.trd_market} permission (found: {seen})"
-                    ),
-                    hint=(
-                        "This is the failure that looks like success: the login "
-                        "worked and the list came back empty. Either the entity or "
-                        "the market is wrong for this account, or the account is not "
-                        "approved for that market yet."
-                    ),
+                    detail=detail,
+                    hint=hint,
                 )
             )
             return result

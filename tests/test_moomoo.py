@@ -294,7 +294,7 @@ def test_empty_account_list_is_reported_as_a_mismatch_not_a_success(
     failure = result.first_failure
     assert failure is not None
     assert failure.name == "account visible"
-    assert "none at all" in failure.detail
+    assert "no account at all" in failure.detail
 
 
 def test_asking_for_real_when_only_paper_exists_says_what_was_found(
@@ -310,6 +310,34 @@ def test_asking_for_real_when_only_paper_exists_says_what_was_found(
     assert failure is not None
     assert failure.name == "account visible"
     assert "SIMULATE" in failure.detail
+    # The advice must be "switch to the account you have", not "your entity or
+    # market is wrong" - the settings were right, and re-checking them is a
+    # wasted trip.
+    assert "MOOMOO_TRD_ENV=SIMULATE" in failure.hint
+    assert "entity" not in failure.hint
+
+
+def test_a_paperless_login_is_told_to_switch_not_to_recheck_its_settings(
+    monkeypatch: pytest.MonkeyPatch, open_port: int
+) -> None:
+    """The real shape of a moomoo Japan account: REAL only, no paper side.
+
+    The SIMULATE default lands here on a healthy setup, so the message has to
+    say "use the account you have" rather than "your entity is wrong".
+    """
+    quote = FakeQuoteContext({"qot_logined": True, "trd_logined": True})
+    trade = FakeTradeContext(_acc_frame([_account_row(trd_env="REAL")]))
+    _install(monkeypatch, FakeMoomoo(quote, trade))
+
+    result = diagnose(MoomooConfig(port=open_port, trd_env="SIMULATE"))
+
+    failure = result.first_failure
+    assert failure is not None
+    assert failure.name == "account visible"
+    assert "it has REAL instead" in failure.detail
+    assert "MOOMOO_TRD_ENV=REAL" in failure.hint
+    assert "choose 2" in failure.hint
+    assert "never places an order" in failure.hint
 
 
 def test_paper_account_passes_and_skips_the_unlock(
