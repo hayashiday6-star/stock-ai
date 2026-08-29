@@ -578,6 +578,62 @@ def test_the_profile_is_fetched_once_per_symbol_not_twice() -> None:
     assert result.rows[0].candidate.sector == "Industrials"
 
 
+def test_a_symbol_typed_on_the_command_line_gets_its_real_company_name() -> None:
+    """There is no listing file to read the name from, but the profile has it."""
+    listings = [Listing("GAP", "GAP", "指定")]  # name == ticker, as the CLI builds it
+    frames = {"GAP": price_frame(breakout=True)}
+
+    result = run_accumulation(
+        config=MoomooConfig(trd_market="US"),
+        listings=listings,
+        price_loader=lambda symbols: frames,
+        market_cap_loader=lambda symbols: dict.fromkeys(symbols, 8.4e9),
+        info_loader=lambda symbol: {"longName": "Gap, Inc. (The)", "sector": "Consumer Cyclical"},
+        flow_loader=lambda config, symbol: flow_frame(),
+        deep_limit=1,
+        today=dt.date(2026, 8, 29),
+    )
+
+    assert result.rows[0].candidate.listing.name == "Gap, Inc. (The)"
+
+
+def test_a_name_from_the_listing_file_is_left_alone() -> None:
+    """The exchange's own name wins; the profile is only a fallback."""
+    listings = [Listing("GAP", "Gap, Inc. (The) Common Stock", "NYSE")]
+    frames = {"GAP": price_frame(breakout=True)}
+
+    result = run_accumulation(
+        config=MoomooConfig(trd_market="US"),
+        listings=listings,
+        price_loader=lambda symbols: frames,
+        market_cap_loader=lambda symbols: dict.fromkeys(symbols, 8.4e9),
+        info_loader=lambda symbol: {"longName": "SOMETHING ELSE"},
+        flow_loader=lambda config, symbol: flow_frame(),
+        deep_limit=1,
+        today=dt.date(2026, 8, 29),
+    )
+
+    assert result.rows[0].candidate.listing.name == "Gap, Inc. (The) Common Stock"
+
+
+def test_a_failed_profile_leaves_the_ticker_as_the_name() -> None:
+    listings = [Listing("GAP", "GAP", "指定")]
+    frames = {"GAP": price_frame(breakout=True)}
+
+    result = run_accumulation(
+        config=MoomooConfig(trd_market="US"),
+        listings=listings,
+        price_loader=lambda symbols: frames,
+        market_cap_loader=lambda symbols: dict.fromkeys(symbols, 8.4e9),
+        info_loader=lambda symbol: insufficient("rate limited"),
+        flow_loader=lambda config, symbol: flow_frame(),
+        deep_limit=1,
+        today=dt.date(2026, 8, 29),
+    )
+
+    assert result.rows[0].candidate.listing.name == "GAP"
+
+
 def test_a_fetch_failure_is_reported_with_its_reason() -> None:
     listings = [Listing("GAP", "Gap, Inc.", "NYSE")]
     frames = {"GAP": price_frame(breakout=True)}

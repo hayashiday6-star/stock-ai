@@ -12,7 +12,7 @@ import datetime as dt
 import logging
 import time
 from collections.abc import Callable, Iterable, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 import pandas as pd
@@ -164,6 +164,17 @@ def _info(symbol: str, *, attempts: int = INFO_ATTEMPTS) -> dict[str, Any] | Mis
     return insufficient(f"プロファイル取得に{attempts}回失敗: {last}")
 
 
+def company_name(info: dict[str, Any] | Missing, fallback: str) -> str:
+    """The company name from a profile blob, or the ticker if there is none."""
+    if isinstance(info, Missing):
+        return fallback
+    for key in ("longName", "shortName", "displayName"):
+        name = info.get(key)
+        if name:
+            return str(name)
+    return fallback
+
+
 def sector_from(info: dict[str, Any] | Missing) -> str | Missing:
     """The sector label out of a profile blob."""
     if isinstance(info, Missing):
@@ -262,6 +273,18 @@ def run(
         base=thresholds,
         limit=screen_limit,
     )
+
+    # Symbols named on the command line arrive with the ticker standing in for
+    # the company name, because there is no listing file to read it from. The
+    # profile was fetched for the sector column anyway, so the real name is
+    # already in hand - and the brief asks for a 社名 column, not a second
+    # ticker column.
+    for candidate in screen.candidates:
+        if candidate.listing.name == candidate.symbol:
+            candidate.listing = replace(
+                candidate.listing,
+                name=company_name(cached_info(candidate.symbol), candidate.symbol),
+            )
 
     rows = [Row(candidate=candidate) for candidate in screen.candidates]
     for index, row in enumerate(rows[:deep_limit]):

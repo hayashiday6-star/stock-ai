@@ -56,7 +56,12 @@ _NON_COMMON_SYMBOL_MARKS = ("$", "^")
 
 @dataclass(frozen=True)
 class Listing:
-    """One listed common stock."""
+    """One listed common stock.
+
+    Frozen: a listing is a fact from the exchange file. Where a caller needs a
+    changed one - filling the company name for a symbol typed on the command
+    line - it replaces the value rather than mutating this.
+    """
 
     symbol: str
     name: str
