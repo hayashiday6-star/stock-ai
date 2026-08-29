@@ -783,7 +783,8 @@ moomoo is deliberately *not* implemented — same stance as the IBKR skeleton.
 ## Accumulation screen (US)
 
 ```powershell
-uv run stock-ai accumulation --symbols-file watchlist.txt
+uv run stock-ai accumulation AAPL MSFT NVDA      # a few names, no file needed
+uv run stock-ai accumulation --symbols-file us.txt
 uv run stock-ai accumulation                     # the whole market, a few minutes
 ```
 

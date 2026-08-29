@@ -2753,10 +2753,13 @@ def _signed(value: object) -> str:
 
 @app.command()
 def accumulation(
+    symbols: list[str] | None = typer.Argument(
+        None, help="Screen only these symbols, e.g. AAPL MSFT NVDA. Omit for the whole market."
+    ),
     symbols_file: Path | None = typer.Option(
         None,
         "--symbols-file",
-        help="Screen only these symbols (one per line) instead of the whole market.",
+        help="Read symbols from a file, one per line (# comments allowed).",
     ),
     limit: int = typer.Option(10, help="Rows in the phase-1 table."),
     deep: int = typer.Option(5, help="How many of them get the phase-2/3 deep dive."),
@@ -2797,10 +2800,11 @@ def accumulation(
         raise typer.Exit(2) from exc
 
     listings: list[Listing] | None = None
-    if symbols_file is not None:
-        symbols = _resolve_symbols(None, symbols_file)
-        listings = [Listing(symbol.upper(), symbol.upper(), "指定") for symbol in symbols]
-        console.print(f"ユニバース: [cyan]{symbols_file}[/] の {len(listings)} 銘柄")
+    if symbols or symbols_file is not None:
+        named = _resolve_symbols(symbols, symbols_file)
+        listings = [Listing(symbol.upper(), symbol.upper(), "指定") for symbol in named]
+        source = str(symbols_file) if symbols_file is not None else "コマンドラインの指定"
+        console.print(f"ユニバース: {source} の [cyan]{len(listings)}[/] 銘柄")
     else:
         console.print(
             "ユニバース: NASDAQ Trader の上場ファイルを取得します"

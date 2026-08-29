@@ -3,14 +3,17 @@
 米国株から「機関投資家が静かに仕込んでいる形」を、3フェーズで探します。
 
 ```powershell
+# 銘柄を並べて試す（まずはこれ。ファイルは要りません）
+uv run stock-ai accumulation AAPL MSFT NVDA AMD INTC
+
+# 手持ちのリストから（1行1銘柄、# でコメント可）
+uv run stock-ai accumulation --symbols-file us.txt
+
 # 全市場（NASDAQ Trader の上場ファイルを取得。数分かかります）
 uv run stock-ai accumulation
 
-# 銘柄を指定して試す（まずはこちらを推奨）
-uv run stock-ai accumulation --symbols-file watchlist.txt
-
 # 条件を緩めて回す
-uv run stock-ai accumulation --volume-multiple 3 --max-range 0.15
+uv run stock-ai accumulation AAPL MSFT --volume-multiple 3 --max-range 0.15
 ```
 
 **前提**: 株価は yfinance、資金フローは moomoo OpenD から取ります。OpenD が

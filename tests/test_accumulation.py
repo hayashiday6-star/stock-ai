@@ -455,6 +455,33 @@ def test_render_never_turns_an_absence_into_a_figure() -> None:
         missing + 1  # type: ignore[operator]
 
 
+def test_cli_takes_symbols_on_the_command_line(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The documented first run must not need a file that does not exist yet.
+
+    The README said `--symbols-file watchlist.txt` and the repository ships no
+    such file, so the first thing a reader ran failed on a missing path.
+    """
+    frames = {"ALFA": price_frame(breakout=True)}
+    monkeypatch.setattr(cli, "download_prices", lambda symbols, period="1y": frames)
+    monkeypatch.setattr(
+        cli, "run_accumulation", lambda **kwargs: _run(price_loader=lambda symbols: frames)
+    )
+
+    result = runner.invoke(cli.app, ["accumulation", "ALFA"])
+
+    assert result.exit_code == 0
+    assert "最終統合サマリー" in result.output
+
+
+def test_cli_still_asks_for_something_to_screen_when_a_file_is_empty(tmp_path) -> None:
+    path = tmp_path / "empty.txt"
+    path.write_text("# nothing here\n", encoding="utf-8")
+
+    result = runner.invoke(cli.app, ["accumulation", "--symbols-file", str(path)])
+
+    assert result.exit_code != 0
+
+
 def test_cli_runs_the_screen_from_a_symbols_file(tmp_path) -> None:
     path = tmp_path / "symbols.txt"
     path.write_text("ALFA\n", encoding="utf-8")
