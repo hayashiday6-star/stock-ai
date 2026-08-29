@@ -56,9 +56,18 @@ from stock_ai.backtest.seasonality import (
     symbol_patterns,
 )
 from stock_ai.backtest.strategy import BuyAndHold, Strategy, build_strategy
+from stock_ai.broker.moomoo import Diagnosis as MoomooDiagnosis
+from stock_ai.broker.moomoo import MoomooConfig, StageStatus
+from stock_ai.broker.moomoo import diagnose as moomoo_diagnose
 from stock_ai.config.settings import Settings, get_settings
 from stock_ai.core.encoding import install as install_console_encoding
-from stock_ai.core.exceptions import AIError, BacktestError, DataError, NotificationError
+from stock_ai.core.exceptions import (
+    AIError,
+    BacktestError,
+    BrokerError,
+    DataError,
+    NotificationError,
+)
 from stock_ai.core.logging import configure_logging
 from stock_ai.core.scheduler import DailyScheduler, JobResult
 from stock_ai.data.base import PriceProvider
@@ -2410,6 +2419,166 @@ def _print_edinet_verdict(results: list[ProbeResult]) -> None:
     )
 
 
+@app.command(name="moomoo-check")
+def moomoo_check(
+    host: str | None = typer.Option(None, help="OpenD host. Defaults to MOOMOO_OPEND_HOST."),
+    port: int | None = typer.Option(None, help="OpenD port. Defaults to MOOMOO_OPEND_PORT."),
+    env: str | None = typer.Option(None, help="SIMULATE or REAL. Defaults to MOOMOO_TRD_ENV."),
+    market: str | None = typer.Option(None, help="JP or US. Defaults to MOOMOO_TRD_MARKET."),
+    firm: str | None = typer.Option(None, help="Account entity, e.g. FUTUJP (moomoo証券)."),
+    unlock: bool = typer.Option(
+        False, help="Also test the trading PIN in MOOMOO_TRADE_PASSWORD (REAL only)."
+    ),
+    show_assets: bool = typer.Option(
+        False, help="Print the account balances instead of only confirming they came back."
+    ),
+) -> None:
+    """Check that moomoo OpenD is installed, logged in, and reaching your account.
+
+    moomoo has no API key. Authentication is a local gateway - OpenD - that you
+    log into with your moomoo securities account, and every failure along that
+    chain reaches Python as the same symptom: a command that never returns.
+
+    This walks the chain in order and stops at the first break, so the answer is
+    "OpenD is not running" or "the entity is wrong for this account" rather than
+    a hang. It never places an order, and it re-locks the live account
+    immediately after testing the PIN.
+    """
+    settings = get_settings()
+    configure_logging(settings.log_level)
+
+    try:
+        config = MoomooConfig(
+            host=host or settings.moomoo_opend_host,
+            port=port or settings.moomoo_opend_port,
+            security_firm=(firm or settings.moomoo_security_firm).upper(),
+            trd_market=(market or settings.moomoo_trd_market).upper(),
+            trd_env=(env or settings.moomoo_trd_env).upper(),
+        )
+    except BrokerError as exc:
+        console.print(f"[red]{exc}[/]")
+        raise typer.Exit(2) from exc
+
+    password: str | None = None
+    if unlock:
+        if not config.is_real:
+            console.print(
+                "[yellow]--unlock only applies to the REAL account; "
+                f"this run is against {config.trd_env}. Ignoring it.[/]"
+            )
+        elif settings.moomoo_trade_password is None:
+            console.print(
+                "[yellow]--unlock was given but MOOMOO_TRADE_PASSWORD is not set in .env.[/]\n"
+                "Set it with: [cyan]powershell -File scripts/set-key.ps1 "
+                "MOOMOO_TRADE_PASSWORD[/]"
+            )
+        else:
+            password = settings.moomoo_trade_password.get_secret_value()
+
+    console.print(
+        f"OpenD at [cyan]{config.host}:{config.port}[/] - "
+        f"{config.security_firm} / {config.trd_market} / "
+        f"[bold]{config.trd_env}[/]"
+    )
+    if config.is_real:
+        console.print("[yellow]This is the live-money account.[/] No order is ever placed here.")
+    console.print()
+
+    diagnosis = moomoo_diagnose(config, unlock_password=password)
+
+    table = Table(title="moomoo OpenD check")
+    table.add_column("Step", style="cyan")
+    table.add_column("Result")
+    table.add_column("Detail")
+    marks = {
+        StageStatus.OK: "[green]OK[/]",
+        StageStatus.FAILED: "[red]NG[/]",
+        StageStatus.SKIPPED: "[dim]--[/]",
+    }
+    for stage in diagnosis.stages:
+        table.add_row(stage.name, marks[stage.status], stage.detail)
+    console.print(table)
+
+    _print_moomoo_accounts(diagnosis, config, show_assets=show_assets)
+    _print_moomoo_verdict(diagnosis, config)
+
+    raise typer.Exit(0 if diagnosis.ok else 1)
+
+
+def _print_moomoo_accounts(
+    diagnosis: MoomooDiagnosis, config: MoomooConfig, *, show_assets: bool
+) -> None:
+    """List every account OpenD showed us, not only the one that was asked for.
+
+    The most confusing moomoo failure is an empty account list from a login that
+    worked: nothing is wrong with the credentials, the entity or the market
+    filter simply does not match the account. Printing what *was* found next to
+    what was asked for turns that into a one-line diagnosis.
+    """
+    if not diagnosis.accounts:
+        return
+
+    table = Table(title=f"Accounts visible through OpenD ({config.security_firm})")
+    table.add_column("Account", style="cyan")
+    table.add_column("Env")
+    table.add_column("Type")
+    table.add_column("Markets")
+    table.add_column("Status")
+    for account in diagnosis.accounts:
+        wanted = account.trd_env == config.trd_env
+        table.add_row(
+            f"{'>' if wanted else ' '} {account.masked_id}",
+            f"[bold]{account.trd_env}[/]" if wanted else account.trd_env,
+            account.acc_type,
+            "/".join(account.markets) or "-",
+            account.status,
+        )
+    console.print(table)
+    console.print(
+        "[dim]Account numbers are masked to the last four digits: this report is "
+        "written to a file people paste when asking for help.[/]"
+    )
+
+    summary = diagnosis.account_summary
+    if not summary:
+        return
+    if show_assets:
+        currency = summary.get("currency", config.currency)
+        console.print(
+            f"\nTotal assets: [bold]{summary.get('total_assets')}[/] {currency}  "
+            f"(cash {summary.get('cash')}, positions {summary.get('market_val')})"
+        )
+    else:
+        console.print(
+            "\n[dim]Balances came back and were not printed. "
+            "Add --show-assets to see the numbers.[/]"
+        )
+
+
+def _print_moomoo_verdict(diagnosis: MoomooDiagnosis, config: MoomooConfig) -> None:
+    """Say what the table means, so it does not need interpreting."""
+    failure = diagnosis.first_failure
+    if failure is None:
+        # Hints on links that *held* still matter: "quotes are up but trading is
+        # not" passes this check and breaks the next thing anyone does.
+        notes = [s for s in diagnosis.stages if s.hint]
+        console.print(
+            f"\n[green]OpenD is up and your {config.trd_env} account answers through it.[/] "
+            "Authentication is done - nothing else is needed to read this account."
+        )
+        for stage in notes:
+            console.print(f"[dim]{stage.name}: {stage.detail}. {stage.hint}[/]")
+        return
+
+    console.print(f"\n[red]Stopped at: {failure.name}.[/] {failure.detail}")
+    if failure.hint:
+        console.print(failure.hint)
+    console.print(
+        "[dim]Later steps were not attempted: each one needs the previous one, "
+        "so running them would only report the same break again.[/]"
+    )
+
+
 def _disclosure_source(name: str, settings: Settings, lookback_days: int):
     """Build the disclosure feed for a source name.
 
@@ -3150,6 +3319,7 @@ def _secret_status(settings: Settings) -> list[tuple[str, SecretStr | None]]:
         ("discord_webhook_url", settings.discord_webhook_url),
         ("line_channel_access_token", settings.line_channel_access_token),
         ("telegram_bot_token", settings.telegram_bot_token),
+        ("moomoo_trade_password", settings.moomoo_trade_password),
     ]
 
 

@@ -718,6 +718,46 @@ Two details worth knowing about it:
   `-Channel discord` — and then go and look at Discord. A clean exit means the
   service accepted the POST, not that the message arrived.
 
+## Connecting a moomoo account (OpenD)
+
+```powershell
+.\scripts\moomoo-check.ps1               # paper account
+.\scripts\moomoo-check.ps1 -Real         # live account, read only
+.\scripts\moomoo-check.ps1 -Real -Unlock # and test the 6-digit trading PIN
+```
+
+moomoo has no API key. Authentication is a gateway program — **OpenD** — that
+runs on your own PC, that you log into with your moomoo securities account, and
+that this code then talks to on `127.0.0.1:11111`. Logging out or closing OpenD
+is the same as deleting a key.
+
+That design makes every failure look identical from Python, and the way it looks
+is the worst available one: **the call blocks**. Confirmed while building this —
+constructing `OpenQuoteContext` against a port with nothing listening does not
+raise, it retries in a background thread and never returns. So "OpenD was never
+installed", "OpenD is sitting on a verification-code prompt", and "the account
+has no permission for this market" are all, at the prompt, the same nothing
+happening.
+
+`moomoo-check` therefore probes the port with a plain socket *before* the client
+gets a chance to hang, puts a deadline on the handshake after that, and then
+walks the rest of the chain one link at a time — client installed, port open,
+logged in (quotes and trading judged separately, because they drop separately),
+account visible, account answering, PIN accepted — stopping at the first break
+and naming it. The empty-account case gets its own treatment: a login that
+worked and an account list that came back empty is not "no accounts", it is the
+wrong entity or market filter, so the report lists what *was* found next to what
+was asked for.
+
+It never places an order, and a PIN that is tested is re-locked immediately
+afterwards. Account numbers are masked to the last four digits and balances are
+withheld unless `--show-assets` is given, because `moomoo-output.txt` is a file
+people paste when asking for help.
+
+Setup, from downloading OpenD to the first successful check, is in
+**[docs/MOOMOO_OPEND.md](docs/MOOMOO_OPEND.md)** (Japanese). Execution through
+moomoo is deliberately *not* implemented — same stance as the IBKR skeleton.
+
 ## Daily automation
 
 ```bash

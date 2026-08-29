@@ -34,6 +34,11 @@ dashboard = ["streamlit>=1.36"]
 # moment it was asked to start running unattended.
 scheduler = ["schedule>=1.2"]
 broker = ["ib-insync>=0.9.86"]
+# moomoo's client talks to a local OpenD gateway rather than to a web API, so
+# it is only useful on a machine where OpenD is installed and logged in. It is
+# still listed in the 'runtime' group below rather than left as an extra-only
+# install: see the note there for why an extra does not survive here.
+moomoo = ["moomoo-api>=10.10"]
 
 [project.scripts]
 stock-ai = "stock_ai.cli:main"
@@ -49,7 +54,13 @@ stock-ai = "stock_ai.cli:main"
 # where the same command had worked minutes earlier and nothing but a git pull
 # had happened in between. A group listed in `default-groups` is maintained
 # rather than pruned, so the environment stops decaying under normal use.
-runtime = ["stock-ai[data,db,ai,dashboard,scheduler]"]
+#
+# 'moomoo' is in that list for the same reason, confirmed the same way: after
+# `uv sync --extra moomoo`, the very next plain `uv sync` reported
+# "Uninstalled 3 packages: moomoo-api, pycryptodome, simplejson". Every .bat
+# launcher in this repo goes through `uv run`, so an extra that is only ever
+# installed by hand is an extra that is gone by the next double-click.
+runtime = ["stock-ai[data,db,ai,dashboard,scheduler,moomoo]"]
 dev = [
     "pytest>=8.2",
     "pytest-cov>=5.0",

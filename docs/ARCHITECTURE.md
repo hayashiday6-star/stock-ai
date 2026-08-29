@@ -37,7 +37,7 @@ config ─┐
 | `ai` | LLM abstraction (Claude/OpenAI/Gemini) | `AIProvider` protocol |
 | `news` / `ir` | Collection + analysis | `Analyzer` protocol |
 | `portfolio` | Scoring, weighting, sizing | `Scorer`, `Sizer` |
-| `broker` | Order execution | `Broker` protocol (dummy → IBKR) |
+| `broker` | Order execution; moomoo OpenD authentication | `Broker` protocol (dummy → IBKR); `moomoo.diagnose` |
 | `notification` | LINE/Discord/Telegram delivery | `Notifier` protocol |
 | `dashboard` | Streamlit UI | reads via services |
 
