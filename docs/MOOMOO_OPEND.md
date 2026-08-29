@@ -137,6 +137,58 @@ Authentication is done - nothing else is needed to read this account.
 
 ---
 
+## 認証が通ったら: 資金フロー (get_capital_flow)
+
+個別銘柄の資金流入・流出を取得します。相場データのみで、口座には触れません。
+
+```powershell
+uv run stock-ai moomoo-flow 9842 --start 2026-08-17 --end 2026-08-28
+uv run stock-ai moomoo-flow 9842 --period week
+uv run stock-ai moomoo-flow AAPL              # 範囲省略で直近30日
+uv run stock-ai moomoo-flow 9842 --period intraday   # 当日の分足のみ
+```
+
+銘柄コードは `9842` / `9842.T` / `JP.9842` / `AAPL` のどれでも受け付け、moomoo
+形式（`JP.9842`）に変換して送ります。
+
+### `moomoo` クライアントを直接叩く場合の注意
+
+引数名は **`start` / `end`** です。`begin_time` / `end_time` ではありません
+（それらを渡すと `TypeError` になります）。
+
+```python
+from moomoo import OpenQuoteContext, PeriodType, SecurityFirm, RET_OK
+
+ctx = OpenQuoteContext(
+    host="127.0.0.1", port=11111, security_firm=SecurityFirm.FUTUJP
+)  # JP口座はこれを指定
+try:
+    ret, data = ctx.get_capital_flow(
+        "JP.9842",
+        period_type=PeriodType.DAY,
+        start="2026-08-17",  # begin_time ではない
+        end="2026-08-28",  # end_time ではない
+    )
+    print(data if ret == RET_OK else f"NG: {data}")
+finally:
+    ctx.close()
+```
+
+- `INTRADAY` 以外では範囲は最大 365 日。省略すると直近1年になります。
+- 返る列: `capital_flow_item_time` / `in_flow`（全体の純流入）/ `main_in_flow`
+  （うち主力＝特大＋大口）/ `super_in_flow` / `big_in_flow` / `mid_in_flow` /
+  `sml_in_flow` / `last_valid_time`。
+  4つの注文サイズ帯が `in_flow` に合計され、`main_in_flow` はその**内訳の一部**
+  です。横一列の成分として足し合わせないでください。
+- **0 件で返ることがあります。** 休場期間か、その銘柄のデータ権限が無いかの
+  どちらかで、見た目では区別できません。取引のあった期間で試してから権限を
+  疑ってください。
+- OpenD が居ないと `moomoo` クライアントは**固まります**。`moomoo-flow` は
+  `moomoo-check` と同じ事前チェック（ポート確認と応答期限）を通してから
+  問い合わせます。
+
+---
+
 ## よくあるつまずき
 
 | 症状 | 実際の原因 | 対処 |

@@ -57,7 +57,8 @@ from stock_ai.backtest.seasonality import (
 )
 from stock_ai.backtest.strategy import BuyAndHold, Strategy, build_strategy
 from stock_ai.broker.moomoo import Diagnosis as MoomooDiagnosis
-from stock_ai.broker.moomoo import MoomooConfig, StageStatus
+from stock_ai.broker.moomoo import MoomooConfig, StageStatus, to_moomoo_code
+from stock_ai.broker.moomoo import capital_flow as moomoo_capital_flow
 from stock_ai.broker.moomoo import diagnose as moomoo_diagnose
 from stock_ai.config.settings import Settings, get_settings
 from stock_ai.core.encoding import install as install_console_encoding
@@ -2577,6 +2578,124 @@ def _print_moomoo_verdict(diagnosis: MoomooDiagnosis, config: MoomooConfig) -> N
         "[dim]Later steps were not attempted: each one needs the previous one, "
         "so running them would only report the same break again.[/]"
     )
+
+
+@app.command(name="moomoo-flow")
+def moomoo_flow(
+    symbol: str = typer.Argument(..., help="Ticker in any form: 9842, JP.9842, 9842.T, AAPL."),
+    start: str | None = typer.Option(None, help="YYYY-MM-DD. Ignored for --period intraday."),
+    end: str | None = typer.Option(None, help="YYYY-MM-DD. Ignored for --period intraday."),
+    period: str = typer.Option("day", help="intraday | day | week | month."),
+    host: str | None = typer.Option(None, help="OpenD host. Defaults to MOOMOO_OPEND_HOST."),
+    port: int | None = typer.Option(None, help="OpenD port. Defaults to MOOMOO_OPEND_PORT."),
+    firm: str | None = typer.Option(None, help="Account entity, e.g. FUTUJP (moomoo証券)."),
+) -> None:
+    """Show capital in/out flow for SYMBOL, read through moomoo OpenD.
+
+    Market data only - no account is touched and no order is placed. OpenD must
+    be running and logged in; ``moomoo-check`` says so in one line when it is not.
+
+    The symbol is converted to moomoo's own market-first form (``JP.9842``), so
+    the codes used everywhere else in this project work here unchanged.
+    """
+    settings = get_settings()
+    configure_logging(settings.log_level)
+
+    try:
+        config = MoomooConfig(
+            host=host or settings.moomoo_opend_host,
+            port=port or settings.moomoo_opend_port,
+            security_firm=(firm or settings.moomoo_security_firm).upper(),
+            trd_market=settings.moomoo_trd_market.upper(),
+            trd_env=settings.moomoo_trd_env.upper(),
+        )
+    except BrokerError as exc:
+        console.print(f"[red]{exc}[/]")
+        raise typer.Exit(2) from exc
+
+    period_type = period.upper()
+    # A range asked for in whole days against an intraday feed is not a smaller
+    # request, it is a different one - and it would come back as today's minutes
+    # under the dates the user typed. Say so rather than answering the wrong
+    # question quietly.
+    if period_type == "INTRADAY" and (start or end):
+        console.print("[yellow]--period intraday covers today only; --start/--end are ignored.[/]")
+        start = end = None
+    elif period_type != "INTRADAY" and not start and not end:
+        end_date = dt.date.today()
+        start_date = end_date - dt.timedelta(days=30)
+        start, end = start_date.isoformat(), end_date.isoformat()
+        console.print(f"[dim]No range given; using the last 30 days ({start} to {end}).[/]")
+
+    code = to_moomoo_code(symbol)
+    console.print(f"Capital flow for [cyan]{code}[/] ({period_type}) via OpenD\n")
+
+    try:
+        frame = moomoo_capital_flow(config, symbol, period_type=period_type, start=start, end=end)
+    except BrokerError as exc:
+        console.print(f"[red]{exc}[/]")
+        raise typer.Exit(1) from exc
+
+    if frame is None or frame.empty:
+        console.print(
+            "[yellow]No rows.[/] The request was accepted and returned nothing - "
+            "a closed-market range, or a symbol this account has no data "
+            "permission for. Both look the same here, so try a range you know "
+            "had trading before assuming the permission."
+        )
+        raise typer.Exit(1)
+
+    _render_capital_flow(frame, code)
+
+
+def _render_capital_flow(frame: pd.DataFrame, code: str) -> None:
+    """Print the flow table, widest bucket first.
+
+    ``in_flow`` is the whole net figure and ``main_in_flow`` is the large-order
+    part of it, so the two are not additive with the buckets beside them. They
+    are separated in the table for that reason - reading them as one row of
+    components is the obvious mistake.
+    """
+    table = Table(title=f"Capital flow: {code} (net, in the listing currency)")
+    table.add_column("Date", style="cyan", no_wrap=True)
+    table.add_column("Net", justify="right")
+    table.add_column("Main", justify="right")
+    table.add_column("Super", justify="right")
+    table.add_column("Big", justify="right")
+    table.add_column("Mid", justify="right")
+    table.add_column("Small", justify="right")
+
+    for row in frame.to_dict("records"):
+        when = str(row.get("capital_flow_item_time", ""))
+        table.add_row(
+            when,
+            _signed(row.get("in_flow")),
+            _signed(row.get("main_in_flow")),
+            _signed(row.get("super_in_flow")),
+            _signed(row.get("big_in_flow")),
+            _signed(row.get("mid_in_flow")),
+            _signed(row.get("sml_in_flow")),
+        )
+    console.print(table)
+    console.print(
+        "[dim]Net = the whole flow; Main = the super + big part of it. The four "
+        "bucket columns are order-size bands and sum to Net, so Main is a subset "
+        "shown alongside, not another band.[/]"
+    )
+
+
+def _signed(value: object) -> str:
+    """Format a flow figure, coloured by direction so a wall of numbers reads."""
+    if not isinstance(value, int | float) or isinstance(value, bool):
+        return "-"
+    if pd.isna(value):
+        return "-"
+    text = _compact(float(value))
+    if value > 0:
+        return f"[green]+{text}[/]"
+    if value < 0:
+        return f"[red]{text}[/]"
+    return text
 
 
 def _disclosure_source(name: str, settings: Settings, lookback_days: int):

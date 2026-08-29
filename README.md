@@ -754,6 +754,14 @@ afterwards. Account numbers are masked to the last four digits and balances are
 withheld unless `--show-assets` is given, because `moomoo-output.txt` is a file
 people paste when asking for help.
 
+Once that passes, `moomoo-flow` reads per-symbol capital flow through the same
+gateway — `uv run stock-ai moomoo-flow 9842 --start 2026-08-17 --end 2026-08-28`.
+It takes this project's own symbol forms (`9842`, `9842.T`, `AAPL`) and converts
+them to moomoo's market-first `JP.9842`, and it goes through the same port probe
+and handshake deadline, so a missing gateway is a message rather than a hang.
+Calling the client directly instead, note the argument names are `start`/`end` —
+`begin_time`/`end_time` raise `TypeError`.
+
 Setup, from downloading OpenD to the first successful check, is in
 **[docs/MOOMOO_OPEND.md](docs/MOOMOO_OPEND.md)** (Japanese). Execution through
 moomoo is deliberately *not* implemented — same stance as the IBKR skeleton.

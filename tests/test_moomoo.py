@@ -8,6 +8,7 @@ returns quickly instead of hanging - is covered with a real socket.
 
 from __future__ import annotations
 
+import datetime as dt
 import socket
 import sys
 import threading
@@ -22,8 +23,10 @@ from stock_ai.broker.moomoo import (
     Account,
     MoomooConfig,
     StageStatus,
+    capital_flow,
     diagnose,
     port_is_open,
+    to_moomoo_code,
 )
 from stock_ai.core.exceptions import BrokerError
 
@@ -72,13 +75,41 @@ def _account_row(acc_id: str = "12345678", trd_env: str = "SIMULATE") -> dict:
 class FakeQuoteContext:
     """Stands in for ``OpenQuoteContext``, answering ``get_global_state`` only."""
 
-    def __init__(self, state: dict, ret: int = RET_OK) -> None:
+    def __init__(self, state: dict, ret: int = RET_OK, flow_ret: int = RET_OK) -> None:
         self._state = state
         self._ret = ret
+        self._flow_ret = flow_ret
+        self.flow_calls: list[tuple[str, str, str | None, str | None]] = []
         self.closed = False
+        self.security_firm: str | None = None
 
     def get_global_state(self) -> tuple[int, object]:
         return self._ret, self._state if self._ret == RET_OK else "refused"
+
+    def get_capital_flow(
+        self,
+        code: str,
+        period_type: str = "INTRADAY",
+        start: str | None = None,
+        end: str | None = None,
+    ) -> tuple[int, object]:
+        self.flow_calls.append((code, period_type, start, end))
+        if self._flow_ret != RET_OK:
+            return self._flow_ret, "no right to this symbol"
+        return RET_OK, pd.DataFrame(
+            [
+                {
+                    "last_valid_time": "2026-08-28 15:00:00",
+                    "in_flow": 1_234_567.0,
+                    "super_in_flow": 900_000.0,
+                    "big_in_flow": 400_000.0,
+                    "mid_in_flow": -30_000.0,
+                    "sml_in_flow": -35_433.0,
+                    "main_in_flow": 1_300_000.0,
+                    "capital_flow_item_time": "2026-08-28",
+                }
+            ]
+        )
 
     def close(self, *args: object, **kwargs: object) -> None:
         self.closed = True
@@ -153,6 +184,8 @@ class FakeMoomoo:
         self._trade = trade
 
     def OpenQuoteContext(self, **kwargs: object) -> FakeQuoteContext:  # noqa: N802
+        firm = kwargs.get("security_firm")
+        self._quote.security_firm = str(firm) if firm is not None else None
         return self._quote
 
     def OpenSecTradeContext(self, **kwargs: object) -> FakeTradeContext:  # noqa: N802
@@ -489,6 +522,152 @@ def test_a_dropped_trading_session_times_out_rather_than_hanging(
     assert failure is not None
     assert failure.name == "account visible"
     assert "Restart" in failure.hint
+
+
+# --- capital flow -------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("given", "expected"),
+    [
+        ("9842", "JP.9842"),
+        ("JP.9842", "JP.9842"),
+        ("9842.T", "JP.9842"),
+        ("7203.JP", "JP.7203"),
+        ("aapl", "US.AAPL"),
+        ("US.AAPL", "US.AAPL"),
+        ("hk.00700", "HK.00700"),
+    ],
+)
+def test_symbols_are_converted_to_moomoos_market_first_form(given: str, expected: str) -> None:
+    assert to_moomoo_code(given) == expected
+
+
+def test_an_unknown_period_is_refused_before_anything_connects() -> None:
+    with pytest.raises(BrokerError, match="Unknown period type"):
+        capital_flow(MoomooConfig(), "9842", period_type="hourly")
+
+
+def test_capital_flow_without_a_gateway_points_at_the_check(
+    monkeypatch: pytest.MonkeyPatch, closed_port: int
+) -> None:
+    _install(monkeypatch, FakeMoomoo(FakeQuoteContext({}), None))
+
+    with pytest.raises(BrokerError, match="Nothing is listening"):
+        capital_flow(MoomooConfig(port=closed_port), "9842", timeout=1.0)
+
+
+def test_capital_flow_passes_the_converted_code_and_the_entity(
+    monkeypatch: pytest.MonkeyPatch, open_port: int
+) -> None:
+    """The entity is forwarded into the request, so a JP account asks as itself."""
+    quote = FakeQuoteContext({"qot_logined": True, "trd_logined": True})
+    _install(monkeypatch, FakeMoomoo(quote, None))
+
+    frame = capital_flow(
+        MoomooConfig(port=open_port),
+        "9842",
+        period_type="day",
+        start="2026-08-17",
+        end="2026-08-28",
+    )
+
+    assert quote.flow_calls == [("JP.9842", "DAY", "2026-08-17", "2026-08-28")]
+    assert quote.security_firm == "FUTUJP"
+    assert frame.iloc[0]["in_flow"] == 1_234_567.0
+    assert quote.closed
+
+
+def test_a_refused_capital_flow_names_the_symbol(
+    monkeypatch: pytest.MonkeyPatch, open_port: int
+) -> None:
+    quote = FakeQuoteContext({"qot_logined": True, "trd_logined": True}, flow_ret=RET_ERROR)
+    _install(monkeypatch, FakeMoomoo(quote, None))
+
+    with pytest.raises(BrokerError, match="JP.9842"):
+        capital_flow(MoomooConfig(port=open_port), "9842")
+
+
+def test_cli_flow_renders_the_buckets(monkeypatch: pytest.MonkeyPatch, open_port: int) -> None:
+    quote = FakeQuoteContext({"qot_logined": True, "trd_logined": True})
+    _install(monkeypatch, FakeMoomoo(quote, None))
+
+    result = runner.invoke(
+        cli.app,
+        [
+            "moomoo-flow",
+            "9842",
+            "--port",
+            str(open_port),
+            "--start",
+            "2026-08-17",
+            "--end",
+            "2026-08-28",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert "JP.9842" in result.output
+    assert quote.flow_calls == [("JP.9842", "DAY", "2026-08-17", "2026-08-28")]
+
+
+def test_cli_flow_ignores_dates_for_intraday_and_says_so(
+    monkeypatch: pytest.MonkeyPatch, open_port: int
+) -> None:
+    """A daily range against an intraday feed answers a different question."""
+    quote = FakeQuoteContext({"qot_logined": True, "trd_logined": True})
+    _install(monkeypatch, FakeMoomoo(quote, None))
+
+    result = runner.invoke(
+        cli.app,
+        [
+            "moomoo-flow",
+            "9842",
+            "--port",
+            str(open_port),
+            "--period",
+            "intraday",
+            "--start",
+            "2026-08-17",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert "are ignored" in result.output
+    assert quote.flow_calls == [("JP.9842", "INTRADAY", None, None)]
+
+
+def test_cli_flow_defaults_to_the_last_thirty_days_and_says_which(
+    monkeypatch: pytest.MonkeyPatch, open_port: int
+) -> None:
+    quote = FakeQuoteContext({"qot_logined": True, "trd_logined": True})
+    _install(monkeypatch, FakeMoomoo(quote, None))
+
+    result = runner.invoke(cli.app, ["moomoo-flow", "9842", "--port", str(open_port)])
+
+    assert result.exit_code == 0
+    assert "last 30 days" in result.output
+    code, period, start, end = quote.flow_calls[0]
+    assert (code, period) == ("JP.9842", "DAY")
+    assert (dt.date.fromisoformat(end) - dt.date.fromisoformat(start)).days == 30
+
+
+def test_cli_flow_calls_an_empty_answer_ambiguous_rather_than_fine(
+    monkeypatch: pytest.MonkeyPatch, open_port: int
+) -> None:
+    """Zero rows is a closed market or a missing permission - never a clean pass."""
+
+    class EmptyFlow(FakeQuoteContext):
+        def get_capital_flow(self, *args: object, **kwargs: object) -> tuple[int, object]:
+            return RET_OK, pd.DataFrame()
+
+    _install(monkeypatch, FakeMoomoo(EmptyFlow({"qot_logined": True}), None))
+
+    result = runner.invoke(cli.app, ["moomoo-flow", "9842", "--port", str(open_port)])
+
+    assert result.exit_code == 1
+    assert "No rows" in result.output
+    assert "permission" in result.output
 
 
 # --- the CLI ------------------------------------------------------------

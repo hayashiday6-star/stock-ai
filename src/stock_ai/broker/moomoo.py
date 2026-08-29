@@ -46,6 +46,7 @@ from typing import Any
 
 from stock_ai.config.constants import OPEND_HOST, OPEND_PORT
 from stock_ai.core.exceptions import BrokerError
+from stock_ai.data.markets import JAPAN, market_for_symbol
 
 #: Re-exported so callers can talk about the gateway without reaching into
 #: the config package for two integers.
@@ -90,6 +91,16 @@ _MARKET_CURRENCY = {
 #: ``moomoo`` is declared as an extra but pulled in through the default
 #: ``runtime`` group, because an extra installed on its own does not survive the
 #: next ``uv run`` - and every .bat launcher here goes through ``uv run``.
+#: Granularities ``get_capital_flow`` accepts. ``INTRADAY`` ignores the date
+#: range entirely and returns today's minute-by-minute flow; the others take a
+#: range of at most 365 days.
+PERIOD_TYPES = ("INTRADAY", "DAY", "WEEK", "MONTH")
+
+#: Prefixes moomoo puts in front of a code. A symbol that already carries one is
+#: passed through untouched - guessing a market for ``JP.9842`` would read the
+#: prefix itself as the ticker and send ``US.JP`` to the gateway.
+_MOOMOO_PREFIXES = tuple(f"{m}." for m in TRD_MARKETS)
+
 _INSTALL_HINT = "moomoo-api is not installed. Run: uv sync   (outside uv: pip install moomoo-api)"
 
 
@@ -604,3 +615,104 @@ def diagnose(
                     ctx.close()
 
     return result
+
+
+def to_moomoo_code(symbol: str) -> str:
+    """Render ``symbol`` the way OpenD names an instrument: ``JP.9842``.
+
+    This project's symbols come in three shapes - a bare JP code (``9842``), a
+    Yahoo-style suffixed one (``9842.T``), and a US ticker (``AAPL``) - and
+    moomoo accepts none of them. Its own form is market-first, the reverse of
+    every other identifier here, so the conversion is easy to get backwards and
+    worth doing in one place.
+    """
+    text = symbol.strip().upper()
+    if text.startswith(_MOOMOO_PREFIXES):
+        return text  # already moomoo's form; do not re-guess its market
+    head = text.split(".")[0]
+    return f"{JAPAN}.{head}" if market_for_symbol(text) == JAPAN else f"US.{head}"
+
+
+def capital_flow(
+    config: MoomooConfig,
+    symbol: str,
+    *,
+    period_type: str = "DAY",
+    start: str | None = None,
+    end: str | None = None,
+    timeout: float = 2.0,
+    handshake_timeout: float = 20.0,
+) -> Any:
+    """Return the capital in/out flow for ``symbol`` as a DataFrame.
+
+    Read-only market data: this asks the gateway a question and never touches
+    the account. It carries the same guards as :func:`diagnose` because it has
+    the same failure mode - a closed or unresponsive port makes the client hang
+    rather than raise, and a hang in a data command is indistinguishable from a
+    slow one.
+
+    Args:
+        config: Where OpenD is. Only the connection fields matter; ``trd_env``
+            is irrelevant to market data.
+        symbol: Any form :func:`to_moomoo_code` accepts.
+        period_type: One of :data:`PERIOD_TYPES`. ``INTRADAY`` ignores the dates.
+        start: ``YYYY-MM-DD``. Ignored for ``INTRADAY``; defaults to a year back.
+        end: ``YYYY-MM-DD``. Ignored for ``INTRADAY``; defaults to today.
+        timeout: Seconds to wait for the port probe.
+        handshake_timeout: Seconds to wait for OpenD to answer once the port is
+            known to be open.
+
+    Raises:
+        BrokerError: If the client is missing, OpenD is unreachable or silent,
+            or the gateway refuses the request.
+    """
+    period = period_type.upper()
+    if period not in PERIOD_TYPES:
+        raise BrokerError(
+            f"Unknown period type {period_type!r}. Expected one of: {', '.join(PERIOD_TYPES)}."
+        )
+
+    try:
+        import moomoo  # optional dependency: imported on use, not at startup
+    except ImportError as exc:
+        raise BrokerError(_INSTALL_HINT) from exc
+
+    with suppress(Exception):
+        moomoo.SysConfig.set_all_thread_daemon(True)
+    _quiet_moomoo_console()
+
+    endpoint = f"{config.host}:{config.port}"
+    if not port_is_open(config.host, config.port, timeout=timeout):
+        raise BrokerError(
+            f"Nothing is listening on {endpoint}. Start moomoo OpenD and log in, "
+            "then try again - moomoo接続確認.bat checks the whole chain."
+        )
+
+    code = to_moomoo_code(symbol)
+    ctx = None
+    try:
+
+        def query() -> Any:
+            # security_firm is forwarded into the request. A JP account asking
+            # without it is asking as nobody in particular, which is one way a
+            # symbol you are entitled to comes back refused.
+            inner = moomoo.OpenQuoteContext(
+                host=config.host, port=config.port, security_firm=config.security_firm
+            )
+            return inner, inner.get_capital_flow(code, period_type=period, start=start, end=end)
+
+        try:
+            ctx, (ret, data) = _with_deadline("capital flow", query, handshake_timeout)
+        except GatewayTimeoutError as exc:
+            raise BrokerError(
+                f"{exc}. Something holds {endpoint} but is not answering as OpenD - "
+                "check that the OpenD window is logged in and not sitting on a prompt."
+            ) from exc
+
+        if ret != moomoo.RET_OK:
+            raise BrokerError(f"OpenD refused the capital-flow request for {code}: {data}")
+        return data
+    finally:
+        if ctx is not None:
+            with suppress(Exception):
+                ctx.close()
