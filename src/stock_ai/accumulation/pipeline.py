@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import datetime as dt
 import logging
+import time
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, field
 from typing import Any
@@ -70,6 +71,9 @@ class Run:
     generated_at: dt.datetime
     data_as_of: dt.date | None
     notes: list[str] = field(default_factory=list)
+    #: Per-symbol fetch failures, so the report can say why a metric is absent
+    #: rather than only that it is.
+    fetch_failures: list[tuple[str, str, str]] = field(default_factory=list)
 
 
 # --------------------------------------------------------------------------
@@ -126,25 +130,50 @@ def market_caps(symbols: Iterable[str]) -> dict[str, Measure]:
     return out
 
 
-def _info(symbol: str) -> dict[str, Any] | Missing:
+#: The profile endpoint needs a cookie and a crumb, and it is the first thing
+#: the provider throttles after a bulk download of several thousand symbols.
+#: A market-wide run therefore reaches it in exactly the state where it fails,
+#: which is how sector, short interest and the earnings date all came back
+#: empty on a run whose prices were fine.
+INFO_ATTEMPTS = 3
+INFO_RETRY_SECONDS = 2.0
+
+
+def _info(symbol: str, *, attempts: int = INFO_ATTEMPTS) -> dict[str, Any] | Missing:
+    """The provider's profile blob for one symbol, retried through a throttle.
+
+    The failure is reported with the provider's own message rather than just a
+    marker. "データ不足" alone cannot be acted on: a throttled request and a
+    symbol that genuinely has no profile look the same, and only one of them is
+    fixed by waiting.
+    """
     import yfinance as yf
 
-    try:
-        return dict(yf.Ticker(to_yahoo_symbol(symbol)).info)
-    except Exception as exc:
-        return insufficient(f"プロファイルを取得できない: {type(exc).__name__}")
+    last = "理由不明"
+    for attempt in range(attempts):
+        try:
+            blob = dict(yf.Ticker(to_yahoo_symbol(symbol)).info)
+        except Exception as exc:
+            last = f"{type(exc).__name__}: {exc}"[:160]
+        else:
+            if blob:
+                return blob
+            last = "プロファイルが空で返った"
+        if attempt + 1 < attempts:
+            time.sleep(INFO_RETRY_SECONDS * (attempt + 1))
+    return insufficient(f"プロファイル取得に{attempts}回失敗: {last}")
+
+
+def sector_from(info: dict[str, Any] | Missing) -> str | Missing:
+    """The sector label out of a profile blob."""
+    if isinstance(info, Missing):
+        return info
+    return str(info.get("sector") or "") or insufficient("セクター未提供")
 
 
 def sectors(symbols: Iterable[str]) -> dict[str, str | Missing]:
     """Sector label per symbol."""
-    out: dict[str, str | Missing] = {}
-    for symbol in symbols:
-        info = _info(symbol)
-        if isinstance(info, Missing):
-            out[symbol] = info
-        else:
-            out[symbol] = str(info.get("sector") or "") or insufficient("セクター未提供")
-    return out
+    return {symbol: sector_from(_info(symbol)) for symbol in symbols}
 
 
 def next_earnings(info: dict[str, Any] | Missing) -> dt.date | Missing:
@@ -185,7 +214,7 @@ def run(
     listings: Sequence[Listing] | None = None,
     price_loader: Callable[[Sequence[str]], dict[str, pd.DataFrame]] = download_prices,
     market_cap_loader: Callable[[Iterable[str]], dict[str, Measure]] = market_caps,
-    sector_loader: Callable[[Iterable[str]], dict[str, str | Missing]] = sectors,
+    sector_loader: Callable[[Iterable[str]], dict[str, str | Missing]] | None = None,
     info_loader: Callable[[str], dict[str, Any] | Missing] = _info,
     flow_loader: Callable[[MoomooConfig, str], pd.DataFrame | None] = fetch_flow,
     universe_loader: Callable[[], Sequence[Listing]] = load_universe,
@@ -202,6 +231,16 @@ def run(
     listings = list(listings if listings is not None else universe_loader())
     frames = price_loader([listing.symbol for listing in listings])
 
+    # The profile is asked for twice per symbol otherwise - once for the sector
+    # column, once for the deep dive - which doubles the exposure to the very
+    # throttle that makes it fail.
+    info_cache: dict[str, dict[str, Any] | Missing] = {}
+
+    def cached_info(symbol: str) -> dict[str, Any] | Missing:
+        if symbol not in info_cache:
+            info_cache[symbol] = info_loader(symbol)
+        return info_cache[symbol]
+
     metrics: dict[str, Metrics] = {}
     for symbol, frame in frames.items():
         result = compute_metrics(frame)
@@ -215,7 +254,11 @@ def run(
         listings,
         metrics,
         market_cap_of=market_cap_loader,
-        sector_of=sector_loader,
+        sector_of=(
+            sector_loader
+            if sector_loader is not None
+            else lambda symbols: {s: sector_from(cached_info(s)) for s in symbols}
+        ),
         base=thresholds,
         limit=screen_limit,
     )
@@ -225,7 +268,7 @@ def run(
         pace_flow_calls(index)
         frame = frames[row.symbol]
         flow_frame = flow_loader(config, row.symbol)
-        info = info_loader(row.symbol)
+        info = cached_info(row.symbol)
         row.deep = analyse(
             row.symbol,
             frame,
@@ -244,12 +287,18 @@ def run(
             f"深掘りは上位{deep_limit}銘柄のみ（moomooのレート制限）"
         )
 
+    failures = [
+        (symbol, "プロファイル（セクター・空売り・決算日）", info.reason)
+        for symbol, info in info_cache.items()
+        if isinstance(info, Missing)
+    ]
     return Run(
         screen=screen,
         rows=rows,
         generated_at=generated_at,
         data_as_of=screen.as_of,
         notes=notes,
+        fetch_failures=failures,
     )
 
 

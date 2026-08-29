@@ -329,6 +329,30 @@ def print_unavailable(console: Console, run: Run) -> None:
     )
 
 
+def print_fetch_failures(console: Console, run: Run) -> None:
+    """Name the calls that failed, with the provider's own message.
+
+    A failed request and a genuinely empty field both surface as an absence,
+    and only one of them is worth retrying. Without the reason a reader cannot
+    tell a throttled run - which a wait fixes - from a symbol that simply has
+    no profile.
+    """
+    if not run.fetch_failures:
+        return
+    table = Table(title="取得に失敗した項目（データが無いのではなく、呼び出しが失敗）")
+    table.add_column("ティッカー", style="cyan")
+    table.add_column("項目")
+    table.add_column("理由")
+    for symbol, item, reason in run.fetch_failures:
+        table.add_row(symbol, item, reason)
+    console.print(table)
+    console.print(
+        "[dim]全市場スキャンの直後はプロファイル取得が絞られやすく、"
+        "セクター・空売り・決算日がまとめて欠けます。数分おいて対象銘柄だけを"
+        "指定して再実行すると埋まることがあります。[/]"
+    )
+
+
 def print_report(console: Console, run: Run, today: dt.date) -> None:
     """The whole report, in the brief's order."""
     print_header(console, run)
@@ -338,3 +362,4 @@ def print_report(console: Console, run: Run, today: dt.date) -> None:
         print_phase3(console, row)
     print_summary(console, run, today)
     print_unavailable(console, run)
+    print_fetch_failures(console, run)

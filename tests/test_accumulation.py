@@ -13,6 +13,8 @@ reach the report looking like one that was.
 from __future__ import annotations
 
 import datetime as dt
+import sys
+import types as pytypes
 
 import numpy as np
 import pandas as pd
@@ -20,6 +22,7 @@ import pytest
 from rich.console import Console
 from typer.testing import CliRunner
 
+import stock_ai.accumulation.pipeline as pipeline
 from stock_ai import cli
 from stock_ai.accumulation.analysis import (
     completion_score,
@@ -29,9 +32,18 @@ from stock_ai.accumulation.analysis import (
     technical_metrics,
 )
 from stock_ai.accumulation.breakout import classify, evaluate
-from stock_ai.accumulation.pipeline import Run, business_days_until, next_earnings
+from stock_ai.accumulation.pipeline import (
+    Run,
+    business_days_until,
+    next_earnings,
+)
 from stock_ai.accumulation.pipeline import run as run_accumulation
-from stock_ai.accumulation.report import print_header, print_phase1, print_report
+from stock_ai.accumulation.report import (
+    print_fetch_failures,
+    print_header,
+    print_phase1,
+    print_report,
+)
 from stock_ai.accumulation.screen import (
     MIN_HISTORY_BARS,
     Thresholds,
@@ -479,6 +491,115 @@ def test_business_days_until_skips_the_weekend() -> None:
 def test_a_missing_earnings_date_stays_missing() -> None:
     assert isinstance(next_earnings({}), Missing)
     assert isinstance(next_earnings(insufficient("no profile")), Missing)
+
+
+# --- the profile endpoint ----------------------------------------------
+
+
+class FakeTicker:
+    """Stands in for yfinance's Ticker, failing a set number of times first."""
+
+    calls = 0
+
+    def __init__(self, symbol: str, *, failures: int, blob: dict) -> None:
+        self._failures = failures
+        self._blob = blob
+
+    @property
+    def info(self) -> dict:
+        type(self).calls += 1
+        if type(self).calls <= self._failures:
+            raise RuntimeError("Too Many Requests. Rate limited.")
+        return dict(self._blob)
+
+
+def _install_yfinance(monkeypatch: pytest.MonkeyPatch, *, failures: int, blob: dict) -> type:
+    module = pytypes.ModuleType("yfinance")
+    FakeTicker.calls = 0
+    holder = type("H", (FakeTicker,), {})
+    module.Ticker = lambda symbol: holder(symbol, failures=failures, blob=blob)  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "yfinance", module)
+    monkeypatch.setattr(pipeline, "INFO_RETRY_SECONDS", 0.0)
+    return holder
+
+
+def test_the_profile_call_is_retried_through_a_throttle(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A market-wide run reaches this endpoint exactly when it is being limited."""
+    holder = _install_yfinance(monkeypatch, failures=2, blob={"sector": "Consumer Cyclical"})
+
+    info = pipeline._info("GAP")
+
+    assert not isinstance(info, Missing)
+    assert info["sector"] == "Consumer Cyclical"
+    assert holder.calls == 3
+
+
+def test_a_failed_profile_carries_the_providers_own_message(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ "データ不足" cannot be acted on; "rate limited" can."""
+    _install_yfinance(monkeypatch, failures=99, blob={})
+
+    info = pipeline._info("GAP", attempts=2)
+
+    assert isinstance(info, Missing)
+    assert "Rate limited" in info.reason
+    assert "2回失敗" in info.reason
+
+
+def test_the_profile_is_fetched_once_per_symbol_not_twice() -> None:
+    """Sector and the deep dive shared a symbol and asked for it separately.
+
+    That doubled the exposure to the throttle that makes the call fail in the
+    first place.
+    """
+    listings = [Listing("ALFA", "Alfa Industries Inc", "NASDAQ")]
+    frames = {"ALFA": price_frame(breakout=True)}
+    asked: list[str] = []
+
+    def info_loader(symbol: str) -> dict:
+        asked.append(symbol)
+        return {"sector": "Industrials"}
+
+    result = run_accumulation(
+        config=MoomooConfig(trd_market="US"),
+        listings=listings,
+        price_loader=lambda symbols: frames,
+        market_cap_loader=lambda symbols: dict.fromkeys(symbols, 1.2e9),
+        info_loader=info_loader,
+        flow_loader=lambda config, symbol: flow_frame(),
+        deep_limit=1,
+        today=dt.date(2026, 8, 29),
+    )
+
+    assert asked == ["ALFA"]
+    assert result.rows[0].candidate.sector == "Industrials"
+
+
+def test_a_fetch_failure_is_reported_with_its_reason() -> None:
+    listings = [Listing("GAP", "Gap, Inc.", "NYSE")]
+    frames = {"GAP": price_frame(breakout=True)}
+
+    result = run_accumulation(
+        config=MoomooConfig(trd_market="US"),
+        listings=listings,
+        price_loader=lambda symbols: frames,
+        market_cap_loader=lambda symbols: dict.fromkeys(symbols, 8.4e9),
+        info_loader=lambda symbol: insufficient("プロファイル取得に3回失敗: Rate limited"),
+        flow_loader=lambda config, symbol: flow_frame(),
+        deep_limit=1,
+        today=dt.date(2026, 8, 29),
+    )
+
+    assert result.fetch_failures
+    console = Console(width=200, record=True, force_terminal=False)
+    print_fetch_failures(console, result)
+    text = console.export_text()
+    assert "GAP" in text
+    assert "Rate limited" in text
+    assert "呼び出しが失敗" in text
 
 
 # --- the whole run ------------------------------------------------------
