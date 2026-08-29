@@ -157,29 +157,67 @@ uv run stock-ai moomoo-flow 9842 --period intraday   # 当日の分足のみ
 （それらを渡すと `TypeError` になります）。
 
 ```python
-from moomoo import OpenQuoteContext, PeriodType, SecurityFirm, RET_OK
+from moomoo import OpenQuoteContext, PeriodType, RET_OK
 
-ctx = OpenQuoteContext(
-    host="127.0.0.1", port=11111, security_firm=SecurityFirm.FUTUJP
-)  # JP口座はこれを指定
+# security_firm は渡さないこと（後述）
+ctx = OpenQuoteContext(host="127.0.0.1", port=11111)
 try:
     ret, data = ctx.get_capital_flow(
-        "JP.9842",
+        "US.AAPL",
         period_type=PeriodType.DAY,
         start="2026-08-17",  # begin_time ではない
         end="2026-08-28",  # end_time ではない
     )
     print(data if ret == RET_OK else f"NG: {data}")
 finally:
-    ctx.close()
+    ctx.close()  # 接続数が枯渇するので必ず閉じる
 ```
 
-- `INTRADAY` 以外では範囲は最大 365 日。省略すると直近1年になります。
-- 返る列: `capital_flow_item_time` / `in_flow`（全体の純流入）/ `main_in_flow`
-  （うち主力＝特大＋大口）/ `super_in_flow` / `big_in_flow` / `mid_in_flow` /
-  `sml_in_flow` / `last_valid_time`。
-  4つの注文サイズ帯が `in_flow` に合計され、`main_in_flow` はその**内訳の一部**
-  です。横一列の成分として足し合わせないでください。
+#### `security_firm` を `OpenQuoteContext` に渡してはいけない
+
+公式に「暗号資産相場接続の作成時のみ適用」とある通りです。**無視されるどころか、
+渡すとその相場接続が暗号資産用として解釈されます。** 実際に `FUTUJP` を渡した
+ところ、ごく普通の米国株の要求がこう拒否されました。
+
+```
+相場情報インターフェースはFutu証券（日本）の暗号資産相場に対応していません
+```
+
+`security_firm` が必要なのは `OpenSecTradeContext`（取引側）だけです。
+
+#### `start` / `end` の組み合わせ（公式仕様）
+
+| start | end | 意味 |
+|---|---|---|
+| 日付 | 日付 | その範囲 |
+| 省略 | 日付 | end から 365 日前まで |
+| 日付 | 省略 | start から 365 日後まで |
+| 省略 | 省略 | 当日から 365 日前まで |
+
+#### 返る列
+
+| 列 | 意味 | 有効な周期 |
+|---|---|---|
+| `capital_flow_item_time` | 開始時間（`yyyy-MM-dd HH:mm:ss`） | すべて |
+| `in_flow` | 全体の純流入額 | すべて |
+| `super_in_flow` / `big_in_flow` / `mid_in_flow` / `sml_in_flow` | 特大口 / 大口 / 中口 / 小口の純流入額 | すべて |
+| `main_in_flow` | 主力大口の純流入額 | **日・週・月のみ**（INTRADAY では無効） |
+| `last_valid_time` | データ最終有効時間 | **INTRADAY のみ** |
+
+`moomoo-flow` は無効な周期の列を出しません。値の入らない列が出ていると 0 として
+読めてしまうためです。なお公式は `main_in_flow` を「主力大口純流入額」とする
+だけで、どの帯の合計かは定義していません。帯の内訳として足し合わせないで
+ください。
+
+#### 公式に明記されている制限（どれもエラーにはなりません）
+
+- **30 秒以内に最大 30 回**まで。
+- 対象は**正株・ワラント・ファンド・暗号資産**のみ。
+- 日・週・月は**直近1年**、INTRADAY は**直近1日**のデータのみ。
+- **場中データのみ。** プレ・アフターマーケットは含まれません（0 ではなく無い）。
+
+#### そのほか
+
 - **0 件で返ることがあります。** 休場期間か、その銘柄のデータ権限が無いかの
   どちらかで、見た目では区別できません。取引のあった期間で試してから権限を
   疑ってください。
@@ -200,6 +238,7 @@ finally:
 | `no SIMULATE account on this login; it has REAL instead` | 模擬口座が無いだけ。**設定は間違っていません** | `moomoo接続確認.bat` で `2` を選ぶ、または `MOOMOO_TRD_ENV=REAL` にする |
 | `no account at all for FUTUJP with JP permission`（一覧も空） | 法人・市場の指定が口座と合っていない／その市場が未承認 | 法人 (`FUTUJP`) と市場 (`JP` / `US`) を見直す。口座の開設状況を moomoo 側で確認する |
 | `unlock_trade was refused` | ログインパスワードを取引暗証番号として入れている | 取引暗証番号は**6 桁の別物**。`set-key.ps1 MOOMOO_TRADE_PASSWORD` で入れ直す |
+| `暗号資産相場に対応していません` | `OpenQuoteContext` に `security_firm` を渡している | 渡さない。この項目は取引コンテキスト専用 |
 | `相場情報を取得する権限がありません` | その市場の**相場データ**が API で提供されていない（日本株は現状これ）／権限がその市場に無い | 上の「相場データの利用権限」を参照。`moomoo-flow AAPL` で口座側か市場側かを切り分ける |
 | Python が固まって返ってこない | OpenD が居ない／応答しない | これを避けるために確認コマンドは先にポートを見て、握手にも時間制限を設けています。素の `moomoo` クライアントを直接使うと固まります |
 

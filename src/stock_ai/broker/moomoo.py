@@ -704,14 +704,14 @@ def capital_flow(
     try:
 
         def query() -> Any:
-            # security_firm is documented as applying only to *crypto* quote
-            # connections, so it is not what grants access to a JP stock. The
-            # client forwards it on this request all the same, so the configured
-            # entity is passed rather than the N/A default - harmless where it is
-            # ignored, correct where it is not.
-            inner = moomoo.OpenQuoteContext(
-                host=config.host, port=config.port, security_firm=config.security_firm
-            )
+            # No security_firm here, deliberately. On OpenQuoteContext it is
+            # documented as applying only to *crypto* quote connections, and it
+            # is not ignored elsewhere: passing FUTUJP made OpenD read this as a
+            # crypto quote connection and refuse an ordinary US stock with
+            # "the quote interface does not support Futu Securities (Japan)
+            # crypto quotes". It belongs on OpenSecTradeContext, which is the
+            # only place this module still passes it.
+            inner = moomoo.OpenQuoteContext(host=config.host, port=config.port)
             return inner, inner.get_capital_flow(code, period_type=period, start=start, end=end)
 
         try:

@@ -557,10 +557,16 @@ def test_capital_flow_without_a_gateway_points_at_the_check(
         capital_flow(MoomooConfig(port=closed_port), "9842", timeout=1.0)
 
 
-def test_capital_flow_passes_the_converted_code_and_the_entity(
+def test_capital_flow_never_puts_the_entity_on_a_quote_connection(
     monkeypatch: pytest.MonkeyPatch, open_port: int
 ) -> None:
-    """The entity is forwarded into the request, so a JP account asks as itself."""
+    """security_firm on OpenQuoteContext is a crypto-only field, and it bites.
+
+    Observed against a live gateway: passing FUTUJP made OpenD read an ordinary
+    US stock request as a crypto quote connection and refuse it with "the quote
+    interface does not support Futu Securities (Japan) crypto quotes". It
+    belongs on the trade context, not this one.
+    """
     quote = FakeQuoteContext({"qot_logined": True, "trd_logined": True})
     _install(monkeypatch, FakeMoomoo(quote, None))
 
@@ -573,7 +579,7 @@ def test_capital_flow_passes_the_converted_code_and_the_entity(
     )
 
     assert quote.flow_calls == [("JP.9842", "DAY", "2026-08-17", "2026-08-28")]
-    assert quote.security_firm == "FUTUJP"
+    assert quote.security_firm is None
     assert frame.iloc[0]["in_flow"] == 1_234_567.0
     assert quote.closed
 

@@ -759,10 +759,13 @@ gateway — `uv run stock-ai moomoo-flow 9842 --start 2026-08-17 --end 2026-08-2
 It takes this project's own symbol forms (`9842`, `9842.T`, `AAPL`) and converts
 them to moomoo's market-first `JP.9842`, and it goes through the same port probe
 and handshake deadline, so a missing gateway is a message rather than a hang.
-Calling the client directly instead, note the argument names are `start`/`end` —
-`begin_time`/`end_time` raise `TypeError` — and that `main_in_flow` is
-documented as valid only for the dated periods, so the command omits that
-column on intraday rather than printing a figure that reads as a real zero.
+Calling the client directly instead, note three things. The argument names are
+`start`/`end` — `begin_time`/`end_time` raise `TypeError`. `main_in_flow` is
+documented as valid only for the dated periods, so the command omits that column
+on intraday rather than printing a figure that reads as a real zero. And do not
+pass `security_firm` to `OpenQuoteContext`: it is a crypto-only field there and
+it is not ignored — setting it to `FUTUJP` made OpenD refuse a plain US stock as
+an unsupported *crypto* quote. It belongs on the trade context.
 
 One thing to know before reaching for it as a data source: moomoo grants
 *quote* access per market, separately from what the account may trade, and it
