@@ -764,6 +764,15 @@ Calling the client directly instead, note the argument names are `start`/`end` �
 documented as valid only for the dated periods, so the command omits that
 column on intraday rather than printing a figure that reads as a real zero.
 
+One thing to know before reaching for it as a data source: moomoo grants
+*quote* access per market, separately from what the account may trade, and it
+currently lists Japanese equities as not available through the API at all. A JP
+symbol is refused however the connection is configured, so JP prices here keep
+coming from J-Quants and yfinance. `moomoo-flow AAPL` is the one-command test
+that separates an account problem from a per-market one, and the command says
+so on any refusal. The market table is deliberately *not* hard-coded — moomoo
+reserves the right to change it, and a stale copy would contradict the gateway.
+
 Setup, from downloading OpenD to the first successful check, is in
 **[docs/MOOMOO_OPEND.md](docs/MOOMOO_OPEND.md)** (Japanese). Execution through
 moomoo is deliberately *not* implemented — same stance as the IBKR skeleton.

@@ -2634,6 +2634,7 @@ def moomoo_flow(
         frame = moomoo_capital_flow(config, symbol, period_type=period_type, start=start, end=end)
     except BrokerError as exc:
         console.print(f"[red]{exc}[/]")
+        _print_quote_entitlement_note(code)
         raise typer.Exit(1) from exc
 
     if frame is None or frame.empty:
@@ -2643,9 +2644,41 @@ def moomoo_flow(
             "permission for. Both look the same here, so try a range you know "
             "had trading before assuming the permission."
         )
+        _print_quote_entitlement_note(code)
         raise typer.Exit(1)
 
     _render_capital_flow(frame, code, period_type)
+
+
+def _print_quote_entitlement_note(code: str) -> None:
+    """Say what a refused or empty quote request usually means, and how to tell.
+
+    The trap here is that ``moomoo-check`` passing makes the connection feel
+    proven, so the next refusal reads as a bug in this code. It usually is not:
+    moomoo grants *quote* access per market, and that grant is separate from
+    the account's trading permissions - a market you are cleared to trade is
+    not necessarily one the API serves quotes for, and the published table has
+    said "not currently available" for whole markets.
+
+    Neither this note nor anything else here hard-codes which markets those
+    are. That list changes, and a stale copy of it would confidently contradict
+    the gateway. The gateway's own message above is the current answer; this
+    only says how to read it, and names the one test that separates an
+    account-wide problem from a per-market one.
+    """
+    market = code.split(".")[0]
+    console.print(
+        f"\n[dim]A refusal or an empty answer here is usually quote entitlement, "
+        f"not this code. moomoo grants quote access per market, separately from "
+        f"what the account may trade, and it has listed whole markets as not "
+        f"available through the API - so passing moomoo-check does not imply "
+        f"{market} quotes.\n"
+        f"To tell an account-wide problem from a {market}-only one, try a US "
+        f"symbol: [cyan]uv run stock-ai moomoo-flow AAPL[/]. If that works, the "
+        f"account is fine and {market} quotes are the missing piece; check the "
+        f"market table in docs/MOOMOO_OPEND.md and moomoo's own quote-permission "
+        f"page.[/]"
+    )
 
 
 def _render_capital_flow(frame: pd.DataFrame, code: str, period_type: str) -> None:

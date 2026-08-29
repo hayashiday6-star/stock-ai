@@ -652,6 +652,43 @@ def test_cli_flow_defaults_to_the_last_thirty_days_and_says_which(
     assert (dt.date.fromisoformat(end) - dt.date.fromisoformat(start)).days == 30
 
 
+def test_cli_flow_reads_a_refusal_as_entitlement_and_names_the_next_test(
+    monkeypatch: pytest.MonkeyPatch, open_port: int
+) -> None:
+    """A passing moomoo-check makes the next refusal read as a bug in this code.
+
+    It is usually the market's quote entitlement, which moomoo grants separately
+    from trading - so the refusal has to name the one test that tells those
+    apart rather than leaving the gateway's message to be read as a defect.
+    """
+    quote = FakeQuoteContext({"qot_logined": True, "trd_logined": True}, flow_ret=RET_ERROR)
+    _install(monkeypatch, FakeMoomoo(quote, None))
+
+    result = runner.invoke(cli.app, ["moomoo-flow", "9842", "--port", str(open_port)])
+
+    assert result.exit_code == 1
+    assert "no right to this symbol" in result.output  # the gateway's own words
+    assert "moomoo-flow AAPL" in result.output
+    assert "JP" in result.output
+
+
+def test_the_unavailable_market_list_is_not_hard_coded(
+    monkeypatch: pytest.MonkeyPatch, open_port: int
+) -> None:
+    """moomoo reserves the right to change which markets it serves quotes for.
+
+    A copy of that list in here would keep refusing a symbol after the gateway
+    started allowing it, so a JP request must still be *sent*.
+    """
+    quote = FakeQuoteContext({"qot_logined": True, "trd_logined": True})
+    _install(monkeypatch, FakeMoomoo(quote, None))
+
+    result = runner.invoke(cli.app, ["moomoo-flow", "9842", "--port", str(open_port)])
+
+    assert result.exit_code == 0
+    assert quote.flow_calls, "the JP request was never sent to the gateway"
+
+
 def test_cli_flow_hides_main_on_intraday_where_the_api_does_not_fill_it(
     monkeypatch: pytest.MonkeyPatch, open_port: int
 ) -> None:
