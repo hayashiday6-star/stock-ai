@@ -31,12 +31,14 @@ from stock_ai.accumulation.analysis import (
 from stock_ai.accumulation.breakout import classify, evaluate
 from stock_ai.accumulation.pipeline import Run, business_days_until, next_earnings
 from stock_ai.accumulation.pipeline import run as run_accumulation
-from stock_ai.accumulation.report import print_report
+from stock_ai.accumulation.report import print_header, print_phase1, print_report
 from stock_ai.accumulation.screen import (
     MIN_HISTORY_BARS,
     Thresholds,
     compute_metrics,
+    filter_results,
     passes_price_filters,
+    rejections_at,
     run_screen,
 )
 from stock_ai.accumulation.types import (
@@ -248,6 +250,107 @@ def test_the_sector_call_is_made_only_for_the_rows_that_print() -> None:
 def test_price_filters_reject_a_penny_stock() -> None:
     metrics = compute_metrics(price_frame(base=2.0))
     assert not passes_price_filters(metrics, Thresholds())
+
+
+def high_and_quiet(base: float = 200.0, bars: int = 300) -> pd.DataFrame:
+    """A mega-cap near its highs: far above the 52-week low, no volume spike."""
+    index = pd.bdate_range(end=LAST_SESSION, periods=bars, name=DATE)
+    rng = np.random.default_rng(3)
+    close = np.linspace(base * 0.55, base, bars) + rng.normal(0, base * 0.01, bars)
+    volumes = np.full(bars, 50_000_000.0) + rng.normal(0, 2e6, bars)
+    opens = np.roll(close, 1)
+    opens[0] = close[0]
+    frame = pd.DataFrame(
+        {
+            "open": opens,
+            "high": close * 1.012,
+            "low": close * 0.988,
+            "close": close,
+            "adj_close": close,
+            "volume": volumes,
+        },
+        index=index,
+    )
+    return frame[OHLCV_COLUMNS]
+
+
+def test_every_filter_reports_its_measured_value_beside_the_threshold() -> None:
+    results = filter_results(compute_metrics(high_and_quiet()), Thresholds())
+    names = [name for name, _passed, _miss in results]
+    assert names == ["株価", "20日平均出来高", "出来高倍率", "52週安値比", "20日レンジ"]
+    misses = {name: miss for name, passed, miss in results if not passed}
+    assert "倍 < 下限" in misses["出来高倍率"]
+    assert "> 上限" in misses["52週安値比"]
+
+
+def test_the_tally_counts_each_test_that_rejected_a_symbol() -> None:
+    listings = [Listing(s, s, "指定") for s in ("AAA", "BBB")]
+    metrics = {listing.symbol: compute_metrics(high_and_quiet()) for listing in listings}
+
+    rejections, tally = rejections_at(listings, metrics, Thresholds())
+
+    assert {r.symbol for r in rejections} == {"AAA", "BBB"}
+    assert tally["出来高倍率"] == 2
+    assert tally["52週安値比"] == 2
+    assert "株価" not in tally  # a $200 stock clears the $5 floor
+
+
+def test_an_empty_screen_carries_the_reason_it_is_empty() -> None:
+    """ "該当なし" alone reads the same as a broken download."""
+    listings = [Listing("AAA", "Alpha", "指定")]
+    metrics = {"AAA": compute_metrics(high_and_quiet())}
+
+    result = run_screen(
+        listings,
+        metrics,
+        market_cap_of=lambda symbols: dict.fromkeys(symbols, 3e12),
+        sector_of=lambda symbols: dict.fromkeys(symbols, "Technology"),
+    )
+
+    assert result.candidates == []
+    assert result.attrition
+    assert result.rejections[0].misses
+
+
+def test_the_empty_report_names_the_filters_rather_than_shrugging() -> None:
+    listings = [Listing(s, s, "指定") for s in ("AAPL", "MSFT")]
+    frames = {listing.symbol: high_and_quiet() for listing in listings}
+    result = _run(listings=listings, price_loader=lambda symbols: frames, deep_limit=5)
+
+    console = Console(width=200, record=True, force_terminal=False)
+    print_phase1(console, result)
+    text = console.export_text()
+
+    assert "どの条件で落ちたか" in text
+    assert "52週安値比" in text
+    assert "AAPL" in text
+    assert "原理的に出ません" in text
+
+
+def test_a_stale_daily_feed_is_called_out(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The volume test judges "the latest bar"; a stale one tests the wrong day."""
+    listings = [Listing("AAA", "Alpha", "指定")]
+    frames = {"AAA": price_frame(breakout=True)}
+    result = _run(listings=listings, price_loader=lambda symbols: frames)
+    result.generated_at = dt.datetime(2026, 9, 1, tzinfo=dt.UTC)  # two sessions later
+
+    console = Console(width=200, record=True, force_terminal=False)
+    print_header(console, result)
+
+    assert "最新の日足が 2 営業日前" in console.export_text()
+
+
+def test_a_feed_one_session_behind_is_not_called_stale() -> None:
+    """Yesterday's close is normal; pinned so the test does not age into failing."""
+    listings = [Listing("AAA", "Alpha", "指定")]
+    frames = {"AAA": price_frame(breakout=True)}
+    result = _run(listings=listings, price_loader=lambda symbols: frames)
+    result.generated_at = dt.datetime(2026, 8, 31, tzinfo=dt.UTC)  # the next session
+
+    console = Console(width=200, record=True, force_terminal=False)
+    print_header(console, result)
+
+    assert "営業日前" not in console.export_text()
 
 
 # --- phase 2 ------------------------------------------------------------

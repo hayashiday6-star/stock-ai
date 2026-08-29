@@ -136,15 +136,76 @@ def compute_metrics(prices: pd.DataFrame) -> Metrics | Missing:
     )
 
 
+#: Each phase-1 test as (name, did it pass, how to describe the miss). Kept as
+#: data rather than a boolean expression so a run can report *which* test
+#: emptied the screen. "該当なし" on its own is the least useful true statement
+#: a screen can make: it reads the same whether the symbols were wrong for the
+#: shape, the thresholds were too tight, or the prices never loaded.
+def filter_results(metrics: Metrics, thresholds: Thresholds) -> list[tuple[str, bool, str]]:
+    """Every phase-1 test, with the measured value beside the threshold."""
+    return [
+        (
+            "株価",
+            metrics.price >= thresholds.min_price,
+            f"${metrics.price:,.2f} < 下限 ${thresholds.min_price:,.2f}",
+        ),
+        (
+            "20日平均出来高",
+            metrics.avg_volume_20d >= thresholds.min_avg_volume,
+            f"{metrics.avg_volume_20d:,.0f}株 < 下限 {thresholds.min_avg_volume:,.0f}株",
+        ),
+        (
+            "出来高倍率",
+            metrics.volume_multiple >= thresholds.volume_multiple,
+            f"{metrics.volume_multiple:.2f}倍 < 下限 {thresholds.volume_multiple:.1f}倍",
+        ),
+        (
+            "52週安値比",
+            metrics.above_52w_low <= thresholds.max_above_52w_low,
+            f"+{metrics.above_52w_low * 100:.1f}% > 上限 "
+            f"+{thresholds.max_above_52w_low * 100:.0f}%",
+        ),
+        (
+            "20日レンジ",
+            metrics.range_20d <= thresholds.max_range_20d,
+            f"{metrics.range_20d * 100:.1f}% > 上限 {thresholds.max_range_20d * 100:.0f}%",
+        ),
+    ]
+
+
 def passes_price_filters(metrics: Metrics, thresholds: Thresholds) -> bool:
     """Every phase-1 test that needs only the OHLCV frame."""
-    return (
-        metrics.price >= thresholds.min_price
-        and metrics.avg_volume_20d >= thresholds.min_avg_volume
-        and metrics.volume_multiple >= thresholds.volume_multiple
-        and metrics.above_52w_low <= thresholds.max_above_52w_low
-        and metrics.range_20d <= thresholds.max_range_20d
-    )
+    return all(passed for _name, passed, _miss in filter_results(metrics, thresholds))
+
+
+@dataclass(frozen=True)
+class Rejection:
+    """Why one symbol did not survive, in the numbers that decided it."""
+
+    symbol: str
+    misses: list[str]
+
+
+def rejections_at(
+    listings: Sequence[Listing],
+    metrics_by_symbol: dict[str, Metrics],
+    thresholds: Thresholds,
+) -> tuple[list[Rejection], dict[str, int]]:
+    """Per-symbol misses and a per-test tally, at one set of thresholds."""
+    rejections: list[Rejection] = []
+    tally: dict[str, int] = {}
+    for listing in listings:
+        metrics = metrics_by_symbol.get(listing.symbol)
+        if metrics is None:
+            continue
+        misses = []
+        for name, passed, miss in filter_results(metrics, thresholds):
+            if not passed:
+                misses.append(f"{name}: {miss}")
+                tally[name] = tally.get(name, 0) + 1
+        if misses:
+            rejections.append(Rejection(listing.symbol, misses))
+    return rejections, tally
 
 
 @dataclass
@@ -159,6 +220,9 @@ class ScreenResult:
     universe_size: int
     priced: int
     measurable: int
+    #: Populated when nothing survived, so the empty table can say why.
+    rejections: list[Rejection] = field(default_factory=list)
+    attrition: dict[str, int] = field(default_factory=dict)
 
     @property
     def relaxation_label(self) -> str:
@@ -266,13 +330,17 @@ def run_screen(
             measurable=len(metrics_by_symbol),
         )
 
+    loosest = _thresholds_for(len(RELAXATIONS), base)
+    rejections, attrition = rejections_at(listings, metrics_by_symbol, loosest)
     return ScreenResult(
         candidates=[],
         relaxation_level=len(RELAXATIONS),
         relaxations_applied=[label for label, _ in RELAXATIONS],
-        thresholds=_thresholds_for(len(RELAXATIONS), base),
+        thresholds=loosest,
         as_of=as_of,
         universe_size=len(listings),
         priced=len(metrics_by_symbol),
         measurable=len(metrics_by_symbol),
+        rejections=rejections,
+        attrition=attrition,
     )

@@ -40,6 +40,16 @@ def print_header(console: Console, run: Run) -> None:
         f"{run.screen.priced:,} 銘柄を測定"
     )
     console.print(f"緩和レベル           : [yellow]{run.screen.relaxation_label}[/]")
+    # A daily feed that is a session behind judges the wrong day. The volume
+    # spike this screen turns on is a statement about "the latest bar", so a
+    # stale one quietly changes what was tested.
+    if run.data_as_of is not None:
+        behind = business_days_until(run.data_as_of, run.generated_at.date())
+        if is_value(behind) and float(behind) <= -2:
+            console.print(
+                f"[yellow]注意: 最新の日足が {abs(int(behind))} 営業日前です。[/]"
+                "出来高倍率は「最新足」で判定するため、直近の値動きは反映されていません。"
+            )
     for note in run.notes:
         console.print(f"[dim]{note}[/]")
     console.print()
@@ -71,11 +81,55 @@ def print_phase1(console: Console, run: Run) -> None:
         )
     console.print(table)
     if not run.rows:
-        console.print(
-            "[yellow]緩和ラダーを最後まで適用しても該当なし。[/]市場全体に該当形状が"
-            "無いか、価格データが取得できていません。"
-        )
+        _print_attrition(console, run)
     console.print()
+
+
+#: Beyond this many rejected symbols the per-symbol list stops being readable
+#: and the tally above it carries the same information.
+MAX_REJECTIONS_LISTED = 20
+
+
+def _print_attrition(console: Console, run: Run) -> None:
+    """Say which test emptied the screen, not merely that it is empty.
+
+    An empty result reads identically whether the symbols were the wrong shape
+    for this screen, the thresholds were too tight, or the prices never loaded.
+    Those need opposite responses, so the numbers that decided it are printed
+    rather than left to be guessed at.
+    """
+    console.print(
+        "[yellow]緩和ラダーを最後まで適用しても該当なし。[/]以下は最も緩い条件でも外れた理由です。"
+    )
+    if not run.screen.rejections:
+        console.print(
+            "[red]測定できた銘柄が1つもありません。[/]"
+            "価格データが取得できていない可能性があります（履歴不足、または銘柄コード違い）。"
+        )
+        return
+
+    tally = Table(title="どの条件で落ちたか（最も緩い条件で）")
+    tally.add_column("条件", style="cyan")
+    tally.add_column("落ちた銘柄数", justify="right")
+    for name, count in sorted(run.screen.attrition.items(), key=lambda item: -item[1]):
+        tally.add_row(name, f"{count} / {run.screen.priced}")
+    console.print(tally)
+
+    detail = Table(title="銘柄ごとの実測値")
+    detail.add_column("ティッカー", style="cyan")
+    detail.add_column("外れた条件")
+    for rejection in run.screen.rejections[:MAX_REJECTIONS_LISTED]:
+        detail.add_row(rejection.symbol, " / ".join(rejection.misses))
+    console.print(detail)
+    if len(run.screen.rejections) > MAX_REJECTIONS_LISTED:
+        console.print(
+            f"[dim]ほか {len(run.screen.rejections) - MAX_REJECTIONS_LISTED} 銘柄は省略。[/]"
+        )
+    console.print(
+        "[dim]この画面は「条件に合う形の銘柄が無かった」であって、"
+        "「その銘柄が悪い」ではありません。仕込みの形は 52週安値の近くで"
+        "レンジが締まっている銘柄に出るので、高値圏の大型株では原理的に出ません。[/]"
+    )
 
 
 def _print_measure_table(
