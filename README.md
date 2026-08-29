@@ -780,6 +780,32 @@ Setup, from downloading OpenD to the first successful check, is in
 **[docs/MOOMOO_OPEND.md](docs/MOOMOO_OPEND.md)** (Japanese). Execution through
 moomoo is deliberately *not* implemented — same stance as the IBKR skeleton.
 
+## Accumulation screen (US)
+
+```powershell
+uv run stock-ai accumulation --symbols-file watchlist.txt
+uv run stock-ai accumulation                     # the whole market, a few minutes
+```
+
+Three phases: a price/volume pass over every NYSE/NASDAQ/AMEX common stock, then
+funding flow (through moomoo OpenD), the short side and the chart on what
+survives, then a breakout test with stop levels as prices.
+
+The design point is what it refuses to do. Several metrics the brief for this
+asked for — dark-pool share, block prints, borrow fees — are sold rather than
+published, and the ratio it wanted as "large orders ÷ volume" cannot be formed
+at all from a feed that reports net currency per order-size band. Those are
+printed as 取得不可 with the reason, never as a plausible number, and absence is
+a *type* here rather than a blank: a `Missing` cannot be added, compared or
+formatted as a digit, so there is no code path from an unmeasured metric to a
+table cell that reads like a measurement.
+
+Cost ordering is the other half. Price and volume come from one bulk download;
+market cap is one request per symbol and moomoo's flow is capped at 30 calls per
+30 seconds, so those are asked only of names that already passed everything
+free. Details, including the full obtainable/not-obtainable table, are in
+**[docs/ACCUMULATION.md](docs/ACCUMULATION.md)** (Japanese). It is not advice.
+
 ## Daily automation
 
 ```bash

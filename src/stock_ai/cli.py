@@ -28,6 +28,11 @@ from rich.progress import (
 from rich.table import Table
 
 from stock_ai import __version__
+from stock_ai.accumulation.pipeline import download_prices
+from stock_ai.accumulation.pipeline import run as run_accumulation
+from stock_ai.accumulation.report import print_report as print_accumulation_report
+from stock_ai.accumulation.screen import Thresholds
+from stock_ai.accumulation.universe import Listing
 from stock_ai.ai.analysis import (
     analyze_sentiment,
 )
@@ -2744,6 +2749,89 @@ def _signed(value: object) -> str:
     if value < 0:
         return f"[red]{text}[/]"
     return text
+
+
+@app.command()
+def accumulation(
+    symbols_file: Path | None = typer.Option(
+        None,
+        "--symbols-file",
+        help="Screen only these symbols (one per line) instead of the whole market.",
+    ),
+    limit: int = typer.Option(10, help="Rows in the phase-1 table."),
+    deep: int = typer.Option(5, help="How many of them get the phase-2/3 deep dive."),
+    period: str = typer.Option("1y", help="History to download. 1y is what the 52-week low needs."),
+    min_market_cap: float = typer.Option(300_000_000.0, help="Phase-1 floor, USD."),
+    min_volume: float = typer.Option(500_000.0, help="20-day average volume floor, shares."),
+    min_price: float = typer.Option(5.0, help="Price floor, USD."),
+    volume_multiple: float = typer.Option(5.0, help="Latest volume over the prior 20-day average."),
+    max_above_low: float = typer.Option(0.15, help="Ceiling on distance above the 52-week low."),
+    max_range: float = typer.Option(0.10, help="Ceiling on the 20-day high-low range."),
+    host: str | None = typer.Option(None, help="OpenD host. Defaults to MOOMOO_OPEND_HOST."),
+    port: int | None = typer.Option(None, help="OpenD port. Defaults to MOOMOO_OPEND_PORT."),
+    firm: str | None = typer.Option(None, help="Account entity, e.g. FUTUJP."),
+) -> None:
+    """Screen US equities for institutional accumulation, in three phases.
+
+    Phase 1 is a price and volume pass over the whole market; phase 2 adds
+    funding flow through moomoo OpenD, the short side, and the chart; phase 3
+    tests whether the base has broken.
+
+    Metrics no reachable source provides - dark-pool share, block prints,
+    borrow fees - are printed as 取得不可 with the reason. Nothing here is
+    estimated to fill a gap, and nothing here is investment advice.
+    """
+    settings = get_settings()
+    configure_logging(settings.log_level)
+
+    try:
+        config = MoomooConfig(
+            host=host or settings.moomoo_opend_host,
+            port=port or settings.moomoo_opend_port,
+            security_firm=(firm or settings.moomoo_security_firm).upper(),
+            trd_market=settings.moomoo_trd_market.upper(),
+            trd_env=settings.moomoo_trd_env.upper(),
+        )
+    except BrokerError as exc:
+        console.print(f"[red]{exc}[/]")
+        raise typer.Exit(2) from exc
+
+    listings: list[Listing] | None = None
+    if symbols_file is not None:
+        symbols = _resolve_symbols(None, symbols_file)
+        listings = [Listing(symbol.upper(), symbol.upper(), "指定") for symbol in symbols]
+        console.print(f"ユニバース: [cyan]{symbols_file}[/] の {len(listings)} 銘柄")
+    else:
+        console.print(
+            "ユニバース: NASDAQ Trader の上場ファイルを取得します"
+            "（ETF・ADR・SPAC・ワラント等は除外）"
+        )
+
+    thresholds = Thresholds(
+        min_market_cap=min_market_cap,
+        min_avg_volume=min_volume,
+        min_price=min_price,
+        volume_multiple=volume_multiple,
+        max_above_52w_low=max_above_low,
+        max_range_20d=max_range,
+    )
+
+    console.print("[dim]価格データを取得しています。全市場の場合は数分かかります...[/]\n")
+    try:
+        result = run_accumulation(
+            config=config,
+            listings=listings,
+            price_loader=lambda symbols: download_prices(symbols, period=period),
+            thresholds=thresholds,
+            screen_limit=limit,
+            deep_limit=deep,
+        )
+    except DataError as exc:
+        console.print(f"[red]{exc}[/]")
+        raise typer.Exit(1) from exc
+
+    print_accumulation_report(console, result, dt.date.today())
+    raise typer.Exit(0 if result.rows else 1)
 
 
 def _disclosure_source(name: str, settings: Settings, lookback_days: int):

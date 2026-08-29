@@ -1,0 +1,266 @@
+"""Wiring: where the numbers come from, and the order the phases run in.
+
+Everything that touches a network lives here behind a callable, so the phases
+themselves are pure functions of data and can be tested without a gateway or a
+price feed - which matters more than usual on this project, because the machine
+that develops it has no route to either.
+"""
+
+from __future__ import annotations
+
+import datetime as dt
+import logging
+from collections.abc import Callable, Iterable, Sequence
+from dataclasses import dataclass, field
+from typing import Any
+
+import pandas as pd
+
+from stock_ai.accumulation.analysis import Deep, analyse, fetch_flow, pace_flow_calls
+from stock_ai.accumulation.breakout import Breakout, classify, evaluate
+from stock_ai.accumulation.screen import (
+    Candidate,
+    Metrics,
+    ScreenResult,
+    Thresholds,
+    compute_metrics,
+    run_screen,
+)
+from stock_ai.accumulation.types import Measure, Missing, insufficient, is_value, not_implemented
+from stock_ai.accumulation.universe import Listing, load_universe, to_yahoo_symbol
+from stock_ai.broker.moomoo import MoomooConfig
+from stock_ai.data.schema import normalize_ohlcv
+
+logger = logging.getLogger(__name__)
+
+#: yfinance batches well but not without limit; 150 keeps each request inside
+#: the URL length the provider accepts while still cutting a 6,000-name
+#: universe down to about forty requests.
+DOWNLOAD_CHUNK = 150
+
+
+@dataclass
+class Row:
+    """One symbol carried through all three phases."""
+
+    candidate: Candidate
+    deep: Deep | None = None
+    breakout: Breakout | None = None
+    next_earnings: dt.date | Missing = field(default_factory=lambda: not_implemented("not fetched"))
+
+    @property
+    def symbol(self) -> str:
+        """The listing symbol."""
+        return self.candidate.symbol
+
+    @property
+    def classification(self) -> str:
+        """The brief's A/B/C/D bucket, or D when phase 2 never ran."""
+        if self.deep is None:
+            return "D=見送り"
+        return classify(self.deep.completion.percent, self.breakout.score if self.breakout else 0)
+
+
+@dataclass
+class Run:
+    """A whole run: the screen, the deep dives, and when the data was as of."""
+
+    screen: ScreenResult
+    rows: list[Row]
+    generated_at: dt.datetime
+    data_as_of: dt.date | None
+    notes: list[str] = field(default_factory=list)
+
+
+# --------------------------------------------------------------------------
+# Data access (yfinance / moomoo). Each is injectable.
+# --------------------------------------------------------------------------
+
+
+def download_prices(symbols: Sequence[str], *, period: str = "1y") -> dict[str, pd.DataFrame]:
+    """Bulk daily OHLCV for many symbols, in the project's canonical schema.
+
+    Symbols the provider does not answer for are dropped rather than raised
+    on: over thousands of tickers a handful of delistings is normal, and one
+    of them must not end the run.
+    """
+    import yfinance as yf  # optional at import time; heavy
+
+    frames: dict[str, pd.DataFrame] = {}
+    for start in range(0, len(symbols), DOWNLOAD_CHUNK):
+        chunk = list(symbols[start : start + DOWNLOAD_CHUNK])
+        yahoo = {to_yahoo_symbol(symbol): symbol for symbol in chunk}
+        raw = yf.download(
+            list(yahoo),
+            period=period,
+            interval="1d",
+            group_by="ticker",
+            auto_adjust=False,
+            actions=False,
+            threads=True,
+            progress=False,
+        )
+        if raw is None or raw.empty:
+            continue
+        for ticker, symbol in yahoo.items():
+            try:
+                block = raw[ticker] if isinstance(raw.columns, pd.MultiIndex) else raw
+                frames[symbol] = normalize_ohlcv(block)
+            except Exception:  # a delisted or unpriced name, not a failed run
+                continue
+    return frames
+
+
+def market_caps(symbols: Iterable[str]) -> dict[str, Measure]:
+    """Market capitalisation per symbol, from the provider's light endpoint."""
+    import yfinance as yf
+
+    out: dict[str, Measure] = {}
+    for symbol in symbols:
+        try:
+            value = yf.Ticker(to_yahoo_symbol(symbol)).fast_info.get("marketCap")
+        except Exception as exc:
+            out[symbol] = insufficient(f"時価総額を取得できない: {type(exc).__name__}")
+            continue
+        out[symbol] = float(value) if value else insufficient("時価総額が提供されていない")
+    return out
+
+
+def _info(symbol: str) -> dict[str, Any] | Missing:
+    import yfinance as yf
+
+    try:
+        return dict(yf.Ticker(to_yahoo_symbol(symbol)).info)
+    except Exception as exc:
+        return insufficient(f"プロファイルを取得できない: {type(exc).__name__}")
+
+
+def sectors(symbols: Iterable[str]) -> dict[str, str | Missing]:
+    """Sector label per symbol."""
+    out: dict[str, str | Missing] = {}
+    for symbol in symbols:
+        info = _info(symbol)
+        if isinstance(info, Missing):
+            out[symbol] = info
+        else:
+            out[symbol] = str(info.get("sector") or "") or insufficient("セクター未提供")
+    return out
+
+
+def next_earnings(info: dict[str, Any] | Missing) -> dt.date | Missing:
+    """The next scheduled earnings date, if the profile carries one."""
+    if isinstance(info, Missing):
+        return info
+    for key in ("earningsTimestampStart", "earningsTimestamp"):
+        stamp = info.get(key)
+        if stamp:
+            try:
+                return dt.datetime.fromtimestamp(int(stamp), tz=dt.UTC).date()
+            except (TypeError, ValueError, OSError):
+                continue
+    return insufficient("決算予定日が提供されていない")
+
+
+def business_days_until(day: dt.date | Missing, today: dt.date) -> Measure:
+    """Business days from ``today`` to ``day``; negative when it has passed."""
+    if isinstance(day, Missing):
+        return day
+    step = 1 if day >= today else -1
+    count, cursor = 0, today
+    while cursor != day:
+        cursor += dt.timedelta(days=step)
+        if cursor.weekday() < 5:
+            count += step
+    return count
+
+
+# --------------------------------------------------------------------------
+# The run
+# --------------------------------------------------------------------------
+
+
+def run(
+    *,
+    config: MoomooConfig,
+    listings: Sequence[Listing] | None = None,
+    price_loader: Callable[[Sequence[str]], dict[str, pd.DataFrame]] = download_prices,
+    market_cap_loader: Callable[[Iterable[str]], dict[str, Measure]] = market_caps,
+    sector_loader: Callable[[Iterable[str]], dict[str, str | Missing]] = sectors,
+    info_loader: Callable[[str], dict[str, Any] | Missing] = _info,
+    flow_loader: Callable[[MoomooConfig, str], pd.DataFrame | None] = fetch_flow,
+    universe_loader: Callable[[], Sequence[Listing]] = load_universe,
+    thresholds: Thresholds | None = None,
+    screen_limit: int = 10,
+    deep_limit: int = 5,
+    today: dt.date | None = None,
+) -> Run:
+    """Run phases 1 to 3 and return everything needed to render the report."""
+    generated_at = dt.datetime.now(tz=dt.UTC)
+    today = today or generated_at.date()
+    notes: list[str] = []
+
+    listings = list(listings if listings is not None else universe_loader())
+    frames = price_loader([listing.symbol for listing in listings])
+
+    metrics: dict[str, Metrics] = {}
+    for symbol, frame in frames.items():
+        result = compute_metrics(frame)
+        if isinstance(result, Missing):
+            continue
+        metrics[symbol] = result
+    if len(metrics) < len(frames):
+        notes.append(f"{len(frames) - len(metrics)} 銘柄は履歴不足のため測定対象外")
+
+    screen = run_screen(
+        listings,
+        metrics,
+        market_cap_of=market_cap_loader,
+        sector_of=sector_loader,
+        base=thresholds,
+        limit=screen_limit,
+    )
+
+    rows = [Row(candidate=candidate) for candidate in screen.candidates]
+    for index, row in enumerate(rows[:deep_limit]):
+        pace_flow_calls(index)
+        frame = frames[row.symbol]
+        flow_frame = flow_loader(config, row.symbol)
+        info = info_loader(row.symbol)
+        row.deep = analyse(
+            row.symbol,
+            frame,
+            flow_frame,
+            info,
+            above_52w_low=row.candidate.metrics.above_52w_low,
+            range_20d=row.candidate.metrics.range_20d,
+            volume_multiple=row.candidate.metrics.volume_multiple,
+        )
+        row.candidate.flow_net_in_10d = row.deep.flow.large_net_in
+        row.breakout = evaluate(row.symbol, frame, flow_frame)
+        row.next_earnings = next_earnings(info)
+
+    for row in rows[deep_limit:]:
+        row.candidate.flow_net_in_10d = not_implemented(
+            f"深掘りは上位{deep_limit}銘柄のみ（moomooのレート制限）"
+        )
+
+    return Run(
+        screen=screen,
+        rows=rows,
+        generated_at=generated_at,
+        data_as_of=screen.as_of,
+        notes=notes,
+    )
+
+
+__all__ = [
+    "Row",
+    "Run",
+    "business_days_until",
+    "download_prices",
+    "is_value",
+    "market_caps",
+    "next_earnings",
+    "run",
+    "sectors",
+]
