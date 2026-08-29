@@ -2717,13 +2717,18 @@ def _render_capital_flow(frame: pd.DataFrame, code: str, period_type: str) -> No
         table.add_row(*cells)
     console.print(table)
 
-    note = (
-        "[dim]Net (in_flow) is the overall net figure; Super/Big/Mid/Small are "
-        "the order-size bands."
-    )
+    note = "[dim]Net (in_flow) is the overall net figure and the four order-size bands sum to it."
     if not intraday:
-        note += " Main (main_in_flow) is the large-order net figure the API "
-        note += "reports separately - it is not one of the bands."
+        # Observed, not specified: across 22 live daily rows for US.AAPL, the
+        # bands summed to Net and Super+Big equalled Main on every one. The API
+        # documents main_in_flow only as "the large-order net inflow", so this
+        # is a reading of the data rather than a guarantee - which is why it is
+        # said as such, and why Main stays a column of its own.
+        note += (
+            " Main (main_in_flow) is reported separately; on live data it has "
+            "matched Super+Big exactly, so read it as a subtotal of those two "
+            "rather than a fifth band."
+        )
     console.print(note + " Regular session only: no pre- or post-market.[/]")
 
 
