@@ -807,6 +807,16 @@ market cap is one request per symbol and moomoo's flow is capped at 30 calls per
 free. Details, including the full obtainable/not-obtainable table, are in
 **[docs/ACCUMULATION.md](docs/ACCUMULATION.md)** (Japanese). It is not advice.
 
+Run it daily with `scripts\7-accumulation-daily.ps1 -Register -Channel discord`
+(or the `アキュムレーション日次.bat` menu), which registers a Windows task and
+pushes a summary to Discord. Two details are deliberate there. A quiet day is
+silent by default — this shape finds nothing most days, and a "該当なし" message
+every morning is one nobody reads by the second week — so `-Heartbeat` exists
+for the opposite worry, that a quiet day and a dead job look identical from a
+phone. And the message is budgeted to Discord's 2,000-character limit rather
+than discovering it: Discord drops an oversized body whole instead of trimming
+it. The line naming what was *not* measured survives the trim in every case.
+
 ## Daily automation
 
 ```bash

@@ -32,6 +32,7 @@ from stock_ai.accumulation.analysis import (
     technical_metrics,
 )
 from stock_ai.accumulation.breakout import classify, evaluate
+from stock_ai.accumulation.notify import DISCORD_LIMIT, build_message, should_notify
 from stock_ai.accumulation.pipeline import (
     Run,
     business_days_until,
@@ -71,6 +72,7 @@ from stock_ai.accumulation.universe import (
     to_yahoo_symbol,
 )
 from stock_ai.broker.moomoo import MoomooConfig
+from stock_ai.core.exceptions import NotificationError
 from stock_ai.data.schema import DATE, OHLCV_COLUMNS
 
 runner = CliRunner()
@@ -783,3 +785,164 @@ def test_cli_runs_the_screen_from_a_symbols_file(tmp_path) -> None:
     assert result.exit_code == 0
     assert "最終統合サマリー" in result.output
     assert "取得不可" in result.output
+
+
+# --- the daily notification ---------------------------------------------
+
+
+def _notify_run(count: int = 3, *, name: str = "Gap, Inc. (The)", deep: int = 3) -> Run:
+    listings = [Listing(f"SY{i:02d}", name, "NYSE") for i in range(count)]
+    frames = {listing.symbol: price_frame() for listing in listings}
+    return run_accumulation(
+        config=MoomooConfig(trd_market="US"),
+        listings=listings,
+        price_loader=lambda symbols: frames,
+        market_cap_loader=lambda symbols: dict.fromkeys(symbols, 8.4e9),
+        info_loader=lambda symbol: {
+            "longName": name,
+            "sector": "Consumer Cyclical",
+            "sharesShort": 8_000_000,
+            "sharesShortPriorMonth": 6_500_000,
+            "floatShares": 100_000_000,
+            "shortRatio": 5.04,
+            "earningsTimestampStart": int(dt.datetime(2026, 9, 2, tzinfo=dt.UTC).timestamp()),
+        },
+        flow_loader=lambda config, symbol: flow_frame(),
+        deep_limit=deep,
+        screen_limit=count,
+        today=dt.date(2026, 8, 29),
+    )
+
+
+def test_the_message_fits_what_discord_will_accept() -> None:
+    """Discord drops an oversized body rather than trimming it."""
+    run = _notify_run(count=40, name="A Very Long Company Name Incorporated Holdings PLC", deep=2)
+
+    message = build_message(run, dt.date(2026, 8, 29))
+
+    assert len(message) <= DISCORD_LIMIT
+    assert "…ほか" in message  # and it says how many it could not fit
+
+
+def test_a_short_run_is_not_truncated() -> None:
+    message = build_message(_notify_run(count=2), dt.date(2026, 8, 29))
+    assert "…ほか" not in message
+    assert message.count("**SY") == 2
+
+
+def test_the_message_keeps_the_line_about_what_was_not_measured() -> None:
+    """Without it the summary reads as a complete picture."""
+    message = build_message(_notify_run(), dt.date(2026, 8, 29))
+    assert "取得不可" in message
+    assert "推定値では埋めていません" in message
+
+
+def test_an_earnings_date_inside_the_window_is_flagged_in_the_message() -> None:
+    message = build_message(_notify_run(count=1), dt.date(2026, 8, 29))
+    assert "⚠️ 2026-09-02" in message
+
+
+def test_an_empty_run_says_which_filter_rejected_what() -> None:
+    listings = [Listing("AAPL", "Apple", "NASDAQ")]
+    frames = {"AAPL": high_and_quiet()}
+    run = run_accumulation(
+        config=MoomooConfig(trd_market="US"),
+        listings=listings,
+        price_loader=lambda symbols: frames,
+        market_cap_loader=lambda symbols: dict.fromkeys(symbols, 3e12),
+        info_loader=lambda symbol: {},
+        flow_loader=lambda config, symbol: None,
+        today=dt.date(2026, 8, 29),
+    )
+
+    message = build_message(run, dt.date(2026, 8, 29))
+
+    assert "該当なし" in message
+    assert "52週安値比" in message
+    assert len(message) <= DISCORD_LIMIT
+
+
+def test_a_quiet_day_is_silent_unless_a_heartbeat_was_asked_for() -> None:
+    """A "該当なし" message every day is one nobody reads by the second week."""
+    empty = run_accumulation(
+        config=MoomooConfig(trd_market="US"),
+        listings=[Listing("AAPL", "Apple", "NASDAQ")],
+        price_loader=lambda symbols: {"AAPL": high_and_quiet()},
+        market_cap_loader=lambda symbols: dict.fromkeys(symbols, 3e12),
+        info_loader=lambda symbol: {},
+        flow_loader=lambda config, symbol: None,
+        today=dt.date(2026, 8, 29),
+    )
+
+    assert should_notify(empty, heartbeat=False) is False
+    assert should_notify(empty, heartbeat=True) is True
+    assert should_notify(_notify_run(count=1), heartbeat=False) is True
+
+
+def test_cli_sends_the_summary_to_the_named_channel(monkeypatch: pytest.MonkeyPatch) -> None:
+    sent: list[str] = []
+
+    class Recorder:
+        name = "console"
+
+        def send(self, message: str) -> None:
+            sent.append(message)
+
+    run = _notify_run(count=1)
+    monkeypatch.setattr(cli, "download_prices", lambda symbols, period="1y": {})
+    monkeypatch.setattr(cli, "run_accumulation", lambda **kwargs: run)
+    monkeypatch.setattr(cli, "get_notifier", lambda channel, settings: Recorder())
+
+    result = runner.invoke(cli.app, ["accumulation", "SY00", "--channel", "console"])
+
+    assert result.exit_code == 0
+    assert len(sent) == 1
+    assert "アキュムレーション検出" in sent[0]
+    assert "通知しました" in result.output
+
+
+def test_cli_says_it_skipped_the_notification_rather_than_failing_silently(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    empty = run_accumulation(
+        config=MoomooConfig(trd_market="US"),
+        listings=[Listing("AAPL", "Apple", "NASDAQ")],
+        price_loader=lambda symbols: {"AAPL": high_and_quiet()},
+        market_cap_loader=lambda symbols: dict.fromkeys(symbols, 3e12),
+        info_loader=lambda symbol: {},
+        flow_loader=lambda config, symbol: None,
+        today=dt.date(2026, 8, 29),
+    )
+    sent: list[str] = []
+    monkeypatch.setattr(cli, "download_prices", lambda symbols, period="1y": {})
+    monkeypatch.setattr(cli, "run_accumulation", lambda **kwargs: empty)
+    monkeypatch.setattr(cli, "get_notifier", lambda channel, settings: pytest.fail("must not send"))
+
+    result = runner.invoke(cli.app, ["accumulation", "AAPL", "--channel", "discord"])
+
+    assert sent == []
+    assert "見送りました" in result.output
+    assert "--heartbeat" in result.output
+
+
+def test_a_failed_delivery_does_not_throw_away_a_successful_screen(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The report is already printed; a down webhook is a delivery problem."""
+
+    class Broken:
+        name = "discord"
+
+        def send(self, message: str) -> None:
+            raise NotificationError("POST https://discord.com/… failed: 404")
+
+    run = _notify_run(count=1)
+    monkeypatch.setattr(cli, "download_prices", lambda symbols, period="1y": {})
+    monkeypatch.setattr(cli, "run_accumulation", lambda **kwargs: run)
+    monkeypatch.setattr(cli, "get_notifier", lambda channel, settings: Broken())
+
+    result = runner.invoke(cli.app, ["accumulation", "SY00", "--channel", "discord"])
+
+    assert result.exit_code == 0  # the screen succeeded
+    assert "通知に失敗しました" in result.output
+    assert "最終統合サマリー" in result.output

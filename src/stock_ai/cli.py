@@ -28,6 +28,9 @@ from rich.progress import (
 from rich.table import Table
 
 from stock_ai import __version__
+from stock_ai.accumulation.notify import build_message as build_accumulation_message
+from stock_ai.accumulation.notify import should_notify as should_notify_accumulation
+from stock_ai.accumulation.pipeline import Run as AccumulationRun
 from stock_ai.accumulation.pipeline import download_prices
 from stock_ai.accumulation.pipeline import run as run_accumulation
 from stock_ai.accumulation.report import print_report as print_accumulation_report
@@ -2773,6 +2776,14 @@ def accumulation(
     host: str | None = typer.Option(None, help="OpenD host. Defaults to MOOMOO_OPEND_HOST."),
     port: int | None = typer.Option(None, help="OpenD port. Defaults to MOOMOO_OPEND_PORT."),
     firm: str | None = typer.Option(None, help="Account entity, e.g. FUTUJP."),
+    channel: str | None = typer.Option(
+        None, help="Also send a summary: console | discord | telegram | line."
+    ),
+    heartbeat: bool = typer.Option(
+        False,
+        "--heartbeat",
+        help="Notify even when nothing passed, so a quiet day and a dead job differ.",
+    ),
 ) -> None:
     """Screen US equities for institutional accumulation, in three phases.
 
@@ -2834,8 +2845,44 @@ def accumulation(
         console.print(f"[red]{exc}[/]")
         raise typer.Exit(1) from exc
 
-    print_accumulation_report(console, result, dt.date.today())
+    today = dt.date.today()
+    print_accumulation_report(console, result, today)
+
+    if channel:
+        _send_accumulation_summary(result, channel, settings, today, heartbeat=heartbeat)
+
     raise typer.Exit(0 if result.rows else 1)
+
+
+def _send_accumulation_summary(
+    result: AccumulationRun,
+    channel: str,
+    settings: Settings,
+    today: dt.date,
+    *,
+    heartbeat: bool,
+) -> None:
+    """Push the run to a channel, without letting delivery sink the run.
+
+    The screen has already printed everything by the time this runs. A webhook
+    that is down is a delivery problem, and failing the whole command for it
+    would throw away work that succeeded - so it is reported and the exit code
+    is left to the screen's own result.
+    """
+    if not should_notify_accumulation(result, heartbeat=heartbeat):
+        console.print(
+            f"\n[dim]{channel} への通知は見送りました（該当0件）。"
+            "0件の日も送るなら --heartbeat を付けてください。[/]"
+        )
+        return
+
+    message = build_accumulation_message(result, today)
+    try:
+        get_notifier(channel, settings).send(message)
+    except NotificationError as exc:
+        console.print(f"\n[red]{channel} への通知に失敗しました: {exc}[/]")
+        return
+    console.print(f"\n[green]{channel} に通知しました[/] ({len(message)} 文字)")
 
 
 def _disclosure_source(name: str, settings: Settings, lookback_days: int):
