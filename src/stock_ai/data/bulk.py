@@ -99,6 +99,23 @@ class BulkReport:
         return text
 
 
+def latest_close(database: Database, symbol: str) -> float | None:
+    """Return the most recent stored close for ``symbol``, or ``None``.
+
+    Exists at module level, not just as :meth:`BulkIngester._latest_close`, so a
+    caller building a statement provider outside the ingester (the CLI, wiring
+    up an EDINET-backed one) can give it the same no-extra-request price lookup
+    without reaching into a private method on an instance that does not exist
+    yet.
+    """
+    with database.session() as session:
+        frame = PriceRepository(session).get_prices(symbol)
+    if frame is None or frame.empty or "close" not in frame:
+        return None
+    close = frame["close"].dropna()
+    return float(close.iloc[-1]) if not close.empty else None
+
+
 def store_universe(database: Database, profiles: Sequence[SecurityProfile]) -> int:
     """Store the universe's profiles, creating any securities that are new.
 
@@ -293,12 +310,7 @@ class BulkIngester:
         stored price still gets a snapshot - just one without the ratios that
         need a price, which is the honest outcome rather than a failed fetch.
         """
-        with self.database.session() as session:
-            frame = PriceRepository(session).get_prices(symbol)
-        if frame is None or frame.empty or "close" not in frame:
-            return None
-        close = frame["close"].dropna()
-        return float(close.iloc[-1]) if not close.empty else None
+        return latest_close(self.database, symbol)
 
     def _is_current(self, symbol: str, dataset: Dataset) -> bool:
         """Whether ``symbol`` already has today's data for ``dataset``.
