@@ -641,8 +641,13 @@ def test_info_shows_the_tachibana_deadline_when_it_is_selected(
 
     v4r9 は 2026-09-27 に停止する。切り替えた日にこれが目に入らないと、停止日に
     株価取得が黙って止まる。
+
+    版は明示的に v4r9 を指定する。指定しなければ ``default_version()`` がその日の
+    日付で選ぶため、v4r10 が公開された 2026-08-29 以降はこのテストが「今日の既定
+    はもう v4r9 ではない」という無関係な理由で落ちる。
     """
     monkeypatch.setenv("JP_PRICE_SOURCE", "tachibana")
+    monkeypatch.setenv("TACHIBANA_API_VERSION", "v4r9")
     get_settings.cache_clear()
 
     result = runner.invoke(app, ["info"])
@@ -662,4 +667,76 @@ def test_info_stays_quiet_about_tachibana_when_it_is_not_used(
     result = runner.invoke(app, ["info"])
 
     assert "tachibana version" not in result.output
+    get_settings.cache_clear()
+
+
+# --- bulk-fetch は JP_PRICE_SOURCE に従う --------------------------------
+
+
+def test_bulk_fetch_prices_uses_the_configured_source(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``bulk-fetch --what prices`` は J-Quants に固定されていた。
+
+    ``BulkIngester`` 自体は ``price_provider`` を差し替えられる作りだったが、
+    CLI 側がそれを渡さず常に ``JQuantsPriceProvider`` を作っていた。実機では
+    ``JP_PRICE_SOURCE=tachibana`` に切り替えた直後の全銘柄再取得が、気付かれ
+    ないまま J-Quants を叩き続けて 429 を大量に返した。
+    """
+    from stock_ai import cli
+    from stock_ai.data.bulk import BulkReport, Dataset
+    from stock_ai.database.engine import Database
+
+    database = Database("sqlite:///:memory:")
+    database.create_all()
+    monkeypatch.setattr(cli, "Database", lambda: database)
+    monkeypatch.setenv("JP_PRICE_SOURCE", "tachibana")
+    get_settings.cache_clear()
+
+    captured: dict[str, object] = {}
+
+    class _FakeIngester:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            captured.update(kwargs)
+
+        def run(self, *args: object, **kwargs: object) -> BulkReport:
+            return BulkReport(dataset=Dataset.PRICES)
+
+    monkeypatch.setattr(cli, "BulkIngester", _FakeIngester)
+    monkeypatch.setattr(cli, "_price_source", lambda source, settings: (f"provider:{source}", "JP"))
+
+    result = runner.invoke(cli.app, ["bulk-fetch", "--what", "prices", "--symbols", "6501"])
+
+    assert result.exit_code == 0, result.output
+    assert captured["price_provider"] == "provider:tachibana"
+    database.dispose()
+    get_settings.cache_clear()
+
+
+def test_bulk_fetch_statements_ignores_jp_price_source(monkeypatch: pytest.MonkeyPatch) -> None:
+    """統計側は今回の修正の対象外。巻き込んで壊していないことだけ確認する。"""
+    from stock_ai import cli
+    from stock_ai.data.bulk import BulkReport, Dataset
+    from stock_ai.database.engine import Database
+
+    database = Database("sqlite:///:memory:")
+    database.create_all()
+    monkeypatch.setattr(cli, "Database", lambda: database)
+    monkeypatch.setenv("JP_PRICE_SOURCE", "tachibana")
+    get_settings.cache_clear()
+
+    captured: dict[str, object] = {}
+
+    class _FakeIngester:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            captured.update(kwargs)
+
+        def run(self, *args: object, **kwargs: object) -> BulkReport:
+            return BulkReport(dataset=Dataset.STATEMENTS)
+
+    monkeypatch.setattr(cli, "BulkIngester", _FakeIngester)
+
+    result = runner.invoke(cli.app, ["bulk-fetch", "--what", "statements", "--symbols", "6501"])
+
+    assert result.exit_code == 0, result.output
+    assert captured["price_provider"] is None
+    database.dispose()
     get_settings.cache_clear()

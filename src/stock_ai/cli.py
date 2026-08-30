@@ -856,7 +856,19 @@ def bulk_fetch(
     )
     if dataset is Dataset.PRICES and not backfill:
         _warn_if_lookback_will_not_reach(database, targets, lookback)
-    ingester = BulkIngester(database, api_key=settings.jquants_api_key, throttle_seconds=throttle)
+    # JP_PRICE_SOURCE picks the provider only for prices: statements have no
+    # EDINET-backed equivalent of JQuantsFundamentalsProvider yet, so that half
+    # stays on J-Quants regardless of the setting.
+    price_provider = None
+    if dataset is Dataset.PRICES:
+        price_provider, _market = _price_source(settings.jp_price_source, settings)
+        console.print(f"[dim]価格の取得元: {settings.jp_price_source.lower()}[/dim]")
+    ingester = BulkIngester(
+        database,
+        api_key=settings.jquants_api_key,
+        throttle_seconds=throttle,
+        price_provider=price_provider,
+    )
 
     with Progress(
         SpinnerColumn(),
