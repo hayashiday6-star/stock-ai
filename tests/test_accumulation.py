@@ -521,7 +521,7 @@ def _install_yfinance(monkeypatch: pytest.MonkeyPatch, *, failures: int, blob: d
     holder = type("H", (FakeTicker,), {})
     module.Ticker = lambda symbol: holder(symbol, failures=failures, blob=blob)  # type: ignore[attr-defined]
     monkeypatch.setitem(sys.modules, "yfinance", module)
-    monkeypatch.setattr(pipeline, "INFO_RETRY_SECONDS", 0.0)
+    monkeypatch.setattr(pipeline, "INFO_BACKOFF_SECONDS", (0.0, 0.0))
     return holder
 
 
@@ -946,3 +946,46 @@ def test_a_failed_delivery_does_not_throw_away_a_successful_screen(
     assert result.exit_code == 0  # the screen succeeded
     assert "通知に失敗しました" in result.output
     assert "最終統合サマリー" in result.output
+
+
+def test_the_message_distinguishes_a_refused_call_from_a_missing_value() -> None:
+    """ "決算 データ不足" alone reads as "this company has no earnings date"."""
+    listings = [Listing("GAP", "Gap, Inc. (The)", "NYSE")]
+    frames = {"GAP": price_frame()}
+    run = run_accumulation(
+        config=MoomooConfig(trd_market="US"),
+        listings=listings,
+        price_loader=lambda symbols: frames,
+        market_cap_loader=lambda symbols: dict.fromkeys(symbols, 8.4e9),
+        info_loader=lambda symbol: insufficient("プロファイル取得に3回失敗: Rate limited"),
+        flow_loader=lambda config, symbol: flow_frame(),
+        deep_limit=1,
+        today=dt.date(2026, 8, 29),
+    )
+
+    message = build_message(run, dt.date(2026, 8, 29))
+
+    assert "プロファイル取得に失敗" in message
+    assert "呼び出しが失敗" in message
+    assert len(message) <= DISCORD_LIMIT
+
+
+def test_the_retry_budget_is_shared_rather_than_spent_per_symbol(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A systematically throttled run must fail quickly, not symbol by symbol."""
+    slept: list[float] = []
+    _install_yfinance(monkeypatch, failures=99, blob={})
+    # The helper zeroes the backoff so other tests run fast; this one is about
+    # the backoff, so put the real figures back and fake the clock instead.
+    monkeypatch.setattr(pipeline, "INFO_BACKOFF_SECONDS", (5.0, 15.0))
+    monkeypatch.setattr(pipeline.time, "sleep", slept.append)
+    budget = pipeline.RetryBudget(remaining=20.0)
+
+    first = pipeline._info("AAA", budget=budget)
+    second = pipeline._info("BBB", budget=budget)
+
+    assert isinstance(first, Missing)
+    assert isinstance(second, Missing)
+    assert sum(slept) <= 20.0
+    assert "上限に達した" in second.reason

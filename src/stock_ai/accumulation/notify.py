@@ -85,6 +85,14 @@ def _header(run: Run, today: dt.date) -> list[str]:
         behind = business_days_until(run.data_as_of, run.generated_at.date())
         if is_value(behind) and float(behind) <= -2:
             lines.append(f"⚠️ 最新の日足が {abs(int(behind))} 営業日前です")
+    if run.fetch_failures:
+        # Without this the message shows "決算 データ不足" and reads as "this
+        # company has no earnings date", when what happened is that the call
+        # was refused. One is permanent and one is fixed by running it again.
+        lines.append(
+            f"⚠️ {len(run.fetch_failures)} 銘柄でプロファイル取得に失敗"
+            "（セクター・空売り・決算日）。データが無いのではなく呼び出しが失敗しています。"
+        )
     return lines
 
 

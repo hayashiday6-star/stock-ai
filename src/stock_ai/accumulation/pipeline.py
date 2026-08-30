@@ -136,10 +136,41 @@ def market_caps(symbols: Iterable[str]) -> dict[str, Measure]:
 #: which is how sector, short interest and the earnings date all came back
 #: empty on a run whose prices were fine.
 INFO_ATTEMPTS = 3
-INFO_RETRY_SECONDS = 2.0
+
+#: Seconds to wait before each retry. Two seconds was measured to be useless:
+#: after a 5,279-symbol download the provider was still refusing profiles six
+#: seconds later, and the whole-market run reported "決算 データ不足" on a
+#: symbol whose profile had loaded fine minutes earlier in a one-symbol run.
+INFO_BACKOFF_SECONDS = (5.0, 15.0)
+
+#: Waiting is bounded across the whole run, not per symbol. A systematically
+#: throttled run would otherwise spend the full backoff on every symbol in
+#: turn, and a screen that takes five extra minutes to fail the same way is
+#: worse than one that fails quickly and says the budget ran out.
+INFO_RETRY_BUDGET_SECONDS = 90.0
 
 
-def _info(symbol: str, *, attempts: int = INFO_ATTEMPTS) -> dict[str, Any] | Missing:
+@dataclass
+class RetryBudget:
+    """A pool of waiting time shared by every profile fetch in one run."""
+
+    remaining: float = INFO_RETRY_BUDGET_SECONDS
+
+    def wait(self, seconds: float) -> bool:
+        """Sleep for ``seconds`` if the budget allows; report whether it did."""
+        if seconds > self.remaining:
+            return False
+        self.remaining -= seconds
+        time.sleep(seconds)
+        return True
+
+
+def _info(
+    symbol: str,
+    *,
+    attempts: int = INFO_ATTEMPTS,
+    budget: RetryBudget | None = None,
+) -> dict[str, Any] | Missing:
     """The provider's profile blob for one symbol, retried through a throttle.
 
     The failure is reported with the provider's own message rather than just a
@@ -149,6 +180,7 @@ def _info(symbol: str, *, attempts: int = INFO_ATTEMPTS) -> dict[str, Any] | Mis
     """
     import yfinance as yf
 
+    budget = budget if budget is not None else RetryBudget()
     last = "理由不明"
     for attempt in range(attempts):
         try:
@@ -159,8 +191,11 @@ def _info(symbol: str, *, attempts: int = INFO_ATTEMPTS) -> dict[str, Any] | Mis
             if blob:
                 return blob
             last = "プロファイルが空で返った"
-        if attempt + 1 < attempts:
-            time.sleep(INFO_RETRY_SECONDS * (attempt + 1))
+        if attempt + 1 >= attempts:
+            break
+        pause = INFO_BACKOFF_SECONDS[min(attempt, len(INFO_BACKOFF_SECONDS) - 1)]
+        if not budget.wait(pause):
+            return insufficient(f"プロファイル取得に失敗し、待機時間の上限に達した: {last}")
     return insufficient(f"プロファイル取得に{attempts}回失敗: {last}")
 
 
@@ -246,10 +281,13 @@ def run(
     # column, once for the deep dive - which doubles the exposure to the very
     # throttle that makes it fail.
     info_cache: dict[str, dict[str, Any] | Missing] = {}
+    budget = RetryBudget()
 
     def cached_info(symbol: str) -> dict[str, Any] | Missing:
         if symbol not in info_cache:
-            info_cache[symbol] = info_loader(symbol)
+            info_cache[symbol] = (
+                info_loader(symbol) if info_loader is not _info else _info(symbol, budget=budget)
+            )
         return info_cache[symbol]
 
     metrics: dict[str, Metrics] = {}
