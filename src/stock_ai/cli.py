@@ -29,6 +29,14 @@ from rich.progress import (
 from rich.table import Table
 
 from stock_ai import __version__
+from stock_ai.accumulation.notify import build_message as build_accumulation_message
+from stock_ai.accumulation.notify import should_notify as should_notify_accumulation
+from stock_ai.accumulation.pipeline import Run as AccumulationRun
+from stock_ai.accumulation.pipeline import download_prices
+from stock_ai.accumulation.pipeline import run as run_accumulation
+from stock_ai.accumulation.report import print_report as print_accumulation_report
+from stock_ai.accumulation.screen import Thresholds
+from stock_ai.accumulation.universe import Listing
 from stock_ai.ai.analysis import (
     analyze_sentiment,
 )
@@ -57,9 +65,19 @@ from stock_ai.backtest.seasonality import (
     symbol_patterns,
 )
 from stock_ai.backtest.strategy import BuyAndHold, Strategy, build_strategy
+from stock_ai.broker.moomoo import Diagnosis as MoomooDiagnosis
+from stock_ai.broker.moomoo import MoomooConfig, StageStatus, to_moomoo_code
+from stock_ai.broker.moomoo import capital_flow as moomoo_capital_flow
+from stock_ai.broker.moomoo import diagnose as moomoo_diagnose
 from stock_ai.config.settings import Settings, get_settings
 from stock_ai.core.encoding import install as install_console_encoding
-from stock_ai.core.exceptions import AIError, BacktestError, DataError, NotificationError
+from stock_ai.core.exceptions import (
+    AIError,
+    BacktestError,
+    BrokerError,
+    DataError,
+    NotificationError,
+)
 from stock_ai.core.logging import configure_logging
 from stock_ai.core.scheduler import DailyScheduler, JobResult
 from stock_ai.data.base import PriceProvider
@@ -2603,6 +2621,463 @@ def _print_edinet_verdict(results: list[ProbeResult]) -> None:
     )
 
 
+@app.command(name="moomoo-check")
+def moomoo_check(
+    host: str | None = typer.Option(None, help="OpenD host. Defaults to MOOMOO_OPEND_HOST."),
+    port: int | None = typer.Option(None, help="OpenD port. Defaults to MOOMOO_OPEND_PORT."),
+    env: str | None = typer.Option(None, help="SIMULATE or REAL. Defaults to MOOMOO_TRD_ENV."),
+    market: str | None = typer.Option(None, help="JP or US. Defaults to MOOMOO_TRD_MARKET."),
+    firm: str | None = typer.Option(None, help="Account entity, e.g. FUTUJP (moomoo証券)."),
+    unlock: bool = typer.Option(
+        False, help="Also test the trading PIN in MOOMOO_TRADE_PASSWORD (REAL only)."
+    ),
+    show_assets: bool = typer.Option(
+        False, help="Print the account balances instead of only confirming they came back."
+    ),
+) -> None:
+    """Check that moomoo OpenD is installed, logged in, and reaching your account.
+
+    moomoo has no API key. Authentication is a local gateway - OpenD - that you
+    log into with your moomoo securities account, and every failure along that
+    chain reaches Python as the same symptom: a command that never returns.
+
+    This walks the chain in order and stops at the first break, so the answer is
+    "OpenD is not running" or "the entity is wrong for this account" rather than
+    a hang. It never places an order, and it re-locks the live account
+    immediately after testing the PIN.
+    """
+    settings = get_settings()
+    configure_logging(settings.log_level)
+
+    try:
+        config = MoomooConfig(
+            host=host or settings.moomoo_opend_host,
+            port=port or settings.moomoo_opend_port,
+            security_firm=(firm or settings.moomoo_security_firm).upper(),
+            trd_market=(market or settings.moomoo_trd_market).upper(),
+            trd_env=(env or settings.moomoo_trd_env).upper(),
+        )
+    except BrokerError as exc:
+        console.print(f"[red]{exc}[/]")
+        raise typer.Exit(2) from exc
+
+    password: str | None = None
+    if unlock:
+        if not config.is_real:
+            console.print(
+                "[yellow]--unlock only applies to the REAL account; "
+                f"this run is against {config.trd_env}. Ignoring it.[/]"
+            )
+        elif settings.moomoo_trade_password is None:
+            console.print(
+                "[yellow]--unlock was given but MOOMOO_TRADE_PASSWORD is not set in .env.[/]\n"
+                "Set it with: [cyan]powershell -File scripts/set-key.ps1 "
+                "MOOMOO_TRADE_PASSWORD[/]"
+            )
+        else:
+            password = settings.moomoo_trade_password.get_secret_value()
+
+    console.print(
+        f"OpenD at [cyan]{config.host}:{config.port}[/] - "
+        f"{config.security_firm} / {config.trd_market} / "
+        f"[bold]{config.trd_env}[/]"
+    )
+    if config.is_real:
+        console.print("[yellow]This is the live-money account.[/] No order is ever placed here.")
+    console.print()
+
+    diagnosis = moomoo_diagnose(config, unlock_password=password)
+
+    table = Table(title="moomoo OpenD check")
+    table.add_column("Step", style="cyan")
+    table.add_column("Result")
+    table.add_column("Detail")
+    marks = {
+        StageStatus.OK: "[green]OK[/]",
+        StageStatus.FAILED: "[red]NG[/]",
+        StageStatus.SKIPPED: "[dim]--[/]",
+    }
+    for stage in diagnosis.stages:
+        table.add_row(stage.name, marks[stage.status], stage.detail)
+    console.print(table)
+
+    _print_moomoo_accounts(diagnosis, config, show_assets=show_assets)
+    _print_moomoo_verdict(diagnosis, config)
+
+    raise typer.Exit(0 if diagnosis.ok else 1)
+
+
+def _print_moomoo_accounts(
+    diagnosis: MoomooDiagnosis, config: MoomooConfig, *, show_assets: bool
+) -> None:
+    """List every account OpenD showed us, not only the one that was asked for.
+
+    The most confusing moomoo failure is an empty account list from a login that
+    worked: nothing is wrong with the credentials, the entity or the market
+    filter simply does not match the account. Printing what *was* found next to
+    what was asked for turns that into a one-line diagnosis.
+    """
+    if not diagnosis.accounts:
+        return
+
+    table = Table(title=f"Accounts visible through OpenD ({config.security_firm})")
+    table.add_column("Account", style="cyan")
+    table.add_column("Env")
+    table.add_column("Type")
+    table.add_column("Markets")
+    table.add_column("Status")
+    for account in diagnosis.accounts:
+        wanted = account.trd_env == config.trd_env
+        table.add_row(
+            f"{'>' if wanted else ' '} {account.masked_id}",
+            f"[bold]{account.trd_env}[/]" if wanted else account.trd_env,
+            account.acc_type,
+            "/".join(account.markets) or "-",
+            account.status,
+        )
+    console.print(table)
+    console.print(
+        "[dim]Account numbers are masked to the last four digits: this report is "
+        "written to a file people paste when asking for help.[/]"
+    )
+
+    summary = diagnosis.account_summary
+    if not summary:
+        return
+    if show_assets:
+        currency = summary.get("currency", config.currency)
+        console.print(
+            f"\nTotal assets: [bold]{summary.get('total_assets')}[/] {currency}  "
+            f"(cash {summary.get('cash')}, positions {summary.get('market_val')})"
+        )
+    else:
+        console.print(
+            "\n[dim]Balances came back and were not printed. "
+            "Add --show-assets to see the numbers.[/]"
+        )
+
+
+def _print_moomoo_verdict(diagnosis: MoomooDiagnosis, config: MoomooConfig) -> None:
+    """Say what the table means, so it does not need interpreting."""
+    failure = diagnosis.first_failure
+    if failure is None:
+        # Hints on links that *held* still matter: "quotes are up but trading is
+        # not" passes this check and breaks the next thing anyone does.
+        notes = [s for s in diagnosis.stages if s.hint]
+        console.print(
+            f"\n[green]OpenD is up and your {config.trd_env} account answers through it.[/] "
+            "Authentication is done - nothing else is needed to read this account."
+        )
+        for stage in notes:
+            console.print(f"[dim]{stage.name}: {stage.detail}. {stage.hint}[/]")
+        return
+
+    console.print(f"\n[red]Stopped at: {failure.name}.[/] {failure.detail}")
+    if failure.hint:
+        console.print(failure.hint)
+    console.print(
+        "[dim]Later steps were not attempted: each one needs the previous one, "
+        "so running them would only report the same break again.[/]"
+    )
+
+
+@app.command(name="moomoo-flow")
+def moomoo_flow(
+    symbol: str = typer.Argument(..., help="Ticker in any form: 9842, JP.9842, 9842.T, AAPL."),
+    start: str | None = typer.Option(None, help="YYYY-MM-DD. Ignored for --period intraday."),
+    end: str | None = typer.Option(None, help="YYYY-MM-DD. Ignored for --period intraday."),
+    period: str = typer.Option("day", help="intraday | day | week | month."),
+    host: str | None = typer.Option(None, help="OpenD host. Defaults to MOOMOO_OPEND_HOST."),
+    port: int | None = typer.Option(None, help="OpenD port. Defaults to MOOMOO_OPEND_PORT."),
+    firm: str | None = typer.Option(None, help="Account entity, e.g. FUTUJP (moomoo証券)."),
+) -> None:
+    """Show capital in/out flow for SYMBOL, read through moomoo OpenD.
+
+    Market data only - no account is touched and no order is placed. OpenD must
+    be running and logged in; ``moomoo-check`` says so in one line when it is not.
+
+    The symbol is converted to moomoo's own market-first form (``JP.9842``), so
+    the codes used everywhere else in this project work here unchanged.
+    """
+    settings = get_settings()
+    configure_logging(settings.log_level)
+
+    try:
+        config = MoomooConfig(
+            host=host or settings.moomoo_opend_host,
+            port=port or settings.moomoo_opend_port,
+            security_firm=(firm or settings.moomoo_security_firm).upper(),
+            trd_market=settings.moomoo_trd_market.upper(),
+            trd_env=settings.moomoo_trd_env.upper(),
+        )
+    except BrokerError as exc:
+        console.print(f"[red]{exc}[/]")
+        raise typer.Exit(2) from exc
+
+    period_type = period.upper()
+    # A range asked for in whole days against an intraday feed is not a smaller
+    # request, it is a different one - and it would come back as today's minutes
+    # under the dates the user typed. Say so rather than answering the wrong
+    # question quietly.
+    if period_type == "INTRADAY" and (start or end):
+        console.print("[yellow]--period intraday covers today only; --start/--end are ignored.[/]")
+        start = end = None
+    elif period_type != "INTRADAY" and not start and not end:
+        end_date = dt.date.today()
+        start_date = end_date - dt.timedelta(days=30)
+        start, end = start_date.isoformat(), end_date.isoformat()
+        console.print(f"[dim]No range given; using the last 30 days ({start} to {end}).[/]")
+
+    code = to_moomoo_code(symbol)
+    console.print(f"Capital flow for [cyan]{code}[/] ({period_type}) via OpenD\n")
+
+    try:
+        frame = moomoo_capital_flow(config, symbol, period_type=period_type, start=start, end=end)
+    except BrokerError as exc:
+        console.print(f"[red]{exc}[/]")
+        _print_quote_entitlement_note(code)
+        raise typer.Exit(1) from exc
+
+    if frame is None or frame.empty:
+        console.print(
+            "[yellow]No rows.[/] The request was accepted and returned nothing - "
+            "a closed-market range, or a symbol this account has no data "
+            "permission for. Both look the same here, so try a range you know "
+            "had trading before assuming the permission."
+        )
+        _print_quote_entitlement_note(code)
+        raise typer.Exit(1)
+
+    _render_capital_flow(frame, code, period_type)
+
+
+def _print_quote_entitlement_note(code: str) -> None:
+    """Say what a refused or empty quote request usually means, and how to tell.
+
+    The trap here is that ``moomoo-check`` passing makes the connection feel
+    proven, so the next refusal reads as a bug in this code. It usually is not:
+    moomoo grants *quote* access per market, and that grant is separate from
+    the account's trading permissions - a market you are cleared to trade is
+    not necessarily one the API serves quotes for, and the published table has
+    said "not currently available" for whole markets.
+
+    Neither this note nor anything else here hard-codes which markets those
+    are. That list changes, and a stale copy of it would confidently contradict
+    the gateway. The gateway's own message above is the current answer; this
+    only says how to read it, and names the one test that separates an
+    account-wide problem from a per-market one.
+    """
+    market = code.split(".")[0]
+    console.print(
+        f"\n[dim]A refusal or an empty answer here is usually quote entitlement, "
+        f"not this code. moomoo grants quote access per market, separately from "
+        f"what the account may trade, and it has listed whole markets as not "
+        f"available through the API - so passing moomoo-check does not imply "
+        f"{market} quotes.\n"
+        f"To tell an account-wide problem from a {market}-only one, try a US "
+        f"symbol: [cyan]uv run stock-ai moomoo-flow AAPL[/]. If that works, the "
+        f"account is fine and {market} quotes are the missing piece; check the "
+        f"market table in docs/MOOMOO_OPEND.md and moomoo's own quote-permission "
+        f"page.[/]"
+    )
+
+
+def _render_capital_flow(frame: pd.DataFrame, code: str, period_type: str) -> None:
+    """Print the flow table, dropping the columns this period does not fill.
+
+    The API documents two fields as period-dependent: ``main_in_flow`` is valid
+    only for the historical periods (day/week/month) and ``last_valid_time``
+    only for intraday. A column that is present but meaningless is worse than an
+    absent one - it reads as a real zero - so ``Main`` is only shown where the
+    API says it means something.
+    """
+    intraday = period_type == "INTRADAY"
+    table = Table(title=f"Capital flow: {code} (net, in the listing currency)")
+    table.add_column("Time" if intraday else "Date", style="cyan", no_wrap=True)
+    table.add_column("Net", justify="right")
+    if not intraday:
+        table.add_column("Main", justify="right")
+    table.add_column("Super", justify="right")
+    table.add_column("Big", justify="right")
+    table.add_column("Mid", justify="right")
+    table.add_column("Small", justify="right")
+
+    for row in frame.to_dict("records"):
+        # The timestamp is 'yyyy-MM-dd HH:mm:ss' whatever the period, so a daily
+        # row would otherwise carry a 00:00:00 that means nothing.
+        when = str(row.get("capital_flow_item_time", ""))
+        cells = [when if intraday else when.split(" ")[0], _signed(row.get("in_flow"))]
+        if not intraday:
+            cells.append(_signed(row.get("main_in_flow")))
+        cells += [
+            _signed(row.get("super_in_flow")),
+            _signed(row.get("big_in_flow")),
+            _signed(row.get("mid_in_flow")),
+            _signed(row.get("sml_in_flow")),
+        ]
+        table.add_row(*cells)
+    console.print(table)
+
+    note = "[dim]Net (in_flow) is the overall net figure and the four order-size bands sum to it."
+    if not intraday:
+        # Observed, not specified: across 22 live daily rows for US.AAPL, the
+        # bands summed to Net and Super+Big equalled Main on every one. The API
+        # documents main_in_flow only as "the large-order net inflow", so this
+        # is a reading of the data rather than a guarantee - which is why it is
+        # said as such, and why Main stays a column of its own.
+        note += (
+            " Main (main_in_flow) is reported separately; on live data it has "
+            "matched Super+Big exactly, so read it as a subtotal of those two "
+            "rather than a fifth band."
+        )
+    console.print(note + " Regular session only: no pre- or post-market.[/]")
+
+
+def _signed(value: object) -> str:
+    """Format a flow figure, coloured by direction so a wall of numbers reads."""
+    if not isinstance(value, int | float) or isinstance(value, bool):
+        return "-"
+    if pd.isna(value):
+        return "-"
+    text = _compact(float(value))
+    if value > 0:
+        return f"[green]+{text}[/]"
+    if value < 0:
+        return f"[red]{text}[/]"
+    return text
+
+
+@app.command()
+def accumulation(
+    symbols: list[str] | None = typer.Argument(
+        None, help="Screen only these symbols, e.g. AAPL MSFT NVDA. Omit for the whole market."
+    ),
+    symbols_file: Path | None = typer.Option(
+        None,
+        "--symbols-file",
+        help="Read symbols from a file, one per line (# comments allowed).",
+    ),
+    limit: int = typer.Option(10, help="Rows in the phase-1 table."),
+    deep: int = typer.Option(5, help="How many of them get the phase-2/3 deep dive."),
+    period: str = typer.Option("1y", help="History to download. 1y is what the 52-week low needs."),
+    min_market_cap: float = typer.Option(300_000_000.0, help="Phase-1 floor, USD."),
+    min_volume: float = typer.Option(500_000.0, help="20-day average volume floor, shares."),
+    min_price: float = typer.Option(5.0, help="Price floor, USD."),
+    volume_multiple: float = typer.Option(5.0, help="Latest volume over the prior 20-day average."),
+    max_above_low: float = typer.Option(0.15, help="Ceiling on distance above the 52-week low."),
+    max_range: float = typer.Option(0.10, help="Ceiling on the 20-day high-low range."),
+    host: str | None = typer.Option(None, help="OpenD host. Defaults to MOOMOO_OPEND_HOST."),
+    port: int | None = typer.Option(None, help="OpenD port. Defaults to MOOMOO_OPEND_PORT."),
+    firm: str | None = typer.Option(None, help="Account entity, e.g. FUTUJP."),
+    channel: str | None = typer.Option(
+        None, help="Also send a summary: console | discord | telegram | line."
+    ),
+    heartbeat: bool = typer.Option(
+        False,
+        "--heartbeat",
+        help="Notify even when nothing passed, so a quiet day and a dead job differ.",
+    ),
+) -> None:
+    """Screen US equities for institutional accumulation, in three phases.
+
+    Phase 1 is a price and volume pass over the whole market; phase 2 adds
+    funding flow through moomoo OpenD, the short side, and the chart; phase 3
+    tests whether the base has broken.
+
+    Metrics no reachable source provides - dark-pool share, block prints,
+    borrow fees - are printed as 取得不可 with the reason. Nothing here is
+    estimated to fill a gap, and nothing here is investment advice.
+    """
+    settings = get_settings()
+    configure_logging(settings.log_level)
+
+    try:
+        config = MoomooConfig(
+            host=host or settings.moomoo_opend_host,
+            port=port or settings.moomoo_opend_port,
+            security_firm=(firm or settings.moomoo_security_firm).upper(),
+            trd_market=settings.moomoo_trd_market.upper(),
+            trd_env=settings.moomoo_trd_env.upper(),
+        )
+    except BrokerError as exc:
+        console.print(f"[red]{exc}[/]")
+        raise typer.Exit(2) from exc
+
+    listings: list[Listing] | None = None
+    if symbols or symbols_file is not None:
+        named = _resolve_symbols(symbols, symbols_file)
+        listings = [Listing(symbol.upper(), symbol.upper(), "指定") for symbol in named]
+        source = str(symbols_file) if symbols_file is not None else "コマンドラインの指定"
+        console.print(f"ユニバース: {source} の [cyan]{len(listings)}[/] 銘柄")
+    else:
+        console.print(
+            "ユニバース: NASDAQ Trader の上場ファイルを取得します"
+            "（ETF・ADR・SPAC・ワラント等は除外）"
+        )
+
+    thresholds = Thresholds(
+        min_market_cap=min_market_cap,
+        min_avg_volume=min_volume,
+        min_price=min_price,
+        volume_multiple=volume_multiple,
+        max_above_52w_low=max_above_low,
+        max_range_20d=max_range,
+    )
+
+    console.print("[dim]価格データを取得しています。全市場の場合は数分かかります...[/]\n")
+    try:
+        result = run_accumulation(
+            config=config,
+            listings=listings,
+            price_loader=lambda symbols: download_prices(symbols, period=period),
+            thresholds=thresholds,
+            screen_limit=limit,
+            deep_limit=deep,
+        )
+    except DataError as exc:
+        console.print(f"[red]{exc}[/]")
+        raise typer.Exit(1) from exc
+
+    today = dt.date.today()
+    print_accumulation_report(console, result, today)
+
+    if channel:
+        _send_accumulation_summary(result, channel, settings, today, heartbeat=heartbeat)
+
+    raise typer.Exit(0 if result.rows else 1)
+
+
+def _send_accumulation_summary(
+    result: AccumulationRun,
+    channel: str,
+    settings: Settings,
+    today: dt.date,
+    *,
+    heartbeat: bool,
+) -> None:
+    """Push the run to a channel, without letting delivery sink the run.
+
+    The screen has already printed everything by the time this runs. A webhook
+    that is down is a delivery problem, and failing the whole command for it
+    would throw away work that succeeded - so it is reported and the exit code
+    is left to the screen's own result.
+    """
+    if not should_notify_accumulation(result, heartbeat=heartbeat):
+        console.print(
+            f"\n[dim]{channel} への通知は見送りました（該当0件）。"
+            "0件の日も送るなら --heartbeat を付けてください。[/]"
+        )
+        return
+
+    message = build_accumulation_message(result, today)
+    try:
+        get_notifier(channel, settings).send(message)
+    except NotificationError as exc:
+        console.print(f"\n[red]{channel} への通知に失敗しました: {exc}[/]")
+        return
+    console.print(f"\n[green]{channel} に通知しました[/] ({len(message)} 文字)")
+
+
 def _disclosure_source(name: str, settings: Settings, lookback_days: int):
     """Build the disclosure feed for a source name.
 
@@ -3347,6 +3822,7 @@ def _secret_status(settings: Settings) -> list[tuple[str, SecretStr | None]]:
         ("discord_webhook_url", settings.discord_webhook_url),
         ("line_channel_access_token", settings.line_channel_access_token),
         ("telegram_bot_token", settings.telegram_bot_token),
+        ("moomoo_trade_password", settings.moomoo_trade_password),
     ]
 
 

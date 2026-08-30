@@ -15,6 +15,7 @@ echo Which key? (press Enter for EDINET_API_KEY)
 echo   1 = EDINET_API_KEY     JP statutory disclosures
 echo   2 = JQUANTS_API_KEY    JP prices and financials
 echo   3 = ANTHROPIC_API_KEY  AI summaries and search
+echo   4 = MOOMOO_TRADE_PASSWORD  moomoo trading PIN (6 digits)
 echo.
 set "CHOICE="
 set /p "CHOICE=Number: "
@@ -22,6 +23,7 @@ set /p "CHOICE=Number: "
 set "KEYNAME=EDINET_API_KEY"
 if "%CHOICE%"=="2" set "KEYNAME=JQUANTS_API_KEY"
 if "%CHOICE%"=="3" set "KEYNAME=ANTHROPIC_API_KEY"
+if "%CHOICE%"=="4" set "KEYNAME=MOOMOO_TRADE_PASSWORD"
 
 echo.
 powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0scripts\set-key.ps1" -Name %KEYNAME%

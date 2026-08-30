@@ -42,6 +42,11 @@ tachibana_public*.txt
 # EDINET から落とした書類本体（公開情報だが、生成物なので追跡しない）。
 edinet_probe/
 
+# --- Diagnostic reports (regenerated on demand; may name an account) ---
+verify-output.txt
+verify-ai-output.txt
+moomoo-output.txt
+
 # --- IDE / OS ---
 .vscode/
 .idea/
