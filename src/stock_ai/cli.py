@@ -64,6 +64,7 @@ from stock_ai.core.logging import configure_logging
 from stock_ai.core.scheduler import DailyScheduler, JobResult
 from stock_ai.data.base import PriceProvider
 from stock_ai.data.bulk import BulkIngester, Dataset, store_universe
+from stock_ai.data.bulk import latest_close as bulk_latest_close
 from stock_ai.data.fx import FxConverter
 from stock_ai.data.jquants_fundamentals import JQuantsFundamentalsProvider
 from stock_ai.data.jquants_profile import JQuantsProfileProvider
@@ -107,7 +108,7 @@ from stock_ai.ir.edinet import (
 from stock_ai.ir.edinet import (
     SUBJECT_CODE_FIELDS as EDINET_SUBJECT_CODE_FIELDS,
 )
-from stock_ai.ir.edinet_financials import fetch_annual_reports
+from stock_ai.ir.edinet_financials import EdinetFundamentalsProvider, fetch_annual_reports
 from stock_ai.ir.monitor import WatchMonitor
 from stock_ai.ir.sources import CompositeDisclosureSource, NewsDisclosureSource
 from stock_ai.news.sources import YFinanceNewsSource
@@ -472,9 +473,11 @@ def statements(
 
     ``--source jquants`` makes one request per symbol and returns every period
     the plan covers. ``--source edinet`` reads five fiscal years out of the
-    annual report instead, which is free - but per-share figures stay empty
-    there, because the filing restates EPS for splits while leaving the share
-    count and the dividend at their historical scale.
+    annual report instead, which is free - but EPS and BPS stay empty there,
+    because the filing restates EPS for splits while leaving the share count
+    and the dividend at their historical scale, and mixing the two would
+    double-correct one of them. Dividend per share is on the same historical
+    scale as the share count, so it is filled in and restated the same way.
     """
     settings = get_settings()
     configure_logging(settings.log_level)
@@ -856,18 +859,26 @@ def bulk_fetch(
     )
     if dataset is Dataset.PRICES and not backfill:
         _warn_if_lookback_will_not_reach(database, targets, lookback)
-    # JP_PRICE_SOURCE picks the provider only for prices: statements have no
-    # EDINET-backed equivalent of JQuantsFundamentalsProvider yet, so that half
-    # stays on J-Quants regardless of the setting.
+    # Each dataset reads its own source setting - JP_PRICE_SOURCE for prices,
+    # JP_STATEMENT_SOURCE for statements. Building the wrong one for the other
+    # dataset would need credentials it has no reason to require.
     price_provider = None
     if dataset is Dataset.PRICES:
         price_provider, _market = _price_source(settings.jp_price_source, settings)
         console.print(f"[dim]価格の取得元: {settings.jp_price_source.lower()}[/dim]")
+    statement_provider = None
+    if dataset is Dataset.STATEMENTS and settings.jp_statement_source.strip().lower() == "edinet":
+        statement_provider = EdinetFundamentalsProvider(
+            settings.edinet_api_key,
+            price_source=lambda symbol: bulk_latest_close(database, symbol),
+        )
+        console.print("[dim]財務諸表の取得元: edinet[/dim]")
     ingester = BulkIngester(
         database,
         api_key=settings.jquants_api_key,
         throttle_seconds=throttle,
         price_provider=price_provider,
+        statement_provider=statement_provider,
     )
 
     with Progress(

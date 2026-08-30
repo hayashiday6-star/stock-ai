@@ -31,6 +31,7 @@ from stock_ai.ir.edinet_financials import (
     INSTANT_FIELDS,
     NON_CONSOLIDATED,
     AnnualFigures,
+    EdinetFundamentalsProvider,
     FilingHeader,
     element_name,
     fetch_annual_reports,
@@ -230,6 +231,28 @@ def test_roe_takes_the_consolidated_figure(years: dict[str, AnnualFigures]) -> N
     assert years["当期"].roe == pytest.approx(0.129)
 
 
+def test_dividend_per_share_is_read_from_the_real_filing(
+    years: dict[str, AnnualFigures],
+) -> None:
+    """1株当たり配当額、経営指標等。日立の実ファイルに5期分そのまま入っている。
+
+    分割調整はされていない当時のままの額――前々期の180円から前期の43円への
+    落差は、2024年の1:5分割をまたいでいるため。ここでは実額をそのまま読める
+    ことだけを確認する。分割をまたいだ比較は growth.py の restated() の仕事。
+    """
+    assert years["当期"].dividend_per_share == 50.0
+    assert years["前期"].dividend_per_share == 43.0
+    assert years["前々期"].dividend_per_share == 180.0
+
+
+def test_dividend_per_share_is_read_regardless_of_consolidation(
+    rows: list[dict[str, str]],
+) -> None:
+    """配当は連結・単体の区別が無い項目。ENTITY_FIELDS 経由で常に取れる。"""
+    standalone = {r["要素ID"].split(":")[-1] for r in summary_rows(rows) if not is_consolidated(r)}
+    assert "DividendPaidPerShareSummaryOfBusinessResults" in standalone
+
+
 def test_falls_back_to_japanese_gaap_when_there_is_no_ifrs() -> None:
     """日本基準の会社には IFRS 名の要素が無い。そのときだけ日本基準名を使う。"""
     body = make_zip(
@@ -358,17 +381,24 @@ def test_share_count_is_not_split_restated(years: dict[str, AnnualFigures]) -> N
     assert implied / before.shares_outstanding == pytest.approx(5.0, abs=0.02)
 
 
-def test_no_per_share_fields_are_exposed() -> None:
-    """1株当たりの値は持たない。持てば、いずれ年をまたいで割られる。
+def test_eps_and_bps_stay_unexposed() -> None:
+    """EPS・BPS は持たない。1株配当・発行済株式数とは尺度が違うため。
 
-    実データで言うと、前々期の1株配当 180円 ÷ EPS 126.91円 は配当性向 141.8%。
-    有報が報告している値は 28.8%。分割前の株数で払った配当を、分割後の尺度の
-    EPS で割った結果で、どちらの数字も単体では正しい。
+    有報の EPS は提出会社が**遡及適用済み**で載せている――前々期の値も、その後の
+    分割を織り込んだ現在の株数基準になっている。一方、発行済株式数と1株配当は
+    「当時のまま」。同じ前々期の行でも、EPS 126.91円 は分割後基準、1株配当
+    180円は分割前基準で、配当性向を単純に割ると 141.8%（有報の報告値は
+    28.8%）という、どちらも単体では正しい数字から誤った比率が生まれる。
+
+    ``growth.restated()`` は発行済株式数の変化から分割係数を出して割り戻す
+    仕組みで、これは「当時のまま」の値どうしを揃える前提で動く。EPS のように
+    既に遡及適用された値を混ぜると、二重に割ってしまい別の誤りになる。1株配当
+    は発行済株式数と同じ「当時のまま」の基準なので、こちらは安全に持てる。
     """
-    implied_payout = 180 / 126.91  # 前々期の1株配当 ÷ 基本的1株当たり当期利益（IFRS）
+    implied_payout = 180 / 126.91  # 前々期の1株配当（当時のまま） ÷ EPS（遡及適用済み）
     assert implied_payout == pytest.approx(1.418, abs=0.001)
     fields = set(AnnualFigures.__dataclass_fields__)
-    assert not {f for f in fields if "per_share" in f or f in {"eps", "dps", "bps"}}
+    assert not {f for f in fields if f in {"eps", "dps", "bps"}}
     assert fields == {
         "year",
         "revenue",
@@ -377,6 +407,7 @@ def test_no_per_share_fields_are_exposed() -> None:
         "total_assets",
         "roe",
         "shares_outstanding",
+        "dividend_per_share",
     }
 
 
@@ -556,16 +587,17 @@ def test_reports_carry_the_consolidated_numbers(rows: list[dict[str, str]]) -> N
     assert latest.equity == 6_568_369_000_000.0
 
 
-def test_reports_leave_per_share_fields_unset(rows: list[dict[str, str]]) -> None:
+def test_reports_leave_eps_and_bps_unset(rows: list[dict[str, str]]) -> None:
     """``FinancialReport`` には eps も bps もあるが、有報からは埋めない。
 
-    EPS は分割調整済み、1株配当と株数は当時のまま。同じ行に並べた時点で、
-    どれかの組み合わせが年をまたいで割られる。埋めないのが唯一の防ぎ方。
+    理由は :func:`test_eps_and_bps_stay_unexposed` の通り、EPS が遡及適用済み
+    である一方、株数や配当は当時のまま――尺度が違う。1株配当は株数と同じ
+    尺度なので、こちらは埋める。``payout_ratio`` は EPS が要るプロパティなので、
+    1株配当があっても None のままになる。
     """
     for report in to_reports(parse_header(rows), parse_summary(rows)):
         assert report.eps is None
         assert report.bps is None
-        assert report.dividend_per_share is None
         assert report.payout_ratio is None
 
 
@@ -806,6 +838,71 @@ def test_fetch_annual_reports_goes_from_symbol_to_five_years(
     reports = fetch_annual_reports("6501", source=source_over(annual_report()))
     assert [r.fiscal_year for r in reports] == [2022, 2023, 2024, 2025, 2026]
     assert fake_http.last["url"].endswith("/documents/S100YGBO")
+
+
+def test_fundamentals_provider_uses_aggregates_not_per_share(
+    fake_http: type[_Client], fixture_bytes: bytes
+) -> None:
+    """時価総額・純利益・純資産という絶対額どうしで比率を出す。実データで確かめる。
+
+    日立 当期: net_income 802,368百万、equity 6,568,369百万、
+    shares_outstanding 4,535,560千株。株価を2,000円とすると時価総額は
+    9,071,120百万円になる。
+    """
+    fake_http.response = _Response(make_zip(fixture_bytes))
+    provider = EdinetFundamentalsProvider(
+        None,
+        source=source_over(annual_report()),
+        price_source=lambda symbol: 2000.0,
+        clock=lambda: dt.date(2026, 8, 23),
+    )
+
+    snapshot, reports = provider.fetch_snapshot_and_statements("6501")
+
+    assert [r.fiscal_year for r in reports] == [2022, 2023, 2024, 2025, 2026]
+    assert snapshot.symbol == "6501"
+    assert snapshot.as_of == dt.date(2026, 8, 23)
+    assert snapshot.revenue == 10_586_781_000_000.0
+    assert snapshot.net_income == 802_368_000_000.0
+    assert snapshot.market_cap == pytest.approx(2000.0 * 4_535_560_000.0)
+    assert snapshot.per == pytest.approx(snapshot.market_cap / 802_368_000_000.0)
+    assert snapshot.pbr == pytest.approx(snapshot.market_cap / 6_568_369_000_000.0)
+    assert snapshot.dividend_yield is None
+
+
+def test_fundamentals_provider_prefers_the_filers_own_roe(
+    fake_http: type[_Client], fixture_bytes: bytes
+) -> None:
+    """ROE は net_income / equity ではなく、有報が報告する値を使う。
+
+    有報の値は 12.9%。net_income / equity で出すと 12.2%（分母が期末値だけの
+    ため）で、一致しない。優先順位が効いていることをこの差で確かめる。
+    """
+    fake_http.response = _Response(make_zip(fixture_bytes))
+    provider = EdinetFundamentalsProvider(
+        None, source=source_over(annual_report()), price_source=lambda symbol: 2000.0
+    )
+
+    snapshot, _reports = provider.fetch_snapshot_and_statements("6501")
+
+    assert snapshot.roe == pytest.approx(0.129)
+    assert pytest.approx(0.122, abs=0.001) == 802_368_000_000.0 / 6_568_369_000_000.0
+
+
+def test_fundamentals_provider_leaves_price_ratios_unset_without_a_price(
+    fake_http: type[_Client], fixture_bytes: bytes
+) -> None:
+    """価格が無ければ、価格が要る比率だけ空欄になる。売上・純利益は出る。"""
+    fake_http.response = _Response(make_zip(fixture_bytes))
+    provider = EdinetFundamentalsProvider(None, source=source_over(annual_report()))
+
+    snapshot, _reports = provider.fetch_snapshot_and_statements("6501")
+
+    assert snapshot.market_cap is None
+    assert snapshot.per is None
+    assert snapshot.pbr is None
+    assert snapshot.revenue == 10_586_781_000_000.0
+    assert snapshot.net_income == 802_368_000_000.0
 
 
 def test_a_later_correction_wins(fake_http: type[_Client], fixture_bytes: bytes) -> None:

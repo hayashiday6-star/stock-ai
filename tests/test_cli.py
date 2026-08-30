@@ -557,8 +557,8 @@ def test_statements_show_prints_what_was_stored(monkeypatch: pytest.MonkeyPatch)
 def test_statements_show_prints_empty_columns_too(monkeypatch: pytest.MonkeyPatch) -> None:
     """埋まらなかった列も出す。空欄であること自体が知りたいこと。
 
-    EDINET から取ると 営業利益・EPS・BPS・1株配当 は空になる。黙って列ごと
-    消すと、取れていないのか元から無いのかが分からなくなる。
+    EDINET から取ると 営業利益・EPS・BPS は空になる（1株配当は埋まる）。黙って
+    列ごと消すと、取れていないのか元から無いのかが分からなくなる。
     """
     from stock_ai import cli
     from stock_ai.data.types import FinancialReport
@@ -712,7 +712,7 @@ def test_bulk_fetch_prices_uses_the_configured_source(monkeypatch: pytest.Monkey
 
 
 def test_bulk_fetch_statements_ignores_jp_price_source(monkeypatch: pytest.MonkeyPatch) -> None:
-    """統計側は今回の修正の対象外。巻き込んで壊していないことだけ確認する。"""
+    """統計側の取得元は JP_STATEMENT_SOURCE で決まる。JP_PRICE_SOURCE には従わない。"""
     from stock_ai import cli
     from stock_ai.data.bulk import BulkReport, Dataset
     from stock_ai.database.engine import Database
@@ -738,5 +738,42 @@ def test_bulk_fetch_statements_ignores_jp_price_source(monkeypatch: pytest.Monke
 
     assert result.exit_code == 0, result.output
     assert captured["price_provider"] is None
+    assert captured["statement_provider"] is None  # 既定の jquants は None のまま
+    database.dispose()
+    get_settings.cache_clear()
+
+
+def test_bulk_fetch_statements_uses_edinet_when_selected(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``JP_STATEMENT_SOURCE=edinet`` で ``bulk-fetch --what statements`` を切り替える。
+
+    以前は ``JQuantsFundamentalsProvider`` 固定で、この設定を見ていなかった。
+    """
+    from stock_ai import cli
+    from stock_ai.data.bulk import BulkReport, Dataset
+    from stock_ai.database.engine import Database
+
+    database = Database("sqlite:///:memory:")
+    database.create_all()
+    monkeypatch.setattr(cli, "Database", lambda: database)
+    monkeypatch.setenv("JP_STATEMENT_SOURCE", "edinet")
+    get_settings.cache_clear()
+
+    captured: dict[str, object] = {}
+
+    class _FakeIngester:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            captured.update(kwargs)
+
+        def run(self, *args: object, **kwargs: object) -> BulkReport:
+            return BulkReport(dataset=Dataset.STATEMENTS)
+
+    monkeypatch.setattr(cli, "BulkIngester", _FakeIngester)
+    monkeypatch.setattr(cli, "EdinetFundamentalsProvider", lambda *a, **k: "edinet-provider")
+
+    result = runner.invoke(cli.app, ["bulk-fetch", "--what", "statements", "--symbols", "6501"])
+
+    assert result.exit_code == 0, result.output
+    assert captured["statement_provider"] == "edinet-provider"
+    assert captured["price_provider"] is None  # prices データセットではないので触らない
     database.dispose()
     get_settings.cache_clear()

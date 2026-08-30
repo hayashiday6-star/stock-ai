@@ -151,6 +151,7 @@ class FinancialReport(BaseModel):
     bps: float | None = None
     dividend_per_share: float | None = None  # annual DPS for the period
     shares_outstanding: float | None = None
+    roe: float | None = None  # as reported by the filer, not derived
 
     @property
     def is_annual(self) -> bool:

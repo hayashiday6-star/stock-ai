@@ -45,8 +45,16 @@ UTF-16LE のタブ区切りで、``jpcrp`` で始まるファイルが本体（`
 から1年ずつ遡って割り当てる。銘柄コードも同じ ``jpdei`` にあるが5桁
 （日立は ``65010``）で、末尾の株式種別を落とさないと watchlist と噛み合わない。
 
-このモジュールは**絶対額と、報告された比率**だけを取る。1株当たりの値から
-何かを導かない。
+このモジュールが取るのは基本的に絶対額と、報告された比率。例外は1株当たり
+配当額――発行済株式数と同じ「当時のまま」の尺度なので、``growth.restated()``
+が既に安全に扱える（罠2）。EPS・BPS はその尺度が違うので、依然として取らない。
+
+``EdinetFundamentalsProvider`` は ``JQuantsFundamentalsProvider`` と同じ契約
+（``fetch_snapshot_and_statements``）で ``BulkIngester`` に差し込める。比率は
+必ず絶対額どうしで出すため、1株当たりの値から比率を導く経路そのものが無く、
+分割の尺度違いによる誤りは構造的に起こらない。配当利回りだけは出さない――
+配当総額が無く、唯一の代替である「1株配当 ÷ 株価」は直近の開示より後に分割が
+あれば桁で狂うため。
 """
 
 from __future__ import annotations
@@ -61,7 +69,8 @@ from pydantic import SecretStr
 
 from stock_ai.core.exceptions import DataError, RateLimitError
 from stock_ai.core.logging import get_logger
-from stock_ai.data.types import FinancialReport, FiscalPeriod
+from stock_ai.data.jquants_fundamentals import Clock, PriceLookup, _ratio
+from stock_ai.data.types import FinancialReport, FiscalPeriod, Fundamentals
 from stock_ai.ir.edinet import CURRENT_PLACEMENT, EdinetDisclosureSource, key_placements
 
 logger = get_logger(__name__)
@@ -161,6 +170,7 @@ ELEMENTS: dict[str, tuple[str, ...]] = {
         "RateOfReturnOnEquitySummaryOfBusinessResults",
     ),
     "shares_outstanding": ("TotalNumberOfIssuedSharesSummaryOfBusinessResults",),
+    "dividend_per_share": ("DividendPaidPerShareSummaryOfBusinessResults",),
 }
 
 #: 完全一致で連結の売上が見つからなかったときに、要素名の形で探すための語。
@@ -197,7 +207,11 @@ INSTANT_FIELDS = frozenset({"equity", "total_assets", "shares_outstanding"})
 #: EDINET もそう扱っていて、この行には常に ``_NonConsolidatedMember`` が付く。連結の
 #: 行だけに絞ると、単体の財務を弾くのと同じ理屈でこれも消え、株式数の列だけが空欄に
 #: なる。例外は出ない。
-ENTITY_FIELDS = frozenset({"shares_outstanding"})
+#:
+#: 1株当たり配当額も同じ理由でここに入る。配当は提出会社が株主に払うもので、
+#: 連結損益とは別の額。実ファイル（6501・7203・8306・9020）でも、この要素には
+#: 例外なく ``_NonConsolidatedMember`` が付いている。
+ENTITY_FIELDS = frozenset({"shares_outstanding", "dividend_per_share"})
 
 
 @dataclasses.dataclass(frozen=True)
@@ -218,6 +232,7 @@ class AnnualFigures:
     total_assets: float | None = None
     roe: float | None = None
     shares_outstanding: float | None = None
+    dividend_per_share: float | None = None
 
     def is_empty(self) -> bool:
         """何も読めなかったか。"""
@@ -474,6 +489,8 @@ def to_reports(
                 net_income=entry.net_income,
                 equity=entry.equity,
                 shares_outstanding=entry.shares_outstanding,
+                dividend_per_share=entry.dividend_per_share,
+                roe=entry.roe,
             )
         )
     return reports
@@ -596,3 +613,83 @@ def fetch_annual_reports(
             "窓を広げるか、決算から3ヶ月後あたりに実行してください。"
         )
     return parse_filing(fetch_document(doc_ids[0], api_key), symbol=symbol)
+
+
+class EdinetFundamentalsProvider:
+    """有報と株価から、J-Quants 版と互換の Fundamentals スナップショットを作る。
+
+    比率は必ず絶対額どうし（時価総額 ÷ 純利益、など）で出す。EPS・BPS は
+    ``fetch_annual_reports`` が返さないので使いようがなく、J-Quants 版で見つかった
+    「1株当たりの値を分割前の尺度のまま price と割る」誤りは、そもそも起こり得ない。
+
+    ``dividend_yield`` は出さない。EDINET の「主要な経営指標等」には配当総額が無く、
+    唯一の候補は 1株配当 ÷ 株価だが、1株配当は「当時のまま」の尺度で株価は今日の
+    ものなので、直近の開示より後に分割があれば桁で狂う――まさにこのモジュールが
+    避けている誤りそのものになる。使えない値を出すより空欄にする。
+    """
+
+    name = "edinet"
+
+    def __init__(
+        self,
+        api_key: SecretStr | None,
+        lookback_days: int = 400,
+        source: EdinetDisclosureSource | None = None,
+        price_source: PriceLookup | None = None,
+        clock: Clock | None = None,
+    ) -> None:
+        """Create the provider.
+
+        Args:
+            api_key: EDINET API key.
+            lookback_days: 有報を探す窓。既定は400日（年1回の開示に対して余裕を持たせる）。
+            source: 日ごとの書類一覧を使い回すための :class:`EdinetDisclosureSource`。
+                銘柄ごとに新しく作ると、有報を探す走査（最大 ``lookback_days`` 回の
+                リクエスト）を銘柄の数だけ繰り返す。一括処理では必ず1つを使い回すこと。
+            price_source: 銘柄の現在値を返す callable。無ければ比率は revenue と
+                net_income だけになり、価格が要るものは ``None`` のまま。
+            clock: スナップショット日付。既定は今日。
+        """
+        self._api_key = api_key
+        self._source = source or EdinetDisclosureSource(
+            api_key=api_key, lookback_days=lookback_days
+        )
+        self._price_source = price_source
+        self._today = clock or dt.date.today
+
+    def fetch_snapshot_and_statements(
+        self, symbol: str
+    ) -> tuple[Fundamentals, list[FinancialReport]]:
+        """1銘柄の有報を読み、系列とスナップショットを両方返す。
+
+        ``BulkIngester`` が両方を1回のフェッチから期待する形に合わせてある
+        （:class:`~stock_ai.data.jquants_fundamentals.JQuantsFundamentalsProvider`
+        と同じ契約）。
+        """
+        reports = fetch_annual_reports(symbol, self._api_key, source=self._source)
+        latest = max(reports, key=lambda r: r.fiscal_year)
+
+        price: float | None = None
+        if self._price_source is not None:
+            try:
+                price = self._price_source(symbol)
+            except Exception as exc:  # price is optional - never fail the fetch
+                logger.warning("Price lookup failed for %s: %s", symbol, exc)
+
+        shares = latest.shares_outstanding
+        market_cap = price * shares if (price and shares) else None
+        # 提出会社の報告する ROE を優先する。分母を平均自己資本にしているなど、
+        # 期末値だけの net_income / equity より正確なことがある。
+        roe = latest.roe if latest.roe is not None else _ratio(latest.net_income, latest.equity)
+        snapshot = Fundamentals(
+            symbol=symbol,
+            as_of=self._today(),
+            roe=roe,
+            per=_ratio(market_cap, latest.net_income),
+            pbr=_ratio(market_cap, latest.equity),
+            dividend_yield=None,
+            market_cap=market_cap,
+            revenue=latest.revenue,
+            net_income=latest.net_income,
+        )
+        return snapshot, reports
