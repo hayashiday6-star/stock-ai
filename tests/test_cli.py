@@ -643,6 +643,10 @@ def test_info_shows_the_tachibana_deadline_when_it_is_selected(
     株価取得が黙って止まる。
     """
     monkeypatch.setenv("JP_PRICE_SOURCE", "tachibana")
+    # 版を固定する。固定しないと「今日の既定版」を見ることになり、v4r10 が公開
+    # された 2026-08-29 を境に v4r9 の停止日は出なくなる。実際そうなって落ちた。
+    # 停止日が見えることを確かめたいのであって、今日どの版が既定かではない。
+    monkeypatch.setenv("TACHIBANA_API_VERSION", "v4r9")
     get_settings.cache_clear()
 
     result = runner.invoke(app, ["info"])
