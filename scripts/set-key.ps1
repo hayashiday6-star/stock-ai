@@ -12,7 +12,9 @@
     written to the PSReadLine history file in plain text and stays there.
 
 .PARAMETER Name
-    The variable to set, e.g. EDINET_API_KEY.
+    The variable to set, e.g. EDINET_API_KEY. MOOMOO_TRADE_PASSWORD is the
+    6-digit moomoo trading PIN, which belongs here for the same reason a key
+    does: typed on a normal command line it lands in the history file.
 
 .EXAMPLE
     .\scripts\set-key.ps1 EDINET_API_KEY
@@ -30,7 +32,8 @@ param(
         'DISCORD_WEBHOOK_URL',
         'LINE_CHANNEL_ACCESS_TOKEN',
         'TELEGRAM_BOT_TOKEN',
-        'TELEGRAM_CHAT_ID'
+        'TELEGRAM_CHAT_ID',
+        'MOOMOO_TRADE_PASSWORD'
     )]
     [string]$Name = 'EDINET_API_KEY'
 )

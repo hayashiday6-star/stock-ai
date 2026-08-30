@@ -40,6 +40,10 @@ jobs:
               "anthropic", "openai", "google.generativeai",
               "pandas", "sqlalchemy", "streamlit", "schedule",
               "yfinance", "httpx", "openpyxl",
+              # The moomoo client is imported inside moomoo-check, and only
+              # ever on a machine with OpenD - so nothing else would notice
+              # if a sync stopped installing it.
+              "moomoo",
           ]
           missing = [m for m in required if importlib.util.find_spec(m) is None]
           if missing:

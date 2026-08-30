@@ -718,6 +718,105 @@ Two details worth knowing about it:
   `-Channel discord` — and then go and look at Discord. A clean exit means the
   service accepted the POST, not that the message arrived.
 
+## Connecting a moomoo account (OpenD)
+
+```powershell
+.\scripts\moomoo-check.ps1               # paper account
+.\scripts\moomoo-check.ps1 -Real         # live account, read only
+.\scripts\moomoo-check.ps1 -Real -Unlock # and test the 6-digit trading PIN
+```
+
+moomoo has no API key. Authentication is a gateway program — **OpenD** — that
+runs on your own PC, that you log into with your moomoo securities account, and
+that this code then talks to on `127.0.0.1:11111`. Logging out or closing OpenD
+is the same as deleting a key.
+
+That design makes every failure look identical from Python, and the way it looks
+is the worst available one: **the call blocks**. Confirmed while building this —
+constructing `OpenQuoteContext` against a port with nothing listening does not
+raise, it retries in a background thread and never returns. So "OpenD was never
+installed", "OpenD is sitting on a verification-code prompt", and "the account
+has no permission for this market" are all, at the prompt, the same nothing
+happening.
+
+`moomoo-check` therefore probes the port with a plain socket *before* the client
+gets a chance to hang, puts a deadline on the handshake after that, and then
+walks the rest of the chain one link at a time — client installed, port open,
+logged in (quotes and trading judged separately, because they drop separately),
+account visible, account answering, PIN accepted — stopping at the first break
+and naming it. The empty-account case gets its own treatment: a login that
+worked and an account list that came back empty is not "no accounts", it is the
+wrong entity or market filter, so the report lists what *was* found next to what
+was asked for.
+
+It never places an order, and a PIN that is tested is re-locked immediately
+afterwards. Account numbers are masked to the last four digits and balances are
+withheld unless `--show-assets` is given, because `moomoo-output.txt` is a file
+people paste when asking for help.
+
+Once that passes, `moomoo-flow` reads per-symbol capital flow through the same
+gateway — `uv run stock-ai moomoo-flow 9842 --start 2026-08-17 --end 2026-08-28`.
+It takes this project's own symbol forms (`9842`, `9842.T`, `AAPL`) and converts
+them to moomoo's market-first `JP.9842`, and it goes through the same port probe
+and handshake deadline, so a missing gateway is a message rather than a hang.
+Calling the client directly instead, note three things. The argument names are
+`start`/`end` — `begin_time`/`end_time` raise `TypeError`. `main_in_flow` is
+documented as valid only for the dated periods, so the command omits that column
+on intraday rather than printing a figure that reads as a real zero. And do not
+pass `security_firm` to `OpenQuoteContext`: it is a crypto-only field there and
+it is not ignored — setting it to `FUTUJP` made OpenD refuse a plain US stock as
+an unsupported *crypto* quote. It belongs on the trade context.
+
+One thing to know before reaching for it as a data source: moomoo grants
+*quote* access per market, separately from what the account may trade, and it
+currently lists Japanese equities as not available through the API at all. A JP
+symbol is refused however the connection is configured, so JP prices here keep
+coming from J-Quants and yfinance. `moomoo-flow AAPL` is the one-command test
+that separates an account problem from a per-market one, and the command says
+so on any refusal. The market table is deliberately *not* hard-coded — moomoo
+reserves the right to change it, and a stale copy would contradict the gateway.
+
+Setup, from downloading OpenD to the first successful check, is in
+**[docs/MOOMOO_OPEND.md](docs/MOOMOO_OPEND.md)** (Japanese). Execution through
+moomoo is deliberately *not* implemented — same stance as the IBKR skeleton.
+
+## Accumulation screen (US)
+
+```powershell
+uv run stock-ai accumulation AAPL MSFT NVDA      # a few names, no file needed
+uv run stock-ai accumulation --symbols-file us.txt
+uv run stock-ai accumulation                     # the whole market, a few minutes
+```
+
+Three phases: a price/volume pass over every NYSE/NASDAQ/AMEX common stock, then
+funding flow (through moomoo OpenD), the short side and the chart on what
+survives, then a breakout test with stop levels as prices.
+
+The design point is what it refuses to do. Several metrics the brief for this
+asked for — dark-pool share, block prints, borrow fees — are sold rather than
+published, and the ratio it wanted as "large orders ÷ volume" cannot be formed
+at all from a feed that reports net currency per order-size band. Those are
+printed as 取得不可 with the reason, never as a plausible number, and absence is
+a *type* here rather than a blank: a `Missing` cannot be added, compared or
+formatted as a digit, so there is no code path from an unmeasured metric to a
+table cell that reads like a measurement.
+
+Cost ordering is the other half. Price and volume come from one bulk download;
+market cap is one request per symbol and moomoo's flow is capped at 30 calls per
+30 seconds, so those are asked only of names that already passed everything
+free. Details, including the full obtainable/not-obtainable table, are in
+**[docs/ACCUMULATION.md](docs/ACCUMULATION.md)** (Japanese). It is not advice.
+
+Run it daily with `scripts\7-accumulation-daily.ps1 -Register -Channel discord`
+(or the `アキュムレーション日次.bat` menu), which registers a Windows task and
+pushes a summary to Discord. Two details are deliberate there. A quiet day is
+silent by default — this shape finds nothing most days, and a "該当なし" message
+every morning is one nobody reads by the second week — so `-Heartbeat` exists
+for the opposite worry, that a quiet day and a dead job look identical from a
+phone. And the message is budgeted to Discord's 2,000-character limit rather
+than discovering it: Discord drops an oversized body whole instead of trimming
+it. The line naming what was *not* measured survives the trim in every case.
+
 ## Daily automation
 
 ```bash

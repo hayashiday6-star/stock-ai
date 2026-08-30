@@ -31,6 +31,11 @@ data/*.sqlite
 data/*.sqlite3
 *.db-journal
 
+# --- Diagnostic reports (regenerated on demand; may name an account) ---
+verify-output.txt
+verify-ai-output.txt
+moomoo-output.txt
+
 # --- IDE / OS ---
 .vscode/
 .idea/

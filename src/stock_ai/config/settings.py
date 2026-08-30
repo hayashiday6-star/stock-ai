@@ -13,7 +13,7 @@ from typing import Literal
 from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-from stock_ai.config.constants import ENV_FILE
+from stock_ai.config.constants import ENV_FILE, OPEND_HOST, OPEND_PORT
 from stock_ai.core.logging import register_secret
 
 Environment = Literal["development", "production"]
@@ -59,6 +59,28 @@ class Settings(BaseSettings):
     anthropic_model: str | None = Field(default=None, validation_alias="ANTHROPIC_MODEL")
     openai_api_key: SecretStr | None = Field(default=None, validation_alias="OPENAI_API_KEY")
     gemini_api_key: SecretStr | None = Field(default=None, validation_alias="GEMINI_API_KEY")
+
+    # --- Brokerage: moomoo OpenD ---
+    #: Where the local OpenD gateway listens. It is loopback by default and
+    #: should stay that way: OpenD holds an authenticated brokerage session, so
+    #: binding it to a reachable address publishes that session to the network.
+    moomoo_opend_host: str = Field(default=OPEND_HOST, validation_alias="MOOMOO_OPEND_HOST")
+    moomoo_opend_port: int = Field(default=OPEND_PORT, validation_alias="MOOMOO_OPEND_PORT")
+    #: Which moomoo entity holds the account - ``FUTUJP`` for moomoo証券 (Japan).
+    #: Naming the wrong one does not raise: the account list simply comes back
+    #: empty, which reads as "no accounts" rather than "wrong entity".
+    moomoo_security_firm: str = Field(default="FUTUJP", validation_alias="MOOMOO_SECURITY_FIRM")
+    moomoo_trd_market: str = Field(default="JP", validation_alias="MOOMOO_TRD_MARKET")
+    #: ``SIMULATE`` (paper) or ``REAL``. Paper by default, for the same reason
+    #: PaperBroker is the default broker: the live account is opt-in, never the
+    #: value a fresh checkout happens to inherit.
+    moomoo_trd_env: str = Field(default="SIMULATE", validation_alias="MOOMOO_TRD_ENV")
+    #: The 6-digit moomoo trading PIN (取引暗証番号), which is *not* the login
+    #: password. Optional: leaving it unset means the live account is never
+    #: unlocked, which is the safe state to be in by default.
+    moomoo_trade_password: SecretStr | None = Field(
+        default=None, validation_alias="MOOMOO_TRADE_PASSWORD"
+    )
 
     # --- Notifications (Phase 8) ---
     discord_webhook_url: SecretStr | None = Field(
