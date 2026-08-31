@@ -70,3 +70,18 @@ class NotificationError(StockAIError):
 
 class AIError(StockAIError):
     """An AI provider failed, was misconfigured, or refused a request."""
+
+
+class OpsError(StockAIError):
+    """The canonical trading repository was reached, and the request failed."""
+
+
+class OpsUnavailableError(OpsError):
+    """The canonical trading repository could not be reached at all.
+
+    Kept distinct because the two mean opposite things on screen. A failed
+    request is about the request; an unreachable repository means every number
+    in the operations view is missing rather than wrong - and the fix lies
+    outside stock-ai (start WSL, correct the path). Rendering that state as
+    "no positions" would be a lie the reader has no way to detect.
+    """

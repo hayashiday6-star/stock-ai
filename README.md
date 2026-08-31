@@ -877,9 +877,9 @@ uv run stock-ai notify "buy: AAPL" --channel console  # console|discord|telegram
 uv run streamlit run src/stock_ai/dashboard/app.py
 ```
 
-Ten screens: データ取得 / ランキング / 日米統合ランキング / スクリーニング /
-ポートフォリオ / 監視リスト / バックテスト / ファクター検証 / AI分析 / 通知テスト —
-the CLI features above, without the command line.
+Eleven screens: データ取得 / ランキング / 日米統合ランキング / スクリーニング /
+ポートフォリオ / 監視リスト / バックテスト / ファクター検証 / AI分析 / 通知テスト /
+自動売買 運用 — the CLI features above, without the command line.
 
 The two screens that spend money carry the same cost machinery the CLI does:
 the watchlist has a free **費用を見積もる** button that counts tokens without
@@ -888,6 +888,29 @@ finishes, and the sidebar shows the active model — or warns that the SDK is
 missing, which otherwise looks identical to a working setup. A button in a
 browser has no console line to notice afterwards, so a control that bills an
 account silently is the one thing this had to avoid.
+
+## Auto-trading operations (自動売買 運用)
+
+The last dashboard screen does not trade. It reads the separate auto-trading
+repository that actually runs - in WSL, at `Ubuntu-24.04:~/test` by default -
+and shows its kill switches, cron jobs, positions, equity curves, trade history
+with the rule that produced each trade, and notification toggles. It can trip a
+kill switch and run the scheduled jobs by hand; it cannot place an order, edit
+that repository's ledger, switch broker, or **release** a kill switch.
+
+None of the trading rules live here. The screen hands each request to that
+repository's own `app_lib` over `wsl.exe` and renders the answer, because a
+second copy of "60-day high, 1.5x volume" in this codebase is a number that goes
+quietly wrong the first time only one of the two is edited.
+
+```bash
+uv run stock-ai ops --what check     # is the canonical repository reachable?
+uv run stock-ai ops --what status    # kill switches, cron, positions
+uv run stock-ai ops --what equity    # daily mark-to-market, three tracks
+```
+
+Point it somewhere else with `OPS_WSL_DISTRO` / `OPS_REPO_PATH` in `.env`.
+See [docs/OPS.md](docs/OPS.md).
 
 ## Backtesting
 

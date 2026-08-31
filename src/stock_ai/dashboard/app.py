@@ -28,7 +28,7 @@ from stock_ai.ai.factory import get_ai_provider
 from stock_ai.ai.pricing import UsageLedger
 from stock_ai.config.settings import get_settings
 from stock_ai.core.exceptions import BacktestError, NotificationError
-from stock_ai.dashboard import data
+from stock_ai.dashboard import data, ops_page
 from stock_ai.data.types import Importance
 from stock_ai.database.engine import Database
 from stock_ai.notification.factory import get_notifier
@@ -796,6 +796,7 @@ def main() -> None:
         "🧪 ファクター検証": lambda: _page_factor_test(database),
         "🤖 AI分析": _page_ai,
         "🔔 通知テスト": _page_notify,
+        "🛰️ 自動売買 運用": ops_page.render,
     }
     choice = st.sidebar.radio("メニュー", list(pages.keys()))
     st.sidebar.divider()

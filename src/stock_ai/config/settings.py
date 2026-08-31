@@ -114,6 +114,16 @@ class Settings(BaseSettings):
     )
     telegram_chat_id: SecretStr | None = Field(default=None, validation_alias="TELEGRAM_CHAT_ID")
 
+    # --- 自動売買の運用モニタ(正典は別リポジトリ) ---
+    # 実弾/ペーパーの自動売買そのものは WSL 上の別リポジトリで動いていて、帳簿・
+    # シグナル・キルスイッチはそちらが正典。ダッシュボードの「自動売買 運用」画面は
+    # そこを読みに行くだけで、ルールをこちらに複製しない(stock_ai.ops 参照)。
+    # 場所を設定にしてあるのは、正典が引っ越したときに黙って古いコピーを読み続ける
+    # 事故を避けるため — 実際に一度、Desktop の古いコピーと正典が分岐している。
+    ops_wsl_distro: str = Field(default="Ubuntu-24.04", validation_alias="OPS_WSL_DISTRO")
+    ops_repo_path: str = Field(default="/home/hayashida/test", validation_alias="OPS_REPO_PATH")
+    ops_repo_python: str = Field(default=".venv/bin/python", validation_alias="OPS_REPO_PYTHON")
+
     @property
     def is_production(self) -> bool:
         """Whether the application is running in the production environment."""

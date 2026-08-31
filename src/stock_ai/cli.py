@@ -77,6 +77,7 @@ from stock_ai.core.exceptions import (
     BrokerError,
     DataError,
     NotificationError,
+    OpsError,
 )
 from stock_ai.core.logging import configure_logging
 from stock_ai.core.scheduler import DailyScheduler, JobResult
@@ -132,6 +133,7 @@ from stock_ai.ir.sources import CompositeDisclosureSource, NewsDisclosureSource
 from stock_ai.news.sources import YFinanceNewsSource
 from stock_ai.notification.base import Notifier
 from stock_ai.notification.factory import get_notifier
+from stock_ai.ops.bridge import get_bridge
 from stock_ai.portfolio.analysis import PortfolioAnalysis, analyze_portfolio
 from stock_ai.portfolio.growth_factors import tenbagger_weighted_factors
 from stock_ai.portfolio.ranking import DEFAULT_MIN_COVERAGE, rank_securities
@@ -3824,6 +3826,88 @@ def _secret_status(settings: Settings) -> list[tuple[str, SecretStr | None]]:
         ("telegram_bot_token", settings.telegram_bot_token),
         ("moomoo_trade_password", settings.moomoo_trade_password),
     ]
+
+
+@app.command()
+def ops(
+    what: str = typer.Option("status", help="check | status | history | equity | jobs."),
+    limit: int = typer.Option(10, help="history のとき、新しい順に何件出すか。"),
+) -> None:
+    """Read the state of the canonical auto-trading repository (in WSL).
+
+    ダッシュボードの「自動売買 運用」画面と同じ経路を、画面を開かずに叩く。
+    読み取り専用で、発注も帳簿の変更もしない(キルスイッチの発動と設定の保存は
+    画面側にしか置いていない)。参照先は .env の OPS_WSL_DISTRO / OPS_REPO_PATH。
+    """
+    bridge = get_bridge()
+    console.print(f"参照先(正典): [bold]{bridge.target.label}[/bold]")
+    try:
+        if what == "check":
+            for key, value in bridge.ping().items():
+                console.print(f"  {key}: {value}")
+            return
+        if what == "status":
+            status = bridge.status()
+            kills = status.get("kill_switches") or []
+            console.print(
+                "  キルスイッチ: [red]発動中[/red] " + ", ".join(kills)
+                if kills
+                else "  キルスイッチ: [green]なし[/green]"
+            )
+            console.print(f"  cron: {len(status.get('cron') or [])}本")
+            risk = status.get("risk") or {}
+            console.print(
+                f"  broker: {risk.get('broker', '?')} / 資金 {risk.get('capital', 0):,}円"
+            )
+            table = Table(title="日本株トラックA 保有")
+            for column in ("コード", "銘柄", "株数", "状態", "約定日"):
+                table.add_column(column)
+            for position in status.get("jp_positions") or []:
+                table.add_row(
+                    str(position.get("code")),
+                    str(position.get("name", "")),
+                    str(position.get("shares")),
+                    str(position.get("status")),
+                    str(position.get("exec_date")),
+                )
+            console.print(table)
+            return
+        if what == "history":
+            rows = (bridge.trade_history().get("rows") or [])[:limit]
+            table = Table(title=f"売買履歴(新しい順 {len(rows)}件)")
+            for column in ("日付", "トラック", "コード", "銘柄", "売買", "株数", "価格"):
+                table.add_column(column)
+            for row in rows:
+                table.add_row(
+                    row["date"],
+                    row["track"],
+                    str(row["code"]),
+                    str(row["name"]),
+                    row["side"],
+                    str(row["shares"]),
+                    str(row["price"]),
+                )
+            console.print(table)
+            return
+        if what == "equity":
+            for curve in bridge.equity().values():
+                if curve is None:
+                    continue
+                pnl = curve["equity"] - curve["capital"]
+                console.print(
+                    f"  {curve['label']}: {curve['equity']:,.0f} {curve['currency']} "
+                    f"({pnl:+,.0f} / {curve['asof']}時点)"
+                )
+            return
+        if what == "jobs":
+            for name in bridge.jobs():
+                console.print(f"  {name}")
+            return
+    except OpsError as exc:
+        console.print(f"[red]正典を参照できませんでした:[/red] {exc}")
+        raise typer.Exit(code=1) from exc
+    console.print(f"[red]不明な --what:[/red] {what}")
+    raise typer.Exit(code=2)
 
 
 def _make_output_encoding_safe() -> None:
