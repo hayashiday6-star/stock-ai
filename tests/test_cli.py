@@ -445,6 +445,85 @@ def test_fetch_routes_japanese_codes_away_from_yfinance(monkeypatch) -> None:
     assert "rather than yfinance" in result.stdout
 
 
+def test_daily_prices_uses_the_configured_jp_price_source(monkeypatch) -> None:
+    """``daily`` の日本株価格取得は ``JP_PRICE_SOURCE`` に従う。
+
+    ``fetch``・``bulk-fetch`` は J-Quants 固定を後から ``JP_PRICE_SOURCE`` 配線
+    に直したが、``daily`` の混在リスト振り分けは立花プロバイダの実装(8/23)より
+    前の8/16に書かれ、日本株を常に ``jquants`` に固定したまま取り残されていた。
+    切り替えたはずが常に旧経路を叩き続ける、このプロジェクトで繰り返し起きて
+    いる不具合そのもの。
+    """
+    from stock_ai import cli
+    from stock_ai.database.engine import Database
+
+    database = Database("sqlite:///:memory:")
+    database.create_all()
+    monkeypatch.setattr(cli, "Database", lambda: database)
+    monkeypatch.setenv("JP_PRICE_SOURCE", "tachibana")
+    get_settings.cache_clear()
+
+    asked: list[tuple[str, tuple[str, ...]]] = []
+
+    def _source(name: str, _settings: object) -> tuple[object, str]:
+        return name, ("JP" if name in ("jquants", "tachibana") else "US")
+
+    class _Service:
+        def __init__(self, provider: str, *_args: object, **_kwargs: object) -> None:
+            self.provider = provider
+
+        def ingest_many(self, syms, *_args: object, **_kwargs: object) -> list:
+            asked.append((self.provider, tuple(syms)))
+            return []
+
+    monkeypatch.setattr(cli, "_price_source", _source)
+    monkeypatch.setattr(cli, "IngestionService", _Service)
+
+    result = runner.invoke(cli.app, ["daily", "--once", "7203", "AAPL"])
+
+    assert result.exit_code == 0, result.output
+    routed = dict(asked)
+    assert routed["tachibana"] == ("7203",)
+    assert routed["yfinance"] == ("AAPL",)
+    database.dispose()
+    get_settings.cache_clear()
+
+
+def test_daily_source_option_still_overrides_jp_routing(monkeypatch) -> None:
+    """``--source jquants`` は ``JP_PRICE_SOURCE`` より優先される単発の指定。"""
+    from stock_ai import cli
+    from stock_ai.database.engine import Database
+
+    database = Database("sqlite:///:memory:")
+    database.create_all()
+    monkeypatch.setattr(cli, "Database", lambda: database)
+    monkeypatch.setenv("JP_PRICE_SOURCE", "tachibana")
+    get_settings.cache_clear()
+
+    asked: list[tuple[str, tuple[str, ...]]] = []
+
+    def _source(name: str, _settings: object) -> tuple[object, str]:
+        return name, ("JP" if name in ("jquants", "tachibana") else "US")
+
+    class _Service:
+        def __init__(self, provider: str, *_args: object, **_kwargs: object) -> None:
+            self.provider = provider
+
+        def ingest_many(self, syms, *_args: object, **_kwargs: object) -> list:
+            asked.append((self.provider, tuple(syms)))
+            return []
+
+    monkeypatch.setattr(cli, "_price_source", _source)
+    monkeypatch.setattr(cli, "IngestionService", _Service)
+
+    result = runner.invoke(cli.app, ["daily", "--once", "--source", "jquants", "7203"])
+
+    assert result.exit_code == 0, result.output
+    assert dict(asked)["jquants"] == ("7203",)
+    database.dispose()
+    get_settings.cache_clear()
+
+
 # --- 財務諸表の取得元 -----------------------------------------------------
 
 

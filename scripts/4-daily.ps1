@@ -27,8 +27,9 @@
     Disclosure feed the monitor reads: all | edinet | news.
 
 .PARAMETER Source
-    Price source for symbols that are not Japanese listings. Four-digit codes
-    are routed to J-Quants regardless, so a mixed list needs no extra flag.
+    Override for Japanese listings only: jquants or tachibana. Left at the
+    default, four-digit codes follow JP_PRICE_SOURCE in .env; everything else
+    always goes to yfinance regardless of this flag.
 
 .PARAMETER MaxCost
     Dollars. The monitor job is skipped, and the run reported as failed, when
@@ -71,7 +72,7 @@ param(
     [string]$Channel,
     [ValidateSet('all', 'edinet', 'news')]
     [string]$Feed = 'all',
-    [ValidateSet('yfinance', 'jquants')]
+    [ValidateSet('yfinance', 'jquants', 'tachibana')]
     [string]$Source = 'yfinance',
     [double]$MaxCost = 0,
     [ValidateRange(1, 100)]
@@ -123,8 +124,9 @@ if ($Interactive) {
 
     Write-Host ''
     Write-Host 'Symbols whose prices to refresh, comma separated. Four-digit'
-    Write-Host 'codes go to J-Quants and the rest to yfinance, so 7203,6758,AAPL'
-    Write-Host 'is fine. Leave empty to only check the watchlist.'
+    Write-Host 'codes follow JP_PRICE_SOURCE in .env and the rest go to'
+    Write-Host 'yfinance, so 7203,6758,AAPL is fine. Leave empty to only check'
+    Write-Host 'the watchlist.'
     $symbolText = Read-Setting -Prompt 'Symbols' `
         -Pattern '^[A-Za-z0-9.,\-]+$' -Hint 'Letters, digits, dots and commas only.'
     if ($symbolText) { $Symbols = $symbolText -split ',' | Where-Object { $_ } }
