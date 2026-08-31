@@ -43,6 +43,7 @@ from stock_ai.database.repository import (
     HoldingRepository,
     PriceRepository,
     WatchlistRepository,
+    list_securities,
     list_symbols,
 )
 from stock_ai.ir.edinet import EdinetDisclosureSource
@@ -85,6 +86,59 @@ def stored_overview(database: Database) -> pd.DataFrame:
     return pd.DataFrame(rows, columns=["銘柄", "日足本数", "最新日", "財務"])
 
 
+def _resolve_price_provider(source: str) -> tuple[PriceProvider, str]:
+    """Return ``(provider, market)`` for a price source name.
+
+    Shared by :func:`ingest_prices` (one ad-hoc call) and :func:`bulk_update_stored`
+    (one call per already-known market group) so the two never drift apart on
+    which source builds which provider.
+    """
+    if source == "jquants":
+        return JQuantsPriceProvider(api_key=get_settings().jquants_api_key), "JP"
+    if source == "tachibana":
+        settings = get_settings()
+        return (
+            TachibanaPriceProvider(
+                settings.tachibana_auth_id,
+                settings.tachibana_private_key,
+                version=settings.tachibana_api_version,
+                base=settings.tachibana_base_url,
+                session_file=settings.tachibana_session_file,
+            ),
+            "JP",
+        )
+    return YFinancePriceProvider(), "US"
+
+
+def _resolve_fundamentals_provider(
+    source: str, database: Database
+) -> tuple[FundamentalsProvider, str]:
+    """Return ``(provider, market)`` for a fundamentals source name.
+
+    ``database`` supplies the already-stored price a snapshot's ratios need,
+    at no extra request - see :func:`latest_close`.
+    """
+    if source == "jquants":
+        from stock_ai.data.jquants_fundamentals import JQuantsFundamentalsProvider
+
+        return (
+            JQuantsFundamentalsProvider(
+                api_key=get_settings().jquants_api_key,
+                price_source=lambda sym: latest_close(database, sym),
+            ),
+            "JP",
+        )
+    if source == "edinet":
+        return (
+            EdinetFundamentalsProvider(
+                get_settings().edinet_api_key,
+                price_source=lambda sym: latest_close(database, sym),
+            ),
+            "JP",
+        )
+    return YFinanceFundamentalsProvider(), "US"
+
+
 def ingest_prices(
     database: Database,
     symbols: list[str],
@@ -98,25 +152,10 @@ def ingest_prices(
     ``source`` is yfinance (US), or jquants / tachibana (JP); ``provider``
     overrides it.
     """
-    market = "US"
     if provider is None:
-        if source == "jquants":
-            provider = JQuantsPriceProvider(api_key=get_settings().jquants_api_key)
-            market = "JP"
-        elif source == "tachibana":
-            settings = get_settings()
-            provider = TachibanaPriceProvider(
-                settings.tachibana_auth_id,
-                settings.tachibana_private_key,
-                version=settings.tachibana_api_version,
-                base=settings.tachibana_base_url,
-                session_file=settings.tachibana_session_file,
-            )
-            market = "JP"
-        else:
-            provider = YFinancePriceProvider()
-    elif source in ("jquants", "tachibana"):
-        market = "JP"
+        provider, market = _resolve_price_provider(source)
+    else:
+        market = "JP" if source in ("jquants", "tachibana") else "US"
     service = IngestionService(provider, database)
     return service.ingest_many(symbols, start, end, market=market)
 
@@ -132,28 +171,87 @@ def ingest_fundamentals(
     ``source`` is yfinance (US), or jquants / edinet (JP); ``provider``
     overrides it.
     """
-    market = "US"
     if provider is None:
-        if source == "jquants":
-            from stock_ai.data.jquants_fundamentals import JQuantsFundamentalsProvider
-
-            provider = JQuantsFundamentalsProvider(
-                api_key=get_settings().jquants_api_key,
-                price_source=lambda sym: latest_close(database, sym),
-            )
-            market = "JP"
-        elif source == "edinet":
-            provider = EdinetFundamentalsProvider(
-                get_settings().edinet_api_key,
-                price_source=lambda sym: latest_close(database, sym),
-            )
-            market = "JP"
-        else:
-            provider = YFinanceFundamentalsProvider()
-    elif source in ("jquants", "edinet"):
-        market = "JP"
+        provider, market = _resolve_fundamentals_provider(source, database)
+    else:
+        market = "JP" if source in ("jquants", "edinet") else "US"
     service = FundamentalsService(provider, database)
     return service.ingest_many(symbols, market=market)
+
+
+def bulk_update_stored(
+    database: Database,
+    fetch_prices: bool = True,
+    fetch_fundamentals: bool = False,
+    progress: Callable[[int, int, str], None] | None = None,
+) -> dict[str, list[IngestResult]]:
+    """Refresh every already-stored symbol, one request per symbol per dataset.
+
+    This is not the CLI's ``bulk-fetch``: that one is built for a whole market
+    (thousands of symbols, resumable, throttled) and belongs in a terminal left
+    running unattended. This one is for the handful to low hundreds of names a
+    dashboard user has already added by hand through "データ取得" - a single
+    click to bring all of them current, sized to finish while the browser tab
+    stays open. For a full-market load, use ``bulk-fetch``.
+
+    Each symbol's market comes from the database (:func:`list_securities`), not
+    re-guessed from its ticker shape, so JP and US names already mixed in the
+    same store each get the provider their own market resolves to - JP through
+    ``JP_PRICE_SOURCE`` / ``JP_STATEMENT_SOURCE``, US through yfinance.
+
+    Args:
+        database: Source of the stored symbol/market list and the write target.
+        fetch_prices: Whether to refresh the price series.
+        fetch_fundamentals: Whether to refresh the fundamentals snapshot.
+        progress: Called as ``(done, total, symbol)`` before each request, so
+            the caller can drive a progress bar across the whole run.
+
+    Returns:
+        Results keyed by dataset (``"prices"``, ``"fundamentals"``) - kept
+        separate rather than one flat list, because a symbol refreshed on both
+        can succeed on one and fail on the other, and merging them would hide
+        which.
+    """
+    settings = get_settings()
+    with database.session() as session:
+        securities = list_securities(session)
+    by_market: dict[str, list[str]] = {}
+    for symbol, market in securities:
+        by_market.setdefault(market, []).append(symbol)
+
+    datasets = int(fetch_prices) + int(fetch_fundamentals)
+    total = sum(len(syms) for syms in by_market.values()) * datasets
+    done = 0
+    results: dict[str, list[IngestResult]] = {}
+
+    for market, symbols in by_market.items():
+        if not symbols:
+            continue
+        if fetch_prices:
+            price_source = (
+                "yfinance" if market == "US" else settings.jp_price_source.strip().lower()
+            )
+            provider, _ = _resolve_price_provider(price_source)
+            service = IngestionService(provider, database)
+            bucket = results.setdefault("prices", [])
+            for symbol in symbols:
+                done += 1
+                if progress is not None:
+                    progress(done, total, symbol)
+                bucket.append(service.ingest_symbol(symbol, market=market))
+        if fetch_fundamentals:
+            stmt_source = (
+                "yfinance" if market == "US" else settings.jp_statement_source.strip().lower()
+            )
+            provider, _ = _resolve_fundamentals_provider(stmt_source, database)
+            service = FundamentalsService(provider, database)
+            bucket = results.setdefault("fundamentals", [])
+            for symbol in symbols:
+                done += 1
+                if progress is not None:
+                    progress(done, total, symbol)
+                bucket.append(service.ingest_symbol(symbol, market=market))
+    return results
 
 
 def results_frame(results: list[IngestResult]) -> pd.DataFrame:

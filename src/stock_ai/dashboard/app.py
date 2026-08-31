@@ -28,7 +28,7 @@ from stock_ai.ai.factory import get_ai_provider
 from stock_ai.ai.pricing import UsageLedger
 from stock_ai.config.settings import get_settings
 from stock_ai.core.exceptions import BacktestError, NotificationError
-from stock_ai.dashboard import data
+from stock_ai.dashboard import data, ops_page
 from stock_ai.data.types import Importance
 from stock_ai.database.engine import Database
 from stock_ai.notification.factory import get_notifier
@@ -194,6 +194,53 @@ def _page_data(database: Database) -> None:
             st.caption("日本株の財務は売上・利益・ROEのみ（PER/PBRは株価が必要なため未取得）。")
         elif statement_fetch_source == "edinet":
             st.caption("EDINET経由はEPS・BPS・営業利益が空欄になります（1株配当は取得できます）。")
+
+    st.divider()
+    st.subheader("🔄 一括更新")
+    st.caption(
+        "保存済みの銘柄を全部まとめて更新します。市場は銘柄ごとにDBの記録から決まる"
+        "ので、米国株・日本株が混ざっていてもそれぞれ正しい取得元に振り分けられます。"
+    )
+    stored_symbols = data.available_symbols(database)
+    if not stored_symbols:
+        st.info("まだ銘柄が保存されていません。上でまず何件か取得してください。")
+    else:
+        st.caption(
+            f"対象: {len(stored_symbols)} 銘柄。数千件規模の全市場取得はここではなく "
+            "CLI の `bulk-fetch`（レジューム・スロットリング付き）を使ってください。"
+        )
+        b1, b2 = st.columns(2)
+        with b1:
+            bulk_prices = st.checkbox("株価を更新", value=True, key="bulk_prices")
+        with b2:
+            bulk_fundamentals = st.checkbox("財務を更新", value=False, key="bulk_fundamentals")
+
+        if st.button("🔄 保存済み銘柄をまとめて更新", width="stretch"):
+            if not bulk_prices and not bulk_fundamentals:
+                st.warning("株価・財務のどちらかは選んでください。")
+            else:
+                bar = st.progress(0.0)
+                status = st.empty()
+
+                def _on_progress(done: int, total: int, symbol: str) -> None:
+                    bar.progress(done / total if total else 1.0)
+                    status.caption(f"{done}/{total}: {symbol}")
+
+                by_dataset = data.bulk_update_stored(
+                    database,
+                    fetch_prices=bulk_prices,
+                    fetch_fundamentals=bulk_fundamentals,
+                    progress=_on_progress,
+                )
+                status.empty()
+                labels = {"prices": "📈 株価", "fundamentals": "🧾 財務"}
+                for key, label in labels.items():
+                    rows = by_dataset.get(key)
+                    if rows is None:
+                        continue
+                    ok = sum(1 for r in rows if r.ok)
+                    st.write(f"**{label}**: {ok}/{len(rows)} 件成功")
+                    st.dataframe(data.results_frame(rows), width="stretch")
 
     st.divider()
     st.subheader("取り込み済みデータ")
@@ -813,6 +860,7 @@ def main() -> None:
         "🧪 ファクター検証": lambda: _page_factor_test(database),
         "🤖 AI分析": _page_ai,
         "🔔 通知テスト": _page_notify,
+        "🛰️ 自動売買 運用": ops_page.render,
     }
     choice = st.sidebar.radio("メニュー", list(pages.keys()))
     st.sidebar.divider()
