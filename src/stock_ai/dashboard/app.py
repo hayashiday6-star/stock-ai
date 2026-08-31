@@ -143,6 +143,13 @@ def _page_data(database: Database) -> None:
     st.header("📥 データ取得")
     st.caption("まずはここで銘柄の株価と財務データを取り込みます。")
 
+    # JP_PRICE_SOURCE / JP_STATEMENT_SOURCE が決める。CLI の bulk-fetch や screen
+    # と同じ設定を見る - ここだけ J-Quants に固定されていると、解約後にこの画面
+    # だけ気付かれずに壊れる。
+    settings = get_settings()
+    price_source = settings.jp_price_source.strip().lower()
+    statement_source = settings.jp_statement_source.strip().lower()
+
     col1, col2 = st.columns(2)
     with col1:
         symbols_text = st.text_input(
@@ -150,13 +157,21 @@ def _page_data(database: Database) -> None:
             value="AAPL MSFT",
             help="例: AAPL MSFT / 日本株は 7203 など",
         )
-        source_label = st.radio("市場・データ元", ["米国株 (yfinance)", "日本株 (J-Quants)"])
-        source = "yfinance" if source_label.startswith("米国") else "jquants"
+        market_label = st.radio("市場", ["米国株 (yfinance)", f"日本株 ({price_source})"])
+        is_jp = market_label.startswith("日本")
     with col2:
         start = st.date_input("開始日", value=dt.date.today() - dt.timedelta(days=365))
         end = st.date_input("終了日", value=dt.date.today())
 
+    if is_jp and price_source != statement_source:
+        st.caption(
+            f"価格: {price_source} ／ 財務: {statement_source}"
+            "（.env の JP_PRICE_SOURCE / JP_STATEMENT_SOURCE で決まります）"
+        )
+
     symbols = _parse_symbols(symbols_text)
+    price_fetch_source = price_source if is_jp else "yfinance"
+    statement_fetch_source = statement_source if is_jp else "yfinance"
 
     c1, c2 = st.columns(2)
     with c1:
@@ -165,7 +180,7 @@ def _page_data(database: Database) -> None:
                 st.warning("銘柄コードを入力してください。")
             else:
                 with st.spinner("株価を取得中..."):
-                    results = data.ingest_prices(database, symbols, source, start, end)
+                    results = data.ingest_prices(database, symbols, price_fetch_source, start, end)
                 st.dataframe(data.results_frame(results), width="stretch")
     with c2:
         if st.button("🧾 財務を取得", width="stretch"):
@@ -173,10 +188,12 @@ def _page_data(database: Database) -> None:
                 st.warning("銘柄コードを入力してください。")
             else:
                 with st.spinner("財務データを取得中..."):
-                    results = data.ingest_fundamentals(database, symbols, source)
+                    results = data.ingest_fundamentals(database, symbols, statement_fetch_source)
                 st.dataframe(data.results_frame(results), width="stretch")
-        if source == "jquants":
+        if statement_fetch_source == "jquants":
             st.caption("日本株の財務は売上・利益・ROEのみ（PER/PBRは株価が必要なため未取得）。")
+        elif statement_fetch_source == "edinet":
+            st.caption("EDINET経由はEPS・BPS・営業利益が空欄になります（1株配当は取得できます）。")
 
     st.divider()
     st.subheader("取り込み済みデータ")

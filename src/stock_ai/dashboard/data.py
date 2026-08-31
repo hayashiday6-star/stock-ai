@@ -31,6 +31,7 @@ from stock_ai.data.service import (
     IngestionService,
     IngestResult,
 )
+from stock_ai.data.tachibana import TachibanaPriceProvider
 from stock_ai.data.types import Importance
 from stock_ai.data.yfinance_provider import (
     YFinanceFundamentalsProvider,
@@ -45,6 +46,7 @@ from stock_ai.database.repository import (
     list_symbols,
 )
 from stock_ai.ir.edinet import EdinetDisclosureSource
+from stock_ai.ir.edinet_financials import EdinetFundamentalsProvider
 from stock_ai.ir.monitor import MonitorResult, WatchMonitor
 from stock_ai.ir.sources import CompositeDisclosureSource, NewsDisclosureSource
 from stock_ai.news.sources import YFinanceNewsSource
@@ -91,17 +93,29 @@ def ingest_prices(
     end: dt.date | None = None,
     provider: PriceProvider | None = None,
 ) -> list[IngestResult]:
-    """Fetch and store prices for ``symbols`` from ``source`` (US) or J-Quants (JP)."""
+    """Fetch and store prices for ``symbols`` from ``source``.
+
+    ``source`` is yfinance (US), or jquants / tachibana (JP); ``provider``
+    overrides it.
+    """
     market = "US"
     if provider is None:
         if source == "jquants":
-            from stock_ai.config.settings import get_settings
-
             provider = JQuantsPriceProvider(api_key=get_settings().jquants_api_key)
+            market = "JP"
+        elif source == "tachibana":
+            settings = get_settings()
+            provider = TachibanaPriceProvider(
+                settings.tachibana_auth_id,
+                settings.tachibana_private_key,
+                version=settings.tachibana_api_version,
+                base=settings.tachibana_base_url,
+                session_file=settings.tachibana_session_file,
+            )
             market = "JP"
         else:
             provider = YFinancePriceProvider()
-    elif source == "jquants":
+    elif source in ("jquants", "tachibana"):
         market = "JP"
     service = IngestionService(provider, database)
     return service.ingest_many(symbols, start, end, market=market)
@@ -115,12 +129,12 @@ def ingest_fundamentals(
 ) -> list[IngestResult]:
     """Fetch and store a fundamentals snapshot for ``symbols``.
 
-    ``source`` selects yfinance (US) or J-Quants (JP); ``provider`` overrides it.
+    ``source`` is yfinance (US), or jquants / edinet (JP); ``provider``
+    overrides it.
     """
     market = "US"
     if provider is None:
         if source == "jquants":
-            from stock_ai.config.settings import get_settings
             from stock_ai.data.jquants_fundamentals import JQuantsFundamentalsProvider
 
             provider = JQuantsFundamentalsProvider(
@@ -128,9 +142,15 @@ def ingest_fundamentals(
                 price_source=lambda sym: latest_close(database, sym),
             )
             market = "JP"
+        elif source == "edinet":
+            provider = EdinetFundamentalsProvider(
+                get_settings().edinet_api_key,
+                price_source=lambda sym: latest_close(database, sym),
+            )
+            market = "JP"
         else:
             provider = YFinanceFundamentalsProvider()
-    elif source == "jquants":
+    elif source in ("jquants", "edinet"):
         market = "JP"
     service = FundamentalsService(provider, database)
     return service.ingest_many(symbols, market=market)

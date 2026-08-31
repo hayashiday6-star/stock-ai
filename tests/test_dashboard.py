@@ -8,6 +8,8 @@ from collections.abc import Iterator
 import pandas as pd
 import pytest
 
+from stock_ai.config.settings import get_settings
+from stock_ai.core.exceptions import DataError
 from stock_ai.dashboard import data
 from stock_ai.data.schema import ADJ_CLOSE, CLOSE, HIGH, LOW, OPEN, VOLUME
 from stock_ai.data.types import Fundamentals
@@ -100,6 +102,83 @@ def test_ingest_prices_with_injected_provider() -> None:
     assert data.available_symbols(database) == ["7203"]
     frame = data.results_frame(results)
     assert list(frame["銘柄"]) == ["7203"]
+    database.dispose()
+
+
+def test_ingest_prices_tachibana_is_marked_jp_with_an_injected_provider() -> None:
+    """``source="tachibana"`` は J-Quants と同じ市場扱い（JP）になる。"""
+    database = Database("sqlite:///:memory:")
+    database.create_all()
+
+    class _FakeProvider:
+        def fetch_prices(self, symbol: str, start: object, end: object) -> pd.DataFrame:
+            return _prices([10.0, 11.0])
+
+    results = data.ingest_prices(database, ["7203"], source="tachibana", provider=_FakeProvider())
+    assert results[0].ok
+    database.dispose()
+
+
+def test_ingest_prices_tachibana_does_not_silently_fall_back_to_yfinance(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """認証情報がなければ、立花のプロバイダを組み立てようとして落ちる。
+
+    黙って yfinance に落ちると、日本株のコードをアメリカの取引所に問い合わせて
+    「銘柄が見つからない」という無関係なエラーになり、原因が分からなくなる。
+    """
+    monkeypatch.delenv("TACHIBANA_AUTH_ID", raising=False)
+    get_settings.cache_clear()
+    database = Database("sqlite:///:memory:")
+    database.create_all()
+
+    with pytest.raises(DataError, match="TACHIBANA_AUTH_ID"):
+        data.ingest_prices(database, ["7203"], source="tachibana")
+
+    database.dispose()
+    get_settings.cache_clear()
+
+
+def test_ingest_fundamentals_edinet_is_marked_jp_with_an_injected_provider() -> None:
+    """``source="edinet"`` も J-Quants と同じ市場扱い（JP）になる。"""
+    database = Database("sqlite:///:memory:")
+    database.create_all()
+
+    class _FakeProvider:
+        def fetch_fundamentals(self, symbol: str) -> Fundamentals:
+            return Fundamentals(symbol=symbol, as_of=_TODAY, revenue=1.0)
+
+    results = data.ingest_fundamentals(
+        database, ["7203"], source="edinet", provider=_FakeProvider()
+    )
+    assert results[0].ok
+    database.dispose()
+
+
+def test_ingest_fundamentals_edinet_builds_the_edinet_provider(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``source="edinet"`` は実際に ``EdinetFundamentalsProvider`` を組み立てる。
+
+    ここが J-Quants 固定のままだと、切り替えたつもりで切り替わっていない。
+    """
+    captured: dict[str, object] = {}
+
+    class _FakeEdinetProvider:
+        def __init__(self, api_key: object, price_source: object = None) -> None:
+            captured["api_key"] = api_key
+
+        def fetch_fundamentals(self, symbol: str) -> Fundamentals:
+            return Fundamentals(symbol=symbol, as_of=_TODAY, revenue=1.0)
+
+    monkeypatch.setattr(data, "EdinetFundamentalsProvider", _FakeEdinetProvider)
+    database = Database("sqlite:///:memory:")
+    database.create_all()
+
+    results = data.ingest_fundamentals(database, ["7203"], source="edinet")
+
+    assert "api_key" in captured
+    assert results[0].ok
     database.dispose()
 
 
