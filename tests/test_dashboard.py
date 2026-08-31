@@ -182,6 +182,142 @@ def test_ingest_fundamentals_edinet_builds_the_edinet_provider(
     database.dispose()
 
 
+def test_bulk_update_stored_routes_each_market_to_its_own_provider(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """US と JP が同じDBに混ざっていても、それぞれ別のプロバイダに振り分ける。
+
+    市場は ``list_securities`` (DB由来) で決まる - ティッカーの見た目から
+    推測すると、この振り分けがずれる余地が生まれる。
+    """
+    database = Database("sqlite:///:memory:")
+    database.create_all()
+    with database.session() as session:
+        PriceRepository(session).upsert_prices("AAPL", _prices([10.0, 11.0]), market="US")
+        PriceRepository(session).upsert_prices("7203", _prices([20.0, 21.0]), market="JP")
+
+    fetched_by: dict[str, list[str]] = {"jquants": [], "yfinance": []}
+
+    class _FakeJQuants:
+        def __init__(self, api_key: object = None) -> None:
+            pass
+
+        def fetch_prices(self, symbol: str, start: object, end: object) -> pd.DataFrame:
+            fetched_by["jquants"].append(symbol)
+            return _prices([1.0, 2.0])
+
+    class _FakeYFinance:
+        def fetch_prices(self, symbol: str, start: object, end: object) -> pd.DataFrame:
+            fetched_by["yfinance"].append(symbol)
+            return _prices([1.0, 2.0])
+
+    monkeypatch.setattr(data, "JQuantsPriceProvider", _FakeJQuants)
+    monkeypatch.setattr(data, "YFinancePriceProvider", _FakeYFinance)
+
+    results = data.bulk_update_stored(database, fetch_prices=True, fetch_fundamentals=False)
+
+    assert fetched_by["jquants"] == ["7203"]
+    assert fetched_by["yfinance"] == ["AAPL"]
+    assert {r.symbol for r in results["prices"]} == {"AAPL", "7203"}
+    assert all(r.ok for r in results["prices"])
+    assert "fundamentals" not in results
+    database.dispose()
+
+
+def test_bulk_update_stored_prices_does_not_silently_fall_back_from_tachibana(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """JP_PRICE_SOURCE=tachibana のとき、一括更新も立花を組み立てようとする。
+
+    ここが J-Quants 固定のままだと、切り替えたつもりで一括更新だけ切り替わって
+    いない - しかも失敗せずに古い経路のまま動き続けるので気付きようがない。
+    """
+    monkeypatch.setenv("JP_PRICE_SOURCE", "tachibana")
+    monkeypatch.delenv("TACHIBANA_AUTH_ID", raising=False)
+    get_settings.cache_clear()
+    database = Database("sqlite:///:memory:")
+    database.create_all()
+    with database.session() as session:
+        PriceRepository(session).upsert_prices("7203", _prices([20.0, 21.0]), market="JP")
+
+    with pytest.raises(DataError, match="TACHIBANA_AUTH_ID"):
+        data.bulk_update_stored(database, fetch_prices=True, fetch_fundamentals=False)
+
+    database.dispose()
+    get_settings.cache_clear()
+
+
+def test_bulk_update_stored_fundamentals_builds_the_edinet_provider(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """JP_STATEMENT_SOURCE=edinet のとき、一括更新も EDINET を実際に組み立てる。"""
+    monkeypatch.setenv("JP_STATEMENT_SOURCE", "edinet")
+    get_settings.cache_clear()
+    captured: dict[str, object] = {}
+
+    class _FakeEdinetProvider:
+        def __init__(self, api_key: object, price_source: object = None) -> None:
+            captured["api_key"] = api_key
+
+        def fetch_fundamentals(self, symbol: str) -> Fundamentals:
+            return Fundamentals(symbol=symbol, as_of=_TODAY, revenue=1.0)
+
+    monkeypatch.setattr(data, "EdinetFundamentalsProvider", _FakeEdinetProvider)
+    database = Database("sqlite:///:memory:")
+    database.create_all()
+    with database.session() as session:
+        PriceRepository(session).upsert_prices("7203", _prices([20.0, 21.0]), market="JP")
+
+    results = data.bulk_update_stored(database, fetch_prices=False, fetch_fundamentals=True)
+
+    assert "api_key" in captured
+    assert results["fundamentals"][0].ok
+    assert "prices" not in results
+    database.dispose()
+    get_settings.cache_clear()
+
+
+def test_bulk_update_stored_progress_reports_done_and_total(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """進捗コールバックは (done, total, symbol) を、両データセット分の総数で呼ぶ。"""
+    database = Database("sqlite:///:memory:")
+    database.create_all()
+    with database.session() as session:
+        PriceRepository(session).upsert_prices("AAPL", _prices([10.0, 11.0]), market="US")
+
+    class _FakeYFinance:
+        def fetch_prices(self, symbol: str, start: object, end: object) -> pd.DataFrame:
+            return _prices([1.0, 2.0])
+
+    class _FakeYFinanceFundamentals:
+        def fetch_fundamentals(self, symbol: str) -> Fundamentals:
+            return Fundamentals(symbol=symbol, as_of=_TODAY, revenue=1.0)
+
+    monkeypatch.setattr(data, "YFinancePriceProvider", _FakeYFinance)
+    monkeypatch.setattr(data, "YFinanceFundamentalsProvider", _FakeYFinanceFundamentals)
+
+    calls: list[tuple[int, int, str]] = []
+    data.bulk_update_stored(
+        database,
+        fetch_prices=True,
+        fetch_fundamentals=True,
+        progress=lambda done, total, symbol: calls.append((done, total, symbol)),
+    )
+
+    # 1銘柄 x 2データセット = 2回。
+    assert calls == [(1, 2, "AAPL"), (2, 2, "AAPL")]
+    database.dispose()
+
+
+def test_bulk_update_stored_nothing_saved_yet_returns_empty(db: Database) -> None:
+    empty = Database("sqlite:///:memory:")
+    empty.create_all()
+    results = data.bulk_update_stored(empty, fetch_prices=True, fetch_fundamentals=True)
+    assert results == {}
+    empty.dispose()
+
+
 def test_screen_table(db: Database) -> None:
     from stock_ai.screening.conditions import MinROE
 
