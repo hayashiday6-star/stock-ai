@@ -3345,7 +3345,11 @@ def _money(value: float | None) -> str:
 def daily(
     at: str = typer.Option("18:00", help="Local HH:MM the jobs run at."),
     symbols: list[str] | None = typer.Argument(None, help="Symbols to refresh."),
-    source: str = typer.Option("yfinance", help="Price source: yfinance | jquants."),
+    source: str = typer.Option(
+        "yfinance",
+        help="Override for JP symbols: jquants | tachibana. Non-JP symbols always use "
+        "yfinance; JP symbols default to JP_PRICE_SOURCE when this is left at yfinance.",
+    ),
     provider: str | None = typer.Option(
         None, help="AI provider used by the monitor. Default: AI_PROVIDER."
     ),
@@ -3376,6 +3380,9 @@ def daily(
     unattended: how many disclosures get filed on a given day is not something
     the schedule controls, and a cap is the only thing standing between a busy
     filing day and a bill nobody chose.
+
+    JP symbols in ``SYMBOLS`` are priced through ``JP_PRICE_SOURCE`` unless
+    ``--source`` names ``jquants`` or ``tachibana`` explicitly.
     """
     settings = get_settings()
     configure_logging(settings.log_level)
@@ -3389,8 +3396,11 @@ def daily(
         # One --source cannot serve a mixed list: yfinance has no 7203 and
         # J-Quants has no AAPL. Routing by the ticker itself is what stops a
         # single flag being applied to symbols the provider cannot answer for.
+        # JP falls back to JP_PRICE_SOURCE, not a hardcoded jquants - same
+        # resolution as `fetch`, so the two never drift apart on which source
+        # a JP ticker actually gets.
         for market, group in split_by_market(targets).items():
-            resolved = "jquants" if market == "JP" else "yfinance"
+            resolved = _source_for_market(market, source, settings)
             if resolved != source.lower():
                 console.print(
                     f"[yellow]{', '.join(group)} are {market} listings; "

@@ -61,8 +61,10 @@ else {
 Write-Section 'API keys'
 
 $required = [ordered]@{
-    'JQUANTS_API_KEY'   = 'JP prices, financials, and the symbol universe'
-    'EDINET_API_KEY'    = 'JP statutory disclosures (watchlist)'
+    'JQUANTS_API_KEY'   = 'JP symbol universe (always), and JP prices/financials unless ' +
+                          'JP_PRICE_SOURCE/JP_STATEMENT_SOURCE in .env moved them to tachibana/edinet'
+    'EDINET_API_KEY'    = 'JP statutory disclosures (watchlist), and JP financials when ' +
+                          'JP_STATEMENT_SOURCE=edinet'
     'ANTHROPIC_API_KEY' = 'AI summaries, importance rating, natural-language search'
 }
 
@@ -94,5 +96,11 @@ else {
     Write-Ok 'All keys present.'
     Write-Host 'Next: run the step-2 .bat in this folder.'
 }
+
+Write-Host ''
+Write-Host 'Moving off the paid J-Quants plan? JP prices can come from the'
+Write-Host 'Tachibana e-shiten API instead (JP_PRICE_SOURCE=tachibana in .env).'
+Write-Host 'That needs a generated key pair, not a pasted key, so it is set up'
+Write-Host 'separately - see the step-7 .bat in this folder.'
 
 Exit-WithPause 0

@@ -1,18 +1,26 @@
 <#
 .SYNOPSIS
-    Check the four integrations that fail silently, and save a report.
+    Check every data integration that can fail silently, and save a report.
 
 .DESCRIPTION
-    Three of this project's data sources were written against published API
-    specs but never run against the live services. Every one of them fails the
-    same way: not with an error, but with zero rows. That is the worst possible
+    Several of this project's data sources were written against published API
+    specs but never run against the live services. Most of them fail the same
+    way: not with an error, but with zero rows. That is the worst possible
     failure mode, because the pipeline downstream keeps "working" on nothing.
+
+    The JP price and statement checks make no ``--source`` choice of their
+    own - they follow whatever JP_PRICE_SOURCE / JP_STATEMENT_SOURCE in .env
+    already resolve to (printed first, under Configuration), the same as every
+    other command in this project. Switching those settings without noticing
+    the switch didn't take is exactly the failure mode this script exists to
+    catch, so it must exercise the setting that is actually live, not one
+    named in this script.
 
     So this runs each one deliberately and writes everything to
     verify-output.txt, which is the file to paste back when asking for help.
 
 .PARAMETER Symbol
-    JP security code used for the J-Quants and EDINET checks.
+    JP security code used for the price, statement, and EDINET checks.
 
 .EXAMPLE
     .\scripts\2-verify.ps1
@@ -46,6 +54,13 @@ try {
 
     $results = [ordered]@{}
 
+    # --- 0. configuration ----------------------------------------------------
+    # JP_PRICE_SOURCE / JP_STATEMENT_SOURCE decide which checks below actually
+    # exercise which provider. Printing them first means a report that gets
+    # pasted for help always says which path was live, instead of leaving the
+    # reader to guess from command names that no longer match the setting.
+    $results['info'] = Invoke-Step 'Configuration' @('info')
+
     # --- 1. yfinance dividend yield ---------------------------------------
     $results['yfinance prices'] = Invoke-Step 'yfinance: fetch prices (AAPL)' @('fetch', 'AAPL')
     $results['yfinance fundamentals'] = Invoke-Step 'yfinance: fundamentals (AAPL)' @(
@@ -67,21 +82,34 @@ try {
     Write-Host '     value below 0.30. A yield like 0.78 is a unit error, not a'
     Write-Host '     78% payer - report it.'
 
-    # --- 2. J-Quants statements -------------------------------------------
-    $results['jquants statements'] = Invoke-Step "J-Quants: statements ($Symbol)" @(
+    # --- 2. JP prices --------------------------------------------------------
+    # No --source: this exercises whatever JP_PRICE_SOURCE actually resolves
+    # to (printed above, and again by the command itself if it differs from
+    # the yfinance default), not a name hardcoded into this script.
+    $results['jp prices'] = Invoke-Step "JP prices, JP_PRICE_SOURCE ($Symbol)" @(
+        'fetch', $Symbol
+    )
+    Write-Host ''
+    Write-Host '  >> EXPECT rows written with no error. tachibana needs TACHIBANA_AUTH_ID'
+    Write-Host '     and a registered key pair (see the step-7 .bat) before this can pass.'
+
+    # --- 3. JP statements ------------------------------------------------
+    # Same idea: no --source, so this follows JP_STATEMENT_SOURCE. The command
+    # itself prints which source it used - read that line, not this label.
+    $results['jp statements'] = Invoke-Step "JP statements, JP_STATEMENT_SOURCE ($Symbol)" @(
         'statements', $Symbol
     )
     Write-Host ''
     Write-Host '  >> EXPECT Rows of roughly 5-20. Rows 0 means a renamed field, not an empty company.'
 
-    # --- 3. J-Quants universe ---------------------------------------------
+    # --- 4. J-Quants universe ---------------------------------------------
     $results['jquants universe'] = Invoke-Step 'J-Quants: universe (growth, 20)' @(
         'universe', '--segment', 'growth', '--limit', '20'
     )
     Write-Host ''
     Write-Host '  >> EXPECT 20 rows with names and sectors.'
 
-    # --- 4. EDINET ---------------------------------------------------------
+    # --- 5. EDINET ---------------------------------------------------------
     # EDINET answers 200 with an empty body when the subscription key is
     # missing, so a key that was never filled in looks exactly like a quiet
     # week. Saying which one it is up front saves chasing the wrong cause.
