@@ -47,6 +47,7 @@ from stock_ai.ai.estimate import estimate_disclosure_run
 from stock_ai.ai.factory import get_ai_provider
 from stock_ai.ai.pricing import RunEstimate, UsageLedger
 from stock_ai.ai.query import parse_query, run_query
+from stock_ai.backtest.accumulation_signal import count_signals
 from stock_ai.backtest.engine import BacktestEngine
 from stock_ai.backtest.factor_test import (
     FactorTestResult,
@@ -1337,6 +1338,54 @@ def factor_test(
         raise typer.Exit(code=1) from exc
 
     _render_factor_test(result, preset)
+
+
+@app.command(name="accum-jp-count")
+def accum_jp_count(
+    symbols: list[str] | None = typer.Argument(
+        None, help="JP codes to scan. Omit to scan every stored JP security."
+    ),
+) -> None:
+    """Count how often the JP accumulation pre-registration's 5 conditions align.
+
+    This is reconnaissance for the pre-registration's period-split and
+    sample-size blanks (sections 6-7) - it computes no return, and its counts
+    are not a pass/fail result. See ``SignalCountReport`` in
+    ``stock_ai.backtest.accumulation_signal`` for what this pass does and does
+    not cover against the pre-registration's universe (section 2): no
+    market-cap filter, no independent segment check beyond what is already
+    stored, and delisted names are entirely absent.
+    """
+    settings = get_settings()
+    configure_logging(settings.log_level)
+
+    database = Database()
+    database.create_all()
+
+    report = count_signals(database, symbols=symbols)
+
+    console.print(
+        f"銘柄: {report.symbols_scanned} 件中 {report.symbols_with_enough_history} 件が"
+        f"250営業日以上の履歴あり。"
+    )
+    console.print(
+        "[dim]件数のみ。リターンは計算していない。市場区分の独立検証・時価総額フィルタ・"
+        "上場廃止銘柄は未対応 - 詳細は accumulation_signal.SignalCountReport を参照。[/]"
+    )
+
+    if report.total == 0:
+        console.print("[yellow]シグナルなし。[/]")
+        return
+
+    console.print(f"合計シグナル数: {report.total} ／ 独立シグナル日数: {report.unique_dates}")
+
+    table = Table(title="年別")
+    table.add_column("年", justify="right")
+    table.add_column("シグナル数", justify="right")
+    table.add_column("独立シグナル日数", justify="right")
+    for row in report.by_year().itertuples():
+        table.add_row(str(row.year), str(row.signals), str(row.signal_days))
+    console.print(table)
 
 
 def _run_walk_forward(
