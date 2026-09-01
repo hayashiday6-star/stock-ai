@@ -252,25 +252,13 @@ class PriceRepository:
             self.session.execute(stmt)
         return len(records)
 
-    def get_prices(
+    def _load_bars(
         self,
         symbol: str,
         start: dt.date | None = None,
         end: dt.date | None = None,
     ) -> pd.DataFrame:
-        """Return stored bars for ``symbol``, on the split-adjusted basis.
-
-        The adjustment happens here, not in the callers, because there are a
-        dozen call sites and every strategy, indicator and the backtest engine
-        reads ``close`` and ``open``. One forgotten call site is a backtest that
-        reports a split as an 80% crash and says nothing about it - which is
-        what was happening. See
-        :func:`~stock_ai.data.schema.split_adjusted` for the measured effect.
-
-        Nothing that reads the *current* price changes: the factor is
-        ``adj_close / close``, and on the latest bar there is no later split, so
-        it is 1.0. Only history moves, which is the point.
-        """
+        """The stored bars exactly as written, unadjusted."""
         stmt = (
             select(PriceBar).join(Security).where(Security.symbol == symbol).order_by(PriceBar.date)
         )
@@ -296,7 +284,46 @@ class PriceRepository:
             columns=[DATE, *OHLCV_COLUMNS],
         )
         frame[DATE] = pd.to_datetime(frame[DATE])
-        return split_adjusted(frame.set_index(DATE))
+        return frame.set_index(DATE)
+
+    def get_prices(
+        self,
+        symbol: str,
+        start: dt.date | None = None,
+        end: dt.date | None = None,
+    ) -> pd.DataFrame:
+        """Return stored bars for ``symbol``, on the split-adjusted basis.
+
+        The adjustment happens here, not in the callers, because there are a
+        dozen call sites and every strategy, indicator and the backtest engine
+        reads ``close`` and ``open``. One forgotten call site is a backtest that
+        reports a split as an 80% crash and says nothing about it - which is
+        what was happening. See
+        :func:`~stock_ai.data.schema.split_adjusted` for the measured effect.
+
+        Nothing that reads the *current* price changes: the factor is
+        ``adj_close / close``, and on the latest bar there is no later split, so
+        it is 1.0. Only history moves, which is the point.
+        """
+        return split_adjusted(self._load_bars(symbol, start, end))
+
+    def get_raw_prices(
+        self,
+        symbol: str,
+        start: dt.date | None = None,
+        end: dt.date | None = None,
+    ) -> pd.DataFrame:
+        """Return stored bars for ``symbol`` exactly as traded, unadjusted.
+
+        Market capitalisation (shares outstanding times price) needs the
+        actually-traded price, not :meth:`get_prices`'s split-adjusted one: a
+        split changes the adjustment factor but not the real number of yen the
+        market was paying for the company that day. Multiplying a split-
+        adjusted close by an as-reported (never adjusted) share count would be
+        the same combined-scale mistake :func:`~stock_ai.data.schema.
+        split_adjusted` exists to prevent, just introduced from the other side.
+        """
+        return self._load_bars(symbol, start, end)
 
     def latest_date(self, symbol: str) -> dt.date | None:
         """Return the most recent stored bar date for ``symbol``, or ``None``."""

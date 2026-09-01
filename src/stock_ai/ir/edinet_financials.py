@@ -441,7 +441,10 @@ def parse_summary(rows: list[dict[str, str]]) -> list[AnnualFigures]:
 
 
 def to_reports(
-    header: FilingHeader, figures: list[AnnualFigures], symbol: str | None = None
+    header: FilingHeader,
+    figures: list[AnnualFigures],
+    symbol: str | None = None,
+    disclosed_on: dt.date | None = None,
 ) -> list[FinancialReport]:
     """相対年度の並びを、決算年度の付いた :class:`FinancialReport` にする。
 
@@ -460,6 +463,10 @@ def to_reports(
         header: ``parse_header`` の結果。決算日が無ければ何も返せない。
         figures: ``parse_summary`` の結果。古い順。
         symbol: 銘柄コードを外から与える。有報が上場コードを持たないときの逃げ道。
+        disclosed_on: この有報がEDINETに公開された日。5期ぶんすべてが同じ1本の
+            有報から来るため、全行に同じ日を付ける。判定日時点の時価総額は
+            「その日までに公開されていた発行済株式数」でしか計算できず、決算日
+            (会計期間の末日)はそれより数ヶ月前で、公開日そのものではない。
 
     Raises:
         DataError: 決算日か銘柄コードが解決できない。
@@ -485,6 +492,7 @@ def to_reports(
                 symbol=code,
                 fiscal_year=latest - offset,
                 period=FiscalPeriod.FY,
+                disclosed_on=disclosed_on,
                 revenue=entry.revenue,
                 net_income=entry.net_income,
                 equity=entry.equity,
@@ -496,19 +504,26 @@ def to_reports(
     return reports
 
 
-def parse_filing(body: bytes, symbol: str | None = None) -> list[FinancialReport]:
+def parse_filing(
+    body: bytes, symbol: str | None = None, disclosed_on: dt.date | None = None
+) -> list[FinancialReport]:
     """``type=5`` の応答から、5期ぶんの財務を取り出す。
 
     ここが入口。ZIP のバイト列を渡すと、そのまま
     :class:`~stock_ai.database.repository.FinancialStatementRepository` に入れられる
     並びが返る。
+
+    Args:
+        body: ``type=5`` の ZIP 応答。
+        symbol: 銘柄コードを外から与える。有報が上場コードを持たないときの逃げ道。
+        disclosed_on: この有報がEDINETに公開された日。:func:`to_reports` 参照。
     """
     rows = read_csv_zip(body)
     figures = parse_summary(rows)
     if not figures:
         raise DataError("「主要な経営指標等」から1期ぶんも読めませんでした。")
     header = parse_header(rows)
-    reports = to_reports(header, figures, symbol)
+    reports = to_reports(header, figures, symbol, disclosed_on)
     logger.info(
         "%s (%s): %d 期ぶんを読みました（%d〜%d 年度）",
         reports[0].symbol,
@@ -606,13 +621,14 @@ def fetch_annual_reports(
         DataError: 窓の中に有報が見つからない。
     """
     finder = source or EdinetDisclosureSource(api_key=api_key, lookback_days=lookback_days)
-    doc_ids = finder.find_documents(symbol, ANNUAL_REPORT_TYPES, limit=1)
-    if not doc_ids:
+    found = finder.find_documents_with_dates(symbol, ANNUAL_REPORT_TYPES, limit=1)
+    if not found:
         raise DataError(
             f"{symbol}: 直近 {finder.lookback_days} 日に有価証券報告書がありません。"
             "窓を広げるか、決算から3ヶ月後あたりに実行してください。"
         )
-    return parse_filing(fetch_document(doc_ids[0], api_key), symbol=symbol)
+    doc_id, disclosed_on = found[0]
+    return parse_filing(fetch_document(doc_id, api_key), symbol=symbol, disclosed_on=disclosed_on)
 
 
 class EdinetFundamentalsProvider:
