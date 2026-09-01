@@ -504,13 +504,13 @@ def test_exrights_flag_does_not_invent_a_date_past_the_end_of_the_series() -> No
 
 
 def test_min_turnover_excludes_a_thin_signal() -> None:
-    """売買代金 = D終値 × D出来高。セクション2の流動性下限。"""
+    """売買代金は D を除く直近20営業日の平均。セクション2の流動性下限。"""
     database = Database("sqlite:///:memory:")
     database.create_all()
-    # 終値100円 × 出来高60,000株 = 600万円。1億円には届かない。
+    # 平常時は 100円 × 10,000株 = 100万円。1億円には遠く届かない。
     _seed(database, "7203", "JP", _spike_volume(_flat_frame(base=100.0)))
 
-    lenient = count_signals(database, min_turnover=1_000_000.0)
+    lenient = count_signals(database, min_turnover=500_000.0)
     strict = count_signals(database, min_turnover=100_000_000.0)
 
     assert lenient.total == 1
@@ -531,10 +531,11 @@ def test_min_turnover_uses_the_unadjusted_close() -> None:
     frame[ADJ_CLOSE] = 20.0
     _seed(database, "7203", "JP", frame)
 
-    # 実際の売買代金は 100円 × 60,000株 = 600万円。調整後(20円)で測れば120万円。
-    report = count_signals(database, min_turnover=5_000_000.0)
+    # 平常時の実際の売買代金は 100円 × 10,000株 = 100万円。
+    # 調整後(20円)で測れば20万円で、50万円の下限を割ってしまう。
+    report = count_signals(database, min_turnover=500_000.0)
 
-    assert report.total == 1, "未調整の終値で測れば 600万円 > 500万円 で残る"
+    assert report.total == 1, "未調整の終値で測れば 100万円 > 50万円 で残る"
     database.dispose()
 
 
@@ -780,3 +781,77 @@ def test_by_earnings_distance_buckets_the_run_up_separately() -> None:
     assert counts["-1..+1（決算日前後＝フラグ対象）"] == 1
     assert counts["-21以下（決算まで1ヶ月超）"] == 1
     assert frame["share"].sum() == pytest.approx(1.0)
+
+
+def test_earnings_distance_matches_the_straightforward_loop() -> None:
+    """ベクトル化した実装が、素朴なループと1件も違わないこと。
+
+    性能のために書き換えた箇所なので、速さではなく一致を固定する。同点
+    （前後の開示がちょうど等距離）はまだ先にある開示を採る——ループ実装が
+    そうしていたため。
+    """
+    index = pd.bdate_range("2020-01-01", periods=400, name="date")
+    statements = [_report(index[p].date(), 1.0) for p in (30, 93, 156, 219, 282, 345)]
+
+    def naive(idx: pd.DatetimeIndex) -> list[float]:
+        anchors = sorted(
+            {
+                int(idx.searchsorted(pd.Timestamp(r.disclosed_on), side="right")) - 1
+                for r in statements
+            }
+        )
+        out = []
+        for i in range(len(idx)):
+            slot = next((n for n, a in enumerate(anchors) if a >= i), len(anchors))
+            candidates = []
+            if slot < len(anchors):
+                candidates.append(i - anchors[slot])
+            if slot > 0:
+                candidates.append(i - anchors[slot - 1])
+            out.append(float(min(candidates, key=abs)))
+        return out
+
+    assert list(earnings_distance_series(index, statements)) == naive(index)
+
+
+def test_split_adjusted_frame_matches_get_prices() -> None:
+    """1回読んで調整するのと、DBに調整済みを2回目に取りに行くのは同じもの。
+
+    count_signals が読み込みを一本化した根拠。ここが崩れると、性能のために
+    静かに違う値を使うことになる。
+    """
+    from stock_ai.data.schema import split_adjusted
+
+    database = Database("sqlite:///:memory:")
+    database.create_all()
+    frame = _flat_frame(base=100.0)
+    frame[ADJ_CLOSE] = 20.0  # 分割をまたいだ系列
+    _seed(database, "6501", "JP", frame)
+
+    with database.session() as session:
+        repo = PriceRepository(session)
+        adjusted = repo.get_prices("6501")
+        derived = split_adjusted(repo.get_raw_prices("6501"))
+
+    pd.testing.assert_frame_equal(adjusted, derived)
+    database.dispose()
+
+
+def test_min_turnover_is_not_conditioned_on_the_spike_itself() -> None:
+    """普段は薄いが、5倍スパイクの当日だけ下限に乗る銘柄を通さない。
+
+    D の売買代金で絞ると、条件②（出来高5倍）と直交しない。普段2,000万円の
+    銘柄がスパイクで1億円に乗って選ばれ、20営業日後の決済時には元の薄さに
+    戻っている——「そもそも流動性のある銘柄」という意図と逆になる。
+    """
+    database = Database("sqlite:///:memory:")
+    database.create_all()
+    # 平常 100円 × 10,000株 = 100万円。当日は6倍で 600万円。
+    _seed(database, "7203", "JP", _spike_volume(_flat_frame(base=100.0)))
+
+    # 下限を平常と当日の間に置く。D基準なら通り、20日平均なら落ちる。
+    report = count_signals(database, min_turnover=3_000_000.0)
+
+    assert report.total == 0
+    assert report.excluded_for_turnover == 1
+    database.dispose()
