@@ -60,6 +60,7 @@ from stock_ai.backtest.factor_test import (
     suggest_formation,
     walk_forward,
 )
+from stock_ai.backtest.pead_census import DRIFT_WINDOW, ENTRY_OFFSET, run_census
 from stock_ai.backtest.report import metrics_frame
 from stock_ai.backtest.seasonality import (
     DEFAULT_MIN_YEARS,
@@ -1494,6 +1495,88 @@ def spread_rows(distances: pd.DataFrame) -> list[tuple[str, str, str]]:
         (str(row.bucket), str(row.signals), f"{row.share * 100:.1f}%")
         for row in distances.itertuples()
     ]
+
+
+@app.command(name="pead-census")
+def pead_census(
+    symbols: list[str] | None = typer.Argument(
+        None, help="JP codes to census. Omit to use every stored JP security."
+    ),
+) -> None:
+    """Count whether PEAD is measurable on the data actually on file.
+
+    Run this BEFORE writing the pre-registration. The accumulation study was
+    registered first and measured last, and ended "検証不能" because the
+    phenomenon and the data did not overlap. This answers that question up
+    front. It computes no return.
+    """
+    settings = get_settings()
+    configure_logging(settings.log_level)
+
+    database = Database()
+    database.create_all()
+
+    report = run_census(database, symbols=symbols)
+    usable = report.measurable()
+
+    console.print(
+        f"銘柄: {report.symbols_scanned} 件 ／ 開示行 {report.rows_total} 件"
+        f"（うち開示日なし {report.rows_without_disclosed_on} 件、"
+        f"価格データなしの銘柄 {report.symbols_without_prices} 件）"
+    )
+    console.print("[dim]件数のみ。リターンは計算していない。事前登録を書く前の下調べである。[/]")
+
+    if not report.disclosures:
+        console.print("[yellow]開示イベントが1件もない。まず取り込みが要る。[/]")
+        return
+
+    total = len(report.disclosures)
+    console.print(
+        f"開示イベント: {total} 件 ／ "
+        f"[bold]D+1 で入り D+{ENTRY_OFFSET + DRIFT_WINDOW} で出られるもの: "
+        f"{len(usable)} 件（{len(usable) / total * 100:.1f}%）[/]"
+    )
+    console.print(
+        "[dim]窓が取れない開示は、件数に数えても検証には使えない - 価格データの"
+        "始端・終端にかかっている分である。以下は窓が取れる分だけを数えている。[/]"
+    )
+
+    if not usable:
+        console.print("[yellow]リターン窓が取れる開示が1件もない。[/]")
+        return
+
+    year_table = Table(title="年別（リターン窓が取れる開示）")
+    for column in ("年", "開示件数", "銘柄数", "ユニーク開示日数"):
+        year_table.add_column(column, justify="right")
+    for year, count, names, days in report.by_year(usable):
+        year_table.add_row(str(year), str(count), str(names), str(days))
+    console.print(year_table)
+
+    band_table = Table(title="流動性帯別（D を除く直近20営業日の平均売買代金）")
+    band_table.add_column("帯", justify="right")
+    band_table.add_column("開示件数", justify="right")
+    band_table.add_column("割合", justify="right")
+    for edge, count in report.by_band(usable):
+        label = "売買代金を計算できず" if edge is None else f"{edge:,.0f}円以上"
+        band_table.add_row(label, str(count), f"{count / len(usable) * 100:.1f}%")
+    console.print(band_table)
+    console.print(
+        "[dim]帯は累積ではなく排他。「1億円以上」の行だけが、前回の事前登録が"
+        "使ったユニバースに相当する。ここが薄ければ前回と同じ結末になる。[/]"
+    )
+
+    per_day = report.same_day_counts(usable)
+    counts = sorted(per_day.values())
+    busiest = per_day.most_common(5)
+    console.print(
+        f"同日発表社数: 中央値 {counts[len(counts) // 2]} 社 ／ "
+        f"最大 {counts[-1]} 社 ／ 開示日 {len(per_day)} 日"
+    )
+    console.print("  最も混雑した日: " + "、".join(f"{day} ({n}社)" for day, n in busiest))
+    console.print(
+        "[dim]注意分散仮説（混雑日ほど初期反応が小さくドリフトが大きい）は、"
+        "この分布に幅がなければ測れない。[/]"
+    )
 
 
 @app.command(name="accum-jp-explain")
