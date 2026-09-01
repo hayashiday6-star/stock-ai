@@ -28,7 +28,6 @@ from rich.progress import (
 )
 from rich.table import Table
 
-from stock_ai import __version__
 from stock_ai.accumulation.notify import build_message as build_accumulation_message
 from stock_ai.accumulation.notify import should_notify as should_notify_accumulation
 from stock_ai.accumulation.pipeline import Run as AccumulationRun
@@ -87,6 +86,7 @@ from stock_ai.core.exceptions import (
 )
 from stock_ai.core.logging import configure_logging
 from stock_ai.core.scheduler import DailyScheduler, JobResult
+from stock_ai.core.version import describe as describe_version
 from stock_ai.data.base import PriceProvider
 from stock_ai.data.bulk import BulkIngester, Dataset, store_universe
 from stock_ai.data.bulk import latest_close as bulk_latest_close
@@ -190,8 +190,10 @@ def _root() -> None:
 
 @app.command()
 def version() -> None:
-    """Print the installed stock-ai version."""
-    console.print(f"stock-ai [bold cyan]v{__version__}[/]")
+    """Print the version, and the commit this working copy is actually on."""
+    # 静的な __version__ だけでは、pull を忘れた作業コピーと最新の作業コピーが
+    # 同じ文字列を返す。「古いコードで測っていないか」に答えられる必要がある。
+    console.print(f"stock-ai [bold cyan]v{describe_version()}[/]")
 
 
 @app.command()
@@ -203,7 +205,9 @@ def info() -> None:
     table = Table(title="stock-ai configuration")
     table.add_column("Key", style="cyan", no_wrap=True)
     table.add_column("Value", style="white")
-    table.add_row("version", __version__)
+    # コミットまで出す。貼られた出力を見るだけで、どのコードが動いたかが
+    # 確定する - 出力の形から推測しなくてよくなる。
+    table.add_row("version", describe_version())
     table.add_row("env", settings.env)
     table.add_row("log_level", settings.log_level)
     # Which model the AI commands will call, and whether that was a choice.
@@ -1359,7 +1363,8 @@ def accum_jp_count(
     min_turnover: float = typer.Option(
         DEFAULT_MIN_TURNOVER,
         "--min-turnover",
-        help="Section 2's liquidity floor in yen (D close x D volume). 0 disables it.",
+        help="Section 2's liquidity floor in yen: the average turnover of the 20 "
+        "sessions before D, never D itself. 0 disables it.",
     ),
     material_days: bool = typer.Option(
         True,

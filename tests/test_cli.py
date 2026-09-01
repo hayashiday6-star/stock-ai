@@ -32,6 +32,26 @@ def test_info_command_runs_and_masks_secrets() -> None:
     assert "configuration" in result.stdout
 
 
+def test_version_and_info_name_the_commit_not_just_the_package_version() -> None:
+    """静的な 0.1.0 だけでは「古いコードで測っていないか」に答えられない。
+
+    core.version.describe() はこのために書かれていたのに、CLI がどこからも
+    呼んでいなかった。実際に info の出力を貼ってもらっても、どのコミットが
+    動いたか分からないままだった。両コマンドが describe() を通ることを固定する。
+    """
+    from stock_ai.core.version import describe
+
+    described = describe()
+    # git チェックアウトの中で走っている限り、コミットまで出るはず。
+    assert described != __version__
+
+    for command in ("version", "info"):
+        stdout = runner.invoke(app, [command]).stdout
+        # rich が表の幅で折り返すので、コミット部分だけを取り出して照合する。
+        commit = described.removeprefix(__version__).strip().lstrip("(").split()[0]
+        assert commit in stdout.replace("\n", ""), command
+
+
 def test_metrics_reports_the_distribution_of_stored_fundamentals(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
