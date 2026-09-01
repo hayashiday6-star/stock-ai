@@ -1454,6 +1454,21 @@ def accum_jp_count(
         table.add_row(str(row.year), str(row.signals), str(row.signal_days))
     console.print(table)
 
+    if material_days:
+        distances = report.by_earnings_distance()
+        if not distances.empty:
+            spread = Table(title="自社の決算発表までの営業日（全シグナル、フラグ適用前）")
+            spread.add_column("距離", justify="left")
+            spread.add_column("シグナル数", justify="right")
+            spread.add_column("割合", justify="right")
+            for row in spread_rows(distances):
+                spread.add_row(*row)
+            console.print(spread)
+            console.print(
+                "[dim]決算の直前2週に山があれば、これは決算発表日ではなく発表前の"
+                "静かな期間を拾っている。平坦なら決算との時間的な関係は無い。[/]"
+            )
+
     by_date = shown.by_date()
     top = Table(title="1日あたりの上位10日（集中度の確認用）")
     top.add_column("日付", justify="right")
@@ -1466,6 +1481,14 @@ def accum_jp_count(
         f"1日平均 {average_per_day:.2f} 件 ／ 最大 {shown.max_signals_per_day} 件"
         "（日次クラスタ補正の前提として、特定の1日が結果を支配していないか確認）"
     )
+
+
+def spread_rows(distances: pd.DataFrame) -> list[tuple[str, str, str]]:
+    """Rows for the earnings-distance table."""
+    return [
+        (str(row.bucket), str(row.signals), f"{row.share * 100:.1f}%")
+        for row in distances.itertuples()
+    ]
 
 
 @app.command(name="accum-jp-explain")

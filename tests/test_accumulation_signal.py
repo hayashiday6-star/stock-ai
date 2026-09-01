@@ -17,10 +17,13 @@ import pytest
 
 from stock_ai.backtest.accumulation_signal import (
     MIN_HISTORY_BARS,
+    Signal,
     Signal5Thresholds,
+    SignalCountReport,
     compute_signal_frame,
     count_signals,
     earnings_coverage,
+    earnings_distance_series,
     earnings_flag_series,
     explain_date,
     exrights_flag_series,
@@ -725,3 +728,55 @@ def test_market_volume_context_stays_near_one_on_an_ordinary_day() -> None:
     assert context.median_multiple == pytest.approx(1.0)
     assert context.over_5x == 1
     database.dispose()
+
+
+# --- 決算までの符号付き距離（発表日か、発表前の静かな期間か） -----------------
+
+
+def test_earnings_distance_is_negative_before_the_disclosure() -> None:
+    """符号が要点。フラグは「決算日か」しか答えない。
+
+    決算の2週間「前」に山があるなら、それは決算発表日を拾っているのではなく
+    発表前の様子見期間を拾っている。別の現象で、対処も違う。
+    """
+    index = _trading_index("2024-01-01", periods=40)
+    disclosed = index[20].date()
+    distance = earnings_distance_series(index, [_report(disclosed, 1.0)])
+
+    assert distance.iloc[20] == 0  # 発表当日
+    assert distance.iloc[15] == -5  # まだ発表していない
+    assert distance.iloc[25] == 5  # 発表済み
+
+
+def test_earnings_distance_picks_the_nearest_disclosure_either_way() -> None:
+    index = _trading_index("2024-01-01", periods=60)
+    statements = [_report(index[10].date(), 1.0), _report(index[50].date(), 1.0)]
+
+    distance = earnings_distance_series(index, statements)
+
+    assert distance.iloc[12] == 2  # 直前の開示のほう
+    assert distance.iloc[48] == -2  # 次の開示のほう
+
+
+def test_earnings_distance_is_nan_without_disclosures() -> None:
+    index = _trading_index()
+    assert earnings_distance_series(index, []).isna().all()
+
+
+def test_by_earnings_distance_buckets_the_run_up_separately() -> None:
+    """決算直前2週が、決算日前後とは別の枠で数えられる。"""
+    signals = [
+        Signal("A", dt.date(2024, 1, 5), earnings_distance=-5),
+        Signal("B", dt.date(2024, 1, 5), earnings_distance=-8),
+        Signal("C", dt.date(2024, 1, 9), earnings_distance=0),
+        Signal("D", dt.date(2024, 2, 9), earnings_distance=-30),
+    ]
+    report = SignalCountReport(signals=signals)
+
+    frame = report.by_earnings_distance()
+
+    counts = dict(zip(frame["bucket"], frame["signals"], strict=True))
+    assert counts["-10..-2（決算の直前2週）"] == 2
+    assert counts["-1..+1（決算日前後＝フラグ対象）"] == 1
+    assert counts["-21以下（決算まで1ヶ月超）"] == 1
+    assert frame["share"].sum() == pytest.approx(1.0)
