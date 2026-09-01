@@ -726,3 +726,59 @@ def explain_date(
             }
         )
     return pd.DataFrame(rows)
+
+
+@dataclass(frozen=True)
+class MarketVolumeContext:
+    """How busy the whole market was on one date, in condition 2's own terms.
+
+    Condition 2 compares a symbol's volume with its own 20-session average and
+    nothing else. On a day the entire market trades twice its normal size, a
+    5x reading is a smaller event than the same reading on a quiet day, and
+    the condition cannot tell the two apart. This measures the difference so
+    a concentration of signals on earnings-season days can be checked against
+    the market's own volume rather than guessed at.
+    """
+
+    on: dt.date
+    symbols_measured: int
+    median_multiple: float
+    #: Symbols clearing condition 2 alone - no other condition applied.
+    over_5x: int
+    over_2x: int
+
+
+def market_volume_context(
+    database: Database, on: dt.date, symbols: list[str] | None = None
+) -> MarketVolumeContext:
+    """Measure the market-wide volume multiple on ``on``.
+
+    Compare a suspect date against ordinary ones: if the median symbol traded
+    near its own average while a handful spiked, the concentration is about
+    those names; if the median itself is elevated, the day is.
+    """
+    with database.session() as session:
+        if symbols is None:
+            symbols = [sym for sym, market in list_securities(session) if market == "JP"]
+        repo = PriceRepository(session)
+        prices_by_symbol = {symbol: repo.get_prices(symbol) for symbol in symbols}
+
+    stamp = pd.Timestamp(on)
+    multiples: list[float] = []
+    for prices in prices_by_symbol.values():
+        if len(prices) < VOLUME_WINDOW + 2 or stamp not in prices.index:
+            continue
+        volume = prices[VOLUME]
+        prior = volume.rolling(VOLUME_WINDOW).mean().shift(1)
+        value = volume.loc[stamp] / prior.loc[stamp]
+        if pd.notna(value):
+            multiples.append(float(value))
+
+    series = pd.Series(multiples, dtype="float64")
+    return MarketVolumeContext(
+        on=on,
+        symbols_measured=len(series),
+        median_multiple=float(series.median()) if not series.empty else float("nan"),
+        over_5x=int((series >= 5.0).sum()),
+        over_2x=int((series >= 2.0).sum()),
+    )

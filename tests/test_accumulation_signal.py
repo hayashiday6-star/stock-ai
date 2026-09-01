@@ -25,6 +25,7 @@ from stock_ai.backtest.accumulation_signal import (
     explain_date,
     exrights_flag_series,
     market_cap_series,
+    market_volume_context,
     material_free_mask,
     record_dates,
 )
@@ -680,3 +681,47 @@ def test_earnings_coverage_reaches_only_as_far_as_the_disclosures_on_file() -> N
     assert covered.loc["2023-06-01"]  # 400日以内
     assert not covered.loc["2021-01-04"]  # 3年以上離れている
     assert not covered.loc["2026-12-31"]
+
+
+# --- 市場全体の出来高（決算シーズン効果の切り分け） ---------------------------
+
+
+def test_market_volume_context_sees_a_market_wide_surge() -> None:
+    """条件②は自分の20日平均としか比べない。市場全体が膨らんだ日を測る道具。
+
+    決算シーズンのように市場全体の出来高が上がる日は、個別銘柄の5倍が
+    静かな日の5倍と同じ意味を持たない。中央値がそれを見える形にする。
+    """
+    database = Database("sqlite:///:memory:")
+    database.create_all()
+    frame = _flat_frame(base=100.0)
+    busy_day = frame.index[-1]
+    for symbol in ("7203", "6501", "8306"):
+        seeded = frame.copy()
+        seeded.loc[busy_day, VOLUME] = seeded[VOLUME].iloc[0] * 6.0  # 全銘柄が6倍
+        _seed(database, symbol, "JP", seeded)
+
+    context = market_volume_context(database, busy_day.date())
+
+    assert context.symbols_measured == 3
+    assert context.median_multiple == pytest.approx(6.0)
+    assert context.over_5x == 3
+    assert context.over_2x == 3
+    database.dispose()
+
+
+def test_market_volume_context_stays_near_one_on_an_ordinary_day() -> None:
+    """1銘柄だけ跳ねた日は、中央値では平常に見える。そこが知りたい差。"""
+    database = Database("sqlite:///:memory:")
+    database.create_all()
+    frame = _flat_frame(base=100.0)
+    day = frame.index[-1]
+    _seed(database, "7203", "JP", _spike_volume(frame))  # この1銘柄だけ6倍
+    for symbol in ("6501", "8306"):
+        _seed(database, symbol, "JP", frame)
+
+    context = market_volume_context(database, day.date())
+
+    assert context.median_multiple == pytest.approx(1.0)
+    assert context.over_5x == 1
+    database.dispose()
