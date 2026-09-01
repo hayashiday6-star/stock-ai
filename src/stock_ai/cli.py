@@ -47,7 +47,7 @@ from stock_ai.ai.estimate import estimate_disclosure_run
 from stock_ai.ai.factory import get_ai_provider
 from stock_ai.ai.pricing import RunEstimate, UsageLedger
 from stock_ai.ai.query import parse_query, run_query
-from stock_ai.backtest.accumulation_signal import count_signals
+from stock_ai.backtest.accumulation_signal import DEFAULT_MIN_TURNOVER, count_signals
 from stock_ai.backtest.engine import BacktestEngine
 from stock_ai.backtest.factor_test import (
     FactorTestResult,
@@ -1348,8 +1348,19 @@ def accum_jp_count(
     min_market_cap: float | None = typer.Option(
         None,
         "--min-market-cap",
-        help="Section 2's judgment-day floor in yen, e.g. 1e10 for 100億円. "
-        "Omit to skip the filter (counts then include names too small to qualify).",
+        help="Secondary: judgment-day market-cap floor in yen, e.g. 1e10. Needs shares "
+        "outstanding disclosed as of D, which only exists ~5 years back.",
+    ),
+    min_turnover: float = typer.Option(
+        DEFAULT_MIN_TURNOVER,
+        "--min-turnover",
+        help="Section 2's liquidity floor in yen (D close x D volume). 0 disables it.",
+    ),
+    material_days: bool = typer.Option(
+        True,
+        "--material-days/--no-material-days",
+        help="Evaluate section 3-1's earnings / ex-rights flags and report the "
+        "material-free subset the registration judges on.",
     ),
 ) -> None:
     """Count how often the JP accumulation pre-registration's 5 conditions align.
@@ -1369,17 +1380,33 @@ def accum_jp_count(
     database = Database()
     database.create_all()
 
-    report = count_signals(database, symbols=symbols, min_market_cap=min_market_cap)
+    report = count_signals(
+        database,
+        symbols=symbols,
+        min_market_cap=min_market_cap,
+        min_turnover=min_turnover or None,
+        flag_material_days=material_days,
+    )
 
     console.print(
         f"銘柄: {report.symbols_scanned} 件中 {report.symbols_with_enough_history} 件が"
         f"250営業日以上の履歴あり。"
     )
+    if min_turnover:
+        console.print(
+            f"売買代金フィルタ: {min_turnover:,.0f}円以上で除外 {report.excluded_for_turnover} 件。"
+        )
     if min_market_cap is not None:
         console.print(
             f"時価総額フィルタ: {min_market_cap:,.0f}円以上で除外 "
             f"{report.excluded_for_market_cap} 件。"
         )
+        if report.first_evaluable_date is not None:
+            console.print(
+                f"[dim]時価総額を評価できる最初の日: {report.first_evaluable_date}"
+                "（これより前は発行済株式数が分からず全件除外。年の途中なら、その年の"
+                "件数が少ないのはデータ開始の都合）[/]"
+            )
     console.print(
         "[dim]件数のみ。リターンは計算していない。市場区分の独立検証・上場廃止銘柄は"
         "未対応 - 詳細は accumulation_signal.SignalCountReport を参照。[/]"
@@ -1391,24 +1418,47 @@ def accum_jp_count(
 
     console.print(f"合計シグナル数: {report.total} ／ 独立シグナル日数: {report.unique_dates}")
 
-    table = Table(title="年別")
+    shown = report
+    if material_days:
+        free = report.material_free
+        console.print(
+            f"[bold]材料日を除いたサブセット（主要判定の対象）: {free.total} 件 ／ "
+            f"独立 {free.unique_dates} 日[/]"
+        )
+        excluded = report.total - free.total
+        rate = excluded / report.total * 100 if report.total else 0.0
+        console.print(
+            f"  除外 {excluded} 件（{rate:.1f}%）＝ 決算 {report.earnings_count} 件 ／ "
+            f"権利 {report.exrights_count} 件 ／ "
+            f"開示日不明で判定不能 {report.unflagged_but_unevaluable} 件"
+        )
+        console.print(
+            "[dim]  除外率がそのまま「このシグナルがどれだけ材料日に依存していたか」。"
+            "以下の表は材料日を除いたサブセット。[/]"
+        )
+        shown = free
+        if shown.total == 0:
+            console.print("[yellow]材料日を除くとシグナルが残らない。[/]")
+            return
+
+    table = Table(title="年別（材料日を除く）" if material_days else "年別")
     table.add_column("年", justify="right")
     table.add_column("シグナル数", justify="right")
     table.add_column("独立シグナル日数", justify="right")
-    for row in report.by_year().itertuples():
+    for row in shown.by_year().itertuples():
         table.add_row(str(row.year), str(row.signals), str(row.signal_days))
     console.print(table)
 
-    by_date = report.by_date()
+    by_date = shown.by_date()
     top = Table(title="1日あたりの上位10日（集中度の確認用）")
     top.add_column("日付", justify="right")
     top.add_column("シグナル数", justify="right")
     for row in by_date.head(10).itertuples():
         top.add_row(str(row.date), str(row.signals))
     console.print(top)
-    average_per_day = report.total / report.unique_dates if report.unique_dates else 0.0
+    average_per_day = shown.total / shown.unique_dates if shown.unique_dates else 0.0
     console.print(
-        f"1日平均 {average_per_day:.2f} 件 ／ 最大 {report.max_signals_per_day} 件"
+        f"1日平均 {average_per_day:.2f} 件 ／ 最大 {shown.max_signals_per_day} 件"
         "（日次クラスタ補正の前提として、特定の1日が結果を支配していないか確認）"
     )
 

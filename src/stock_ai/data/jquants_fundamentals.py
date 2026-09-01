@@ -371,13 +371,25 @@ def _fiscal_year_of(record: dict[str, Any]) -> int | None:
     if explicit is not None and 1900 <= explicit <= 2999:
         return int(explicit)
 
-    for key in ("FYEnd", "CurrentFiscalYearEndDate", "FiscalYearEnd", "PeriodEnd"):
-        parsed = _parse_date(_text(record, key))
-        if parsed is not None:
-            return parsed.year
+    parsed = _fiscal_year_end_of(record)
+    if parsed is not None:
+        return parsed.year
 
     disclosed = _parse_date(_text(record, "DiscDate", "DisclosedDate"))
     return disclosed.year if disclosed else None
+
+
+#: 決算期末日を名乗りうるキー。v2 は略記、v1 は綴り。
+_FY_END_KEYS = ("FYEnd", "CurrentFiscalYearEndDate", "FiscalYearEnd", "PeriodEnd")
+
+
+def _fiscal_year_end_of(record: dict[str, Any]) -> dt.date | None:
+    """決算期末日そのものを返す。年だけでは権利確定日の月が決まらない。"""
+    for key in _FY_END_KEYS:
+        parsed = _parse_date(_text(record, key))
+        if parsed is not None:
+            return parsed
+    return None
 
 
 def normalize_statements(symbol: str, records: list[dict[str, Any]]) -> list[FinancialReport]:
@@ -418,6 +430,7 @@ def normalize_statements(symbol: str, records: list[dict[str, Any]]) -> list[Fin
             fiscal_year=fiscal_year,
             period=period,
             disclosed_on=_parse_date(disclosed_text),
+            fiscal_year_end=_fiscal_year_end_of(record),
             revenue=_first(record, "Sales", "NetSales"),
             operating_income=_first(record, "OP", "OperatingProfit"),
             net_income=_first(record, "NP", "Profit"),

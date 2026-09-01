@@ -19,7 +19,7 @@ leak information about whether the return test would pass.
 from __future__ import annotations
 
 import datetime as dt
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 import pandas as pd
 
@@ -48,6 +48,34 @@ MA_WINDOWS: tuple[int, ...] = (5, 10, 20, 30)
 #: metric below is meaningful, so it doubles as the "上場後250営業日以上経過"
 #: universe requirement - no separate listing-date lookup is needed.
 MIN_HISTORY_BARS = FIFTY_TWO_WEEK_WINDOW
+
+#: Section 2's liquidity floor, in yen: D's close times D's volume.
+#:
+#: This replaced a market-cap floor. Market cap needs the shares outstanding
+#: disclosed as of D, and that only exists for about five years back, which
+#: silently truncated the whole study to 2021+. Turnover needs only the close
+#: and the volume, so it is computable over the full history and cannot look
+#: ahead by construction. It is also the same quantity section 4's size
+#: constraint is expressed in.
+DEFAULT_MIN_TURNOVER = 100_000_000.0
+
+#: Trading days either side of a material date that the flags also cover.
+#:
+#: Symmetric on purpose: the volume a disclosure moves shows up the session
+#: before (anticipation) and the session after (reaction), not only on the
+#: day itself. This does mean a signal is dropped for an announcement that
+#: lands the *next* day - fine for cleaning a research sample, but a live
+#: screener must use the company's pre-announced 決算発表予定日 instead of
+#: the realised disclosure date, or it would be using what it cannot know.
+MATERIAL_WINDOW_DAYS = 1
+
+#: Japan moved to T+2 settlement on this date; it was T+3 before.
+#:
+#: 権利付最終日 (the last day to buy and still be on the register) is that
+#: many business days before the record date, so the flag's anchor moves
+#: with it. The primary window (2021+) is entirely T+2; the long-history
+#: secondary analysis crosses the change.
+T_PLUS_2_FROM = dt.date(2019, 7, 16)
 
 
 @dataclass(frozen=True)
@@ -143,6 +171,145 @@ def compute_signal_frame(
     return frame
 
 
+def _flag_around(index: pd.DatetimeIndex, anchors: list[dt.date], window: int) -> pd.Series:
+    """Flag every trading day within ``window`` sessions of any anchor date.
+
+    The trading calendar is taken from ``index`` itself - the days this
+    symbol actually traded - rather than from a holiday table. That is the
+    calendar the windows are meant to be counted in, and it is exact for the
+    symbol in question without needing a separate data source.
+
+    An anchor that falls on a non-trading day (a record date on a Sunday, a
+    disclosure published over a weekend) is pulled back to the last trading
+    day on or before it, which is where its volume actually lands.
+    """
+    flags = pd.Series(False, index=index)
+    if not anchors or len(index) == 0:
+        return flags
+
+    positions = index.searchsorted(pd.to_datetime(sorted(anchors)), side="right") - 1
+    for position in positions:
+        if position < 0:  # the anchor predates every bar this symbol has
+            continue
+        start = max(0, position - window)
+        flags.iloc[start : position + window + 1] = True
+    return flags
+
+
+def earnings_flag_series(index: pd.DatetimeIndex, statements: list[FinancialReport]) -> pd.Series:
+    """Flag trading days within ±1 session of a results disclosure.
+
+    Section 3-1. Anchors are the ``disclosed_on`` dates already stored on the
+    statements - a symbol with none gets an all-False series, which the
+    caller must not read as "no earnings happened": see
+    :func:`material_free_mask`.
+    """
+    anchors = [r.disclosed_on for r in statements if r.disclosed_on is not None]
+    return _flag_around(index, anchors, MATERIAL_WINDOW_DAYS)
+
+
+def record_dates(statements: list[FinancialReport], years: range) -> list[dt.date]:
+    """The 権利確定日 a company's fiscal calendar implies, over ``years``.
+
+    Japanese record dates sit on the fiscal year end (the year-end dividend
+    and the AGM register) and on its half-year point (the interim dividend).
+    Both follow from the fiscal year-end *date*, so one known fiscal calendar
+    covers every year - which matters because the statements on file cover
+    only a few years while the price history runs much longer.
+
+    Returns an empty list when no statement carries a fiscal year-end date;
+    the company's closing month is then simply unknown.
+    """
+    ends = [r.fiscal_year_end for r in statements if r.fiscal_year_end is not None]
+    if not ends:
+        return []
+
+    # Any of them will do - a company's closing month is a property of the
+    # company, not of the period. The newest is the one most likely to
+    # reflect a fiscal-calendar change.
+    month_day = max(ends)
+    dates: list[dt.date] = []
+    for year in years:
+        try:
+            year_end = month_day.replace(year=year)
+        except ValueError:  # 2/29 in a non-leap year
+            year_end = month_day.replace(year=year, day=month_day.day - 1)
+        dates.append(year_end)
+        # The half-year point. Subtracting six months lands on the previous
+        # month's same day; the interim record date is the month end, which
+        # is what a fiscal-period end always is.
+        month = year_end.month - 6
+        half_year = year - 1 if month <= 0 else year
+        month = month + 12 if month <= 0 else month
+        dates.append(_month_end(half_year, month))
+    return dates
+
+
+def _month_end(year: int, month: int) -> dt.date:
+    """The last calendar day of ``year``-``month``."""
+    if month == 12:
+        return dt.date(year, 12, 31)
+    return dt.date(year, month + 1, 1) - dt.timedelta(days=1)
+
+
+def exrights_flag_series(index: pd.DatetimeIndex, statements: list[FinancialReport]) -> pd.Series:
+    """Flag trading days within ±1 session of 権利付最終日 or 権利落ち日.
+
+    Section 3-1. 権利付最終日 is two business days before the record date
+    under T+2 (three before :data:`T_PLUS_2_FROM`), and 権利落ち日 is the
+    session after it. Both anchors are flagged with their own ±1 window, so
+    the covered stretch is four sessions around each record date.
+    """
+    if len(index) == 0:
+        return pd.Series(False, index=index)
+
+    years = range(index[0].year - 1, index[-1].year + 2)
+    first, last = index[0].date(), index[-1].date()
+    anchors: list[dt.date] = []
+    for record_date in record_dates(statements, years):
+        # Only record dates this series actually covers. Past the last bar,
+        # ``searchsorted`` would clamp to that bar and invent an ex-rights day
+        # at the end of every series; before the first, there is nothing to
+        # count back from. The cost is under-flagging the final sessions of a
+        # series, which is bounded and never fabricates a flag.
+        if not first <= record_date <= last:
+            continue
+        # A record date on a holiday moves back to the preceding business day.
+        position = index.searchsorted(pd.Timestamp(record_date), side="right") - 1
+        if position < 0:
+            continue
+        settlement_days = 2 if record_date >= T_PLUS_2_FROM else 3
+        last_with_rights = position - settlement_days
+        if last_with_rights < 0:
+            continue
+        anchors.append(index[last_with_rights].date())  # 権利付最終日
+        anchors.append(index[last_with_rights + 1].date())  # 権利落ち日
+    return _flag_around(index, anchors, MATERIAL_WINDOW_DAYS)
+
+
+def material_free_mask(
+    index: pd.DatetimeIndex, statements: list[FinancialReport]
+) -> tuple[pd.Series, pd.Series, pd.Series]:
+    """Return ``(material_free, earnings_flag, exrights_flag)`` for ``index``.
+
+    ``material_free`` is the pre-registration's primary subset: neither flag
+    set **and** both flags actually evaluable. A symbol with no disclosure
+    dates on file is not a symbol that never reported - it is one whose
+    material days cannot be identified, and section 3-1 excludes those rather
+    than let them pass as clean.
+    """
+    earnings = earnings_flag_series(index, statements)
+    exrights = exrights_flag_series(index, statements)
+
+    evaluable = any(r.disclosed_on is not None for r in statements) and any(
+        r.fiscal_year_end is not None for r in statements
+    )
+    material_free = ~earnings & ~exrights
+    if not evaluable:
+        material_free = pd.Series(False, index=index)
+    return material_free, earnings, exrights
+
+
 def market_cap_series(raw_close: pd.Series, statements: list[FinancialReport]) -> pd.Series:
     """Market cap at each date in ``raw_close``, section 2's "判定日時点の値".
 
@@ -201,6 +368,13 @@ class Signal:
 
     symbol: str
     date: dt.date
+    #: Section 3-1's material-day flags. ``material_free`` is not simply
+    #: ``not (earnings or exrights)``: a symbol whose disclosure dates are
+    #: unknown has both flags False and is still not material-free, because
+    #: nothing was checked. See :func:`material_free_mask`.
+    earnings_flag: bool = False
+    exrights_flag: bool = False
+    material_free: bool = False
 
 
 @dataclass
@@ -240,11 +414,51 @@ class SignalCountReport:
     #: ``min_market_cap`` on that date. ``None`` means the filter was not
     #: requested at all - never confuse that with "requested and found zero".
     excluded_for_market_cap: int | None = None
+    #: Same, for the turnover floor.
+    excluded_for_turnover: int | None = None
+    #: The earliest date on which every requested filter could actually be
+    #: evaluated, per the data on file. A thin first year usually means the
+    #: data starts mid-year rather than the market being quiet.
+    first_evaluable_date: dt.date | None = None
 
     @property
     def total(self) -> int:
         """Total (symbol, date) signals - the same date can repeat across symbols."""
         return len(self.signals)
+
+    @property
+    def material_free(self) -> SignalCountReport:
+        """The pre-registration's primary subset: no earnings, no ex-rights.
+
+        Section 3-2 judges on this, not on ``self``. The difference between
+        the two is the answer to "how much of this signal was material-day
+        volume all along".
+        """
+        return replace(self, signals=[s for s in self.signals if s.material_free])
+
+    @property
+    def earnings_count(self) -> int:
+        """Signals flagged as sitting on or beside a results disclosure."""
+        return sum(1 for s in self.signals if s.earnings_flag)
+
+    @property
+    def exrights_count(self) -> int:
+        """Signals flagged as sitting on or beside an ex-rights date."""
+        return sum(1 for s in self.signals if s.exrights_flag)
+
+    @property
+    def unflagged_but_unevaluable(self) -> int:
+        """Signals neither flag fired on, yet which are not material-free.
+
+        These are the symbols with no disclosure dates on file: nothing was
+        checked, so nothing can be called clean. Counting them separately
+        keeps "verified quiet" apart from "never looked".
+        """
+        return sum(
+            1
+            for s in self.signals
+            if not s.material_free and not (s.earnings_flag or s.exrights_flag)
+        )
 
     @property
     def unique_dates(self) -> int:
@@ -296,6 +510,8 @@ def count_signals(
     symbols: list[str] | None = None,
     thresholds: Signal5Thresholds | None = None,
     min_market_cap: float | None = None,
+    min_turnover: float | None = None,
+    flag_material_days: bool = False,
 ) -> SignalCountReport:
     """Scan stored JP symbols and count how often all five conditions align.
 
@@ -306,12 +522,19 @@ def count_signals(
             does and does not already exclude).
         thresholds: Overrides for the sensitivity sweep (section 8); the
             registered center values by default.
-        min_market_cap: Section 2's judgment-day market-cap floor (yen), e.g.
-            ``10_000_000_000`` for the pre-registration's 100億円. ``None``
-            (the default) skips the filter entirely - the count then still
-            includes symbols the sealed run would exclude for being too
-            small, which is why this must not stay unset in the sealed run.
+        min_market_cap: Section 2's *former* judgment-day market-cap floor
+            (yen). Kept as a secondary measure - it needs shares outstanding
+            disclosed as of D, which only exists for about five years back.
+            ``None`` (the default) skips it.
+        min_turnover: Section 2's liquidity floor (yen), D's close times D's
+            volume - see :data:`DEFAULT_MIN_TURNOVER`. ``None`` skips it,
+            which the sealed run must not do.
+        flag_material_days: Evaluate section 3-1's earnings and ex-rights
+            flags on every signal. Off by default because it needs the
+            statement history for each symbol; the sealed run's primary
+            subset depends on it.
     """
+    needs_statements = min_market_cap is not None or flag_material_days
     with database.session() as session:
         if symbols is None:
             symbols = [sym for sym, market in list_securities(session) if market == "JP"]
@@ -319,9 +542,14 @@ def count_signals(
         prices_by_symbol = {symbol: price_repo.get_prices(symbol) for symbol in symbols}
         raw_prices_by_symbol: dict[str, pd.DataFrame] = {}
         statements_by_symbol: dict[str, list[FinancialReport]] = {}
-        if min_market_cap is not None:
-            statement_repo = FinancialStatementRepository(session)
+        if min_market_cap is not None or min_turnover is not None:
+            # Both floors are yen amounts of actually-traded value, so both
+            # need the unadjusted close: an adjusted close against a raw
+            # volume understates turnover by the split factor for every bar
+            # before a split.
             raw_prices_by_symbol = {symbol: price_repo.get_raw_prices(symbol) for symbol in symbols}
+        if needs_statements:
+            statement_repo = FinancialStatementRepository(session)
             statements_by_symbol = {
                 symbol: statement_repo.get_reports(symbol, period=None) for symbol in symbols
             }
@@ -329,26 +557,55 @@ def count_signals(
     signals: list[Signal] = []
     with_history = 0
     excluded_for_market_cap = 0
+    excluded_for_turnover = 0
+    first_evaluable: dt.date | None = None
     for symbol, prices in prices_by_symbol.items():
         if len(prices) < MIN_HISTORY_BARS:
             continue
         with_history += 1
         frame = compute_signal_frame(prices, thresholds)
         signal_mask = frame["signal"]
+        statements = statements_by_symbol.get(symbol, [])
+
+        if min_turnover is not None:
+            raw = raw_prices_by_symbol[symbol]
+            turnover = (raw[CLOSE] * raw[VOLUME]).reindex(frame.index)
+            meets_floor = (turnover >= min_turnover).fillna(False)
+            excluded_for_turnover += int((signal_mask & ~meets_floor).sum())
+            signal_mask = signal_mask & meets_floor
 
         if min_market_cap is not None:
-            market_cap = market_cap_series(
-                raw_prices_by_symbol[symbol][CLOSE], statements_by_symbol[symbol]
-            ).reindex(frame.index)
+            market_cap = market_cap_series(raw_prices_by_symbol[symbol][CLOSE], statements).reindex(
+                frame.index
+            )
             meets_floor = (market_cap >= min_market_cap).fillna(False)
             excluded_for_market_cap += int((signal_mask & ~meets_floor).sum())
             signal_mask = signal_mask & meets_floor
+            evaluable_from = market_cap.first_valid_index()
+            if evaluable_from is not None:
+                seen = evaluable_from.date()
+                first_evaluable = seen if first_evaluable is None else min(first_evaluable, seen)
 
-        signals.extend(Signal(symbol, ts.date()) for ts in frame.index[signal_mask])
+        if flag_material_days:
+            material_free, earnings, exrights = material_free_mask(frame.index, statements)
+            signals.extend(
+                Signal(
+                    symbol,
+                    ts.date(),
+                    earnings_flag=bool(earnings.loc[ts]),
+                    exrights_flag=bool(exrights.loc[ts]),
+                    material_free=bool(material_free.loc[ts]),
+                )
+                for ts in frame.index[signal_mask]
+            )
+        else:
+            signals.extend(Signal(symbol, ts.date()) for ts in frame.index[signal_mask])
 
     return SignalCountReport(
         signals=signals,
         symbols_scanned=len(symbols),
         symbols_with_enough_history=with_history,
         excluded_for_market_cap=excluded_for_market_cap if min_market_cap is not None else None,
+        excluded_for_turnover=excluded_for_turnover if min_turnover is not None else None,
+        first_evaluable_date=first_evaluable,
     )

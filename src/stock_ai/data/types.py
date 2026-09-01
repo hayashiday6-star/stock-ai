@@ -142,6 +142,8 @@ class FinancialReport(BaseModel):
     fiscal_year: int
     period: FiscalPeriod = FiscalPeriod.FY
     disclosed_on: dt.date | None = None
+    fiscal_year_end: dt.date | None = None
+    """The fiscal year-end date. ``fiscal_year`` cannot say which month it is."""
 
     revenue: float | None = None
     operating_income: float | None = None

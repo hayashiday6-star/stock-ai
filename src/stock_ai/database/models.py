@@ -172,6 +172,14 @@ class FinancialStatement(Base):
     fiscal_year: Mapped[int] = mapped_column(Integer, index=True)
     period: Mapped[str] = mapped_column(String(4), default="FY")
     disclosed_on: Mapped[dt.date | None] = mapped_column(Date, default=None)
+    fiscal_year_end: Mapped[dt.date | None] = mapped_column(Date, default=None)
+    """The company's fiscal year-end *date*, not just its year.
+
+    ``fiscal_year`` alone cannot say which month a company closes its books
+    in, and Japanese record dates (権利確定日) sit on the fiscal year end and
+    its half-year point. A March filer and a December filer with the same
+    ``fiscal_year`` have their ex-rights dates six months apart.
+    """
 
     revenue: Mapped[float | None] = mapped_column(default=None)
     operating_income: Mapped[float | None] = mapped_column(default=None)

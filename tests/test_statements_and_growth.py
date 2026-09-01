@@ -876,3 +876,19 @@ def test_a_missing_share_count_leaves_the_scale_alone() -> None:
 
 def test_a_single_year_needs_no_restatement() -> None:
     assert len(restated([FinancialReport(symbol="6501", fiscal_year=2026, eps=176.76)])) == 1
+
+
+def test_normalize_statements_keeps_the_fiscal_year_end_date() -> None:
+    """権利確定日は期末日から決まる。年に潰すと3月決算と12月決算が同じになる。"""
+    records = [{"DiscDate": "2024-05-10", "FYEnd": "2024-03-31", "Sales": "100"}]
+    (report,) = normalize_statements("X", records)
+    assert report.fiscal_year_end == dt.date(2024, 3, 31)
+    assert report.fiscal_year == 2024
+
+
+def test_normalize_statements_leaves_the_fiscal_year_end_unset_when_absent() -> None:
+    """期末日を名乗るキーが1つも無ければ空。推測で埋めない。"""
+    records = [{"DiscDate": "2024-05-10", "FY": "2024", "Sales": "100"}]
+    (report,) = normalize_statements("X", records)
+    assert report.fiscal_year_end is None
+    assert report.fiscal_year == 2024

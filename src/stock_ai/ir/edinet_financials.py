@@ -440,6 +440,20 @@ def parse_summary(rows: list[dict[str, str]]) -> list[AnnualFigures]:
     return figures
 
 
+def _same_day_in_year(day: dt.date, year: int) -> dt.date:
+    """``day`` の月日を ``year`` に移す。2/29 は平年で 2/28 に寄せる。
+
+    有報1本の5期はすべて同じ会社の同じ決算月なので、当期の期末日の月日が
+    そのまま各期に効く。ただし2月決算の会社は閏年の 2/29 を持ちうる。
+    ``date.replace`` は平年に移そうとすると例外を投げ、それは有報1本の解析
+    ごと落とす――月末という意味は 2/28 で保たれるので、寄せるほうがよい。
+    """
+    try:
+        return day.replace(year=year)
+    except ValueError:
+        return day.replace(year=year, day=day.day - 1)
+
+
 def to_reports(
     header: FilingHeader,
     figures: list[AnnualFigures],
@@ -493,6 +507,7 @@ def to_reports(
                 fiscal_year=latest - offset,
                 period=FiscalPeriod.FY,
                 disclosed_on=disclosed_on,
+                fiscal_year_end=_same_day_in_year(header.fiscal_year_end, latest - offset),
                 revenue=entry.revenue,
                 net_income=entry.net_income,
                 equity=entry.equity,
