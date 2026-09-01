@@ -217,3 +217,28 @@ def test_count_signals_by_year_deduplicates_same_day_across_symbols() -> None:
     assert list(by_year["signals"]) == [2]
     assert list(by_year["signal_days"]) == [1]
     database.dispose()
+
+
+def test_max_signals_per_day_reports_the_busiest_date() -> None:
+    """A day where every symbol signals at once should stand out, not average away."""
+    database = Database("sqlite:///:memory:")
+    database.create_all()
+    frame = _spike_volume(_flat_frame())
+    for symbol in ("7203", "6501", "8306"):
+        _seed(database, symbol, "JP", frame)  # all three signal on the same date
+
+    report = count_signals(database)
+
+    assert report.max_signals_per_day == 3
+    by_date = report.by_date()
+    assert by_date.iloc[0]["signals"] == 3
+    database.dispose()
+
+
+def test_max_signals_per_day_is_zero_with_no_signals() -> None:
+    empty = Database("sqlite:///:memory:")
+    empty.create_all()
+    report_with_no_signals = count_signals(empty)
+    assert report_with_no_signals.max_signals_per_day == 0
+    assert report_with_no_signals.by_date().empty
+    empty.dispose()

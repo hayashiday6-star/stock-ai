@@ -1387,6 +1387,19 @@ def accum_jp_count(
         table.add_row(str(row.year), str(row.signals), str(row.signal_days))
     console.print(table)
 
+    by_date = report.by_date()
+    top = Table(title="1日あたりの上位10日（集中度の確認用）")
+    top.add_column("日付", justify="right")
+    top.add_column("シグナル数", justify="right")
+    for row in by_date.head(10).itertuples():
+        top.add_row(str(row.date), str(row.signals))
+    console.print(top)
+    average_per_day = report.total / report.unique_dates if report.unique_dates else 0.0
+    console.print(
+        f"1日平均 {average_per_day:.2f} 件 ／ 最大 {report.max_signals_per_day} 件"
+        "（日次クラスタ補正の前提として、特定の1日が結果を支配していないか確認）"
+    )
+
 
 def _run_walk_forward(
     database: Database, scorer: WeightedScorer, preset: str, horizon: int, buckets: int
