@@ -319,6 +319,48 @@ def earnings_coverage(index: pd.DatetimeIndex, statements: list[FinancialReport]
     return (nearest - pd.Series(index, index=index)).abs() <= margin
 
 
+def earnings_distance_series(
+    index: pd.DatetimeIndex, statements: list[FinancialReport]
+) -> pd.Series:
+    """Signed trading-session distance from each date to the nearest disclosure.
+
+    Negative means the disclosure is still ahead - the company has not
+    reported yet and the date sits in the run-up. Positive means it is
+    behind. ``NaN`` where nothing is on file.
+
+    The sign is the point. ``earnings_flag`` answers "is this an earnings
+    day"; a concentration of signals two weeks *before* earnings is a
+    different phenomenon, and only a signed distance separates the two.
+    """
+    disclosed = sorted(r.disclosed_on for r in statements if r.disclosed_on is not None)
+    if not disclosed or len(index) == 0:
+        return pd.Series(float("nan"), index=index)
+
+    positions = sorted(
+        {
+            int(index.searchsorted(pd.Timestamp(date), side="right")) - 1
+            for date in disclosed
+            if index[0].date() <= date <= index[-1].date()
+        }
+    )
+    positions = [p for p in positions if p >= 0]
+    if not positions:
+        return pd.Series(float("nan"), index=index)
+
+    anchors = pd.Index(positions)
+    here = pd.Index(range(len(index)))
+    after = anchors.searchsorted(here, side="left")
+    distances: list[float] = []
+    for i, slot in zip(here, after, strict=True):
+        candidates = []
+        if slot < len(anchors):
+            candidates.append(i - anchors[slot])
+        if slot > 0:
+            candidates.append(i - anchors[slot - 1])
+        distances.append(float(min(candidates, key=abs)))
+    return pd.Series(distances, index=index)
+
+
 def material_free_mask(
     index: pd.DatetimeIndex, statements: list[FinancialReport]
 ) -> tuple[pd.Series, pd.Series, pd.Series]:
@@ -405,6 +447,11 @@ class Signal:
     earnings_flag: bool = False
     exrights_flag: bool = False
     material_free: bool = False
+    #: Trading sessions to the nearest disclosure: negative when the company
+    #: has *not* reported yet, positive when it already has. ``None`` when no
+    #: disclosure is on file. Distinguishes "on an earnings day" from "in the
+    #: quiet stretch before one", which the flag alone cannot.
+    earnings_distance: int | None = None
 
 
 @dataclass
@@ -512,6 +559,53 @@ class SignalCountReport:
         )
         return grouped.reset_index().sort_values("year").reset_index(drop=True)
 
+    def by_earnings_distance(self) -> pd.DataFrame:
+        """Signals bucketed by trading sessions to their own next disclosure.
+
+        Section 3-1's flag asks "is this an earnings day". This asks the
+        question the flag cannot: whether the signals pile up in the quiet
+        run-up *before* a company reports. A flat spread means the timing is
+        incidental; a peak a week or two ahead of results means the screen is
+        finding pre-announcement positioning, not accumulation.
+        """
+        measured = [s for s in self.signals if s.earnings_distance is not None]
+        if not measured:
+            return pd.DataFrame(columns=["bucket", "signals", "share"])
+
+        def bucket(distance: int) -> str:
+            if distance <= -21:
+                return "-21以下（決算まで1ヶ月超）"
+            if distance <= -11:
+                return "-20..-11（決算の3〜4週前）"
+            if distance <= -2:
+                return "-10..-2（決算の直前2週）"
+            if distance <= 1:
+                return "-1..+1（決算日前後＝フラグ対象）"
+            if distance <= 10:
+                return "+2..+10（決算直後2週）"
+            if distance <= 20:
+                return "+11..+20"
+            return "+21以上"
+
+        order = [
+            "-21以下（決算まで1ヶ月超）",
+            "-20..-11（決算の3〜4週前）",
+            "-10..-2（決算の直前2週）",
+            "-1..+1（決算日前後＝フラグ対象）",
+            "+2..+10（決算直後2週）",
+            "+11..+20",
+            "+21以上",
+        ]
+        counts = pd.Series([bucket(s.earnings_distance) for s in measured]).value_counts()
+        rows = [
+            {"bucket": name, "signals": int(counts.get(name, 0))}
+            for name in order
+            if counts.get(name, 0)
+        ]
+        frame = pd.DataFrame(rows)
+        frame["share"] = frame["signals"] / len(measured)
+        return frame
+
     def by_date(self) -> pd.DataFrame:
         """Signal count per judgment date, busiest day first.
 
@@ -618,6 +712,7 @@ def count_signals(
 
         if flag_material_days:
             material_free, earnings, exrights = material_free_mask(frame.index, statements)
+            distance = earnings_distance_series(frame.index, statements)
             signals.extend(
                 Signal(
                     symbol,
@@ -625,6 +720,9 @@ def count_signals(
                     earnings_flag=bool(earnings.loc[ts]),
                     exrights_flag=bool(exrights.loc[ts]),
                     material_free=bool(material_free.loc[ts]),
+                    earnings_distance=(
+                        None if pd.isna(distance.loc[ts]) else int(distance.loc[ts])
+                    ),
                 )
                 for ts in frame.index[signal_mask]
             )
