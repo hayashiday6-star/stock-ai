@@ -626,6 +626,27 @@ def test_a_december_filer_lands_on_the_calendar_year() -> None:
     assert [r.fiscal_year for r in to_reports(header, figures)] == [2024, 2025]
 
 
+def test_disclosed_on_defaults_to_none(rows: list[dict[str, str]]) -> None:
+    """引数を省けば、これまで通り未設定のまま。"""
+    for report in to_reports(parse_header(rows), parse_summary(rows)):
+        assert report.disclosed_on is None
+
+
+def test_disclosed_on_is_stamped_on_every_period_from_the_one_filing(
+    rows: list[dict[str, str]],
+) -> None:
+    """5期ぶんすべてが同じ1本の有報から来るので、同じ公開日が付く。
+
+    判定日時点の時価総額は「その日までに公開されていた発行済株式数」でしか
+    計算できない。決算日(会計期間の末日)は公開日の数ヶ月前で、それを代わりに
+    使うと、まだ非公開の情報を判定日時点で知っていたことになってしまう。
+    """
+    filed = dt.date(2026, 6, 25)
+    reports = to_reports(parse_header(rows), parse_summary(rows), disclosed_on=filed)
+    assert reports  # the fixture always yields at least one period
+    assert {r.disclosed_on for r in reports} == {filed}
+
+
 # --- 入口 -----------------------------------------------------------------
 
 
@@ -809,6 +830,13 @@ def test_find_documents_returns_the_doc_id() -> None:
     assert source_over(annual_report()).find_documents("6501", ("120",)) == ["S100YGBO"]
 
 
+def test_find_documents_with_dates_pairs_the_doc_id_with_the_day_it_was_found() -> None:
+    """``find_documents`` と同じ一致条件で、どの日に見つかったかも返す。"""
+    assert source_over(annual_report()).find_documents_with_dates("6501", ("120",)) == [
+        ("S100YGBO", FILED_ON)
+    ]
+
+
 def test_find_documents_matches_the_five_digit_code() -> None:
     """一覧側のコードも5桁。4桁の watchlist 記号と突き合わせる。"""
     assert source_over(annual_report()).find_documents("6501.T", ("120",)) == ["S100YGBO"]
@@ -838,6 +866,18 @@ def test_fetch_annual_reports_goes_from_symbol_to_five_years(
     reports = fetch_annual_reports("6501", source=source_over(annual_report()))
     assert [r.fiscal_year for r in reports] == [2022, 2023, 2024, 2025, 2026]
     assert fake_http.last["url"].endswith("/documents/S100YGBO")
+
+
+def test_fetch_annual_reports_stamps_disclosed_on_from_the_filing_date(
+    fake_http: type[_Client], fixture_bytes: bytes
+) -> None:
+    """発行済株式数が「公開された日」は、決算日ではなく提出日で決まる。
+
+    5期すべてが同じ1本の有報から来るので、この提出日が全期に付く。
+    """
+    fake_http.response = _Response(make_zip(fixture_bytes))
+    reports = fetch_annual_reports("6501", source=source_over(annual_report()))
+    assert {r.disclosed_on for r in reports} == {FILED_ON}
 
 
 def test_fundamentals_provider_uses_aggregates_not_per_share(

@@ -20,10 +20,12 @@ from stock_ai.backtest.accumulation_signal import (
     Signal5Thresholds,
     compute_signal_frame,
     count_signals,
+    market_cap_series,
 )
 from stock_ai.data.schema import ADJ_CLOSE, CLOSE, HIGH, LOW, OPEN, VOLUME
+from stock_ai.data.types import FinancialReport
 from stock_ai.database.engine import Database
-from stock_ai.database.repository import PriceRepository
+from stock_ai.database.repository import FinancialStatementRepository, PriceRepository
 
 _BARS = MIN_HISTORY_BARS + 20
 
@@ -242,3 +244,117 @@ def test_max_signals_per_day_is_zero_with_no_signals() -> None:
     assert report_with_no_signals.max_signals_per_day == 0
     assert report_with_no_signals.by_date().empty
     empty.dispose()
+
+
+# --- market_cap_series --------------------------------------------------------
+
+
+def _report(disclosed_on: dt.date | None, shares: float | None) -> FinancialReport:
+    return FinancialReport(
+        symbol="6501",
+        fiscal_year=disclosed_on.year if disclosed_on else 2000,
+        disclosed_on=disclosed_on,
+        shares_outstanding=shares,
+    )
+
+
+def test_market_cap_series_steps_up_at_each_disclosure() -> None:
+    index = pd.bdate_range("2024-01-01", periods=10, name="date")
+    raw_close = pd.Series(100.0, index=index)
+    statements = [
+        _report(dt.date(2024, 1, 3), 1_000_000.0),
+        _report(dt.date(2024, 1, 8), 2_000_000.0),
+    ]
+
+    market_cap = market_cap_series(raw_close, statements)
+
+    assert pd.isna(market_cap.iloc[0])  # before the first disclosure
+    assert market_cap.loc["2024-01-03"] == pytest.approx(100.0 * 1_000_000.0)
+    assert market_cap.loc["2024-01-05"] == pytest.approx(100.0 * 1_000_000.0)  # still the old count
+    assert market_cap.loc["2024-01-08"] == pytest.approx(100.0 * 2_000_000.0)
+
+
+def test_market_cap_series_ignores_reports_missing_either_field() -> None:
+    index = pd.bdate_range("2024-01-01", periods=5, name="date")
+    raw_close = pd.Series(100.0, index=index)
+    statements = [
+        _report(None, 1_000_000.0),  # no disclosure date - can't be placed in time
+        _report(dt.date(2024, 1, 2), None),  # no share count - nothing to multiply
+    ]
+
+    market_cap = market_cap_series(raw_close, statements)
+
+    assert market_cap.isna().all()
+
+
+def test_market_cap_series_uses_the_raw_close_not_a_split_adjusted_one() -> None:
+    """The whole point of taking ``raw_close`` as a parameter, not the frame."""
+    index = pd.bdate_range("2024-01-01", periods=3, name="date")
+    raw_close = pd.Series([500.0, 500.0, 100.0], index=index)  # a 5:1 split on day 3
+    statements = [_report(dt.date(2024, 1, 1), 1_000_000.0)]
+
+    market_cap = market_cap_series(raw_close, statements)
+
+    # A split changes the price scale, not the real company value - so market
+    # cap must move with the actually-traded price, not stay constant the way
+    # it would if a split-adjusted close (flat at 100 throughout) were used.
+    assert market_cap.iloc[0] == pytest.approx(500.0 * 1_000_000.0)
+    assert market_cap.iloc[-1] == pytest.approx(100.0 * 1_000_000.0)
+
+
+# --- count_signals(min_market_cap=...) ----------------------------------------
+
+
+def _seed_statement(database: Database, symbol: str, disclosed_on: dt.date, shares: float) -> None:
+    report = FinancialReport(
+        symbol=symbol,
+        fiscal_year=disclosed_on.year,
+        disclosed_on=disclosed_on,
+        shares_outstanding=shares,
+    )
+    with database.session() as session:
+        FinancialStatementRepository(session).upsert_reports(symbol, [report], market="JP")
+
+
+def test_min_market_cap_excludes_a_signal_below_the_floor() -> None:
+    database = Database("sqlite:///:memory:")
+    database.create_all()
+    frame = _spike_volume(_flat_frame(base=100.0))  # raw close == adjusted close (no split)
+    _seed(database, "7203", "JP", frame)
+    _seed_statement(database, "7203", dt.date(2024, 1, 1), shares=1_000_000.0)  # cap = 1億円
+
+    without_filter = count_signals(database)
+    with_filter = count_signals(database, min_market_cap=10_000_000_000.0)  # 100億円
+
+    assert without_filter.total == 1
+    assert without_filter.excluded_for_market_cap is None
+    assert with_filter.total == 0
+    assert with_filter.excluded_for_market_cap == 1
+    database.dispose()
+
+
+def test_min_market_cap_keeps_a_signal_above_the_floor() -> None:
+    database = Database("sqlite:///:memory:")
+    database.create_all()
+    frame = _spike_volume(_flat_frame(base=100.0))
+    _seed(database, "7203", "JP", frame)
+    _seed_statement(database, "7203", dt.date(2024, 1, 1), shares=1_000_000_000.0)  # cap = 1000億円
+
+    report = count_signals(database, min_market_cap=10_000_000_000.0)
+
+    assert report.total == 1
+    assert report.excluded_for_market_cap == 0
+    database.dispose()
+
+
+def test_min_market_cap_excludes_a_signal_with_no_known_shares_outstanding() -> None:
+    """No disclosure at all means the floor cannot be confirmed - exclude, don't assume."""
+    database = Database("sqlite:///:memory:")
+    database.create_all()
+    _seed(database, "7203", "JP", _spike_volume(_flat_frame(base=100.0)))
+
+    report = count_signals(database, min_market_cap=10_000_000_000.0)
+
+    assert report.total == 0
+    assert report.excluded_for_market_cap == 1
+    database.dispose()

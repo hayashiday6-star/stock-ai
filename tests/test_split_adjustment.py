@@ -152,6 +152,31 @@ def test_stored_prices_come_back_adjusted(tmp_path) -> None:
     assert stored[CLOSE].iloc[-1] == pytest.approx(3601.0)
 
 
+def test_get_raw_prices_returns_the_actually_traded_price(tmp_path) -> None:
+    """``get_raw_prices`` は調整しない - 市場が当日払った実際の株価が要る用途向け。
+
+    時価総額(発行済株式数 x 株価)はその一例: 分割は調整係数を変えるだけで、
+    その日会社にいくら値が付いていたかは変えない。調整後の終値を当時のまま
+    (未調整)の発行済株式数と掛けるのは、``split_adjusted`` が防いでいる
+    「尺度の違う値を組み合わせる」誤りを逆方向からやることになる。
+    """
+    from stock_ai.database.engine import Database
+    from stock_ai.database.repository import PriceRepository
+
+    database = Database(url=f"sqlite:///{tmp_path / 'r.db'}")
+    database.create_all()
+    with database.session() as session:
+        PriceRepository(session).upsert_prices("6501", HITACHI_SPLIT, market="JP")
+
+    with database.session() as session:
+        raw = PriceRepository(session).get_raw_prices("6501")
+
+    # 分割前の終値が、実際に取引されていた尺度のまま返る。
+    assert raw[CLOSE].iloc[1] == pytest.approx(17620.0)
+    assert raw[OPEN].iloc[1] == pytest.approx(17425.0)
+    assert raw[CLOSE].iloc[-1] == pytest.approx(3601.0)
+
+
 def test_a_split_is_not_reported_as_a_crash(tmp_path) -> None:
     """これが欠陥の本体。
 

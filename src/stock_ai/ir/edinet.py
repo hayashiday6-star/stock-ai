@@ -778,12 +778,24 @@ class EdinetDisclosureSource:
         ``lookback_days``: an annual report is filed once a year, so finding one
         needs a window measured in months, not the default week.
         """
+        return [doc_id for doc_id, _day in self.find_documents_with_dates(symbol, doc_types, limit)]
+
+    def find_documents_with_dates(
+        self, symbol: str, doc_types: Sequence[str], limit: int = 1
+    ) -> list[tuple[str, dt.date]]:
+        """Same as :meth:`find_documents`, paired with the day each was filed on.
+
+        Callers that need to know *when* a filing became public need this
+        instead of the plain list - a point-in-time market-cap filter, for one:
+        shares outstanding from an annual report is only "known" as of the day
+        EDINET published it, not as of its accounting period end.
+        """
         code = normalize_sec_code(symbol)
         if code is None:
             return []
 
         wanted = {str(t).strip() for t in doc_types}
-        found: list[str] = []
+        found: list[tuple[str, dt.date]] = []
         for day in self._recent_days():
             for record in self._day_records(day):
                 if _sec_code_of(record) != code or not _is_visible(record):
@@ -796,7 +808,7 @@ class EdinetDisclosureSource:
                 if not self._offers_csv(record):
                     logger.info("%s: csvFlag=0 のため飛ばします (%s)", symbol, doc_id)
                     continue
-                found.append(doc_id)
+                found.append((doc_id, day))
                 if len(found) >= limit:
                     return found
         return found

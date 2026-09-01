@@ -1345,6 +1345,12 @@ def accum_jp_count(
     symbols: list[str] | None = typer.Argument(
         None, help="JP codes to scan. Omit to scan every stored JP security."
     ),
+    min_market_cap: float | None = typer.Option(
+        None,
+        "--min-market-cap",
+        help="Section 2's judgment-day floor in yen, e.g. 1e10 for 100億円. "
+        "Omit to skip the filter (counts then include names too small to qualify).",
+    ),
 ) -> None:
     """Count how often the JP accumulation pre-registration's 5 conditions align.
 
@@ -1353,8 +1359,9 @@ def accum_jp_count(
     are not a pass/fail result. See ``SignalCountReport`` in
     ``stock_ai.backtest.accumulation_signal`` for what this pass does and does
     not cover against the pre-registration's universe (section 2): no
-    market-cap filter, no independent segment check beyond what is already
-    stored, and delisted names are entirely absent.
+    independent segment check beyond what is already stored, and delisted
+    names are entirely absent. The market-cap filter is covered when
+    ``--min-market-cap`` is given.
     """
     settings = get_settings()
     configure_logging(settings.log_level)
@@ -1362,15 +1369,20 @@ def accum_jp_count(
     database = Database()
     database.create_all()
 
-    report = count_signals(database, symbols=symbols)
+    report = count_signals(database, symbols=symbols, min_market_cap=min_market_cap)
 
     console.print(
         f"銘柄: {report.symbols_scanned} 件中 {report.symbols_with_enough_history} 件が"
         f"250営業日以上の履歴あり。"
     )
+    if min_market_cap is not None:
+        console.print(
+            f"時価総額フィルタ: {min_market_cap:,.0f}円以上で除外 "
+            f"{report.excluded_for_market_cap} 件。"
+        )
     console.print(
-        "[dim]件数のみ。リターンは計算していない。市場区分の独立検証・時価総額フィルタ・"
-        "上場廃止銘柄は未対応 - 詳細は accumulation_signal.SignalCountReport を参照。[/]"
+        "[dim]件数のみ。リターンは計算していない。市場区分の独立検証・上場廃止銘柄は"
+        "未対応 - 詳細は accumulation_signal.SignalCountReport を参照。[/]"
     )
 
     if report.total == 0:

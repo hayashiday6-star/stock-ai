@@ -24,8 +24,13 @@ from dataclasses import dataclass, field
 import pandas as pd
 
 from stock_ai.data.schema import CLOSE, HIGH, LOW, VOLUME
+from stock_ai.data.types import FinancialReport
 from stock_ai.database.engine import Database
-from stock_ai.database.repository import PriceRepository, list_securities
+from stock_ai.database.repository import (
+    FinancialStatementRepository,
+    PriceRepository,
+    list_securities,
+)
 from stock_ai.technical.indicators import bollinger_bands, sma
 
 #: The pre-registration's windows, in trading days.
@@ -138,6 +143,58 @@ def compute_signal_frame(
     return frame
 
 
+def market_cap_series(raw_close: pd.Series, statements: list[FinancialReport]) -> pd.Series:
+    """Market cap at each date in ``raw_close``, section 2's "判定日時点の値".
+
+    Args:
+        raw_close: The *actually traded* close (:meth:`PriceRepository.
+            get_raw_prices`, never :meth:`~PriceRepository.get_prices`'s
+            split-adjusted one). A split changes the adjustment factor, not
+            the real yen value the market put on the company that day -
+            multiplying an adjusted close by an as-reported (never adjusted)
+            share count would reintroduce the combined-scale mistake
+            :func:`~stock_ai.data.schema.split_adjusted` exists to prevent,
+            just from the other direction.
+        statements: The security's full disclosure history, any period. Each
+            report's ``shares_outstanding`` only becomes usable on its
+            ``disclosed_on`` date - a report with neither is dropped, since a
+            share count with no known disclosure date cannot be placed in
+            time and would otherwise look known on every date.
+
+    Returns:
+        A series indexed like ``raw_close``, ``NaN`` before the first known
+        disclosure with both fields set.
+    """
+    known = sorted(
+        (report.disclosed_on, report.shares_outstanding)
+        for report in statements
+        if report.disclosed_on is not None and report.shares_outstanding is not None
+    )
+    if not known or raw_close.empty:
+        return pd.Series(float("nan"), index=raw_close.index, name="market_cap")
+
+    dates, shares = zip(*known, strict=True)
+    # Both sides must share one datetime64 resolution before merge_asof will
+    # compare them - a plain ``pd.to_datetime`` on ``dt.date`` objects can
+    # land on a different one (e.g. seconds) than ``raw_close.index`` (e.g.
+    # microseconds) despite both being midnight-dates, and merge_asof refuses
+    # to compare mismatched resolutions rather than silently coercing.
+    unit = raw_close.index.dtype
+    disclosures = pd.DataFrame(
+        {"date": pd.to_datetime(list(dates)).astype(unit), "shares": shares}
+    ).sort_values("date")
+    shares_asof = pd.merge_asof(
+        pd.DataFrame({"date": raw_close.index}),
+        disclosures,
+        on="date",
+        direction="backward",
+    )
+    return (
+        pd.Series(shares_asof["shares"].to_numpy(), index=raw_close.index, name="market_cap")
+        * raw_close
+    )
+
+
 @dataclass(frozen=True)
 class Signal:
     """One symbol clearing all five conditions on one judgment date."""
@@ -161,9 +218,6 @@ class SignalCountReport:
     unresolved because this is a reconnaissance pass rather than the sealed
     run:
 
-    - No market-cap filter. Section 2 wants judgment-day market cap; that
-      needs the shares outstanding on file as of that specific date, and
-      building that point-in-time lookup is deferred to the sealed run.
     - No independent market-segment check. Whatever is in ``symbols_scanned``
       is whatever ``stock-ai universe`` last loaded into this database - the
       ``Security`` table does not itself record Prime/Standard/Growth, so a
@@ -173,11 +227,19 @@ class SignalCountReport:
       lists what trades today, so a name that delisted partway through the
       sample is invisible here and to the sealed run alike, until that gap is
       closed with its own point-in-time listing lookup.
+
+    The market-cap filter (section 2's third requirement) *is* covered when
+    ``count_signals`` is called with ``min_market_cap`` - see
+    ``excluded_for_market_cap``.
     """
 
     signals: list[Signal] = field(default_factory=list)
     symbols_scanned: int = 0
     symbols_with_enough_history: int = 0
+    #: Signals that cleared the 5 conditions but were dropped for being under
+    #: ``min_market_cap`` on that date. ``None`` means the filter was not
+    #: requested at all - never confuse that with "requested and found zero".
+    excluded_for_market_cap: int | None = None
 
     @property
     def total(self) -> int:
@@ -233,6 +295,7 @@ def count_signals(
     database: Database,
     symbols: list[str] | None = None,
     thresholds: Signal5Thresholds | None = None,
+    min_market_cap: float | None = None,
 ) -> SignalCountReport:
     """Scan stored JP symbols and count how often all five conditions align.
 
@@ -243,24 +306,49 @@ def count_signals(
             does and does not already exclude).
         thresholds: Overrides for the sensitivity sweep (section 8); the
             registered center values by default.
+        min_market_cap: Section 2's judgment-day market-cap floor (yen), e.g.
+            ``10_000_000_000`` for the pre-registration's 100億円. ``None``
+            (the default) skips the filter entirely - the count then still
+            includes symbols the sealed run would exclude for being too
+            small, which is why this must not stay unset in the sealed run.
     """
     with database.session() as session:
         if symbols is None:
             symbols = [sym for sym, market in list_securities(session) if market == "JP"]
-        repo = PriceRepository(session)
-        prices_by_symbol = {symbol: repo.get_prices(symbol) for symbol in symbols}
+        price_repo = PriceRepository(session)
+        prices_by_symbol = {symbol: price_repo.get_prices(symbol) for symbol in symbols}
+        raw_prices_by_symbol: dict[str, pd.DataFrame] = {}
+        statements_by_symbol: dict[str, list[FinancialReport]] = {}
+        if min_market_cap is not None:
+            statement_repo = FinancialStatementRepository(session)
+            raw_prices_by_symbol = {symbol: price_repo.get_raw_prices(symbol) for symbol in symbols}
+            statements_by_symbol = {
+                symbol: statement_repo.get_reports(symbol, period=None) for symbol in symbols
+            }
 
     signals: list[Signal] = []
     with_history = 0
+    excluded_for_market_cap = 0
     for symbol, prices in prices_by_symbol.items():
         if len(prices) < MIN_HISTORY_BARS:
             continue
         with_history += 1
         frame = compute_signal_frame(prices, thresholds)
-        signals.extend(Signal(symbol, ts.date()) for ts in frame.index[frame["signal"]])
+        signal_mask = frame["signal"]
+
+        if min_market_cap is not None:
+            market_cap = market_cap_series(
+                raw_prices_by_symbol[symbol][CLOSE], statements_by_symbol[symbol]
+            ).reindex(frame.index)
+            meets_floor = (market_cap >= min_market_cap).fillna(False)
+            excluded_for_market_cap += int((signal_mask & ~meets_floor).sum())
+            signal_mask = signal_mask & meets_floor
+
+        signals.extend(Signal(symbol, ts.date()) for ts in frame.index[signal_mask])
 
     return SignalCountReport(
         signals=signals,
         symbols_scanned=len(symbols),
         symbols_with_enough_history=with_history,
+        excluded_for_market_cap=excluded_for_market_cap if min_market_cap is not None else None,
     )
