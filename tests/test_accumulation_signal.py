@@ -780,3 +780,57 @@ def test_by_earnings_distance_buckets_the_run_up_separately() -> None:
     assert counts["-1..+1（決算日前後＝フラグ対象）"] == 1
     assert counts["-21以下（決算まで1ヶ月超）"] == 1
     assert frame["share"].sum() == pytest.approx(1.0)
+
+
+def test_earnings_distance_matches_the_straightforward_loop() -> None:
+    """ベクトル化した実装が、素朴なループと1件も違わないこと。
+
+    性能のために書き換えた箇所なので、速さではなく一致を固定する。同点
+    （前後の開示がちょうど等距離）はまだ先にある開示を採る——ループ実装が
+    そうしていたため。
+    """
+    index = pd.bdate_range("2020-01-01", periods=400, name="date")
+    statements = [_report(index[p].date(), 1.0) for p in (30, 93, 156, 219, 282, 345)]
+
+    def naive(idx: pd.DatetimeIndex) -> list[float]:
+        anchors = sorted(
+            {
+                int(idx.searchsorted(pd.Timestamp(r.disclosed_on), side="right")) - 1
+                for r in statements
+            }
+        )
+        out = []
+        for i in range(len(idx)):
+            slot = next((n for n, a in enumerate(anchors) if a >= i), len(anchors))
+            candidates = []
+            if slot < len(anchors):
+                candidates.append(i - anchors[slot])
+            if slot > 0:
+                candidates.append(i - anchors[slot - 1])
+            out.append(float(min(candidates, key=abs)))
+        return out
+
+    assert list(earnings_distance_series(index, statements)) == naive(index)
+
+
+def test_split_adjusted_frame_matches_get_prices() -> None:
+    """1回読んで調整するのと、DBに調整済みを2回目に取りに行くのは同じもの。
+
+    count_signals が読み込みを一本化した根拠。ここが崩れると、性能のために
+    静かに違う値を使うことになる。
+    """
+    from stock_ai.data.schema import split_adjusted
+
+    database = Database("sqlite:///:memory:")
+    database.create_all()
+    frame = _flat_frame(base=100.0)
+    frame[ADJ_CLOSE] = 20.0  # 分割をまたいだ系列
+    _seed(database, "6501", "JP", frame)
+
+    with database.session() as session:
+        repo = PriceRepository(session)
+        adjusted = repo.get_prices("6501")
+        derived = split_adjusted(repo.get_raw_prices("6501"))
+
+    pd.testing.assert_frame_equal(adjusted, derived)
+    database.dispose()

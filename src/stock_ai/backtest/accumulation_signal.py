@@ -21,9 +21,10 @@ from __future__ import annotations
 import datetime as dt
 from dataclasses import dataclass, field, replace
 
+import numpy as np
 import pandas as pd
 
-from stock_ai.data.schema import CLOSE, HIGH, LOW, VOLUME
+from stock_ai.data.schema import CLOSE, HIGH, LOW, VOLUME, split_adjusted
 from stock_ai.data.types import FinancialReport
 from stock_ai.database.engine import Database
 from stock_ai.database.repository import (
@@ -347,18 +348,21 @@ def earnings_distance_series(
     if not positions:
         return pd.Series(float("nan"), index=index)
 
-    anchors = pd.Index(positions)
-    here = pd.Index(range(len(index)))
-    after = anchors.searchsorted(here, side="left")
-    distances: list[float] = []
-    for i, slot in zip(here, after, strict=True):
-        candidates = []
-        if slot < len(anchors):
-            candidates.append(i - anchors[slot])
-        if slot > 0:
-            candidates.append(i - anchors[slot - 1])
-        distances.append(float(min(candidates, key=abs)))
-    return pd.Series(distances, index=index)
+    anchors = np.asarray(positions)
+    here = np.arange(len(index))
+    slot = np.searchsorted(anchors, here, side="left")
+
+    # The nearest anchor is one of the two straddling ``here``. Clip so both
+    # lookups stay in range, then mask the side that does not exist.
+    ahead = here - anchors[np.clip(slot, 0, len(anchors) - 1)]
+    behind = here - anchors[np.clip(slot - 1, 0, len(anchors) - 1)]
+    huge = len(index) + 1
+    ahead = np.where(slot < len(anchors), ahead, huge)
+    behind = np.where(slot > 0, behind, huge)
+    # Ties go to the anchor still ahead, matching the loop this replaced.
+    return pd.Series(
+        np.where(np.abs(ahead) <= np.abs(behind), ahead, behind).astype(float), index=index
+    )
 
 
 def material_free_mask(
@@ -663,15 +667,18 @@ def count_signals(
         if symbols is None:
             symbols = [sym for sym, market in list_securities(session) if market == "JP"]
         price_repo = PriceRepository(session)
-        prices_by_symbol = {symbol: price_repo.get_prices(symbol) for symbol in symbols}
-        raw_prices_by_symbol: dict[str, pd.DataFrame] = {}
+        # Read each symbol's bars once. The adjusted frame is the raw one put
+        # through a pure function, so asking the database for both is a second
+        # pass over the same rows - about half the runtime of a full scan.
+        #
+        # Both yen floors need the *unadjusted* close: an adjusted close
+        # against a raw volume understates turnover by the split factor for
+        # every bar before a split.
+        raw_prices_by_symbol = {symbol: price_repo.get_raw_prices(symbol) for symbol in symbols}
+        prices_by_symbol = {
+            symbol: split_adjusted(raw) for symbol, raw in raw_prices_by_symbol.items()
+        }
         statements_by_symbol: dict[str, list[FinancialReport]] = {}
-        if min_market_cap is not None or min_turnover is not None:
-            # Both floors are yen amounts of actually-traded value, so both
-            # need the unadjusted close: an adjusted close against a raw
-            # volume understates turnover by the split factor for every bar
-            # before a split.
-            raw_prices_by_symbol = {symbol: price_repo.get_raw_prices(symbol) for symbol in symbols}
         if needs_statements:
             statement_repo = FinancialStatementRepository(session)
             statements_by_symbol = {
