@@ -1359,7 +1359,8 @@ def accum_jp_count(
     min_turnover: float = typer.Option(
         DEFAULT_MIN_TURNOVER,
         "--min-turnover",
-        help="Section 2's liquidity floor in yen (D close x D volume). 0 disables it.",
+        help="Section 2's liquidity floor in yen: the average turnover of the 20 "
+        "sessions before D, never D itself. 0 disables it.",
     ),
     material_days: bool = typer.Option(
         True,
