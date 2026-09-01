@@ -51,6 +51,7 @@ from stock_ai.backtest.accumulation_signal import (
     DEFAULT_MIN_TURNOVER,
     count_signals,
     explain_date,
+    market_volume_context,
 )
 from stock_ai.backtest.engine import BacktestEngine
 from stock_ai.backtest.factor_test import (
@@ -1486,7 +1487,19 @@ def accum_jp_explain(
     database = Database()
     database.create_all()
 
-    frame = explain_date(database, _require_date(on), min_turnover=min_turnover or None)
+    judged = _require_date(on)
+    context = market_volume_context(database, judged)
+    console.print(
+        f"市場全体 ({context.symbols_measured} 銘柄): 出来高倍率の中央値 "
+        f"{context.median_multiple:.2f} ／ 2倍以上 {context.over_2x} 銘柄 ／ "
+        f"5倍以上 {context.over_5x} 銘柄"
+    )
+    console.print(
+        "[dim]条件②は自分の20日平均としか比べない。市場全体が膨らんだ日の5倍は、"
+        "静かな日の5倍と同じ意味ではない。平常日と見比べること。[/]"
+    )
+
+    frame = explain_date(database, judged, min_turnover=min_turnover or None)
     if frame.empty:
         console.print(f"[yellow]{on} にシグナルはありません。[/]")
         return
