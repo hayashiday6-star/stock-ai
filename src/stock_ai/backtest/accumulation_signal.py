@@ -206,6 +206,28 @@ class SignalCountReport:
         )
         return grouped.reset_index().sort_values("year").reset_index(drop=True)
 
+    def by_date(self) -> pd.DataFrame:
+        """Signal count per judgment date, busiest day first.
+
+        Section 7's date-clustered t-statistic corrects for same-day
+        correlation, but only if no single day dominates the cluster
+        structure - a day that alone contributed a large share of all
+        signals is one market-wide event standing in for many, and the
+        correction cannot fully undo that. This is what makes that
+        concentration checkable before sealing the registration.
+        """
+        if not self.signals:
+            return pd.DataFrame(columns=["date", "signals"])
+        frame = pd.DataFrame({"date": [s.date for s in self.signals]})
+        grouped = frame.groupby("date").size().rename("signals").reset_index()
+        return grouped.sort_values("signals", ascending=False).reset_index(drop=True)
+
+    @property
+    def max_signals_per_day(self) -> int:
+        """The busiest single judgment date's signal count, 0 if there were none."""
+        by_date = self.by_date()
+        return int(by_date["signals"].max()) if not by_date.empty else 0
+
 
 def count_signals(
     database: Database,
