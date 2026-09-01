@@ -47,7 +47,11 @@ from stock_ai.ai.estimate import estimate_disclosure_run
 from stock_ai.ai.factory import get_ai_provider
 from stock_ai.ai.pricing import RunEstimate, UsageLedger
 from stock_ai.ai.query import parse_query, run_query
-from stock_ai.backtest.accumulation_signal import DEFAULT_MIN_TURNOVER, count_signals
+from stock_ai.backtest.accumulation_signal import (
+    DEFAULT_MIN_TURNOVER,
+    count_signals,
+    explain_date,
+)
 from stock_ai.backtest.engine import BacktestEngine
 from stock_ai.backtest.factor_test import (
     FactorTestResult,
@@ -1460,6 +1464,64 @@ def accum_jp_count(
     console.print(
         f"1日平均 {average_per_day:.2f} 件 ／ 最大 {shown.max_signals_per_day} 件"
         "（日次クラスタ補正の前提として、特定の1日が結果を支配していないか確認）"
+    )
+
+
+@app.command(name="accum-jp-explain")
+def accum_jp_explain(
+    on: str = typer.Argument(..., help="Judgment date to explain, YYYY-MM-DD."),
+    min_turnover: float = typer.Option(
+        DEFAULT_MIN_TURNOVER, "--min-turnover", help="Same floor as accum-jp-count. 0 disables."
+    ),
+) -> None:
+    """Show why each symbol signalling on ON is, or is not, material-free.
+
+    Reads three explanations for an unflagged earnings day apart - the
+    disclosure history is not on file, the +/-1 session window is too tight,
+    or the flag is not reading what is stored. They need opposite fixes.
+    """
+    settings = get_settings()
+    configure_logging(settings.log_level)
+
+    database = Database()
+    database.create_all()
+
+    frame = explain_date(database, _require_date(on), min_turnover=min_turnover or None)
+    if frame.empty:
+        console.print(f"[yellow]{on} にシグナルはありません。[/]")
+        return
+
+    table = Table(title=f"{on} のシグナル {len(frame)} 件")
+    for column in (
+        "銘柄",
+        "出来高倍率",
+        "開示件数",
+        "最古開示",
+        "最新開示",
+        "最近開示",
+        "営業日差",
+        "決算",
+        "権利",
+        "材料なし",
+    ):
+        table.add_column(column, justify="right")
+    for row in frame.itertuples():
+        table.add_row(
+            row.symbol,
+            f"{row.volume_multiple:.1f}",
+            f"{row.disclosed}/{row.statements}",
+            str(row.earliest_disclosed or "-"),
+            str(row.latest_disclosed or "-"),
+            str(row.nearest_disclosed or "-"),
+            "-" if row.nearest_disclosed_days is None else str(row.nearest_disclosed_days),
+            "✓" if row.earnings else "",
+            "✓" if row.exrights else "",
+            "✓" if row.material_free else "",
+        )
+    console.print(table)
+    console.print(
+        "[dim]営業日差が大きい/開示件数が1なら被覆の問題（統計を取り直す）。"
+        "2〜3営業日なら窓が狭い。0〜1なのに決算欄が空なら突合の不具合。[/]"
     )
 
 

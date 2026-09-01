@@ -77,6 +77,14 @@ MATERIAL_WINDOW_DAYS = 1
 #: secondary analysis crosses the change.
 T_PLUS_2_FROM = dt.date(2019, 7, 16)
 
+#: How far from a disclosure the earnings history is still taken to reach.
+#:
+#: A listed company reports at least annually, so a date with no disclosure
+#: within this many days sits outside what the database knows: the flag can
+#: be neither set nor cleared there, and the day is not material-free, it is
+#: unexamined. Matches the EDINET annual-report search window.
+EARNINGS_COVERAGE_DAYS = 400
+
 
 @dataclass(frozen=True)
 class Signal5Thresholds:
@@ -287,6 +295,30 @@ def exrights_flag_series(index: pd.DatetimeIndex, statements: list[FinancialRepo
     return _flag_around(index, anchors, MATERIAL_WINDOW_DAYS)
 
 
+def earnings_coverage(index: pd.DatetimeIndex, statements: list[FinancialReport]) -> pd.Series:
+    """Dates the disclosure history can actually say anything about.
+
+    A company reports at least once a year, so a date more than
+    :data:`EARNINGS_COVERAGE_DAYS` from every disclosure on file sits in a
+    stretch this database has no disclosures for. Nothing is known about
+    whether it was an earnings day.
+
+    This is per *date*, not per symbol, and that distinction was got wrong
+    once already: checking only that a symbol had some disclosure somewhere
+    marked a 2002 signal material-free on the strength of a 2026 filing.
+    Every year before the disclosure history began was being reported as
+    verified quiet when it had never been looked at.
+    """
+    disclosed = [r.disclosed_on for r in statements if r.disclosed_on is not None]
+    if not disclosed:
+        return pd.Series(False, index=index)
+
+    margin = pd.Timedelta(days=EARNINGS_COVERAGE_DAYS)
+    stamps = pd.to_datetime(sorted(disclosed))
+    nearest = pd.Series(index.map(lambda day: stamps[abs(stamps - day).argmin()]), index=index)
+    return (nearest - pd.Series(index, index=index)).abs() <= margin
+
+
 def material_free_mask(
     index: pd.DatetimeIndex, statements: list[FinancialReport]
 ) -> tuple[pd.Series, pd.Series, pd.Series]:
@@ -301,13 +333,11 @@ def material_free_mask(
     earnings = earnings_flag_series(index, statements)
     exrights = exrights_flag_series(index, statements)
 
-    evaluable = any(r.disclosed_on is not None for r in statements) and any(
-        r.fiscal_year_end is not None for r in statements
+    has_calendar = any(r.fiscal_year_end is not None for r in statements)
+    covered = (
+        earnings_coverage(index, statements) if has_calendar else pd.Series(False, index=index)
     )
-    material_free = ~earnings & ~exrights
-    if not evaluable:
-        material_free = pd.Series(False, index=index)
-    return material_free, earnings, exrights
+    return covered & ~earnings & ~exrights, earnings, exrights
 
 
 def market_cap_series(raw_close: pd.Series, statements: list[FinancialReport]) -> pd.Series:
@@ -609,3 +639,90 @@ def count_signals(
         excluded_for_turnover=excluded_for_turnover if min_turnover is not None else None,
         first_evaluable_date=first_evaluable,
     )
+
+
+def explain_date(
+    database: Database,
+    on: dt.date,
+    symbols: list[str] | None = None,
+    thresholds: Signal5Thresholds | None = None,
+    min_turnover: float | None = None,
+) -> pd.DataFrame:
+    """Why each symbol signalling on ``on`` is, or is not, material-free.
+
+    Built to tell three explanations for an unflagged earnings day apart,
+    because they need opposite fixes and the counts alone cannot separate
+    them:
+
+    - **Coverage.** ``disclosed`` is 1, or ``nearest_disclosed_days`` runs to
+      hundreds: the disclosure history simply is not on file for this date,
+      so no window could have caught it. Fetch more statements.
+    - **Window.** ``nearest_disclosed_days`` is 2 or 3: the date *is* on
+      file and the ±1 session window is too tight. Widen
+      :data:`MATERIAL_WINDOW_DAYS`.
+    - **Matching.** ``nearest_disclosed_days`` is 0 or 1 yet ``earnings``
+      is False: the flag is not reading what is stored. A code fault.
+
+    Returns one row per symbol that signalled on ``on``, or an empty frame
+    when nothing did.
+    """
+    with database.session() as session:
+        if symbols is None:
+            symbols = [sym for sym, market in list_securities(session) if market == "JP"]
+        price_repo = PriceRepository(session)
+        statement_repo = FinancialStatementRepository(session)
+        prices_by_symbol = {symbol: price_repo.get_prices(symbol) for symbol in symbols}
+        raw_by_symbol = {symbol: price_repo.get_raw_prices(symbol) for symbol in symbols}
+        statements_by_symbol = {
+            symbol: statement_repo.get_reports(symbol, period=None) for symbol in symbols
+        }
+
+    stamp = pd.Timestamp(on)
+    rows: list[dict[str, object]] = []
+    for symbol, prices in prices_by_symbol.items():
+        if len(prices) < MIN_HISTORY_BARS or stamp not in prices.index:
+            continue
+        frame = compute_signal_frame(prices, thresholds)
+        if not bool(frame.loc[stamp, "signal"]):
+            continue
+
+        raw = raw_by_symbol[symbol]
+        turnover = float(raw.loc[stamp, CLOSE] * raw.loc[stamp, VOLUME])
+        if min_turnover is not None and turnover < min_turnover:
+            continue
+
+        statements = statements_by_symbol[symbol]
+        material_free, earnings, exrights = material_free_mask(frame.index, statements)
+        disclosed = sorted(r.disclosed_on for r in statements if r.disclosed_on is not None)
+        # Distance in *trading* sessions, which is what the window counts in.
+        position = frame.index.get_loc(stamp)
+        nearest_days: int | None = None
+        nearest_date: dt.date | None = None
+        for date in disclosed:
+            other = frame.index.searchsorted(pd.Timestamp(date), side="right") - 1
+            if other < 0:
+                continue
+            distance = abs(int(position) - int(other))
+            if nearest_days is None or distance < nearest_days:
+                nearest_days, nearest_date = distance, date
+
+        rows.append(
+            {
+                "symbol": symbol,
+                "volume_multiple": round(float(frame.loc[stamp, "volume_multiple"]), 2),
+                "turnover": turnover,
+                "statements": len(statements),
+                "disclosed": len(disclosed),
+                "earliest_disclosed": disclosed[0] if disclosed else None,
+                "latest_disclosed": disclosed[-1] if disclosed else None,
+                "nearest_disclosed": nearest_date,
+                "nearest_disclosed_days": nearest_days,
+                "fiscal_year_end": next(
+                    (r.fiscal_year_end for r in statements if r.fiscal_year_end is not None), None
+                ),
+                "earnings": bool(earnings.loc[stamp]),
+                "exrights": bool(exrights.loc[stamp]),
+                "material_free": bool(material_free.loc[stamp]),
+            }
+        )
+    return pd.DataFrame(rows)

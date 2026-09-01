@@ -20,7 +20,9 @@ from stock_ai.backtest.accumulation_signal import (
     Signal5Thresholds,
     compute_signal_frame,
     count_signals,
+    earnings_coverage,
     earnings_flag_series,
+    explain_date,
     exrights_flag_series,
     market_cap_series,
     material_free_mask,
@@ -590,3 +592,91 @@ def test_exrights_flag_lands_on_the_days_the_real_data_flagged(
 
     flagged = {ts.date() for ts, on in zip(index, flags, strict=True) if on}
     assert expected_last_with_rights in flagged
+
+
+# --- explain_date（材料日フラグの取りこぼし診断） -----------------------------
+
+
+def test_explain_date_separates_coverage_from_a_narrow_window() -> None:
+    """開示が遠いのか、窓が狭いのか、突合の不具合かを1つの表で切り分ける。
+
+    実測で決算ピーク日が主要サブセットに残ったとき、3つの原因は対処が
+    正反対になる。件数だけでは区別できないので、営業日差を出す。
+    """
+    database = Database("sqlite:///:memory:")
+    database.create_all()
+    frame = _spike_volume(_flat_frame(base=100.0))
+    signal_day = frame.index[-1].date()
+    _seed(database, "7203", "JP", frame)
+    # 開示は1件だけ、しかもシグナル日から遠い＝被覆の問題の形。
+    far_away = frame.index[-40].date()
+    with database.session() as session:
+        FinancialStatementRepository(session).upsert_reports(
+            "7203",
+            [
+                FinancialReport(
+                    symbol="7203",
+                    fiscal_year=2026,
+                    disclosed_on=far_away,
+                    fiscal_year_end=dt.date(2026, 3, 31),
+                )
+            ],
+            market="JP",
+        )
+
+    explained = explain_date(database, signal_day)
+
+    (row,) = explained.itertuples()
+    assert row.symbol == "7203"
+    assert row.disclosed == 1
+    assert row.nearest_disclosed == far_away
+    assert row.nearest_disclosed_days == 39  # 営業日で39日離れている＝窓の問題ではない
+    assert not row.earnings
+    database.dispose()
+
+
+def test_explain_date_is_empty_when_nothing_signalled() -> None:
+    database = Database("sqlite:///:memory:")
+    database.create_all()
+    frame = _spike_volume(_flat_frame(base=100.0))
+    _seed(database, "7203", "JP", frame)
+
+    quiet_day = frame.index[-5].date()
+    assert explain_date(database, quiet_day).empty
+    database.dispose()
+
+
+def test_a_date_outside_the_disclosure_history_is_not_material_free() -> None:
+    """2026年の開示1件を根拠に、2002年の日を「材料なし」と数えていた不具合。
+
+    銘柄単位で「開示が1件でもあるか」を見ていたため、開示履歴が始まる前の
+    年が全部「確認できた静かな日」として通っていた。調べていない日は
+    調べていない日として落とす。
+    """
+    index = pd.bdate_range("2002-01-01", "2026-06-30", freq="B", name="date")
+    statements = [
+        FinancialReport(
+            symbol="6501",
+            fiscal_year=2026,
+            disclosed_on=dt.date(2026, 6, 25),
+            fiscal_year_end=dt.date(2026, 3, 31),
+        )
+    ]
+
+    free, _earnings, _exrights = material_free_mask(index, statements)
+
+    assert not free.loc["2002-06-03"]  # 開示履歴のはるか前
+    assert not free.loc["2015-06-03"]  # まだ届かない
+    assert free.loc["2026-01-06"]  # 開示から400日以内なので判定できる
+
+
+def test_earnings_coverage_reaches_only_as_far_as_the_disclosures_on_file() -> None:
+    index = pd.bdate_range("2020-01-01", "2026-12-31", freq="B", name="date")
+    statements = [_report(dt.date(2024, 5, 10), 1.0)]
+
+    covered = earnings_coverage(index, statements)
+
+    assert covered.loc["2024-05-10"]
+    assert covered.loc["2023-06-01"]  # 400日以内
+    assert not covered.loc["2021-01-04"]  # 3年以上離れている
+    assert not covered.loc["2026-12-31"]
