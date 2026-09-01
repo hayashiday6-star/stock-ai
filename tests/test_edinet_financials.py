@@ -1427,3 +1427,29 @@ def test_a_zip_with_an_unexpected_content_type_is_still_read(
     with caplog.at_level(logging.WARNING):
         assert len(read_csv_zip(fetch_document("S100YGBO"))) == 192
     assert "application/zip" in caplog.text
+
+
+def test_fiscal_year_end_is_stamped_per_period(rows: list[dict[str, str]]) -> None:
+    """権利確定日は決算期末日から決まる。年だけでは月が分からない。
+
+    有報1本の5期は同じ会社の同じ決算月なので、月日は共通で年だけが動く。
+    """
+    reports = to_reports(parse_header(rows), parse_summary(rows))
+    ends = {r.fiscal_year: r.fiscal_year_end for r in reports}
+    for fiscal_year, end in ends.items():
+        assert end is not None
+        assert end.year == fiscal_year
+        assert (end.month, end.day) == (3, 31)  # 日立は3月決算
+
+
+def test_a_february_filer_survives_a_leap_day(rows: list[dict[str, str]]) -> None:
+    """2/29 の期末日を平年に移すとき、``date.replace`` は例外を投げる。
+
+    有報1本の解析ごと落ちるので、月末という意味が保たれる 2/28 に寄せる。
+    """
+    header = FilingHeader(symbol="9999", fiscal_year_end=dt.date(2024, 2, 29))
+    figures = [AnnualFigures(year="前期", revenue=1.0), AnnualFigures(year="当期", revenue=2.0)]
+
+    reports = to_reports(header, figures)
+
+    assert [r.fiscal_year_end for r in reports] == [dt.date(2023, 2, 28), dt.date(2024, 2, 29)]

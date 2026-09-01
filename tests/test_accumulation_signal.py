@@ -20,7 +20,11 @@ from stock_ai.backtest.accumulation_signal import (
     Signal5Thresholds,
     compute_signal_frame,
     count_signals,
+    earnings_flag_series,
+    exrights_flag_series,
     market_cap_series,
+    material_free_mask,
+    record_dates,
 )
 from stock_ai.data.schema import ADJ_CLOSE, CLOSE, HIGH, LOW, OPEN, VOLUME
 from stock_ai.data.types import FinancialReport
@@ -258,6 +262,16 @@ def _report(disclosed_on: dt.date | None, shares: float | None) -> FinancialRepo
     )
 
 
+def _fy_end_report(fiscal_year_end: dt.date) -> FinancialReport:
+    """A statement that only carries the company's fiscal calendar."""
+    return FinancialReport(
+        symbol="6501",
+        fiscal_year=fiscal_year_end.year,
+        disclosed_on=fiscal_year_end + dt.timedelta(days=60),
+        fiscal_year_end=fiscal_year_end,
+    )
+
+
 def test_market_cap_series_steps_up_at_each_disclosure() -> None:
     index = pd.bdate_range("2024-01-01", periods=10, name="date")
     raw_close = pd.Series(100.0, index=index)
@@ -358,3 +372,221 @@ def test_min_market_cap_excludes_a_signal_with_no_known_shares_outstanding() -> 
     assert report.total == 0
     assert report.excluded_for_market_cap == 1
     database.dispose()
+
+
+# --- 材料日フラグ（セクション3-1） -------------------------------------------
+
+
+def _trading_index(start: str = "2024-01-01", periods: int = 60) -> pd.DatetimeIndex:
+    return pd.bdate_range(start, periods=periods, name="date")
+
+
+def test_earnings_flag_covers_one_session_either_side() -> None:
+    """発表日そのものと、前後1営業日。出来高は発表の前後に動くため。"""
+    index = _trading_index()
+    disclosed = index[10].date()
+    flags = earnings_flag_series(index, [_report(disclosed, 1.0)])
+
+    assert not flags.iloc[8]
+    assert flags.iloc[9]  # 前営業日
+    assert flags.iloc[10]  # 当日
+    assert flags.iloc[11]  # 翌営業日
+    assert not flags.iloc[12]
+
+
+def test_earnings_flag_pulls_a_weekend_disclosure_back_to_a_trading_day() -> None:
+    """休日に公開された開示の出来高は、直前の営業日ではなく直後に出る。
+
+    ここでは「その日以前の最後の営業日」に寄せる。±1営業日の窓が翌営業日も
+    覆うので、寄せ方向によらず発表後の商いは窓に入る。
+    """
+    index = _trading_index()
+    saturday = dt.date(2024, 1, 13)
+    flags = earnings_flag_series(index, [_report(saturday, 1.0)])
+    assert flags.any()
+
+
+def test_earnings_flag_is_all_false_without_disclosure_dates() -> None:
+    index = _trading_index()
+    assert not earnings_flag_series(index, [_report(None, 1.0)]).any()
+
+
+def test_record_dates_are_the_fiscal_year_end_and_its_half_year_point() -> None:
+    """3月決算なら 3/31 と 9/30。日本の権利確定日はこの2つ。"""
+    statements = [_fy_end_report(dt.date(2024, 3, 31))]
+    dates = record_dates(statements, range(2024, 2025))
+    assert set(dates) == {dt.date(2024, 3, 31), dt.date(2023, 9, 30)}
+
+
+def test_record_dates_follow_a_december_filer() -> None:
+    """12月決算なら 12/31 と 6/30。年だけでは決まらないのがこの差。"""
+    statements = [_fy_end_report(dt.date(2024, 12, 31))]
+    dates = record_dates(statements, range(2024, 2025))
+    assert set(dates) == {dt.date(2024, 12, 31), dt.date(2024, 6, 30)}
+
+
+def test_record_dates_are_empty_without_a_fiscal_year_end() -> None:
+    assert record_dates([_report(dt.date(2024, 5, 1), 1.0)], range(2024, 2025)) == []
+
+
+def test_exrights_flag_sits_two_business_days_before_the_record_date() -> None:
+    """T+2。権利付最終日は権利確定日の2営業日前、権利落ち日はその翌営業日。"""
+    index = _trading_index("2024-03-01", periods=40)
+    flags = exrights_flag_series(index, [_fy_end_report(dt.date(2024, 3, 31))])
+
+    positions = [i for i, flagged in enumerate(flags) if flagged]
+    record_position = index.searchsorted(pd.Timestamp("2024-03-31"), side="right") - 1
+    # 権利付最終日 = record - 2、その ±1 と権利落ち日の ±1 で連続4営業日。
+    assert positions == [
+        record_position - 3,
+        record_position - 2,
+        record_position - 1,
+        record_position,
+    ]
+
+
+def test_exrights_flag_uses_t_plus_3_before_the_2019_settlement_change() -> None:
+    """2019-07-16 より前は T+3。長期の副次分析はこの変更をまたぐ。"""
+    index = pd.bdate_range("2018-02-01", periods=60, name="date")
+    flags = exrights_flag_series(index, [_fy_end_report(dt.date(2018, 3, 31))])
+
+    record_position = index.searchsorted(pd.Timestamp("2018-03-31"), side="right") - 1
+    positions = [i for i, flagged in enumerate(flags) if flagged]
+    assert min(positions) == record_position - 4  # (record - 3) の1営業日前
+
+
+def test_material_free_excludes_a_symbol_whose_flags_cannot_be_evaluated() -> None:
+    """開示日が1つも無い銘柄は「静かだった」ではなく「調べていない」。"""
+    index = _trading_index()
+    free, earnings, exrights = material_free_mask(index, [])
+
+    assert not earnings.any()
+    assert not exrights.any()
+    assert not free.any()  # フラグが立たなくても material-free にはしない
+
+
+def test_material_free_is_true_away_from_every_material_date() -> None:
+    index = _trading_index()
+    statements = [
+        FinancialReport(
+            symbol="6501",
+            fiscal_year=2024,
+            disclosed_on=index[10].date(),
+            fiscal_year_end=dt.date(2024, 3, 31),
+        )
+    ]
+    free, _earnings, _exrights = material_free_mask(index, statements)
+
+    assert free.iloc[0]  # 材料日から離れた日
+    assert not free.iloc[10]  # 決算発表日
+
+
+def test_exrights_flag_does_not_invent_a_date_past_the_end_of_the_series() -> None:
+    """データ終端より後の権利確定日で、末尾に架空のフラグを立てない。
+
+    ``searchsorted`` は範囲外の日付を最終バーに丸める。素直に使うと、
+    まだ来ていない権利確定日が「最終営業日に起きた」ことになり、どの銘柄でも
+    系列の末尾4営業日が必ず材料日として落ちていた。
+    """
+    # 3月決算。系列は1月で終わるので、3/31 も 9/30 も範囲外。
+    index = pd.bdate_range("2024-01-04", periods=15, name="date")
+    flags = exrights_flag_series(index, [_fy_end_report(dt.date(2024, 3, 31))])
+    assert not flags.any()
+
+
+# --- 売買代金フィルタと材料日サブセット ---------------------------------------
+
+
+def test_min_turnover_excludes_a_thin_signal() -> None:
+    """売買代金 = D終値 × D出来高。セクション2の流動性下限。"""
+    database = Database("sqlite:///:memory:")
+    database.create_all()
+    # 終値100円 × 出来高60,000株 = 600万円。1億円には届かない。
+    _seed(database, "7203", "JP", _spike_volume(_flat_frame(base=100.0)))
+
+    lenient = count_signals(database, min_turnover=1_000_000.0)
+    strict = count_signals(database, min_turnover=100_000_000.0)
+
+    assert lenient.total == 1
+    assert lenient.excluded_for_turnover == 0
+    assert strict.total == 0
+    assert strict.excluded_for_turnover == 1
+    database.dispose()
+
+
+def test_min_turnover_uses_the_unadjusted_close() -> None:
+    """調整後の終値で測ると、分割前の売買代金を分割係数のぶん過小評価する。"""
+    database = Database("sqlite:///:memory:")
+    database.create_all()
+    frame = _spike_volume(_flat_frame(base=100.0))
+    # 全バーの adj_close を 1/5 にする（＝系列の後に5分割があった状態）。
+    # get_prices はこの比率を全 OHLC に掛けるので、調整後の系列は 20 円で平坦。
+    # 平坦なままなので5条件は変わらず成立し、違うのは尺度だけになる。
+    frame[ADJ_CLOSE] = 20.0
+    _seed(database, "7203", "JP", frame)
+
+    # 実際の売買代金は 100円 × 60,000株 = 600万円。調整後(20円)で測れば120万円。
+    report = count_signals(database, min_turnover=5_000_000.0)
+
+    assert report.total == 1, "未調整の終値で測れば 600万円 > 500万円 で残る"
+    database.dispose()
+
+
+def test_material_free_subset_separates_verified_quiet_from_never_checked() -> None:
+    database = Database("sqlite:///:memory:")
+    database.create_all()
+    frame = _spike_volume(_flat_frame(base=100.0))
+    signal_day = frame.index[-1].date()
+    _seed(database, "7203", "JP", frame)
+    _seed(database, "6501", "JP", frame)
+    # 7203 はシグナル当日が決算発表日。6501 は開示が1件も無い。
+    with database.session() as session:
+        FinancialStatementRepository(session).upsert_reports(
+            "7203",
+            [
+                FinancialReport(
+                    symbol="7203",
+                    fiscal_year=2026,
+                    disclosed_on=signal_day,
+                    fiscal_year_end=dt.date(2026, 3, 31),
+                )
+            ],
+            market="JP",
+        )
+
+    report = count_signals(database, min_turnover=None, flag_material_days=True)
+
+    assert report.total == 2
+    assert report.earnings_count == 1  # 7203
+    assert report.unflagged_but_unevaluable == 1  # 6501: 調べていない
+    assert report.material_free.total == 0  # どちらも「確認できた静かな日」ではない
+    database.dispose()
+
+
+@pytest.mark.parametrize(
+    ("record_date", "expected_last_with_rights"),
+    [
+        (dt.date(2023, 3, 31), dt.date(2023, 3, 29)),
+        (dt.date(2024, 9, 30), dt.date(2024, 9, 26)),
+        (dt.date(2025, 3, 31), dt.date(2025, 3, 27)),
+    ],
+)
+def test_exrights_flag_lands_on_the_days_the_real_data_flagged(
+    record_date: dt.date, expected_last_with_rights: dt.date
+) -> None:
+    """実データで「権利付最終日」と特定された3日を、実装が同じ日に置くか。
+
+    予備調査のシグナル数上位10日のうち3日がこれで、事前登録に材料日フラグを
+    足す根拠になった日そのもの。ここが1日ずれると、除外したい日を外して
+    隣の平常日を落とすことになる。
+
+    2024-09-30 は月曜、2025-03-31 も月曜、2023-03-31 は金曜。いずれも権利付
+    最終日はその2営業日前で、上表の実測と一致する。この窓に日本の祝日は無い
+    ので、平日カレンダーで再現できる。
+    """
+    index = pd.bdate_range(record_date - dt.timedelta(days=40), record_date, name="date")
+    fiscal_year_end = record_date  # 3月決算なら3/31が本決算、9/30が中間
+    flags = exrights_flag_series(index, [_fy_end_report(fiscal_year_end)])
+
+    flagged = {ts.date() for ts, on in zip(index, flags, strict=True) if on}
+    assert expected_last_with_rights in flagged
