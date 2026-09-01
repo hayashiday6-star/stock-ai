@@ -50,7 +50,16 @@ MA_WINDOWS: tuple[int, ...] = (5, 10, 20, 30)
 #: universe requirement - no separate listing-date lookup is needed.
 MIN_HISTORY_BARS = FIFTY_TWO_WEEK_WINDOW
 
-#: Section 2's liquidity floor, in yen: D's close times D's volume.
+#: Section 2's liquidity floor, in yen: the average turnover of the 20
+#: sessions *before* D.
+#:
+#: Averaged over the run-up, and excluding D, for the same reason condition 2
+#: excludes D from its own average - and here it matters more. Judging D on
+#: D's own turnover is not independent of condition 2: a name that normally
+#: trades 20 million yen clears a 100 million floor only *because* of the 5x
+#: spike being tested for, so the filter would admit exactly the illiquid
+#: names it exists to exclude, and they would be back to their usual
+#: thinness by the time the position is closed 20 sessions later.
 #:
 #: This replaced a market-cap floor. Market cap needs the shares outstanding
 #: disclosed as of D, and that only exists for about five years back, which
@@ -59,6 +68,10 @@ MIN_HISTORY_BARS = FIFTY_TWO_WEEK_WINDOW
 #: ahead by construction. It is also the same quantity section 4's size
 #: constraint is expressed in.
 DEFAULT_MIN_TURNOVER = 100_000_000.0
+
+#: Sessions averaged for the liquidity floor. Same window as condition 2's
+#: volume average, and excluded the same way.
+TURNOVER_WINDOW = 20
 
 #: Trading days either side of a material date that the flags also cover.
 #:
@@ -654,9 +667,9 @@ def count_signals(
             (yen). Kept as a secondary measure - it needs shares outstanding
             disclosed as of D, which only exists for about five years back.
             ``None`` (the default) skips it.
-        min_turnover: Section 2's liquidity floor (yen), D's close times D's
-            volume - see :data:`DEFAULT_MIN_TURNOVER`. ``None`` skips it,
-            which the sealed run must not do.
+        min_turnover: Section 2's liquidity floor (yen), averaged over the
+            20 sessions before D - see :data:`DEFAULT_MIN_TURNOVER`. ``None``
+            skips it, which the sealed run must not do.
         flag_material_days: Evaluate section 3-1's earnings and ex-rights
             flags on every signal. Off by default because it needs the
             statement history for each symbol; the sealed run's primary
@@ -700,8 +713,11 @@ def count_signals(
 
         if min_turnover is not None:
             raw = raw_prices_by_symbol[symbol]
-            turnover = (raw[CLOSE] * raw[VOLUME]).reindex(frame.index)
-            meets_floor = (turnover >= min_turnover).fillna(False)
+            # The 20 sessions before D, never D itself - see
+            # :data:`DEFAULT_MIN_TURNOVER`.
+            daily = raw[CLOSE] * raw[VOLUME]
+            average = daily.rolling(TURNOVER_WINDOW).mean().shift(1).reindex(frame.index)
+            meets_floor = (average >= min_turnover).fillna(False)
             excluded_for_turnover += int((signal_mask & ~meets_floor).sum())
             signal_mask = signal_mask & meets_floor
 
@@ -792,8 +808,10 @@ def explain_date(
             continue
 
         raw = raw_by_symbol[symbol]
-        turnover = float(raw.loc[stamp, CLOSE] * raw.loc[stamp, VOLUME])
-        if min_turnover is not None and turnover < min_turnover:
+        daily = raw[CLOSE] * raw[VOLUME]
+        prior = daily.rolling(TURNOVER_WINDOW).mean().shift(1)
+        turnover = float(prior.loc[stamp]) if stamp in prior.index else float("nan")
+        if min_turnover is not None and not (turnover >= min_turnover):
             continue
 
         statements = statements_by_symbol[symbol]

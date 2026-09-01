@@ -504,13 +504,13 @@ def test_exrights_flag_does_not_invent_a_date_past_the_end_of_the_series() -> No
 
 
 def test_min_turnover_excludes_a_thin_signal() -> None:
-    """売買代金 = D終値 × D出来高。セクション2の流動性下限。"""
+    """売買代金は D を除く直近20営業日の平均。セクション2の流動性下限。"""
     database = Database("sqlite:///:memory:")
     database.create_all()
-    # 終値100円 × 出来高60,000株 = 600万円。1億円には届かない。
+    # 平常時は 100円 × 10,000株 = 100万円。1億円には遠く届かない。
     _seed(database, "7203", "JP", _spike_volume(_flat_frame(base=100.0)))
 
-    lenient = count_signals(database, min_turnover=1_000_000.0)
+    lenient = count_signals(database, min_turnover=500_000.0)
     strict = count_signals(database, min_turnover=100_000_000.0)
 
     assert lenient.total == 1
@@ -531,10 +531,11 @@ def test_min_turnover_uses_the_unadjusted_close() -> None:
     frame[ADJ_CLOSE] = 20.0
     _seed(database, "7203", "JP", frame)
 
-    # 実際の売買代金は 100円 × 60,000株 = 600万円。調整後(20円)で測れば120万円。
-    report = count_signals(database, min_turnover=5_000_000.0)
+    # 平常時の実際の売買代金は 100円 × 10,000株 = 100万円。
+    # 調整後(20円)で測れば20万円で、50万円の下限を割ってしまう。
+    report = count_signals(database, min_turnover=500_000.0)
 
-    assert report.total == 1, "未調整の終値で測れば 600万円 > 500万円 で残る"
+    assert report.total == 1, "未調整の終値で測れば 100万円 > 50万円 で残る"
     database.dispose()
 
 
@@ -833,4 +834,24 @@ def test_split_adjusted_frame_matches_get_prices() -> None:
         derived = split_adjusted(repo.get_raw_prices("6501"))
 
     pd.testing.assert_frame_equal(adjusted, derived)
+    database.dispose()
+
+
+def test_min_turnover_is_not_conditioned_on_the_spike_itself() -> None:
+    """普段は薄いが、5倍スパイクの当日だけ下限に乗る銘柄を通さない。
+
+    D の売買代金で絞ると、条件②（出来高5倍）と直交しない。普段2,000万円の
+    銘柄がスパイクで1億円に乗って選ばれ、20営業日後の決済時には元の薄さに
+    戻っている——「そもそも流動性のある銘柄」という意図と逆になる。
+    """
+    database = Database("sqlite:///:memory:")
+    database.create_all()
+    # 平常 100円 × 10,000株 = 100万円。当日は6倍で 600万円。
+    _seed(database, "7203", "JP", _spike_volume(_flat_frame(base=100.0)))
+
+    # 下限を平常と当日の間に置く。D基準なら通り、20日平均なら落ちる。
+    report = count_signals(database, min_turnover=3_000_000.0)
+
+    assert report.total == 0
+    assert report.excluded_for_turnover == 1
     database.dispose()
