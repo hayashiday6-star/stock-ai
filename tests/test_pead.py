@@ -567,3 +567,57 @@ def test_the_explanation_reports_the_benchmark_legs_too() -> None:
 
     assert row.bench_surprise == pytest.approx(0.03, abs=1e-9)
     assert row.bench_forward == pytest.approx(0.02, abs=1e-9)
+
+
+def test_the_columns_add_back_up_to_the_difference() -> None:
+    """セクション5は上位・下位を「差の内訳」と書いている。
+
+    内訳が本体に足し戻せなければ、表から結果を再構成できない。以前は
+    上位・下位がイベント等加重・全日、差が日次等加重・両分位が揃った日のみで、
+    列を引き算しても差にならなかった。3つを同じ日集合・同じ加重に揃える。
+    """
+    # 片側しか出ない日を混ぜる。ここが揃っていないと乖離が出る。
+    surprises_by_day = {
+        dt.date(2023, 1, 4): [0.00, 0.01, 0.90, 0.91],
+        dt.date(2023, 1, 5): [0.02, 0.50, 0.92],
+        dt.date(2023, 1, 6): [0.03, 0.51, 0.93],
+        dt.date(2023, 1, 10): [0.04, 0.52],  # 下位のみ
+    }
+    rows = [
+        {
+            "month": "2023-01",
+            "surprise": value,
+            "forward": 0.02 * value,
+            "reaction_on": day,
+        }
+        for day, values in surprises_by_day.items()
+        for value in values
+    ]
+    result = spread(pd.DataFrame(rows))
+
+    assert result.days_without_both_legs >= 1  # 揃っていない日がある構成
+    assert result.high - result.low == pytest.approx(result.difference, abs=1e-12)
+
+
+def test_the_ladder_is_the_pre_cost_view_of_the_same_quantiles() -> None:
+    """はしごはコスト控除前。差の列とは片道コスト分だけずれる。
+
+    実測でも -3.18% + 0.30% = -2.88%、-1.83% - 0.30% = -2.13% と一致していた。
+    不整合ではないので、混同しないようここで関係を固定する。
+    """
+    rows = [
+        {
+            "month": "2023-01",
+            "surprise": i * 0.01,
+            "forward": 0.03,
+            "reaction_on": dt.date(2023, 1, (i % 4) + 1),
+        }
+        for i in range(20)
+    ]
+    frame = pd.DataFrame(rows)
+    ladder = quantile_ladder(frame)
+    result = spread(frame)
+
+    round_trip = 2 * 0.0015
+    assert ladder["mean"].iloc[-1] - round_trip == pytest.approx(result.high, abs=1e-12)
+    assert ladder["mean"].iloc[0] + round_trip == pytest.approx(result.low, abs=1e-12)
