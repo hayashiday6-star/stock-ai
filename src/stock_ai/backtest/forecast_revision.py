@@ -21,9 +21,16 @@ from __future__ import annotations
 import datetime as dt
 from dataclasses import dataclass, field
 
+import pandas as pd
+
+from stock_ai.data.schema import CLOSE
 from stock_ai.data.types import FinancialReport
 from stock_ai.database.engine import Database
-from stock_ai.database.repository import FinancialStatementRepository, list_securities
+from stock_ai.database.repository import (
+    FinancialStatementRepository,
+    PriceRepository,
+    list_securities,
+)
 
 #: 予想が「変わった」とみなす最小の相対幅。
 #:
@@ -272,11 +279,35 @@ class SueEvent:
     """通期短信が報告した実績。この日の新情報。"""
     forecast_from_period: str
     """予想を出した短信の期。通常は Q3。"""
+    market_cap: float | None = None
+    """開示日の**前営業日**の終値 × その時点の発行済株式数。
+
+    前営業日にするのは、開示当日の終値だと場中開示の反応が混ざるためである。
+    分割調整前の終値と、その時点の株数を掛ける。両方が同じ株数基準なので
+    分割をまたいでも時価総額は連続する。
+    """
 
     @property
     def surprise(self) -> float:
-        """予想からの乖離。予想を分母にする。"""
+        """予想からの乖離。予想を分母にする。
+
+        **分母が小さい会社で発散する。** 予想利益が薄いほど比が大きく出るので、
+        分位の端が薄利の会社に偏る。順位でしか使わないので裾の値そのものは
+        効かないが、**選ばれる顔ぶれが変わる**。
+        """
         return self.actual / self.forecast - 1.0
+
+    @property
+    def scaled_surprise(self) -> float | None:
+        """時価総額に対する驚きの大きさ。時価総額が取れなければ None。
+
+        市場が織り込むのは株価に対する金額であって、予想利益に対する比では
+        ない。予想1億が2億になる（+100%）のと1000億が1100億になる（+10%）の
+        とでは、時価総額比では後者が大きいこともある。
+        """
+        if not self.market_cap:
+            return None
+        return (self.actual - self.forecast) / self.market_cap
 
 
 @dataclass(frozen=True)
@@ -291,6 +322,12 @@ class SueReport:
     """実績が入っていない通期短信。"""
     without_prior_forecast: int
     """直前の短信に通期予想が無かった通期短信。"""
+    without_market_cap: int = 0
+    """イベントにはなったが時価総額を出せなかった数。
+
+    **0でなければ、時価総額で正規化する定義は全件では使えない。**
+    株数が入っていないか、開示日より前の終値が無いかのどちらかである。
+    """
 
     @property
     def total(self) -> int:
@@ -306,6 +343,59 @@ class SueReport:
         サンプルが足りると判断してはいけない。
         """
         return len({e.disclosed_on for e in self.events})
+
+    @property
+    def scaled_available(self) -> int:
+        """時価総額比の驚きを計算できたイベント数。"""
+        return sum(1 for e in self.events if e.scaled_surprise is not None)
+
+    def scaled_quantiles(self) -> list[tuple[str, float]]:
+        """時価総額比の驚きの分布。単位は bp（時価総額の万分の一）。"""
+        values = sorted(
+            e.scaled_surprise * 10_000 for e in self.events if e.scaled_surprise is not None
+        )
+        if not values:
+            return []
+
+        def at(fraction: float) -> float:
+            return values[min(len(values) - 1, int(fraction * len(values)))]
+
+        return [(f"p{int(f * 100)}", at(f)) for f in (0.05, 0.2, 0.4, 0.5, 0.6, 0.8, 0.95)]
+
+    def rank_correlation(self) -> float | None:
+        """2つの定義の順位相関（スピアマン）。
+
+        1に近ければどちらで並べても同じ顔ぶれが選ばれるので、議論する必要が
+        無い。低ければ**どちらを封印するかが結果を変える**ので、理屈で
+        決めておく必要がある。
+        """
+        pairs = [(e.surprise, e.scaled_surprise) for e in self.events if e.scaled_surprise]
+        if len(pairs) < 3:
+            return None
+        frame = pd.DataFrame(pairs, columns=["relative", "scaled"])
+        return float(frame["relative"].rank().corr(frame["scaled"].rank()))
+
+    def size_profile(self) -> list[tuple[str, float, float, float]]:
+        """各定義で5分位に切ったときの、下位・中位・上位分位の時価総額中央値（億円）。
+
+        **相対変化率が薄利の会社に偏るかを直接測る。** 端の分位だけ時価総額が
+        小さければ、その定義は驚きの大きさではなく会社の小ささを並べている。
+        """
+        usable = [e for e in self.events if e.scaled_surprise is not None and e.market_cap]
+        if len(usable) < 25:
+            return []
+        out = []
+        for name, key in (
+            ("相対変化率", lambda e: e.surprise),
+            ("時価総額比", lambda e: e.scaled_surprise),
+        ):
+            frame = pd.DataFrame(
+                {"value": [key(e) for e in usable], "cap": [e.market_cap for e in usable]}
+            )
+            bucket = pd.qcut(frame["value"].rank(method="first"), 5, labels=False)
+            median = frame.groupby(bucket)["cap"].median() / 1e8
+            out.append((name, float(median.iloc[0]), float(median.iloc[2]), float(median.iloc[4])))
+        return out
 
     @property
     def near_zero(self) -> int:
@@ -356,9 +446,39 @@ class _SueFound:
     fy_statements: int
     without_actual: int
     without_prior_forecast: int
+    without_market_cap: int = 0
 
 
-def find_sue_events(reports: list[FinancialReport], field: str = "net_income") -> _SueFound:
+def _market_cap_before(
+    closes: pd.Series | None, report: FinancialReport, disclosed_on: dt.date
+) -> float | None:
+    """開示日の前営業日の終値 × その時点の発行済株式数。
+
+    **当日の終値は使わない。** 場中開示なら反応が既に混ざっており、引け後開示
+    でも当日の値動きは開示への期待を含みうる。正規化に使う分母は、開示より
+    前に確定していた値でなければならない。
+
+    調整前の終値を使う。株数もその時点のものなので、分割をまたいでも
+    「株価×株数」は連続する。調整済み終値と当時の株数を掛けると、分割の
+    ぶんだけ時価総額を取り違える。
+    """
+    shares = report.shares_outstanding
+    if closes is None or closes.empty or not shares or shares <= 0:
+        return None
+    position = int(closes.index.searchsorted(pd.Timestamp(disclosed_on), side="left"))
+    if position == 0:
+        return None
+    price = closes.iloc[position - 1]
+    if price is None or not float(price) > 0:
+        return None
+    return float(price) * float(shares)
+
+
+def find_sue_events(
+    reports: list[FinancialReport],
+    field: str = "net_income",
+    closes: pd.Series | None = None,
+) -> _SueFound:
     """通期短信について、実績と直前の通期予想を組にする。
 
     **四半期では SUE を定義しない。** 日本の短信は通期予想と期中累計の実績を
@@ -375,7 +495,7 @@ def find_sue_events(reports: list[FinancialReport], field: str = "net_income") -
         by_year.setdefault(report.fiscal_year_end, []).append(report)
 
     events: list[SueEvent] = []
-    annual = no_actual = no_forecast = 0
+    annual = no_actual = no_forecast = no_cap = 0
 
     for fiscal_year_end, group in by_year.items():
         ordered = sorted(group, key=lambda r: (_ORDER.get(str(r.period), 9), r.disclosed_on))
@@ -402,6 +522,9 @@ def find_sue_events(reports: list[FinancialReport], field: str = "net_income") -
                 continue
             forecast = _forecast_of(prior, field)
             assert forecast is not None  # 上の next() で絞り込み済み
+            market_cap = _market_cap_before(closes, report, report.disclosed_on)
+            if market_cap is None:
+                no_cap += 1
             events.append(
                 SueEvent(
                     symbol=report.symbol,
@@ -410,9 +533,10 @@ def find_sue_events(reports: list[FinancialReport], field: str = "net_income") -
                     forecast=forecast,
                     actual=float(actual),
                     forecast_from_period=str(prior.period),
+                    market_cap=market_cap,
                 )
             )
-    return _SueFound(events, annual, no_actual, no_forecast)
+    return _SueFound(events, annual, no_actual, no_forecast, no_cap)
 
 
 def census_sue(
@@ -420,18 +544,26 @@ def census_sue(
 ) -> SueReport:
     """SUE を計算できる通期短信を数える。**リターンは計算しない。**"""
     events: list[SueEvent] = []
-    annual = no_actual = no_forecast = 0
+    annual = no_actual = no_forecast = no_cap = 0
 
     with database.session() as session:
         if symbols is None:
             symbols = [sym for sym, market in list_securities(session) if market == "JP"]
         repo = FinancialStatementRepository(session)
+        price_repo = PriceRepository(session)
         for symbol in symbols:
-            found = find_sue_events(repo.get_reports(symbol, period=None), field=field)
+            # 調整前の終値。時価総額はその時点の株数と掛け合わせるので、
+            # 調整済みの値を使うと分割のぶんだけ取り違える。
+            raw = price_repo.get_raw_prices(symbol)
+            closes = raw[CLOSE] if not raw.empty and CLOSE in raw else None
+            found = find_sue_events(
+                repo.get_reports(symbol, period=None), field=field, closes=closes
+            )
             events.extend(found.events)
             annual += found.fy_statements
             no_actual += found.without_actual
             no_forecast += found.without_prior_forecast
+            no_cap += found.without_market_cap
 
     return SueReport(
         events=events,
@@ -439,4 +571,5 @@ def census_sue(
         fy_statements=annual,
         without_actual=no_actual,
         without_prior_forecast=no_forecast,
+        without_market_cap=no_cap,
     )

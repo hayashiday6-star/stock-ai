@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import datetime as dt
 
+import pandas as pd
 import pytest
 
 from stock_ai.backtest.forecast_revision import (
@@ -17,9 +18,10 @@ from stock_ai.backtest.forecast_revision import (
     find_revisions,
     find_sue_events,
 )
+from stock_ai.data.schema import ADJ_CLOSE, CLOSE, HIGH, LOW, OPEN, VOLUME
 from stock_ai.data.types import FinancialReport
 from stock_ai.database.engine import Database
-from stock_ai.database.repository import FinancialStatementRepository
+from stock_ai.database.repository import FinancialStatementRepository, PriceRepository
 
 
 def _report(
@@ -29,6 +31,7 @@ def _report(
     fiscal_year_end: dt.date | None = dt.date(2024, 3, 31),
     symbol: str = "7203",
     net_income: float | None = None,
+    shares_outstanding: float | None = None,
 ) -> FinancialReport:
     return FinancialReport(
         symbol=symbol,
@@ -40,6 +43,7 @@ def _report(
         fiscal_year_end=fiscal_year_end,
         forecast_net_income=forecast,
         net_income=net_income,
+        shares_outstanding=shares_outstanding,
     )
 
 
@@ -365,3 +369,121 @@ def test_the_census_flags_how_many_surprises_are_effectively_zero() -> None:
         "p80",
         "p95",
     ]
+
+
+# --- 時価総額での正規化 -------------------------------------------------------
+#
+# 相対変化率は予想利益が薄い会社で発散する。順位でしか使わないので裾の値は
+# 効かないが、選ばれる顔ぶれが変わる。市場が織り込むのは株価に対する金額
+# なので、時価総額比も出せるようにしてある。どちらを封印するかは、結果を
+# 見る前に決める。
+
+
+def _closes(prices: dict[dt.date, float]) -> pd.Series:
+    index = pd.DatetimeIndex([pd.Timestamp(day) for day in sorted(prices)], name="date")
+    return pd.Series([prices[day.date()] for day in index], index=index, name=CLOSE)
+
+
+def test_market_cap_uses_the_close_before_the_disclosure_not_the_day_itself() -> None:
+    # 開示当日の終値には反応が混ざる。場中開示なら確実に混ざるし、引け後でも
+    # その日の値動きは開示への期待を含みうる。分母は開示前に確定していた値。
+    closes = _closes(
+        {dt.date(2024, 5, 9): 100.0, dt.date(2024, 5, 10): 130.0, dt.date(2024, 5, 13): 140.0}
+    )
+    found = find_sue_events(
+        [
+            _report("Q3", dt.date(2024, 2, 2), 1_000.0),
+            _report("FY", dt.date(2024, 5, 10), None, net_income=1_200.0, shares_outstanding=10.0),
+        ],
+        closes=closes,
+    )
+
+    event = found.events[0]
+    assert event.market_cap == pytest.approx(100.0 * 10.0)  # 5/9 の終値
+    assert event.scaled_surprise == pytest.approx(200.0 / 1_000.0)
+
+
+def test_an_event_without_share_count_still_counts_but_has_no_scaled_surprise() -> None:
+    closes = _closes({dt.date(2024, 5, 9): 100.0})
+    found = find_sue_events(
+        [
+            _report("Q3", dt.date(2024, 2, 2), 1_000.0),
+            _report("FY", dt.date(2024, 5, 10), None, net_income=1_200.0),
+        ],
+        closes=closes,
+    )
+
+    assert len(found.events) == 1  # 落とさない。相対変化率では使える
+    assert found.without_market_cap == 1
+    assert found.events[0].scaled_surprise is None
+
+
+def test_no_market_cap_when_the_disclosure_precedes_every_stored_bar() -> None:
+    # 前営業日が無ければ分母が作れない。当日の終値で代用しない。
+    closes = _closes({dt.date(2024, 5, 10): 100.0, dt.date(2024, 5, 13): 110.0})
+    found = find_sue_events(
+        [
+            _report("Q3", dt.date(2024, 2, 2), 1_000.0),
+            _report("FY", dt.date(2024, 5, 10), None, net_income=1_200.0, shares_outstanding=10.0),
+        ],
+        closes=closes,
+    )
+
+    assert found.without_market_cap == 1
+    assert found.events[0].market_cap is None
+
+
+def test_the_census_reports_the_rank_correlation_between_the_two_definitions() -> None:
+    # 薄利の会社ほど相対変化率が大きく出る。同じ金額の驚きでも、時価総額比では
+    # 順位が変わる。2定義がどれだけ違う並びになるかを、封印前に数字で見る。
+    database = Database("sqlite:///:memory:")
+    database.create_all()
+    frame = pd.DataFrame(
+        {OPEN: 100.0, HIGH: 100.0, LOW: 100.0, CLOSE: 100.0, ADJ_CLOSE: 100.0, VOLUME: 1_000.0},
+        index=pd.bdate_range("2024-04-01", periods=40, name="date"),
+    )
+    with database.session() as session:
+        PriceRepository(session).upsert_prices("7203", frame, market="JP")
+        PriceRepository(session).upsert_prices("6758", frame, market="JP")
+        repo = FinancialStatementRepository(session)
+        # 7203: 予想100 -> 実績200（+100%）。驚きの金額は100。
+        # 6758: 予想10,000 -> 実績12,000（+20%）。驚きの金額は2,000。
+        # 株数が同じなら、金額では 6758 のほうが大きい。順位が逆になる。
+        repo.upsert_reports(
+            "7203",
+            [
+                _report("Q3", dt.date(2024, 4, 2), 100.0),
+                _report(
+                    "FY",
+                    dt.date(2024, 5, 10),
+                    None,
+                    net_income=200.0,
+                    shares_outstanding=1_000.0,
+                ),
+            ],
+            market="JP",
+        )
+        repo.upsert_reports(
+            "6758",
+            [
+                _report("Q3", dt.date(2024, 4, 2), 10_000.0, symbol="6758"),
+                _report(
+                    "FY",
+                    dt.date(2024, 5, 10),
+                    None,
+                    symbol="6758",
+                    net_income=12_000.0,
+                    shares_outstanding=1_000.0,
+                ),
+            ],
+            market="JP",
+        )
+
+    report = census_sue(database)
+
+    assert report.scaled_available == 2
+    assert report.without_market_cap == 0
+    by_symbol = {e.symbol: e for e in report.events}
+    assert by_symbol["7203"].surprise > by_symbol["6758"].surprise
+    # 金額では逆。これが順位相関を下げる。
+    assert by_symbol["7203"].scaled_surprise < by_symbol["6758"].scaled_surprise
