@@ -155,6 +155,22 @@ class FinancialReport(BaseModel):
     """
     doc_type: str | None = None
     """開示の種類。決算短信と予想修正は別のイベントで、混ぜて数えられない。"""
+
+    forecast_revenue: float | None = None
+    forecast_operating_income: float | None = None
+    forecast_net_income: float | None = None
+    forecast_eps: float | None = None
+    """会社が**その短信で示した当期通期の予想**。
+
+    日本の決算短信は毎回この予想を載せる。連続する短信の予想を比べれば、
+    予想修正の開示を別に取らなくても修正が検出できる。実測で
+    ``fins/summary`` の開示種類の99.2%が決算短信であり、予想修正は上位に
+    1件も無かった。**別文書として取れない以上、この経路以外に修正を
+    知る手段が無い。**
+
+    同じ抽出が SUE（実績と会社予想の差）にも要る。日本は会社が予想を出す
+    制度なので、アナリスト予想が無くても驚きの大きさを定義できる。
+    """
     fiscal_year_end: dt.date | None = None
     """The fiscal year-end date. ``fiscal_year`` cannot say which month it is."""
 
