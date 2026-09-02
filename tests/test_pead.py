@@ -15,6 +15,7 @@ from stock_ai.backtest.pead import (
     HOLDING_DAYS,
     MIN_TURNOVER,
     OOS_FROM,
+    SORT_SUE,
     Period,
     assign_quantiles,
     build_events,
@@ -621,3 +622,119 @@ def test_the_ladder_is_the_pre_cost_view_of_the_same_quantiles() -> None:
     round_trip = 2 * 0.0015
     assert ladder["mean"].iloc[-1] - round_trip == pytest.approx(result.high, abs=1e-12)
     assert ladder["mean"].iloc[0] + round_trip == pytest.approx(result.low, abs=1e-12)
+
+
+# --- SUE 版の並べ替え（docs/PREREG_SUE_JP.md セクション3-3）-------------------
+#
+# 変えるのは並べ替える変数だけで、反応日・売買ルール・コスト・期間分割・
+# 評価指標は PEAD 版と共有する。別々に実装すると、結果の違いが並べ替え方の
+# 違いなのか実装の違いなのか分離できなくなる。
+
+
+def _annual(
+    symbol: str,
+    on: dt.date,
+    *,
+    period: str,
+    forecast: float | None = None,
+    net_income: float | None = None,
+    at: dt.time = dt.time(16, 0),
+) -> FinancialReport:
+    return FinancialReport(
+        symbol=symbol,
+        fiscal_year=2022,
+        period=period,
+        disclosed_on=on,
+        disclosed_at=at,
+        doc_type=f"{period}FinancialStatements_Consolidated_JP",
+        fiscal_year_end=dt.date(2022, 3, 31),
+        forecast_net_income=forecast,
+        net_income=net_income,
+    )
+
+
+def _sue_reports(symbol: str, reaction_index: int) -> list[FinancialReport]:
+    index = _frame().index
+    return [
+        _annual(symbol, index[reaction_index - 40].date(), period="Q3", forecast=1_000.0),
+        _annual(symbol, index[reaction_index - 1].date(), period="FY", net_income=1_300.0),
+    ]
+
+
+def test_the_sue_sort_uses_the_forecast_gap_not_the_price_reaction() -> None:
+    symbol = "7203"
+    frame = _with_drift(_frame(), reaction=100, jump=-0.05, drift=0.0)
+    database = _database({symbol: frame}, {symbol: _sue_reports(symbol, 100)})
+
+    built = build_events(database, Period.ALL, sort=SORT_SUE)
+
+    assert built.total == 1
+    # 株価は R に −5% 動いているが、並べ替えに使うのは会社予想からの乖離。
+    assert built.events[0].surprise == pytest.approx(0.30)
+
+
+def test_quarterly_statements_never_become_sue_events() -> None:
+    # 会社予想は通期12ヶ月ぶん、実績は期中累計。そのまま引くと季節性を測る。
+    symbol = "7203"
+    index = _frame().index
+    reports = [
+        _annual(symbol, index[60].date(), period="Q1", forecast=1_000.0, net_income=200.0),
+        _annual(symbol, index[100].date(), period="Q2", forecast=1_000.0, net_income=500.0),
+    ]
+    database = _database({symbol: _frame()}, {symbol: reports})
+
+    built = build_events(database, Period.ALL, sort=SORT_SUE)
+
+    assert built.total == 0
+    assert built.excluded_not_annual == 2
+
+
+def test_a_full_year_statement_without_a_prior_forecast_is_counted_separately() -> None:
+    symbol = "7203"
+    index = _frame().index
+    reports = [_annual(symbol, index[100].date(), period="FY", net_income=1_300.0)]
+    database = _database({symbol: _frame()}, {symbol: reports})
+
+    built = build_events(database, Period.ALL, sort=SORT_SUE)
+
+    assert built.total == 0
+    assert built.excluded_no_forecast == 1
+    assert built.excluded_not_annual == 0
+
+
+def test_both_sorts_share_the_return_of_the_same_event() -> None:
+    # 並べ替える変数だけが違い、リターンの測り方は同じであることを固定する。
+    # ここがずれると、2つの登録の結果を比べても意味が無くなる。
+    symbol = "7203"
+    frame = _with_drift(_frame(), reaction=100, jump=0.05, drift=0.001)
+    database = _database({symbol: frame}, {symbol: _sue_reports(symbol, 100)})
+
+    by_sue = build_events(database, Period.ALL, sort=SORT_SUE)
+    by_reaction = build_events(database, Period.ALL)
+
+    sue_event = by_sue.events[0]
+    same = [e for e in by_reaction.events if e.reaction_on == sue_event.reaction_on][0]
+    assert sue_event.forward == pytest.approx(same.forward)
+    assert sue_event.reaction_on == same.reaction_on
+    assert sue_event.surprise != pytest.approx(same.surprise)
+
+
+def test_an_unknown_sort_is_refused_rather_than_silently_defaulting() -> None:
+    # 既定に落とすと、綴りを間違えたまま別の登録を回してしまう。
+    database = _database({"7203": _frame()}, {"7203": _sue_reports("7203", 100)})
+
+    with pytest.raises(ValueError, match="unknown sort"):
+        build_events(database, Period.ALL, sort="SUE-version")
+
+
+def test_explain_shows_the_forecast_and_actual_behind_the_sue_surprise() -> None:
+    # セクション9「3銘柄について手計算と突き合わせた」を SUE 版でも通せるように。
+    symbol = "7203"
+    database = _database({symbol: _frame()}, {symbol: _sue_reports(symbol, 100)})
+
+    rows = [r for r in explain_events(database, symbol, Period.ALL) if r.period_label == "FY"]
+
+    assert len(rows) == 1
+    assert rows[0].forecast == pytest.approx(1_000.0)
+    assert rows[0].actual == pytest.approx(1_300.0)
+    assert rows[0].sue_surprise == pytest.approx(0.30)

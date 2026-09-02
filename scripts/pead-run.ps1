@@ -1,6 +1,6 @@
 ﻿<#
 .SYNOPSIS
-    封印した事前登録どおりに PEAD を計算する（docs/PREREG_PEAD_JP.md）。
+    封印した事前登録どおりに計算する（PREREG_PEAD_JP.md / PREREG_SUE_JP.md）。
 
 .DESCRIPTION
     期間の指定が必須です。既定を置いていません。合否判定はOOSで一度だけ
@@ -17,6 +17,17 @@
     主要指標はベンチマークの選び方に影響されません。効くのは驚きの
     並べ替えと、副次の分位ごとの数字です。
 
+.PARAMETER Surprise
+    並べ替える変数。**2つの事前登録はここだけが違います。**
+
+    - reaction : R 当日の市場対比リターン（docs/PREREG_PEAD_JP.md、不合格）
+    - sue      : 通期実績と、直前に公表済みだった会社予想との乖離
+                 （docs/PREREG_SUE_JP.md）
+
+    反応日の決め方・売買ルール・コスト・期間分割・評価指標は共有です。
+    別々に実装すると、結果の違いが並べ替え方の違いなのか実装の違いなのかを
+    分離できなくなります。
+
 .PARAMETER Period
     is | oos | all。
 
@@ -28,13 +39,15 @@
 
 .EXAMPLE
     .\scripts\pead-run.ps1 -Period is
-    .\scripts\pead-run.ps1 -Period is -Benchmark 1306
+    .\scripts\pead-run.ps1 -Period is -Surprise sue
 #>
 [CmdletBinding()]
 param(
     [ValidateSet('is', 'oos', 'all')]
     [string]$Period = 'is',
     [string]$Benchmark = '1306',
+    [ValidateSet('reaction', 'sue')]
+    [string]$Surprise = 'reaction',
     [switch]$ReadyForOos
 )
 
@@ -47,7 +60,7 @@ Show-Version
 
 if (-not (Test-UvInstalled)) { Exit-WithPause 1 }
 
-Write-Section "PEAD: 封印した事前登録どおりに計算する ($Period)"
+Write-Section "封印した事前登録どおりに計算する（並べ替え: $Surprise、期間: $Period）"
 if ($Period -ne 'is' -and -not $ReadyForOos) {
     Write-Err "'$Period' には検証用に取り置いた期間が含まれます。"
     Write-Host ''
@@ -68,6 +81,7 @@ if ($Benchmark) {
 
 $arguments = @('run', 'stock-ai', 'pead-run', $Period)
 if ($Benchmark) { $arguments += @('--benchmark', $Benchmark) }
+$arguments += @('--surprise', $Surprise)
 if ($ReadyForOos) { $arguments += '--i-am-ready-for-oos' }
 
 uv @arguments
