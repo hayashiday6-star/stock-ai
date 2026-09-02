@@ -19,11 +19,19 @@
     リターンは一切計算しません。ネットワークにも出ません。手元のDBを
     数えるだけです。
 
+.PARAMETER Symbols
+    調べる銘柄コードをカンマ区切りで。省略すると全銘柄。1銘柄だけ指定すると、
+    10-JQuants開示確認.bat が出す「レコード数」と直に突き合わせられる。
+    APIが返す件数とDBの行数が食い違えば、取り込み側で落ちている。
+
 .EXAMPLE
     .\scripts\pead-census.ps1
+    .\scripts\pead-census.ps1 -Symbols 7203
 #>
 [CmdletBinding()]
-param()
+param(
+    [string]$Symbols
+)
 
 $ErrorActionPreference = 'Continue'
 Set-Location (Split-Path -Parent $PSScriptRoot)
@@ -39,7 +47,10 @@ Write-Host '全銘柄の価格と開示を突き合わせます。数分かか�
 Write-Host 'リターンは計算しません。' -ForegroundColor DarkGray
 Write-Host ''
 
-uv run stock-ai pead-census
+$arguments = @('run', 'stock-ai', 'pead-census')
+if ($Symbols) { $arguments += $Symbols.Split(',') | ForEach-Object { $_.Trim() } }
+
+uv @arguments
 $code = $LASTEXITCODE
 
 if ($code -ne 0) {

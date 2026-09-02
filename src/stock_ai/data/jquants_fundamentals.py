@@ -404,7 +404,14 @@ def _fiscal_year_of(record: dict[str, Any]) -> int | None:
 
 
 #: 決算期末日を名乗りうるキー。v2 は略記、v1 は綴り。
-_FY_END_KEYS = ("FYEnd", "CurrentFiscalYearEndDate", "FiscalYearEnd", "PeriodEnd")
+#:
+#: **``CurFYEn`` は実データで確認した名前である。** ほかは推測で置いた候補で、
+#: 実際の v2 レスポンスには1つも現れない - つまりこの一覧は、当てずっぽうの
+#: 略記だけを並べて「該当なし」を返し続けていた。``fiscal_year_end`` が
+#: J-Quants から一度も埋まっていなかったのはそのためで、例外は出ないので
+#: 気付けなかった（``tools/jquants_disclosure_probe.py`` で実物のキー名を
+#: 並べて初めて分かった）。
+_FY_END_KEYS = ("CurFYEn", "FYEnd", "CurrentFiscalYearEndDate", "FiscalYearEnd", "PeriodEnd")
 
 
 def _fiscal_year_end_of(record: dict[str, Any]) -> dt.date | None:
