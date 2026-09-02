@@ -542,11 +542,18 @@ class Spread:
     """上位分位と下位分位の差、とその有意性。"""
 
     high: float
-    """上位分位の平均超過リターン（コスト控除後）。"""
+    """上位分位の平均超過リターン（コスト控除後、日次等加重）。"""
     low: float
-    """下位分位の平均超過リターン（コスト控除後）。"""
+    """下位分位の平均超過リターン（コスト控除後、日次等加重）。"""
     difference: float
-    """``high - low``。**合否判定に使う数字はこれ**（セクション5）。"""
+    """``high - low``。**合否判定に使う数字はこれ**（セクション5）。
+
+    **3つとも同じ日集合・同じ加重で出す。** セクション5は上位・下位を
+    「差の内訳」と書いているので、内訳が本体に足し戻せなければ報告として
+    成立しない。以前はここが揃っておらず、上位と下位がイベント等加重・全日、
+    差が日次等加重・両分位が揃った日のみだった。列を引き算しても差にならず、
+    表から結果を再構成できなかった。
+    """
     t_statistic: float
     """日付クラスタ標準誤差による t 値（セクション7）。"""
     clusters: int
@@ -662,9 +669,12 @@ def spread(
     error = difference.std(ddof=1) / (count**0.5) if count > 1 else float("nan")
     t_value = float(difference.mean() / error) if error and not pd.isna(error) else float("nan")
 
+    # 上位・下位も、差と同じ日集合・同じ日次等加重で出す。イベント等加重に
+    # すると、片側しか出ない日のイベントが上位（または下位）にだけ入り、
+    # 内訳が本体に足し戻せなくなる。
     return Spread(
-        high=float(high_net.mean()),
-        low=float(low_net.mean()),
+        high=float(per_day["high"].mean()),
+        low=float(per_day["low"].mean()),
         difference=float(difference.mean()),
         t_statistic=t_value,
         clusters=count,
@@ -686,6 +696,11 @@ def quantile_ladder(
     水準の偏りを読むためでもある。全分位が同じだけ沈んでいるなら、その水準は
     分位に依らない何か（ユニバースとベンチマークの組成差など）であり、差では
     相殺される。特定の分位だけが沈んでいるなら、それは差に効く。
+
+    **加重が :func:`spread` と違う。** ここはイベント等加重で、全日を使い、
+    コストを引かない。分位の形を見るためのものだからである。合否に使う差は
+    日次等加重・両分位が揃った日のみ・コスト控除後なので、両端の値を引き算
+    しても差にはならない。混同しないよう、表題に加重を書く。
 
     Returns:
         ``quantile``（0が最下位）、``mean``、``events``、``days`` の表。
