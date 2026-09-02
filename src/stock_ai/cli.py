@@ -1867,6 +1867,23 @@ def revision_census(
         f"[dim]内訳: 据え置き {report.pairs_unchanged:,} ／ "
         f"予想が入っておらず比較できず {report.pairs_without_forecast:,}[/]"
     )
+    console.print(
+        f"  比較できなかった組の内訳: 前だけ無し {report.missing_previous_only:,} ／ "
+        f"後だけ無し {report.missing_current_only:,} ／ 両方無し {report.missing_both:,}"
+    )
+    console.print(
+        f"  [bold]SUE を計算できる組: {report.usable_for_sue:,}[/]"
+        "（SUE は前回の予想と今回の実績を比べるので、前側にさえ予想があればよい）"
+    )
+    if report.missing_by_transition:
+        worst = sorted(report.missing_by_transition.items(), key=lambda kv: -kv[1])
+        console.print(
+            "  期の遷移ごとの欠落: " + "、".join(f"{key} {count:,}" for key, count in worst[:6])
+        )
+        console.print(
+            "[dim]  特定の遷移に偏っていれば構造的な欠落（通期短信に当期予想が"
+            "無いなど）。散っていれば予想を出さない会社の事情である。[/]"
+        )
     if report.pairs_compared and report.pairs_without_forecast == report.pairs_compared:
         console.print(
             "[yellow]全組で予想が空だった。[/] 予想フィールドは後から足した列なので、"
@@ -1883,6 +1900,7 @@ def revision_census(
     for year, total, up, down in report.by_year():
         table.add_row(str(year), f"{total:,}", f"{up:,}", f"{down:,}")
     console.print(table)
+    console.print(f"独立した開示日数: [bold]{report.unique_days}[/] 日")
     console.print(
         "[dim]件数のみ。リターンは計算していない。候補2（予想修正後のドリフト）が"
         "成立するかは、この件数が決める。年に数百件しか出ないなら設計を先に"

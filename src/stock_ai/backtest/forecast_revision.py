@@ -19,7 +19,7 @@
 from __future__ import annotations
 
 import datetime as dt
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from stock_ai.data.types import FinancialReport
 from stock_ai.database.engine import Database
@@ -74,11 +74,40 @@ class RevisionReport:
     """
     pairs_unchanged: int
     """予想が動かなかった組（据え置き）。"""
+    missing_previous_only: int = 0
+    """前の短信にだけ予想が無かった組。
+
+    **SUE の成否はここで決まる。** SUE は「前回の予想」と「今回の実績」を
+    比べるので、前側に予想があれば計算できる。後ろ側が空でも困らない。
+    修正検出（両側が要る）と成否が分かれるので、分けて数える。
+    """
+    missing_current_only: int = 0
+    """後の短信にだけ予想が無かった組。通期短信は当期が終わっているので、
+    当期通期予想の欄が空になりうる。その形かどうかを見る。"""
+    missing_both: int = 0
+    """両方に予想が無かった組。"""
+    missing_by_transition: dict[str, int] = field(default_factory=dict)
+    """``"Q3->FY"`` のような期の遷移ごとの、比較できなかった組の数。
+
+    特定の遷移に偏っていれば構造的な欠落（通期短信に当期予想が無い、など）で
+    あり、散っていれば銘柄側の事情（予想を出さない会社）である。**推測で
+    片付けないために分けて数える。**
+    """
 
     @property
     def total(self) -> int:
         """検出できた修正の数。"""
         return len(self.revisions)
+
+    @property
+    def unique_days(self) -> int:
+        """修正が起きた独立の開示日数。日次クラスタの有効サンプルサイズ。"""
+        return len({r.disclosed_on for r in self.revisions})
+
+    @property
+    def usable_for_sue(self) -> int:
+        """SUE を計算できる組の数。前側に予想があればよい。"""
+        return self.pairs_compared - self.missing_previous_only - self.missing_both
 
     def by_year(self) -> list[tuple[int, int, int, int]]:
         """年ごとの (年, 修正数, 上方, 下方)。"""
@@ -93,6 +122,20 @@ class RevisionReport:
 
 #: 会計年度内での短信の並び順。予想を比べるのは「同じ会計年度の連続する短信」。
 _ORDER = {"Q1": 1, "Q2": 2, "Q3": 3, "FY": 4}
+
+
+@dataclass(frozen=True)
+class _Found:
+    """:func:`find_revisions` の返り値。内訳を取りこぼさないための入れ物。"""
+
+    revisions: list[Revision]
+    compared: int
+    missing: int
+    unchanged: int
+    missing_previous_only: int
+    missing_current_only: int
+    missing_both: int
+    missing_by_transition: dict[str, int]
 
 
 def _forecast_of(report: FinancialReport, field: str) -> float | None:
@@ -114,7 +157,7 @@ def find_revisions(
     翌期の予想と比べても「修正」ではなく別の期の話になる。期末日で束ねる。
 
     Returns:
-        ``(修正, 比較した組数, 予想が無くて比較できなかった組数, 据え置きの組数)``
+        :class:`_Found`。件数の内訳つき。
     """
     by_year: dict[dt.date | None, list[FinancialReport]] = {}
     for report in reports:
@@ -124,6 +167,8 @@ def find_revisions(
 
     revisions: list[Revision] = []
     compared = missing = unchanged = 0
+    only_previous = only_current = neither = 0
+    by_transition: dict[str, int] = {}
 
     for fiscal_year_end, group in by_year.items():
         if fiscal_year_end is None:
@@ -139,6 +184,14 @@ def find_revisions(
             after = _forecast_of(current, field)
             if before is None or after is None:
                 missing += 1
+                if before is None and after is None:
+                    neither += 1
+                elif before is None:
+                    only_previous += 1
+                else:
+                    only_current += 1
+                key = f"{previous.period}->{current.period}"
+                by_transition[key] = by_transition.get(key, 0) + 1
                 continue
             if abs(after / before - 1.0) < min_change:
                 unchanged += 1
@@ -155,7 +208,9 @@ def find_revisions(
                     current=after,
                 )
             )
-    return revisions, compared, missing, unchanged
+    return _Found(
+        revisions, compared, missing, unchanged, only_previous, only_current, neither, by_transition
+    )
 
 
 def census_revisions(
@@ -172,14 +227,21 @@ def census_revisions(
         if symbols is None:
             symbols = [sym for sym, market in list_securities(session) if market == "JP"]
         repo = FinancialStatementRepository(session)
+        only_previous = only_current = neither = 0
+        by_transition: dict[str, int] = {}
         for symbol in symbols:
-            found, pairs, gaps, same = find_revisions(
+            found = find_revisions(
                 repo.get_reports(symbol, period=None), field=field, min_change=min_change
             )
-            revisions.extend(found)
-            compared += pairs
-            missing += gaps
-            unchanged += same
+            revisions.extend(found.revisions)
+            compared += found.compared
+            missing += found.missing
+            unchanged += found.unchanged
+            only_previous += found.missing_previous_only
+            only_current += found.missing_current_only
+            neither += found.missing_both
+            for key, count in found.missing_by_transition.items():
+                by_transition[key] = by_transition.get(key, 0) + count
 
     return RevisionReport(
         revisions=revisions,
@@ -187,4 +249,8 @@ def census_revisions(
         pairs_compared=compared,
         pairs_without_forecast=missing,
         pairs_unchanged=unchanged,
+        missing_previous_only=only_previous,
+        missing_current_only=only_current,
+        missing_both=neither,
+        missing_by_transition=by_transition,
     )
