@@ -205,6 +205,11 @@ def _bar_exists(index: pd.DatetimeIndex, when: pd.Timestamp, offset: int) -> boo
     営業日はその銘柄自身の価格インデックスから取る - 祝日表を別に持つと、
     表とデータがずれたときに黙って間違う。
     """
+    if len(index) == 0 or when < index[0]:
+        # 価格が始まる前の開示には D が無い。searchsorted は 0 を返すので、
+        # 弾かないと**最初のバーを D と見なして**測定可能に数えてしまう。
+        # 2021年の開示を2025年の株価で測ることになり、件数も反応も別物になる。
+        return False
     # side="left" は「``when`` 以降の最初のバー」を指す。開示日が非営業日なら
     # その次の営業日が D になり、営業日ならその日自身が D になる。
     position = int(index.searchsorted(when, side="left"))
