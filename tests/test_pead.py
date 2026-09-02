@@ -443,3 +443,37 @@ def test_the_spread_is_unchanged_by_the_benchmark() -> None:
     assert against.difference == pytest.approx(plain.difference, abs=1e-9)
     # 分位ごとの数字のほうは、ベンチマークのぶんだけ下がる。
     assert against.high < plain.high
+
+
+def test_the_placebo_uses_the_same_recipe_from_an_earlier_anchor() -> None:
+    """水準の偏りが決算由来かどうかを、推測でなく数字で切り分けるための診断。"""
+    base = _frame(bars=500)
+    reaction = 300
+    symbol = "7203"
+    # 決算とは無関係に、系列全体をなだらかに上げておく。プラセボにも同じ
+    # 傾きが出るはずで、それが「決算とは関係のない水準」になる。
+    frame = base.copy()
+    trend = pd.Series(range(len(base)), index=base.index) * 2.0 + 2_000.0
+    for column in (OPEN, HIGH, LOW, CLOSE, ADJ_CLOSE):
+        frame[column] = trend
+    reports = {symbol: [_report(symbol, base.index[reaction - 1].date())]}
+
+    built = build_events(_database({symbol: frame}, reports), Period.ALL)
+
+    event = built.events[0]
+    assert event.placebo is not None
+    # 同じ傾きの系列なので、プラセボもリターンと同じ符号の大きさになる。
+    assert event.placebo > 0
+
+
+def test_the_placebo_is_absent_when_there_is_no_room_before_the_event() -> None:
+    """起点が価格の外に出る場合は None。ゼロで埋めると診断が歪む。"""
+    base = _frame()
+    reaction = 100  # PLACEBO_OFFSET=120 より手前なので遡れない
+    symbol = "7203"
+    frame = _with_drift(base, reaction, 0.05, 0.0)
+    reports = {symbol: [_report(symbol, base.index[reaction - 1].date())]}
+
+    built = build_events(_database({symbol: frame}, reports), Period.ALL)
+
+    assert built.events[0].placebo is None
