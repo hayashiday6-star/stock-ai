@@ -1632,6 +1632,21 @@ def pead_census(
         "しない銘柄が混ざっている。[/]"
     )
 
+    kinds = report.doc_type_counts(usable)
+    kind_table = Table(title="開示の種類（PEADのイベントは決算短信だけ）")
+    kind_table.add_column("種類", justify="left", overflow="fold")
+    kind_table.add_column("開示件数", justify="right")
+    kind_table.add_column("割合", justify="right")
+    for label, count in kinds.most_common(12):
+        kind_table.add_row(label, str(count), f"{count / len(usable) * 100:.1f}%")
+    if len(kinds) > 12:
+        kind_table.add_row(f"... 他 {len(kinds) - 12} 種類", "", "")
+    console.print(kind_table)
+    console.print(
+        "[dim]予想修正や訂正が混ざっていれば、決算への反応を測っているつもりで"
+        "別のものを測ることになる。事前登録はここで種類を絞る。[/]"
+    )
+
     timing = report.timing_counts(usable)
     timing_table = Table(title="開示のタイミング（エントリー日がこれで決まる）")
     timing_table.add_column("区分", justify="left")

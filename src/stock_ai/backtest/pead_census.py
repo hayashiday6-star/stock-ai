@@ -81,6 +81,8 @@ class Disclosure:
     """D+60 に価格がある（決済できる）。"""
     disclosed_at: dt.time | None = None
     """開示時刻。``None`` は「取り込んでいない」であって「無い」ではない。"""
+    doc_type: str | None = None
+    """開示の種類。決算短信と予想修正を混ぜて数えると、イベントが別物になる。"""
 
     def timing(self) -> str:
         """場中 / 引け後 / 判定不能 のどれか。
@@ -160,6 +162,18 @@ class CensusReport:
         if counts.get(None):
             ordered.append((None, counts[None]))
         return ordered
+
+    def doc_type_counts(self, disclosures: list[Disclosure] | None = None) -> Counter[str]:
+        """開示の種類の内訳。
+
+        PEAD のイベントは決算短信であって、予想修正や訂正ではない。混ぜて
+        数えると、測っているものが「決算への反応」でなくなる。``fins/summary``
+        が短信だけを返すのか、他の種類も混ざるのかは、この分布を見るまで
+        分からない（7203 の1銘柄では四半期ぶんきっかりだったが、1銘柄は
+        全体の証拠にならない）。
+        """
+        rows = self.disclosures if disclosures is None else disclosures
+        return Counter(d.doc_type or "(種類なし)" for d in rows)
 
     def timing_counts(self, disclosures: list[Disclosure] | None = None) -> Counter[str]:
         """場中 / 引け後 の内訳。PEAD のエントリー日はこれで決まる。"""
@@ -267,6 +281,7 @@ def run_census(database: Database, symbols: list[str] | None = None) -> CensusRe
                         has_entry_bar=_bar_exists(raw.index, when, ENTRY_OFFSET),
                         has_exit_bar=_bar_exists(raw.index, when, ENTRY_OFFSET + DRIFT_WINDOW),
                         disclosed_at=report.disclosed_at,
+                        doc_type=report.doc_type,
                     )
                 )
 
