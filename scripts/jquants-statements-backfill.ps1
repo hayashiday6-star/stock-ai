@@ -15,6 +15,13 @@
     列を足した直後の取り直しは「0 ok, 20 skipped」で成功したように見えて
     1件も取れていませんでした。
 
+    既存の行はいったん消してから入れ直します（--replace）。upsert は鍵が
+    一致する行しか置き換えないので、鍵の意味が変わったり5年ローリング窓が
+    ずれたりすると古い行が残ります。実測で 7203 は API が返す20件に対し
+    DBに21行ありました。数える側から見れば、存在しない開示が1件増えている
+    のと同じです。消してから入れ直せば、DBの中身は「いまAPIが返すもの」と
+    一致します。
+
     期限があります。5年分の開示履歴を取れるのは有料プランがある間だけで、
     解約予定は 2026-09-22 です。それ以降は取り直せません。
 
@@ -57,6 +64,7 @@ if (-not (Test-EnvKeySet 'JQUANTS_API_KEY')) {
 
 Write-Section "J-Quants: 財務を取り直して開示時刻を埋める ($Segment)"
 Write-Host '.env は書き換えません。この1回だけ取得元を jquants にします。' -ForegroundColor DarkGray
+Write-Host '既存の財務行はいったん消してから入れ直します。価格には触れません。' -ForegroundColor DarkGray
 Write-Host '全銘柄なら30分以上かかります。中断しても安全です。' -ForegroundColor DarkGray
 Write-Host ''
 
@@ -65,7 +73,8 @@ $arguments = @(
     '--what', 'statements',
     '--statement-source', 'jquants',
     '--segment', $Segment,
-    '--no-resume'
+    '--no-resume',
+    '--replace'
 )
 if ($Limit -gt 0) { $arguments += @('--limit', "$Limit") }
 

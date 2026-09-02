@@ -966,3 +966,59 @@ def test_a_missing_disclosure_time_stays_unknown() -> None:
     )
 
     assert reports[0].disclosed_at is None
+
+
+def test_delete_reports_removes_rows_the_api_no_longer_returns() -> None:
+    """upsert は鍵が一致する行しか置き換えないので、古い行が残る。
+
+    実測で 7203 は API が返す20件に対しDBに21行あった。その1行は現在の
+    5年ローリング窓の外にあり、取り直しても消えない。開示イベントを数える
+    側から見れば、存在しない開示が1件増えているのと同じである。
+    """
+    database = Database("sqlite:///:memory:")
+    database.create_all()
+    with database.session() as session:
+        repo = FinancialStatementRepository(session)
+        repo.upsert_reports(
+            "7203",
+            [
+                FinancialReport(symbol="7203", fiscal_year=year, disclosed_on=dt.date(year, 5, 10))
+                for year in (2021, 2022, 2023)
+            ],
+            market="JP",
+        )
+        assert len(repo.get_reports("7203", period=None)) == 3
+
+        removed = repo.delete_reports("7203")
+
+        assert removed == 3
+        assert repo.get_reports("7203", period=None) == []
+
+
+def test_delete_reports_leaves_other_symbols_alone() -> None:
+    database = Database("sqlite:///:memory:")
+    database.create_all()
+    with database.session() as session:
+        repo = FinancialStatementRepository(session)
+        for symbol in ("7203", "6758"):
+            repo.upsert_reports(
+                symbol,
+                [
+                    FinancialReport(
+                        symbol=symbol, fiscal_year=2024, disclosed_on=dt.date(2024, 5, 10)
+                    )
+                ],
+                market="JP",
+            )
+
+        repo.delete_reports("7203")
+
+        assert repo.get_reports("7203", period=None) == []
+        assert len(repo.get_reports("6758", period=None)) == 1
+
+
+def test_delete_reports_on_an_unknown_symbol_is_a_no_op() -> None:
+    database = Database("sqlite:///:memory:")
+    database.create_all()
+    with database.session() as session:
+        assert FinancialStatementRepository(session).delete_reports("9999") == 0
