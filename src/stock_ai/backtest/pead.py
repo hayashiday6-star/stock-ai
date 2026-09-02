@@ -414,6 +414,130 @@ def _with_same_day_counts(events: list[Event]) -> list[Event]:
 
 
 @dataclass(frozen=True)
+class Explanation:
+    """1件のイベントの計算過程を、手計算と突き合わせられる形で並べたもの。
+
+    事前登録セクション9の最後の項目「既知の3銘柄について、驚きと R+60
+    リターンを手計算と突き合わせた」のためにある。**集計を眺めても、
+    集計の作り方が間違っている場合には気付けない。** 使った日付と価格を
+    全部出して、電卓で追えるようにする。
+    """
+
+    symbol: str
+    disclosed_on: dt.date
+    disclosed_at: dt.time | None
+    session_close: dt.time
+    intraday: bool
+    reaction_on: dt.date
+    prior_close: float
+    reaction_close: float
+    entry_on: dt.date
+    entry_open: float
+    exit_on: dt.date
+    exit_close: float
+    benchmark: str | None
+    bench_prior_close: float | None
+    bench_reaction_close: float | None
+    bench_entry_open: float | None
+    bench_exit_close: float | None
+
+    @property
+    def stock_surprise(self) -> float:
+        """R の値動き。"""
+        return self.reaction_close / self.prior_close - 1.0
+
+    @property
+    def stock_forward(self) -> float:
+        """R+1 の寄付きから R+60 の終値まで。"""
+        return self.exit_close / self.entry_open - 1.0
+
+    @property
+    def bench_surprise(self) -> float | None:
+        """同じ日のベンチマークの値動き。"""
+        if self.bench_prior_close is None or self.bench_reaction_close is None:
+            return None
+        return self.bench_reaction_close / self.bench_prior_close - 1.0
+
+    @property
+    def bench_forward(self) -> float | None:
+        """同じ窓のベンチマークのリターン。"""
+        if self.bench_entry_open is None or self.bench_exit_close is None:
+            return None
+        return self.bench_exit_close / self.bench_entry_open - 1.0
+
+
+def explain_events(
+    database: Database,
+    symbol: str,
+    period: Period = Period.ALL,
+    benchmark: str | None = None,
+) -> list[Explanation]:
+    """``symbol`` のイベントを、使った日付と価格ごと並べる。
+
+    集計と同じ関数（:func:`reaction_position`）で反応日を決めるので、
+    ここに出る日付が集計で使われた日付そのものである。別経路で計算し直すと、
+    突き合わせたつもりで別のものを見ることになる。
+    """
+    out: list[Explanation] = []
+    with database.session() as session:
+        price_repo = PriceRepository(session)
+        raw = price_repo.get_raw_prices(symbol)
+        if raw.empty:
+            return out
+        adjusted = split_adjusted(raw)
+        index = adjusted.index
+
+        bench_frame: pd.DataFrame | None = None
+        if benchmark is not None:
+            bench_raw = price_repo.get_raw_prices(benchmark)
+            if not bench_raw.empty:
+                bench_frame = split_adjusted(bench_raw)
+
+        def bench_at(column: str, position: int) -> float | None:
+            if bench_frame is None:
+                return None
+            try:
+                return float(bench_frame[column].loc[index[position]])
+            except KeyError:
+                return None
+
+        for report in FinancialStatementRepository(session).get_reports(symbol, period=None):
+            if report.disclosed_on is None or not is_earnings(report.doc_type):
+                continue
+            position = reaction_position(index, report.disclosed_on, report.disclosed_at)
+            if position is None or position < 1:
+                continue
+            exit_at = position + 1 + HOLDING_DAYS
+            if exit_at >= len(index):
+                continue
+            if not period.contains(index[position].date()):
+                continue
+            assert report.disclosed_at is not None  # reaction_position が None を返す
+            out.append(
+                Explanation(
+                    symbol=symbol,
+                    disclosed_on=report.disclosed_on,
+                    disclosed_at=report.disclosed_at,
+                    session_close=session_close_on(report.disclosed_on),
+                    intraday=report.disclosed_at < session_close_on(report.disclosed_on),
+                    reaction_on=index[position].date(),
+                    prior_close=float(adjusted[CLOSE].iloc[position - 1]),
+                    reaction_close=float(adjusted[CLOSE].iloc[position]),
+                    entry_on=index[position + 1].date(),
+                    entry_open=float(adjusted[OPEN].iloc[position + 1]),
+                    exit_on=index[exit_at].date(),
+                    exit_close=float(adjusted[CLOSE].iloc[exit_at]),
+                    benchmark=benchmark,
+                    bench_prior_close=bench_at(CLOSE, position - 1),
+                    bench_reaction_close=bench_at(CLOSE, position),
+                    bench_entry_open=bench_at(OPEN, position + 1),
+                    bench_exit_close=bench_at(CLOSE, exit_at),
+                )
+            )
+    return out
+
+
+@dataclass(frozen=True)
 class Spread:
     """上位分位と下位分位の差、とその有意性。"""
 

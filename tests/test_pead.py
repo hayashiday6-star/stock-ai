@@ -20,6 +20,7 @@ from stock_ai.backtest.pead import (
     build_events,
     clustered_t,
     crowding_split,
+    explain_events,
     is_earnings,
     quantile_ladder,
     reaction_position,
@@ -512,3 +513,57 @@ def test_days_with_only_one_leg_are_counted_not_hidden() -> None:
 
     assert result.clusters == 1  # 1月4日だけ
     assert result.days_without_both_legs == 2  # 1月5日と1月6日
+
+
+# --- セクション9: 手計算との突き合わせ -----------------------------------------
+
+
+def test_the_explanation_uses_the_same_dates_the_aggregate_uses() -> None:
+    """別経路で計算し直すと、突き合わせたつもりで別のものを見ることになる。"""
+    base = _frame()
+    reaction = 100
+    symbol = "7203"
+    frame = _with_drift(base, reaction, 0.08, 0.05)
+    reports = {symbol: [_report(symbol, base.index[reaction - 1].date())]}
+    database = _database({symbol: frame}, reports)
+
+    built = build_events(database, Period.ALL)
+    rows = explain_events(database, symbol, Period.ALL)
+
+    assert len(rows) == 1
+    assert rows[0].reaction_on == built.events[0].reaction_on
+    assert rows[0].stock_surprise == pytest.approx(built.events[0].surprise, abs=1e-12)
+    assert rows[0].stock_forward == pytest.approx(built.events[0].forward, abs=1e-12)
+
+
+def test_the_explanation_names_the_dates_used_for_entry_and_exit() -> None:
+    """日付を出さないと、電卓で追えない。"""
+    base = _frame()
+    reaction = 100
+    symbol = "7203"
+    frame = _with_drift(base, reaction, 0.08, 0.05)
+    reports = {symbol: [_report(symbol, base.index[reaction - 1].date())]}
+
+    row = explain_events(_database({symbol: frame}, reports), symbol, Period.ALL)[0]
+
+    assert row.reaction_on == base.index[reaction].date()
+    assert row.entry_on == base.index[reaction + 1].date()
+    assert row.exit_on == base.index[reaction + 1 + HOLDING_DAYS].date()
+    assert not row.intraday
+    assert row.session_close == dt.time(15, 0)
+
+
+def test_the_explanation_reports_the_benchmark_legs_too() -> None:
+    base = _frame()
+    reaction = 100
+    symbol, bench = "7203", "1306"
+    frames = {
+        symbol: _with_drift(base, reaction, 0.08, 0.05),
+        bench: _with_drift(base, reaction, 0.03, 0.02),
+    }
+    reports = {symbol: [_report(symbol, base.index[reaction - 1].date())]}
+
+    row = explain_events(_database(frames, reports), symbol, Period.ALL, benchmark=bench)[0]
+
+    assert row.bench_surprise == pytest.approx(0.03, abs=1e-9)
+    assert row.bench_forward == pytest.approx(0.02, abs=1e-9)
