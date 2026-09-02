@@ -56,6 +56,12 @@ QUANTILES = 5
 #: 片道コスト。ロング・ショートは両建てなので、差には往復2本ぶんが乗る。
 ONE_WAY_COST = 0.0015
 
+#: プラセボの起点を、実際の反応日から何営業日前に置くか。
+#:
+#: 決算の影響が残らない距離を取りつつ、同じ相場付きの中に留める。120営業日は
+#: 約半年で、直前の四半期決算（約60営業日前）よりさらに前になる。
+PLACEBO_OFFSET = 120
+
 #: この文字列を ``DocType`` に含むものだけがイベント（セクション3-2）。
 #: 件数ではなく名前で絞るのは、上位に出てこない変種（US基準・REIT など）を
 #: 取りこぼさないためである。
@@ -108,6 +114,20 @@ class Event:
     """R を除く直近20営業日の平均売買代金。"""
     same_day_count: int = 0
     """同じ日に決算を出した会社数。混雑度（セクション3-4）。"""
+    market_forward: float | None = None
+    """同じ窓でベンチマークが動いた分。**判定には使わない。**
+
+    超過リターンの水準が偏っているとき、それが銘柄側の話なのか
+    ベンチマーク側の話なのかを、引き算の内訳として読めるようにする。
+    """
+    placebo: float | None = None
+    """同じ銘柄・同じ計算を、決算から離れた日で回した超過リターン。
+
+    **判定には使わない。診断用である。** 分位ごとの水準が大きく偏っている
+    とき、それが決算イベントの性質なのか、ユニバースとベンチマークの
+    組成差（等金額 vs 時価総額加重など）なのかを切り分ける。プラセボにも
+    同じだけの偏りが出るなら、それはイベントの性質ではない。
+    """
 
     @property
     def month(self) -> str:
@@ -162,19 +182,27 @@ def _excess(stock: float, benchmark: float | None) -> float:
 
 
 def _benchmark_return(
-    bench: pd.Series | None, index: pd.DatetimeIndex, a: int, b: int
+    bench: pd.DataFrame | None,
+    index: pd.DatetimeIndex,
+    a: int,
+    b: int,
+    start_column: str = CLOSE,
 ) -> float | None:
     """``index[a]`` から ``index[b]`` までのベンチマークのリターン。
 
+    ``start_column`` は**銘柄側と同じ足**を指す必要がある。銘柄のリターンが
+    R+1 の寄付き起点なら、ベンチマークも R+1 の寄付き起点でなければ、
+    R から R+1 への一晩ぶんだけベンチマーク側に余計に乗る。片側だけずれた
+    引き算は、超過リターンに一方向の偏りを作る。
+
     日付で引き当てる。銘柄の営業日とベンチマークの営業日がずれている日は
-    ``None`` を返し、そのイベントを落とす - ずれたまま引き算すると、
-    ずれの分だけ超過リターンに偏りが乗る。
+    ``None`` を返し、そのイベントを落とす。
     """
     if bench is None:
         return None
     try:
-        start = float(bench.loc[index[a]])
-        end = float(bench.loc[index[b]])
+        start = float(bench[start_column].loc[index[a]])
+        end = float(bench[CLOSE].loc[index[b]])
     except KeyError:
         return None
     if not start or pd.isna(start) or pd.isna(end):
@@ -226,6 +254,8 @@ class EventSet:
                     "forward_short": e.forward_short,
                     "turnover_20d": e.turnover_20d,
                     "same_day_count": e.same_day_count,
+                    "market_forward": e.market_forward,
+                    "placebo": e.placebo,
                 }
                 for e in self.events
             ]
@@ -260,11 +290,11 @@ def build_events(
         price_repo = PriceRepository(session)
         statement_repo = FinancialStatementRepository(session)
 
-        bench_close: pd.Series | None = None
+        bench_frame: pd.DataFrame | None = None
         if benchmark is not None:
             bench_raw = price_repo.get_raw_prices(benchmark)
             if not bench_raw.empty:
-                bench_close = split_adjusted(bench_raw)[CLOSE]
+                bench_frame = split_adjusted(bench_raw)
 
         events: list[Event] = []
         not_earnings = no_time = no_window = thin = no_bench = 0
@@ -325,10 +355,16 @@ def build_events(
                 short_exit = position + 1 + SECONDARY_HOLDING_DAYS
                 stock_short = float(adjusted[CLOSE].iloc[short_exit]) / entry - 1.0
 
-                bench_surprise = _benchmark_return(bench_close, index, position - 1, position)
-                bench_forward = _benchmark_return(bench_close, index, position, exit_at)
-                bench_short = _benchmark_return(bench_close, index, position, short_exit)
-                if bench_close is not None and None in (
+                # 驚きは R-1 の終値起点、リターンは R+1 の寄付き起点。
+                # ベンチマークも同じ足から測る。
+                bench_surprise = _benchmark_return(bench_frame, index, position - 1, position)
+                bench_forward = _benchmark_return(
+                    bench_frame, index, position + 1, exit_at, start_column=OPEN
+                )
+                bench_short = _benchmark_return(
+                    bench_frame, index, position + 1, short_exit, start_column=OPEN
+                )
+                if bench_frame is not None and None in (
                     bench_surprise,
                     bench_forward,
                     bench_short,
@@ -348,6 +384,8 @@ def build_events(
                         forward=_excess(stock_forward, bench_forward),
                         forward_short=_excess(stock_short, bench_short),
                         turnover_20d=float(floor),
+                        market_forward=bench_forward,
+                        placebo=_placebo_return(adjusted, bench_frame, index, position),
                     )
                 )
 
@@ -362,6 +400,37 @@ def build_events(
         excluded_thin=thin,
         excluded_no_benchmark=no_bench,
     )
+
+
+def _placebo_return(
+    adjusted: pd.DataFrame,
+    bench: pd.DataFrame | None,
+    index: pd.DatetimeIndex,
+    position: int,
+) -> float | None:
+    """決算から離れた日を起点に、同じ計算をした超過リターン。
+
+    **判定には使わない。** 分位ごとの水準が偏っているとき、その偏りが決算
+    イベントの性質なのか、ユニバースとベンチマークの組成差なのかを切り分ける
+    ためだけに出す。同じ銘柄・同じ保有期間・同じベンチマークで、起点だけを
+    ``PLACEBO_OFFSET`` 営業日前にずらす。
+
+    プラセボにも同じ偏りが出るなら、それは決算とは無関係な水準差であり、
+    上位分位と下位分位の差では相殺される。出ないなら、イベント窓に固有の
+    何かが起きている。
+    """
+    anchor = position - PLACEBO_OFFSET
+    exit_at = anchor + 1 + HOLDING_DAYS
+    if anchor < 1 or exit_at >= len(index):
+        return None
+    entry = float(adjusted[OPEN].iloc[anchor + 1])
+    if not entry or pd.isna(entry):
+        return None
+    stock = float(adjusted[CLOSE].iloc[exit_at]) / entry - 1.0
+    market = _benchmark_return(bench, index, anchor + 1, exit_at, start_column=OPEN)
+    if bench is not None and market is None:
+        return None
+    return _excess(stock, market)
 
 
 def _with_same_day_counts(events: list[Event]) -> list[Event]:
@@ -385,6 +454,8 @@ def _with_same_day_counts(events: list[Event]) -> list[Event]:
             forward_short=e.forward_short,
             turnover_20d=e.turnover_20d,
             same_day_count=per_day[e.reaction_on],
+            market_forward=e.market_forward,
+            placebo=e.placebo,
         )
         for e in events
     ]

@@ -1786,6 +1786,32 @@ def pead_run(
         "他はすべて副次で、判定には使わない。[/]"
     )
 
+    # 分位ごとの水準が偏っているとき、それが決算の性質なのか、ユニバースと
+    # ベンチマークの組成差なのかを切り分ける。差では相殺されるので判定には
+    # 効かないが、切り分けないと実装の誤りと区別が付かない。
+    level = frame["forward"].mean()
+    placebo = frame["placebo"].dropna()
+    market = frame["market_forward"].dropna()
+    console.print(
+        f"\n水準の診断: 全イベントの平均超過リターン [bold]{level * 100:+.2f}%[/]"
+        f" ／ プラセボ（決算から離れた日を起点に同じ計算） "
+        f"[bold]{placebo.mean() * 100:+.2f}%[/]（{len(placebo)} 件）"
+    )
+    if not market.empty:
+        # 引き算の内訳。水準が銘柄側の話かベンチマーク側の話かは、
+        # 差だけを見ていても分からない。
+        console.print(
+            f"  内訳: 銘柄の素のリターン {(level + market.mean()) * 100:+.2f}%"
+            f" − ベンチマーク {market.mean() * 100:+.2f}%"
+            f" = 超過 {level * 100:+.2f}%"
+        )
+    console.print(
+        "[dim]プラセボにも同じだけの偏りが出るなら、その水準は決算とは無関係な"
+        "組成差（等金額のユニバース対 時価総額加重のベンチマークなど）であり、"
+        "上位分位と下位分位の差では相殺される。出ないなら、イベント窓に固有の"
+        "何かが起きている。[/]"
+    )
+
 
 @app.command(name="accum-jp-explain")
 def accum_jp_explain(
