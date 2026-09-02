@@ -380,3 +380,66 @@ def test_crowding_is_split_on_each_year_median() -> None:
     # ならないことを見ている。
     assert sorted(busy["same_day_count"]) == [6, 60]
     assert sorted(quiet["same_day_count"]) == [2, 4, 20, 40]
+
+
+# --- ベンチマーク --------------------------------------------------------------
+
+
+def test_the_benchmark_symbol_is_not_itself_an_event() -> None:
+    """ETF自身をイベントに数えると、ベンチマークが被説明変数に混ざる。"""
+    base = _frame()
+    reaction = 100
+    symbol, bench = "7203", "1306"
+    frames = {symbol: _with_drift(base, reaction, 0.10, 0.0), bench: base}
+    reports = {s: [_report(s, base.index[reaction - 1].date())] for s in (symbol, bench)}
+
+    built = build_events(_database(frames, reports), Period.ALL, benchmark=bench)
+
+    assert built.total == 1
+    assert built.events[0].symbol == symbol
+
+
+def test_the_benchmark_is_subtracted_from_both_the_surprise_and_the_return() -> None:
+    """市場が動いた日の反応を、そのまま驚きにしない。"""
+    base = _frame()
+    reaction = 100
+    symbol, bench = "7203", "1306"
+    # 銘柄は反応日に +10%、市場は +4%。驚きは差の +6% になるはず。
+    frames = {
+        symbol: _with_drift(base, reaction, 0.10, 0.0),
+        bench: _with_drift(base, reaction, 0.04, 0.0),
+    }
+    reports = {symbol: [_report(symbol, base.index[reaction - 1].date())]}
+
+    plain = build_events(_database(frames, reports), Period.ALL)
+    against = build_events(_database(frames, reports), Period.ALL, benchmark=bench)
+
+    assert plain.events[0].surprise == pytest.approx(0.10, abs=1e-9)
+    assert against.events[0].surprise == pytest.approx(0.10 - 0.04, abs=1e-9)
+    assert against.benchmark == bench
+    assert plain.benchmark is None
+
+
+def test_the_spread_is_unchanged_by_the_benchmark() -> None:
+    """主要指標は差なので、両分位から同じものを引いても変わらない。
+
+    TOPIX が取れず 1306 で代替しても合否判定が動かない、という主張の裏付け。
+    """
+    base = _frame()
+    reaction = 100
+    jumps = [0.10, 0.05, 0.0, -0.05, -0.10]
+    drifts = [0.08, 0.0, 0.0, 0.0, -0.04]
+    symbols = [f"100{i}" for i in range(5)]
+    frames = {
+        s: _with_drift(base, reaction, j, d) for s, j, d in zip(symbols, jumps, drifts, strict=True)
+    }
+    frames["1306"] = _with_drift(base, reaction, 0.03, 0.02)
+    reports = {s: [_report(s, base.index[reaction - 1].date())] for s in symbols}
+    database = _database(frames, reports)
+
+    plain = spread(build_events(database, Period.ALL).frame())
+    against = spread(build_events(database, Period.ALL, benchmark="1306").frame())
+
+    assert against.difference == pytest.approx(plain.difference, abs=1e-9)
+    # 分位ごとの数字のほうは、ベンチマークのぶんだけ下がる。
+    assert against.high < plain.high
