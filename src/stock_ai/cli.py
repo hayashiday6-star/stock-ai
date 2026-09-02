@@ -60,6 +60,7 @@ from stock_ai.backtest.factor_test import (
     suggest_formation,
     walk_forward,
 )
+from stock_ai.backtest.forecast_revision import DEFAULT_MIN_CHANGE, census_revisions
 from stock_ai.backtest.pead import (
     MIN_TURNOVER,
     Period,
@@ -1831,6 +1832,62 @@ def pead_run(
             f" − ベンチマーク {market.mean() * 100:+.2f}%"
             f" = 超過 {level * 100:+.2f}%"
         )
+
+
+@app.command(name="revision-census")
+def revision_census(
+    symbols: list[str] | None = typer.Argument(None, help="JP codes; omit for every stored one."),
+    field: str = typer.Option(
+        "net_income", "--field", help="revenue | operating_income | net_income | eps."
+    ),
+    min_change: float = typer.Option(
+        DEFAULT_MIN_CHANGE, "--min-change", help="Relative move that counts as a revision."
+    ),
+) -> None:
+    """Count company-forecast revisions found by comparing consecutive 短信.
+
+    Revisions are not available as their own filings: 99.2% of what
+    ``fins/summary`` returns is an earnings statement, and no revision
+    document appears at all. The only route is the full-year forecast that
+    every 短信 carries. **Whether hypothesis 2 is viable is decided by the
+    count this prints**, so it runs before any pre-registration is drafted.
+    """
+    settings = get_settings()
+    configure_logging(settings.log_level)
+
+    database = Database()
+    database.create_all()
+    report = census_revisions(database, symbols=symbols, field=field, min_change=min_change)
+
+    console.print(
+        f"銘柄 {report.symbols_scanned} 件 ／ 比較できた短信の組 {report.pairs_compared:,} ／ "
+        f"[bold]修正 {report.total:,} 件[/]（{field}、{min_change:.0%}以上の変化）"
+    )
+    console.print(
+        f"[dim]内訳: 据え置き {report.pairs_unchanged:,} ／ "
+        f"予想が入っておらず比較できず {report.pairs_without_forecast:,}[/]"
+    )
+    if report.pairs_compared and report.pairs_without_forecast == report.pairs_compared:
+        console.print(
+            "[yellow]全組で予想が空だった。[/] 予想フィールドは後から足した列なので、"
+            "財務を取り直すまで埋まらない。11-開示時刻の取り込み.bat を先に実行する。"
+        )
+        return
+    if report.total == 0:
+        console.print("[yellow]修正が1件も見つからない。[/]")
+        return
+
+    table = Table(title="年別の予想修正")
+    for column in ("年", "修正数", "上方", "下方"):
+        table.add_column(column, justify="right")
+    for year, total, up, down in report.by_year():
+        table.add_row(str(year), f"{total:,}", f"{up:,}", f"{down:,}")
+    console.print(table)
+    console.print(
+        "[dim]件数のみ。リターンは計算していない。候補2（予想修正後のドリフト）が"
+        "成立するかは、この件数が決める。年に数百件しか出ないなら設計を先に"
+        "見直す必要がある。[/]"
+    )
 
 
 @app.command(name="pead-explain")

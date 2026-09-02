@@ -191,6 +191,17 @@ class FinancialStatement(Base):
     """
     doc_type: Mapped[str | None] = mapped_column(String(80), default=None)
     """開示の種類。決算短信と予想修正は別のイベントで、混ぜて数えられない。"""
+
+    forecast_revenue: Mapped[float | None] = mapped_column(default=None)
+    forecast_operating_income: Mapped[float | None] = mapped_column(default=None)
+    forecast_net_income: Mapped[float | None] = mapped_column(default=None)
+    forecast_eps: Mapped[float | None] = mapped_column(default=None)
+    """会社がその短信で示した当期通期の予想。
+
+    連続する短信の予想を比べることが、予想修正を知る唯一の経路である
+    （実測で ``fins/summary`` は99.2%が決算短信で、予想修正は別文書として
+    出てこない）。同じ値が SUE の計算にも要る。
+    """
     fiscal_year_end: Mapped[dt.date | None] = mapped_column(Date, default=None)
     """The company's fiscal year-end *date*, not just its year.
 

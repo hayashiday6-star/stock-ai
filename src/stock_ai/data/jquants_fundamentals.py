@@ -354,6 +354,20 @@ _TIME_KEYS = ("DiscTime", "DisclosedTime")
 #: 開示の種類を名乗りうるキー。
 _DOC_TYPE_KEYS = ("DocType", "TypeOfDocument")
 
+#: 当期通期の会社予想。**すべて実レスポンスで存在を確認した名前である。**
+#:
+#: `_FY_END_KEYS` は推測の略記だけを並べて「該当なし」を返し続けていた
+#: （`fiscal_year_end` が一度も埋まらなかった原因）。同じ轍を踏まないよう、
+#: ここには probe で実際に値が入っていた名前しか置かない。綴りの長い v1 形式は
+#: 実物を見るまで足さない - 当てずっぽうを混ぜると、次に読む人が「確認済み」と
+#: 誤解する。
+_FORECAST_KEYS: dict[str, tuple[str, ...]] = {
+    "revenue": ("FSales",),
+    "operating_income": ("FOP",),
+    "net_income": ("FNP",),
+    "eps": ("FEPS",),
+}
+
 #: Field names that may carry the period marker, newest spelling first.
 _PERIOD_FIELDS = ("CurPerType", "Period", "TypeOfCurrentPeriod", "PeriodType")
 
@@ -463,6 +477,10 @@ def normalize_statements(symbol: str, records: list[dict[str, Any]]) -> list[Fin
             disclosed_on=_parse_date(disclosed_text),
             disclosed_at=_parse_time(_text(record, *_TIME_KEYS)),
             doc_type=_text(record, *_DOC_TYPE_KEYS),
+            forecast_revenue=_first(record, *_FORECAST_KEYS["revenue"]),
+            forecast_operating_income=_first(record, *_FORECAST_KEYS["operating_income"]),
+            forecast_net_income=_first(record, *_FORECAST_KEYS["net_income"]),
+            forecast_eps=_first(record, *_FORECAST_KEYS["eps"]),
             fiscal_year_end=_fiscal_year_end_of(record),
             revenue=_first(record, "Sales", "NetSales"),
             operating_income=_first(record, "OP", "OperatingProfit"),
