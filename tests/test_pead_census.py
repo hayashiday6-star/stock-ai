@@ -326,3 +326,45 @@ def test_a_disclosure_on_the_first_bar_is_still_measurable() -> None:
     report = run_census(_database(frame, first))
 
     assert report.disclosures[0].measurable
+
+
+def test_doc_type_counts_separate_the_kinds_of_disclosure() -> None:
+    """決算短信と予想修正を混ぜて数えると、測っているものが別になる。
+
+    PEAD のイベントは決算短信だけ。`fins/summary` が短信だけを返すのか
+    他の種類も混ざるのかは、この分布を見るまで分からない。
+    """
+    frame = _frame()
+    database = Database("sqlite:///:memory:")
+    database.create_all()
+    with database.session() as session:
+        PriceRepository(session).upsert_prices("7203", frame, market="JP")
+        FinancialStatementRepository(session).upsert_reports(
+            "7203",
+            [
+                FinancialReport(
+                    symbol="7203",
+                    fiscal_year=2024,
+                    period=period,
+                    disclosed_on=frame.index[60 + offset].date(),
+                    doc_type=kind,
+                )
+                for offset, (period, kind) in enumerate(
+                    (("Q1", "1QFinancialStatements"), ("Q2", "ForecastRevision"))
+                )
+            ],
+            market="JP",
+        )
+
+    counts = run_census(database).doc_type_counts()
+
+    assert counts["1QFinancialStatements"] == 1
+    assert counts["ForecastRevision"] == 1
+
+
+def test_a_missing_doc_type_is_labelled_not_dropped() -> None:
+    """種類が無い行を黙って落とすと、絞り込みの影響が見えなくなる。"""
+    frame = _frame()
+    report = run_census(_database(frame, frame.index[100].date()))
+
+    assert report.doc_type_counts()["(種類なし)"] == 1
