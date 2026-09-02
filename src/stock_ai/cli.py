@@ -65,6 +65,7 @@ from stock_ai.backtest.pead import (
     Period,
     build_events,
     crowding_split,
+    explain_events,
     quantile_ladder,
     spread,
 )
@@ -1825,6 +1826,71 @@ def pead_run(
             f" − ベンチマーク {market.mean() * 100:+.2f}%"
             f" = 超過 {level * 100:+.2f}%"
         )
+
+
+@app.command(name="pead-explain")
+def pead_explain(
+    symbol: str = typer.Argument(..., help="JP code to walk through, e.g. 7203."),
+    benchmark: str | None = typer.Option("1306", "--benchmark", help="Market series to net off."),
+    period: str = typer.Option("is", "--period", help="is | oos | all."),
+) -> None:
+    """Print every number behind SYMBOL's events, so they can be checked by hand.
+
+    Section 9's last unchecked item. Aggregates cannot reveal a mistake in how
+    the aggregate is built, so this prints the dates and prices used and the
+    arithmetic on top of them - the same ``reaction_position`` the aggregate
+    uses, not a second implementation that could agree by accident.
+    """
+    settings = get_settings()
+    configure_logging(settings.log_level)
+
+    try:
+        chosen = Period(period.strip().lower())
+    except ValueError as exc:
+        raise typer.BadParameter(f"--period must be is, oos or all; got {period!r}.") from exc
+
+    database = Database()
+    database.create_all()
+    rows = explain_events(database, symbol, chosen, benchmark=benchmark or None)
+
+    if not rows:
+        console.print(f"[yellow]{symbol}: この期間にイベントなし。[/]")
+        return
+
+    console.print(f"[bold]{symbol}[/] ／ 期間 {chosen.value} ／ {len(rows)} 件")
+    for row in rows:
+        where = "場中" if row.intraday else "引け後"
+        console.print(
+            f"\n[cyan]開示 {row.disclosed_on} {row.disclosed_at}[/]"
+            f"（引けは {row.session_close} なので[bold]{where}[/]）"
+            f" → 反応日 R = [bold]{row.reaction_on}[/]"
+        )
+        console.print(
+            f"  驚き : {row.reaction_close:,.2f} ÷ {row.prior_close:,.2f} − 1 = "
+            f"[bold]{row.stock_surprise * 100:+.2f}%[/]"
+        )
+        if row.bench_surprise is not None:
+            console.print(
+                f"         ベンチマーク {row.bench_reaction_close:,.2f} ÷ "
+                f"{row.bench_prior_close:,.2f} − 1 = {row.bench_surprise * 100:+.2f}%"
+                f" → 超過 [bold]{(row.stock_surprise - row.bench_surprise) * 100:+.2f}%[/]"
+            )
+        console.print(
+            f"  60日 : {row.exit_on} 終値 {row.exit_close:,.2f} ÷ "
+            f"{row.entry_on} 寄付 {row.entry_open:,.2f} − 1 = "
+            f"[bold]{row.stock_forward * 100:+.2f}%[/]"
+        )
+        if row.bench_forward is not None:
+            console.print(
+                f"         ベンチマーク {row.bench_exit_close:,.2f} ÷ "
+                f"{row.bench_entry_open:,.2f} − 1 = {row.bench_forward * 100:+.2f}%"
+                f" → 超過 [bold]{(row.stock_forward - row.bench_forward) * 100:+.2f}%[/]"
+            )
+    console.print(
+        "\n[dim]価格は分割調整後（adj_close/close を全四本値に掛けたもの）。"
+        "集計と同じ関数で反応日を決めているので、ここの日付が集計で使われた"
+        "日付そのものである。[/]"
+    )
 
 
 @app.command(name="accum-jp-explain")
