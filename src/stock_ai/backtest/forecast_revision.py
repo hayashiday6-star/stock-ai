@@ -23,7 +23,15 @@ from dataclasses import dataclass, field
 
 import pandas as pd
 
-from stock_ai.data.schema import CLOSE
+from stock_ai.backtest.pead import (
+    HOLDING_DAYS,
+    MIN_TURNOVER,
+    QUANTILES,
+    TURNOVER_WINDOW,
+    is_earnings,
+    reaction_position,
+)
+from stock_ai.data.schema import CLOSE, VOLUME
 from stock_ai.data.types import FinancialReport
 from stock_ai.database.engine import Database
 from stock_ai.database.repository import (
@@ -279,6 +287,22 @@ class SueEvent:
     """通期短信が報告した実績。この日の新情報。"""
     forecast_from_period: str
     """予想を出した短信の期。通常は Q3。"""
+    disclosed_at: dt.time | None = None
+    """開示時刻。**無ければ反応日を決められないので、イベントにならない。**
+
+    日本の開示は8割が引け後なので、時刻を取り違えると8割のイベントが
+    1日ずれる。分からない行は落とす。
+    """
+    turnover_20d: float | None = None
+    """反応日 R の直前20営業日の平均売買代金。流動性フィルタが見る値。
+
+    ``None`` は「時刻が無い」「バーが足りない」など、そもそも測れなかった
+    ことを意味する。薄いのではない。
+    """
+    has_window: bool = False
+    """R-1 の終値と、R+1 の寄付きから R+保有日数 の終値までが揃っているか。"""
+    is_earnings_doc: bool = False
+    """開示種類が決算短信だと確認できたか。種類が分からない行は通さない。"""
     market_cap: float | None = None
     """開示日の**前営業日**の終値 × その時点の発行済株式数。
 
@@ -425,6 +449,96 @@ class SueReport:
             counts[event.forecast_from_period] = counts.get(event.forecast_from_period, 0) + 1
         return sorted(counts.items(), key=lambda kv: -kv[1])
 
+    def admitted(self, min_turnover: float = MIN_TURNOVER) -> list[SueEvent]:
+        """封印する手順を全部通ったイベント。**実際に測れるのはこれだけ。**"""
+        return [
+            e
+            for e in self.events
+            if e.is_earnings_doc
+            and e.disclosed_at is not None
+            and e.has_window
+            and e.turnover_20d is not None
+            and e.turnover_20d >= min_turnover
+        ]
+
+    def admission_ladder(self, min_turnover: float = MIN_TURNOVER) -> list[tuple[str, int, int]]:
+        """段階ごとの (残った件数, 独立開示日数)。
+
+        **アキュムレーションの事前登録は、封印してから流動性フィルタが
+        11,014件を279件にしていたと分かって中止になった。** 同じ失い方を
+        繰り返さないために、封印する前にここで数える。落ちるのが分かって
+        いれば、事前登録に本当の母数を書ける。
+        """
+        stages: list[tuple[str, list[SueEvent]]] = []
+        step = self.events
+        stages.append(("SUE を組めた", step))
+        step = [e for e in step if e.is_earnings_doc]
+        stages.append(("短信だと確認できた", step))
+        step = [e for e in step if e.disclosed_at is not None]
+        stages.append(("開示時刻がある", step))
+        step = [e for e in step if e.has_window]
+        stages.append(("前後のバーが揃う", step))
+        step = [e for e in step if e.turnover_20d is not None and e.turnover_20d >= min_turnover]
+        stages.append((f"売買代金 {min_turnover / 1e8:.0f}億円以上", step))
+        return [(name, len(group), len({e.disclosed_on for e in group})) for name, group in stages]
+
+    def admitted_by_year(self, min_turnover: float = MIN_TURNOVER) -> list[tuple[int, int, int]]:
+        """通った後の、年ごとの (年, イベント数, 独立開示日数)。"""
+        events = self.admitted(min_turnover)
+        years = sorted({e.disclosed_on.year for e in events})
+        return [
+            (
+                year,
+                len([e for e in events if e.disclosed_on.year == year]),
+                len({e.disclosed_on for e in events if e.disclosed_on.year == year}),
+            )
+            for year in years
+        ]
+
+    def admitted_size_profile(
+        self, min_turnover: float = MIN_TURNOVER
+    ) -> list[tuple[str, float, float, float]]:
+        """通った後で月次5分位に切ったときの、端と中央の時価総額中央値（億円）。
+
+        **分位は流動性フィルタの後に切る。** 封印する手順がそうなっているため
+        で、実際に売買できる銘柄の中での上位・下位を見ることになる。全銘柄で
+        切ってから絞ると、端の分位だけが削られて中身が変わる。
+        """
+        usable = [e for e in self.admitted(min_turnover) if e.market_cap]
+        if len(usable) < 5 * QUANTILES:
+            return []
+        base = pd.DataFrame(
+            {
+                "month": [pd.Timestamp(e.disclosed_on).to_period("M") for e in usable],
+                "cap": [e.market_cap for e in usable],
+                "relative": [e.surprise for e in usable],
+                "scaled": [e.scaled_surprise for e in usable],
+            }
+        )
+        out = []
+        for name, column in (("相対変化率", "relative"), ("時価総額比", "scaled")):
+            frame = base.dropna(subset=[column]).copy()
+            frame["bucket"] = frame.groupby("month")[column].transform(
+                lambda values: (
+                    pd.qcut(values.rank(method="first"), QUANTILES, labels=False, duplicates="drop")
+                    if len(values) >= QUANTILES
+                    else pd.NA
+                )
+            )
+            frame = frame.dropna(subset=["bucket"])
+            if frame.empty:
+                continue
+            median = frame.groupby("bucket")["cap"].median() / 1e8
+            out.append(
+                (
+                    name,
+                    float(median.iloc[0]),
+                    float(median.iloc[len(median) // 2]),
+                    float(median.iloc[-1]),
+                )
+            )
+        return out
+
     def by_year(self) -> list[tuple[int, int, int]]:
         """年ごとの (年, イベント数, 独立開示日数)。"""
         years = sorted({e.disclosed_on.year for e in self.events})
@@ -474,10 +588,38 @@ def _market_cap_before(
     return float(price) * float(shares)
 
 
+def _admission(
+    raw: pd.DataFrame | None, report: FinancialReport, disclosed_on: dt.date
+) -> tuple[float | None, bool]:
+    """封印する手順が反応日 R について見る2つを、そのまま計算する。
+
+    **``pead`` と同じ関数・同じ定数を呼ぶ。** ここで独自に近いものを書くと、
+    センサスが数えた件数と、実際に回したときの件数がずれる。ずれても
+    例外は出ないので、気付けない。
+
+    Returns:
+        ``(R直前20営業日の平均売買代金, 前後のバーが揃っているか)``。
+    """
+    if raw is None or raw.empty:
+        return None, False
+    index = raw.index
+    position = reaction_position(index, disclosed_on, report.disclosed_at)
+    if position is None:
+        return None, False
+    # 売買代金は生値で測る。調整済み終値に実出来高を掛けると、分割前のバーで
+    # 売買代金を分割比率のぶん過小に見積もる。
+    turnover = (raw[CLOSE] * raw[VOLUME]).rolling(TURNOVER_WINDOW).mean().shift(1)
+    exit_at = position + 1 + HOLDING_DAYS
+    has_window = position >= 1 and exit_at < len(index)
+    floor = turnover.iloc[position]
+    return (None if pd.isna(floor) else float(floor)), has_window
+
+
 def find_sue_events(
     reports: list[FinancialReport],
     field: str = "net_income",
     closes: pd.Series | None = None,
+    raw: pd.DataFrame | None = None,
 ) -> _SueFound:
     """通期短信について、実績と直前の通期予想を組にする。
 
@@ -525,6 +667,7 @@ def find_sue_events(
             market_cap = _market_cap_before(closes, report, report.disclosed_on)
             if market_cap is None:
                 no_cap += 1
+            turnover, has_window = _admission(raw, report, report.disclosed_on)
             events.append(
                 SueEvent(
                     symbol=report.symbol,
@@ -533,7 +676,11 @@ def find_sue_events(
                     forecast=forecast,
                     actual=float(actual),
                     forecast_from_period=str(prior.period),
+                    disclosed_at=report.disclosed_at,
+                    turnover_20d=turnover,
+                    has_window=has_window,
                     market_cap=market_cap,
+                    is_earnings_doc=is_earnings(report.doc_type),
                 )
             )
     return _SueFound(events, annual, no_actual, no_forecast, no_cap)
@@ -557,7 +704,7 @@ def census_sue(
             raw = price_repo.get_raw_prices(symbol)
             closes = raw[CLOSE] if not raw.empty and CLOSE in raw else None
             found = find_sue_events(
-                repo.get_reports(symbol, period=None), field=field, closes=closes
+                repo.get_reports(symbol, period=None), field=field, closes=closes, raw=raw
             )
             events.extend(found.events)
             annual += found.fy_statements
