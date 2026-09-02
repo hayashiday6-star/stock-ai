@@ -876,3 +876,38 @@ def test_bulk_fetch_statements_uses_edinet_when_selected(monkeypatch: pytest.Mon
     assert captured["price_provider"] is None  # prices データセットではないので触らない
     database.dispose()
     get_settings.cache_clear()
+
+
+def _plain(text: str) -> str:
+    """rich の装飾と折り返しを剥がして、文言だけを残す。
+
+    CI には端末が無いが色は出る。ローカルで通ったアサーションが CI だけで
+    落ちたのはこれが理由で、色コードが単語の途中に入って照合が壊れていた。
+    """
+    import re
+
+    return re.sub(r"\x1b\[[0-9;]*m", "", text).replace("\n", "").replace(" ", "")
+
+
+def test_pead_run_refuses_oos_without_the_explicit_flag() -> None:
+    """合否判定はOOSで一度だけ。うっかり見てしまう経路を作らない。"""
+    result = runner.invoke(app, ["pead-run", "oos"])
+    assert result.exit_code != 0
+    assert "--i-am-ready-for-oos" in _plain(result.output)
+
+
+def test_pead_run_refuses_all_without_the_explicit_flag() -> None:
+    """all にも held-out が含まれる。is だけが無条件で走る。"""
+    result = runner.invoke(app, ["pead-run", "all"])
+    assert result.exit_code != 0
+
+
+def test_pead_run_requires_a_period() -> None:
+    """既定を置くと「とりあえず全部出す」がOOSを消費する。"""
+    result = runner.invoke(app, ["pead-run"])
+    assert result.exit_code != 0
+
+
+def test_pead_run_rejects_an_unknown_period() -> None:
+    result = runner.invoke(app, ["pead-run", "everything"])
+    assert result.exit_code != 0
