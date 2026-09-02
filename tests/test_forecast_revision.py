@@ -18,6 +18,7 @@ from stock_ai.backtest.forecast_revision import (
     find_revisions,
     find_sue_events,
 )
+from stock_ai.backtest.pead import MIN_TURNOVER
 from stock_ai.data.schema import ADJ_CLOSE, CLOSE, HIGH, LOW, OPEN, VOLUME
 from stock_ai.data.types import FinancialReport
 from stock_ai.database.engine import Database
@@ -487,3 +488,98 @@ def test_the_census_reports_the_rank_correlation_between_the_two_definitions() -
     assert by_symbol["7203"].surprise > by_symbol["6758"].surprise
     # 金額では逆。これが順位相関を下げる。
     assert by_symbol["7203"].scaled_surprise < by_symbol["6758"].scaled_surprise
+
+
+# --- 封印する手順を通った後に何件残るか ---------------------------------------
+#
+# アキュムレーションの事前登録は、封印してから流動性フィルタが11,014件を
+# 279件にしていたと分かって中止になった。同じ失い方を繰り返さないために、
+# 入場条件ごとの残存を封印前に数える。
+
+
+def _price_frame(volume: float, bars: int = 200) -> pd.DataFrame:
+    return pd.DataFrame(
+        {OPEN: 100.0, HIGH: 100.0, LOW: 100.0, CLOSE: 100.0, ADJ_CLOSE: 100.0, VOLUME: volume},
+        index=pd.bdate_range("2024-01-01", periods=bars, name="date"),
+    )
+
+
+def _sue_database(volume: float, *, disclosed_at: dt.time | None, doc_type: str | None) -> Database:
+    database = Database("sqlite:///:memory:")
+    database.create_all()
+    with database.session() as session:
+        PriceRepository(session).upsert_prices("7203", _price_frame(volume), market="JP")
+        FinancialStatementRepository(session).upsert_reports(
+            "7203",
+            [
+                _report("Q3", dt.date(2024, 2, 2), 1_000.0),
+                FinancialReport(
+                    symbol="7203",
+                    fiscal_year=2024,
+                    period="FY",
+                    disclosed_on=dt.date(2024, 5, 10),
+                    disclosed_at=disclosed_at,
+                    doc_type=doc_type,
+                    fiscal_year_end=dt.date(2024, 3, 31),
+                    net_income=1_200.0,
+                    shares_outstanding=10.0,
+                ),
+            ],
+            market="JP",
+        )
+    return database
+
+
+def test_a_liquid_full_year_event_survives_every_admission_step() -> None:
+    # 終値100円 × 出来高200万株 = 売買代金2億円。下限1億円を超える。
+    database = _sue_database(
+        2_000_000.0, disclosed_at=dt.time(15, 30), doc_type="FYFinancialStatements_Consolidated_JP"
+    )
+
+    report = census_sue(database)
+
+    assert [count for _, count, _ in report.admission_ladder()] == [1, 1, 1, 1, 1]
+    assert len(report.admitted()) == 1
+
+
+def test_a_thin_event_is_counted_then_dropped_at_the_liquidity_step() -> None:
+    # 終値100円 × 出来高1万株 = 売買代金100万円。下限を大きく下回る。
+    database = _sue_database(
+        10_000.0, disclosed_at=dt.time(15, 30), doc_type="FYFinancialStatements_Consolidated_JP"
+    )
+
+    report = census_sue(database)
+
+    stages = report.admission_ladder()
+    assert [count for _, count, _ in stages] == [1, 1, 1, 1, 0]
+    assert "売買代金" in stages[-1][0]
+    assert report.admitted() == []
+
+
+def test_an_event_without_a_disclosure_time_never_reaches_the_liquidity_step() -> None:
+    # 時刻が無いと反応日を決められない。日本の開示は8割が引け後なので、
+    # 当日に決め打つと8割のイベントが1日ずれる。落とすほうを選ぶ。
+    database = _sue_database(
+        2_000_000.0, disclosed_at=None, doc_type="FYFinancialStatements_Consolidated_JP"
+    )
+
+    report = census_sue(database)
+
+    assert [count for _, count, _ in report.admission_ladder()] == [1, 1, 0, 0, 0]
+
+
+def test_an_event_whose_document_type_is_unknown_is_dropped() -> None:
+    # 「短信でなかった」ではなく「短信だと確認できていない」。通さない。
+    database = _sue_database(2_000_000.0, disclosed_at=dt.time(15, 30), doc_type=None)
+
+    report = census_sue(database)
+
+    assert [count for _, count, _ in report.admission_ladder()] == [1, 0, 0, 0, 0]
+
+
+def test_the_liquidity_floor_matches_the_one_pead_run_seals() -> None:
+    # センサスが数えた件数と、実際に回したときの件数がずれてはいけない。
+    # ずれても例外は出ないので、定数を共有していることをここで固定する。
+    from stock_ai.backtest import forecast_revision
+
+    assert forecast_revision.MIN_TURNOVER is MIN_TURNOVER

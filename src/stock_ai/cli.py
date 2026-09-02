@@ -1918,6 +1918,11 @@ def sue_census(
     field: str = typer.Option(
         "net_income", "--field", help="revenue | operating_income | net_income | eps."
     ),
+    min_turnover: float = typer.Option(
+        MIN_TURNOVER,
+        "--min-turnover",
+        help="Liquidity floor in yen, as the 20-session average before R. Same as pead-run.",
+    ),
 ) -> None:
     """Count full-year 短信 where actual can be compared with the standing forecast.
 
@@ -2021,6 +2026,46 @@ def sue_census(
             console.print(
                 "[dim]端の分位だけ時価総額が小さければ、その定義は驚きの大きさでは"
                 "なく会社の小ささを並べている。[/]"
+            )
+
+    console.print()
+    console.print("[bold]封印する手順を通った後に何件残るか[/]")
+    console.print(
+        "[dim]アキュムレーションの事前登録は、封印してから流動性フィルタが"
+        "11,014件を279件にしていたと分かって中止になった。同じ失い方を"
+        "繰り返さないために、ここで先に数える。[/]"
+    )
+    ladder = Table(title="入場条件ごとの残存")
+    ladder.add_column("段階")
+    for column in ("残った件数", "独立開示日数"):
+        ladder.add_column(column, justify="right")
+    for name, count, days in report.admission_ladder(min_turnover):
+        ladder.add_row(name, f"{count:,}", f"{days:,}")
+    console.print(ladder)
+
+    admitted = report.admitted(min_turnover)
+    if not admitted:
+        console.print("[yellow]全部落ちた。この条件では1件も測れない。[/]")
+    else:
+        per_year = Table(title="通った後の年別")
+        for column in ("年", "イベント数", "独立開示日数"):
+            per_year.add_column(column, justify="right")
+        for year, count, days in report.admitted_by_year(min_turnover):
+            per_year.add_row(str(year), f"{count:,}", f"{days:,}")
+        console.print(per_year)
+
+        profile = report.admitted_size_profile(min_turnover)
+        if profile:
+            table = Table(title="通った後・月次5分位ごとの時価総額の中央値（億円）")
+            table.add_column("並べ替えた変数")
+            for column in ("下位20%", "中央", "上位20%"):
+                table.add_column(column, justify="right")
+            for name, low, mid, high in profile:
+                table.add_row(name, f"{low:,.0f}", f"{mid:,.0f}", f"{high:,.0f}")
+            console.print(table)
+            console.print(
+                "[dim]分位は流動性フィルタの後に切っている。封印する手順がそうなって"
+                "いるためで、実際に売買できる銘柄の中での上位・下位になる。[/]"
             )
 
     console.print()
