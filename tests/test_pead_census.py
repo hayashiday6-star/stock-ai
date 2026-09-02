@@ -298,3 +298,31 @@ def test_slots_per_fiscal_year_shows_how_many_quarters_are_on_file() -> None:
 
     assert slots[4] == 1  # 7203
     assert slots[2] == 1  # 6758
+
+
+def test_a_disclosure_before_the_price_history_is_not_measurable() -> None:
+    """価格が始まる前の開示には D が無い。
+
+    searchsorted は範囲外に 0 を返すので、弾かないと最初のバーを D と見なして
+    測定可能に数えてしまう。2021年の開示を2025年の株価で測ることになり、
+    件数も反応も別物になる。例外は出ないので、数字を検算するまで気付けない。
+    """
+    frame = _frame()
+    before = (frame.index[0] - pd.Timedelta(days=365)).date()
+
+    report = run_census(_database(frame, before))
+
+    assert len(report.disclosures) == 1
+    assert not report.disclosures[0].has_entry_bar
+    assert not report.disclosures[0].has_exit_bar
+    assert report.measurable() == []
+
+
+def test_a_disclosure_on_the_first_bar_is_still_measurable() -> None:
+    """境界の向きを固定する。始端そのものは弾かない。"""
+    frame = _frame()
+    first = frame.index[0].date()
+
+    report = run_census(_database(frame, first))
+
+    assert report.disclosures[0].measurable

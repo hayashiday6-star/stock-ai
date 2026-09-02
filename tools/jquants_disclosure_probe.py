@@ -13,9 +13,19 @@ PEAD は「決算がいつ市場に出たか」で成否が決まる。**引け�
 解約予定は 2026-09-22 である。「Light に何が含まれるか」を実機で見ておかないと、
 事前登録を書いた後に取り返しがつかなくなる。
 
+もう1つ、この道具は**どこで開示が落ちているか**を1回の実行で切り分ける。
+センサスの実測で、1銘柄あたりの開示が内側の年でも平均3.36件しかなかった。
+四半期ごとに短信が出る以上4件のはずで、16%足りない。落ちている場所は3箇所の
+どこかで、目視で2つの出力を見比べると取り違える。
+
+    APIのレコード数 → パーサを通した件数 → DBの行数
+
+を並べれば、どちらの区間で減ったかが一意に決まる。減っていなければ、
+3.36件は J-Quants が返す件数そのものということになる。
+
 **値は出さない。** 出すのは、レスポンスに現れたキーの名前と、時刻らしき値の
-「形」（``15:00`` のような桁の並び）だけである。銘柄の中身を見るための道具では
-ないので、これで十分であり、貼り付けても差し支えない出力になる。
+「形」（``15:00`` のような桁の並び）、および件数だけである。銘柄の中身を
+見るための道具ではないので、これで十分であり、貼り付けても差し支えない出力になる。
 
 使い方::
 
@@ -37,6 +47,9 @@ from dotenv import load_dotenv
 
 from stock_ai.core.logging import configure_logging
 from stock_ai.core.version import describe
+from stock_ai.data.jquants_fundamentals import normalize_statements
+from stock_ai.database.engine import Database
+from stock_ai.database.repository import FinancialStatementRepository
 
 #: 時刻に見える値。``15:00`` / ``15:00:00`` を拾う。
 _TIME_SHAPE = re.compile(r"^\d{1,2}:\d{2}(:\d{2})?$")
@@ -119,6 +132,55 @@ def _report(title: str, records: list[dict[str, Any]]) -> None:
         print("      別の情報源で時刻を補うかの二択になる。")
 
 
+def _trace_losses(symbol: str, records: list[dict[str, Any]]) -> None:
+    """API → パーサ → DB の3点で件数を並べ、減った区間を名指しする。
+
+    センサスは1銘柄あたりの開示が内側の年でも3.36件しかないと言っている。
+    四半期ごとに短信が出る以上4件のはずで、原因は「APIがそもそも返していない」
+    「パーサが落としている」「DBに入っていない」のどれか。3つ並べれば、
+    どれかは推測でなく確定する。
+    """
+    print("\n=== どこで開示が落ちているか ===")
+    if not records:
+        print("  APIが0件なので、切り分けるものがない。")
+        return
+
+    parsed = normalize_statements(symbol, records)
+    print(f"  1. API が返したレコード      : {len(records)}")
+    print(f"  2. パーサを通した件数        : {len(parsed)}")
+
+    try:
+        database = Database()
+        database.create_all()
+        with database.session() as session:
+            stored = FinancialStatementRepository(session).get_reports(symbol, period=None)
+    except Exception as exc:  # noqa: BLE001 - DBが無くても probe は成立する
+        print(f"  3. DB の行数                 : 読めなかった（{type(exc).__name__}）")
+        return
+    print(f"  3. DB の行数                 : {len(stored)}")
+
+    print()
+    if len(parsed) < len(records):
+        print(f"  ★ パーサで {len(records) - len(parsed)} 件落ちている。")
+        print("    同じ（会計年度, 四半期）に割り当てられた開示が畳まれている。")
+    if len(stored) < len(parsed):
+        print(f"  ★ DB で {len(parsed) - len(stored)} 件少ない。取り直しが要る。")
+    if len(stored) > len(parsed):
+        print(f"  ★ DB のほうが {len(stored) - len(parsed)} 件多い。")
+        print("    古い鍵で入った行が残っている可能性がある（会計年度の意味が変わった）。")
+    if len(parsed) == len(records) == len(stored):
+        print("  ★ どこでも落ちていない。")
+        print("    1銘柄あたりの件数が4に満たないのは、API が返す件数そのもの。")
+
+    # どの期が入っているかまで出す。落ちているのが特定の四半期に偏っていれば、
+    # 「たまたま少ない」ではなく割り当ての問題だと分かる。
+    periods = Counter(f"{r.fiscal_year}-{r.period}" for r in parsed)
+    print(f"\n  パーサが割り当てた（会計年度-期）: {len(periods)} 種類")
+    for key in sorted(periods):
+        mark = "" if periods[key] == 1 else f"  <- {periods[key]}件が同じ鍵"
+        print(f"    {key}{mark}")
+
+
 def main() -> int:
     """開示エンドポイントの列構成を実データで確かめる。"""
     parser = argparse.ArgumentParser(description=__doc__)
@@ -136,16 +198,16 @@ def main() -> int:
     print(f"JQUANTS_API_KEY: {len(api_key)} 文字, 指紋 {_fingerprint(api_key)}")
     print(f"銘柄: {args.symbol}")
 
-    _report(
-        "fins/summary（決算。いまパーサが読んでいる先）",
-        _fetch(_SUMMARY_URL, {"code": args.symbol}, api_key),
-    )
+    summary = _fetch(_SUMMARY_URL, {"code": args.symbol}, api_key)
+    _report("fins/summary（決算。いまパーサが読んでいる先）", summary)
     _report(
         "fins/announcement（決算発表予定日）",
         _fetch(_ANNOUNCEMENT_URL, {}, api_key),
     )
 
-    print("\n値は出していない。出したのはキー名と値の形だけである。")
+    _trace_losses(args.symbol, summary)
+
+    print("\n値は出していない。出したのはキー名と値の形と件数だけである。")
     return 0
 
 
