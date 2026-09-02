@@ -60,7 +60,11 @@ from stock_ai.backtest.factor_test import (
     suggest_formation,
     walk_forward,
 )
-from stock_ai.backtest.forecast_revision import DEFAULT_MIN_CHANGE, census_revisions
+from stock_ai.backtest.forecast_revision import (
+    DEFAULT_MIN_CHANGE,
+    census_revisions,
+    census_sue,
+)
 from stock_ai.backtest.pead import (
     MIN_TURNOVER,
     Period,
@@ -1906,6 +1910,73 @@ def revision_census(
         "成立するかは、この件数が決める。年に数百件しか出ないなら設計を先に"
         "見直す必要がある。[/]"
     )
+
+
+@app.command(name="sue-census")
+def sue_census(
+    symbols: list[str] | None = typer.Argument(None, help="JP codes; omit for every stored one."),
+    field: str = typer.Option(
+        "net_income", "--field", help="revenue | operating_income | net_income | eps."
+    ),
+) -> None:
+    """Count full-year 短信 where actual can be compared with the standing forecast.
+
+    Quarterly SUE cannot be built from Japanese filings: the forecast is
+    full-year while the actual is year-to-date, so Q1 would subtract three
+    months of actual from twelve months of forecast. Only the full-year 短信
+    lines up. This prints how many such events exist, how many independent
+    disclosure days they fall on, and how wide the surprise distribution is
+    -- **no returns are computed**, so it can be run before sealing.
+    """
+    settings = get_settings()
+    configure_logging(settings.log_level)
+
+    database = Database()
+    database.create_all()
+    report = census_sue(database, symbols=symbols, field=field)
+
+    console.print(
+        f"銘柄 {report.symbols_scanned} 件 ／ 通期短信 {report.fy_statements:,} ／ "
+        f"[bold]SUE を計算できたイベント {report.total:,} 件[/]（{field}）"
+    )
+    console.print(
+        f"[dim]落ちた分: 実績が無い {report.without_actual:,} ／ "
+        f"直前の短信に通期予想が無い {report.without_prior_forecast:,}[/]"
+    )
+    if report.total == 0:
+        console.print(
+            "[yellow]1件も組めなかった。[/] 予想フィールドは後から足した列なので、"
+            "財務を取り直すまで埋まらない。11-開示時刻の取り込み.bat を先に実行する。"
+        )
+        return
+
+    table = Table(title="年別の通期決算イベント")
+    for column in ("年", "イベント数", "独立開示日数"):
+        table.add_column(column, justify="right")
+    for year, total, days in report.by_year():
+        table.add_row(str(year), f"{total:,}", f"{days:,}")
+    console.print(table)
+    console.print(
+        f"独立した開示日数（通算）: [bold]{report.unique_days}[/] 日 "
+        "[dim]通期短信は5月に集中するので、件数ではなくこの日数が実質的な"
+        "サンプルサイズになる。[/]"
+    )
+
+    console.print(
+        "予想を出した短信: "
+        + "、".join(f"{period} {count:,}" for period, count in report.forecast_sources())
+    )
+    quantiles = report.surprise_quantiles()
+    console.print("驚きの分布: " + "、".join(f"{name} {value:+.1%}" for name, value in quantiles))
+    share = report.near_zero / report.total
+    console.print(f"±1%未満に収まったイベント: [bold]{report.near_zero:,}[/]（{share:.1%}）")
+    if share > 0.3:
+        console.print(
+            "[yellow]予想と実績がほぼ一致するイベントが多い。[/] 日本の会社は着地が"
+            "見えた時点で予想を出し直すため、分位の中央付近が潰れうる。分位に"
+            "分けても上位と下位が同じものにならないか、封印前に確認する。"
+        )
+    console.print("[dim]件数と分布のみ。リターンは計算していない。[/]")
 
 
 @app.command(name="pead-explain")

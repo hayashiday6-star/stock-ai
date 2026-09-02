@@ -11,7 +11,12 @@ import datetime as dt
 
 import pytest
 
-from stock_ai.backtest.forecast_revision import census_revisions, find_revisions
+from stock_ai.backtest.forecast_revision import (
+    census_revisions,
+    census_sue,
+    find_revisions,
+    find_sue_events,
+)
 from stock_ai.data.types import FinancialReport
 from stock_ai.database.engine import Database
 from stock_ai.database.repository import FinancialStatementRepository
@@ -23,6 +28,7 @@ def _report(
     forecast: float | None,
     fiscal_year_end: dt.date | None = dt.date(2024, 3, 31),
     symbol: str = "7203",
+    net_income: float | None = None,
 ) -> FinancialReport:
     return FinancialReport(
         symbol=symbol,
@@ -33,6 +39,7 @@ def _report(
         doc_type=f"{period}FinancialStatements_Consolidated_JP",
         fiscal_year_end=fiscal_year_end,
         forecast_net_income=forecast,
+        net_income=net_income,
     )
 
 
@@ -223,3 +230,138 @@ def test_the_census_counts_independent_days() -> None:
 
     assert report.total == 2
     assert report.unique_days == 1  # 同じ日に2社
+
+
+# --- SUE ---------------------------------------------------------------------
+#
+# 通期短信の実績と、その時点で公表済みだった通期予想を組にする。四半期では
+# 組めない（予想は12ヶ月ぶん、実績は期中累計）ので、通期だけを見る。
+
+
+def test_a_full_year_statement_is_paired_with_the_standing_forecast() -> None:
+    found = find_sue_events(
+        [
+            _report("Q3", dt.date(2024, 2, 2), 1_000.0),
+            _report("FY", dt.date(2024, 5, 10), None, net_income=1_200.0),
+        ]
+    )
+
+    assert found.fy_statements == 1
+    assert len(found.events) == 1
+    event = found.events[0]
+    assert event.forecast == pytest.approx(1_000.0)
+    assert event.actual == pytest.approx(1_200.0)
+    assert event.surprise == pytest.approx(0.20)
+    assert event.forecast_from_period == "Q3"
+    # イベント日は通期短信の開示日。予想はそれより前に公開済みである。
+    assert event.disclosed_on == dt.date(2024, 5, 10)
+
+
+def test_quarterly_statements_are_never_turned_into_events() -> None:
+    # 予想も実績も揃っているが、四半期なので組まない。Q1の実績3ヶ月ぶんを
+    # 通期予想12ヶ月ぶんから引くと、驚きではなく季節性を測ることになる。
+    found = find_sue_events(
+        [
+            _report("Q1", dt.date(2023, 8, 3), 1_000.0, net_income=200.0),
+            _report("Q2", dt.date(2023, 11, 2), 1_000.0, net_income=500.0),
+        ]
+    )
+
+    assert found.fy_statements == 0
+    assert found.events == []
+
+
+def test_an_older_forecast_is_used_when_the_latest_statement_has_none() -> None:
+    # Q3が予想を出していなくても、Q2の予想は公開済みである。使ってよい。
+    found = find_sue_events(
+        [
+            _report("Q2", dt.date(2023, 11, 2), 900.0),
+            _report("Q3", dt.date(2024, 2, 2), None),
+            _report("FY", dt.date(2024, 5, 10), None, net_income=1_100.0),
+        ]
+    )
+
+    assert len(found.events) == 1
+    assert found.events[0].forecast_from_period == "Q2"
+
+
+def test_a_full_year_statement_without_any_prior_forecast_is_counted_not_dropped() -> None:
+    found = find_sue_events([_report("FY", dt.date(2024, 5, 10), None, net_income=1_100.0)])
+
+    assert found.fy_statements == 1
+    assert found.without_prior_forecast == 1
+    assert found.events == []
+
+
+def test_a_forecast_from_a_different_fiscal_year_is_not_used() -> None:
+    # 前期の通期予想は当期の実績の予想ではない。期末日で束ねているので混ざらない。
+    found = find_sue_events(
+        [
+            _report("Q3", dt.date(2023, 2, 2), 800.0, fiscal_year_end=dt.date(2023, 3, 31)),
+            _report(
+                "FY",
+                dt.date(2024, 5, 10),
+                None,
+                fiscal_year_end=dt.date(2024, 3, 31),
+                net_income=1_100.0,
+            ),
+        ]
+    )
+
+    assert found.without_prior_forecast == 1
+    assert found.events == []
+
+
+def test_the_sue_census_counts_independent_days_not_just_events() -> None:
+    # 通期短信は5月に集中する。件数ではなく日数が実質的なサンプルサイズになる。
+    database = Database("sqlite:///:memory:")
+    database.create_all()
+    with database.session() as session:
+        repo = FinancialStatementRepository(session)
+        for symbol, actual in (("7203", 1_200.0), ("6758", 900.0)):
+            repo.upsert_reports(
+                symbol,
+                [
+                    _report("Q3", dt.date(2024, 2, 2), 1_000.0, symbol=symbol),
+                    _report("FY", dt.date(2024, 5, 10), None, symbol=symbol, net_income=actual),
+                ],
+                market="JP",
+            )
+
+    report = census_sue(database)
+
+    assert report.total == 2
+    assert report.unique_days == 1
+    assert report.by_year() == [(2024, 2, 1)]
+    assert report.forecast_sources() == [("Q3", 2)]
+
+
+def test_the_census_flags_how_many_surprises_are_effectively_zero() -> None:
+    # 会社が着地を見てから予想を出し直すと、実績が予想にぴたりと寄る。
+    # 分位に分けても中央が潰れていないかを、リターンを見る前に知りたい。
+    database = Database("sqlite:///:memory:")
+    database.create_all()
+    with database.session() as session:
+        repo = FinancialStatementRepository(session)
+        for symbol, actual in (("7203", 1_002.0), ("6758", 1_500.0)):
+            repo.upsert_reports(
+                symbol,
+                [
+                    _report("Q3", dt.date(2024, 2, 2), 1_000.0, symbol=symbol),
+                    _report("FY", dt.date(2024, 5, 10), None, symbol=symbol, net_income=actual),
+                ],
+                market="JP",
+            )
+
+    report = census_sue(database)
+
+    assert report.near_zero == 1  # 7203 は +0.2%
+    assert [name for name, _ in report.surprise_quantiles()] == [
+        "p5",
+        "p20",
+        "p40",
+        "p50",
+        "p60",
+        "p80",
+        "p95",
+    ]
