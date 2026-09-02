@@ -859,6 +859,12 @@ def bulk_fetch(
         help="Extend symbols that already have prices back to --lookback. "
         "Without this, --lookback only applies to symbols with no prices at all.",
     ),
+    statement_source: str | None = typer.Option(
+        None,
+        "--statement-source",
+        help="Override JP_STATEMENT_SOURCE for this run only: jquants | edinet. "
+        "For a one-off backfill of a field only one source carries.",
+    ),
 ) -> None:
     """Backfill prices or statements across a whole universe.
 
@@ -898,12 +904,23 @@ def bulk_fetch(
         price_provider, _market = _price_source(settings.jp_price_source, settings)
         console.print(f"[dim]価格の取得元: {settings.jp_price_source.lower()}[/dim]")
     statement_provider = None
-    if dataset is Dataset.STATEMENTS and settings.jp_statement_source.strip().lower() == "edinet":
-        statement_provider = EdinetFundamentalsProvider(
-            settings.edinet_api_key,
-            price_source=lambda symbol: bulk_latest_close(database, symbol),
-        )
-        console.print("[dim]財務諸表の取得元: edinet[/dim]")
+    if dataset is Dataset.STATEMENTS:
+        # --statement-source は .env を書き換えずに1回だけ経路を変えるためのもの。
+        # 開示時刻のように片方の情報源にしか無い列を埋め直すとき、設定値のつもりで
+        # APIキーを上書きする事故（過去に実際に起きた）を避けられる。
+        chosen = (statement_source or settings.jp_statement_source).strip().lower()
+        if chosen not in STATEMENT_SOURCES:
+            raise typer.BadParameter(
+                f"--statement-source must be one of {', '.join(sorted(STATEMENT_SOURCES))}; "
+                f"got {chosen!r}."
+            )
+        if chosen == "edinet":
+            statement_provider = EdinetFundamentalsProvider(
+                settings.edinet_api_key,
+                price_source=lambda symbol: bulk_latest_close(database, symbol),
+            )
+        origin = "" if statement_source is None else "  [yellow](--statement-source で上書き)[/]"
+        console.print(f"[dim]財務諸表の取得元: {chosen}[/dim]{origin}")
     ingester = BulkIngester(
         database,
         api_key=settings.jquants_api_key,
@@ -936,6 +953,17 @@ def bulk_fetch(
         progress.update(task, completed=len(targets))
 
     console.print(report.summary())
+    if resume and not report.succeeded and report.skipped:
+        # 「0 ok, N skipped」で [OK] と出て終わるのが一番危ない。再開の仕組みは
+        # 「行がある＝最新」と見なすので、列を後から足しても永久に埋まらない。
+        # 実際、開示時刻の列を足した直後の取り直しがこの形で空振りした。
+        console.print(
+            f"[yellow]1件も取得していない。[/]{len(report.skipped)} 件すべてが"
+            "「既に最新」として飛ばされた。\n"
+            "  再開の判定は『その銘柄の行があるか』だけを見るので、**列を新しく"
+            "足しても、行が既にあれば埋まらない**。\n"
+            "  後から足した列を埋め直すときは [bold]--no-resume[/] を付ける。"
+        )
     if report.aborted:
         console.print(
             f"[red]Stopped early:[/] {report.aborted}\n"

@@ -1,0 +1,32 @@
+@echo off
+setlocal
+cd /d "%~dp0"
+rem This .bat pauses at the end; stop the script pausing too.
+set STOCK_AI_NO_PAUSE=1
+
+rem ASCII only - cmd.exe reads a .bat in the console codepage, not UTF-8.
+rem The Japanese belongs in the .ps1, which carries a UTF-8 BOM.
+
+echo ============================================
+echo   stock-ai : J-Quants statements backfill
+echo ============================================
+echo.
+echo Refetches financial statements from J-Quants to fill the
+echo disclosure-time column. Only J-Quants carries it, and only
+echo while the paid plan is active (ends 2026-09-22).
+echo.
+echo This takes 30+ minutes for the whole market.
+echo.
+
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0scripts\jquants-statements-backfill.ps1" %*
+set CODE=%ERRORLEVEL%
+
+echo.
+if not "%CODE%"=="0" (
+  echo Did not finish. Paste the output above.
+) else (
+  echo Done. Paste the output above.
+)
+echo.
+pause
+exit /b %CODE%

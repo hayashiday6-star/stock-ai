@@ -892,3 +892,77 @@ def test_normalize_statements_leaves_the_fiscal_year_end_unset_when_absent() -> 
     (report,) = normalize_statements("X", records)
     assert report.fiscal_year_end is None
     assert report.fiscal_year == 2024
+
+
+# --- 実レスポンスで確認したキー名 -------------------------------------------
+
+
+def test_fiscal_year_end_reads_the_name_v2_actually_uses() -> None:
+    """``CurFYEn`` は実レスポンスで確認した名前。
+
+    従来の一覧（``FYEnd`` など）は推測の略記だけで、v2 のレスポンスには1つも
+    現れなかった。例外は出ないまま ``fiscal_year_end`` が常に空になり、それに
+    気付く手段が無かった。実物のキー名を固定して、同じ当てずっぽうに戻らない
+    ようにする。
+    """
+    reports = normalize_statements(
+        "7203",
+        [
+            {
+                "Code": "7203",
+                "DiscDate": "2025-08-05",
+                "CurPerType": "1Q",
+                "CurFYEn": "2026-03-31",
+                "Sales": "1000",
+            }
+        ],
+    )
+
+    assert len(reports) == 1
+    assert reports[0].fiscal_year_end == dt.date(2026, 3, 31)
+    # 期末日が読めれば、会計年度は開示年ではなく期末日の年から決まる。
+    assert reports[0].fiscal_year == 2026
+
+
+def test_the_fiscal_year_falls_back_to_the_disclosure_year_without_a_period_end() -> None:
+    """期末日が無いと、会計年度は開示年になる。これは近似であって正解ではない。
+
+    3月決算の会社が8月に出す1Qは会計年度2026だが、期末日が読めなければ
+    2025として入る。``CurFYEn`` が読めるようになるまで、DBの ``fiscal_year``
+    は「開示された年」を意味していた。
+    """
+    reports = normalize_statements(
+        "7203", [{"Code": "7203", "DiscDate": "2025-08-05", "CurPerType": "1Q"}]
+    )
+
+    assert reports[0].fiscal_year_end is None
+    assert reports[0].fiscal_year == 2025
+
+
+def test_disclosure_time_and_doc_type_are_read() -> None:
+    """開示時刻を取り違えると、反応そのものをドリフトとして数えてしまう。"""
+    reports = normalize_statements(
+        "7203",
+        [
+            {
+                "Code": "7203",
+                "DiscDate": "2025-08-05",
+                "DiscTime": "14:00:00",
+                "DocType": "1QFinancialStatements_Consolidated_JP",
+                "CurPerType": "1Q",
+                "CurFYEn": "2026-03-31",
+            }
+        ],
+    )
+
+    assert reports[0].disclosed_at == dt.time(14, 0)
+    assert reports[0].doc_type == "1QFinancialStatements_Consolidated_JP"
+
+
+def test_a_missing_disclosure_time_stays_unknown() -> None:
+    """既定値で埋めると、場中か引け後かを取り違えたまま先に進む。"""
+    reports = normalize_statements(
+        "7203", [{"Code": "7203", "DiscDate": "2025-08-05", "CurPerType": "1Q"}]
+    )
+
+    assert reports[0].disclosed_at is None
