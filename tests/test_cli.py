@@ -878,12 +878,22 @@ def test_bulk_fetch_statements_uses_edinet_when_selected(monkeypatch: pytest.Mon
     get_settings.cache_clear()
 
 
+def _plain(text: str) -> str:
+    """rich の装飾と折り返しを剥がして、文言だけを残す。
+
+    CI には端末が無いが色は出る。ローカルで通ったアサーションが CI だけで
+    落ちたのはこれが理由で、色コードが単語の途中に入って照合が壊れていた。
+    """
+    import re
+
+    return re.sub(r"\x1b\[[0-9;]*m", "", text).replace("\n", "").replace(" ", "")
+
+
 def test_pead_run_refuses_oos_without_the_explicit_flag() -> None:
     """合否判定はOOSで一度だけ。うっかり見てしまう経路を作らない。"""
     result = runner.invoke(app, ["pead-run", "oos"])
     assert result.exit_code != 0
-    # rich が枠で折り返すので、改行を潰してから照合する。
-    assert "--i-am-ready-for-oos" in result.output.replace("\n", "").replace(" ", "")
+    assert "--i-am-ready-for-oos" in _plain(result.output)
 
 
 def test_pead_run_refuses_all_without_the_explicit_flag() -> None:
