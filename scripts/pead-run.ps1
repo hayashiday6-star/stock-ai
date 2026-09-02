@@ -9,16 +9,19 @@
     OOS を走らせるには -ReadyForOos が要ります。実装の確認とIS期間の確認が
     終わるまで、OOSは見ません。
 
-    ベンチマークを指定すると市場対比の超過リターンになります。指定しない
-    場合は素のリターンですが、**上位分位と下位分位の差ではベンチマークが
-    相殺される**ので、合否に使う主要指標は成立します。ただし驚きの並べ替えは
-    地合いの影響を受けるので、指定できるならしたほうが正確です。
+    ベンチマークは既定で 1306（TOPIX連動型上場投信）です。TOPIX そのものは
+    このプランでは取れません（indices/daily が 403）。価格が入っていなければ
+    自動で取り込みます。
+
+    上位分位と下位分位の差ではベンチマークが相殺されるので、合否に使う
+    主要指標はベンチマークの選び方に影響されません。効くのは驚きの
+    並べ替えと、副次の分位ごとの数字です。
 
 .PARAMETER Period
     is | oos | all。
 
 .PARAMETER Benchmark
-    市場対比に使う銘柄コード（TOPIX連動ETFなど）。省略可。
+    市場対比に使う銘柄コード。既定は 1306。空文字を渡すとベンチマークなし。
 
 .PARAMETER ReadyForOos
     OOS を含む期間を走らせるときに必要。
@@ -31,7 +34,7 @@
 param(
     [ValidateSet('is', 'oos', 'all')]
     [string]$Period = 'is',
-    [string]$Benchmark,
+    [string]$Benchmark = '1306',
     [switch]$ReadyForOos
 )
 
@@ -54,6 +57,14 @@ if ($Period -ne 'is' -and -not $ReadyForOos) {
 }
 Write-Host '全銘柄の価格と開示を突き合わせます。数分かかります。' -ForegroundColor DarkGray
 Write-Host ''
+
+if ($Benchmark) {
+    # TOPIX そのものは取れない（indices/daily が 403）。連動ETFで代替する。
+    # 取り込み済みなら「最新」として飛ばされるので、毎回叩いても無駄がない。
+    Write-Host "ベンチマーク $Benchmark の価格を確認します。" -ForegroundColor DarkGray
+    uv run stock-ai bulk-fetch --symbols $Benchmark
+    Write-Host ''
+}
 
 $arguments = @('run', 'stock-ai', 'pead-run', $Period)
 if ($Benchmark) { $arguments += @('--benchmark', $Benchmark) }
