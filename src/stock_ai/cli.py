@@ -65,6 +65,7 @@ from stock_ai.backtest.pead import (
     Period,
     build_events,
     crowding_split,
+    quantile_ladder,
     spread,
 )
 from stock_ai.backtest.pead_census import DRIFT_WINDOW, ENTRY_OFFSET, run_census
@@ -1757,7 +1758,7 @@ def pead_run(
 
     frame = built.frame()
     table = Table(title=f"上位分位 − 下位分位（{chosen.value}、コスト控除後）")
-    for column in ("区分", "上位", "下位", "差", "t値", "クラスタ", "イベント"):
+    for column in ("区分", "上位", "下位", "差", "t値", "クラスタ", "イベント", "片側のみの日"):
         table.add_column(column, justify="right")
 
     def add(label: str, rows: pd.DataFrame, column: str = "forward") -> None:
@@ -1771,6 +1772,7 @@ def pead_run(
             f"{result.t_statistic:.2f}{flag}",
             str(result.clusters),
             str(result.events),
+            str(result.days_without_both_legs),
         )
 
     add("主要指標 R+60", frame)
@@ -1785,18 +1787,36 @@ def pead_run(
         "[dim]合否に使うのは「主要指標 R+60」の差1つだけ（セクション5）。"
         "他はすべて副次で、判定には使わない。[/]"
     )
+    console.print(
+        "[dim]「片側のみの日」は上位か下位のどちらかしか出ず、差を取れなかった日。"
+        "その日はロング・ショートを組めないので落とすのが正しいが、落ちるのは"
+        "発表の少ない日に偏るため、残った日は混雑日寄りになる。[/]"
+    )
 
     # 分位ごとの水準が偏っているとき、それが決算の性質なのか、ユニバースと
     # ベンチマークの組成差なのかを切り分ける。差では相殺されるので判定には
     # 効かないが、切り分けないと実装の誤りと区別が付かない。
-    level = frame["forward"].mean()
-    placebo = frame["placebo"].dropna()
-    market = frame["market_forward"].dropna()
+    ladder_table = Table(title="分位ごとの平均超過リターン（驚きの小さい順）")
+    for column in ("分位", "平均", "イベント", "日数"):
+        ladder_table.add_column(column, justify="right")
+    for row in quantile_ladder(frame).itertuples():
+        label = (
+            f"{int(row.quantile) + 1}（最下位）"
+            if row.quantile == 0
+            else str(int(row.quantile) + 1)
+        )
+        ladder_table.add_row(label, f"{row.mean * 100:+.2f}%", str(row.events), str(row.days))
+    console.print(ladder_table)
     console.print(
-        f"\n水準の診断: 全イベントの平均超過リターン [bold]{level * 100:+.2f}%[/]"
-        f" ／ プラセボ（決算から離れた日を起点に同じ計算） "
-        f"[bold]{placebo.mean() * 100:+.2f}%[/]（{len(placebo)} 件）"
+        "[dim]差は2点しか使わないので、外れ値の多い分位が1つあるだけで動く。"
+        "驚きの順に単調に並んでいれば、差そのものよりずっと強い証拠になる。"
+        "全分位が同じだけ沈んでいるなら、その水準は分位に依らない何かであり、"
+        "差では相殺される。[/]"
     )
+
+    level = frame["forward"].mean()
+    market = frame["market_forward"].dropna()
+    console.print(f"\n水準: 全イベントの平均超過リターン [bold]{level * 100:+.2f}%[/]")
     if not market.empty:
         # 引き算の内訳。水準が銘柄側の話かベンチマーク側の話かは、
         # 差だけを見ていても分からない。
@@ -1805,12 +1825,6 @@ def pead_run(
             f" − ベンチマーク {market.mean() * 100:+.2f}%"
             f" = 超過 {level * 100:+.2f}%"
         )
-    console.print(
-        "[dim]プラセボにも同じだけの偏りが出るなら、その水準は決算とは無関係な"
-        "組成差（等金額のユニバース対 時価総額加重のベンチマークなど）であり、"
-        "上位分位と下位分位の差では相殺される。出ないなら、イベント窓に固有の"
-        "何かが起きている。[/]"
-    )
 
 
 @app.command(name="accum-jp-explain")

@@ -56,12 +56,6 @@ QUANTILES = 5
 #: 片道コスト。ロング・ショートは両建てなので、差には往復2本ぶんが乗る。
 ONE_WAY_COST = 0.0015
 
-#: プラセボの起点を、実際の反応日から何営業日前に置くか。
-#:
-#: 決算の影響が残らない距離を取りつつ、同じ相場付きの中に留める。120営業日は
-#: 約半年で、直前の四半期決算（約60営業日前）よりさらに前になる。
-PLACEBO_OFFSET = 120
-
 #: この文字列を ``DocType`` に含むものだけがイベント（セクション3-2）。
 #: 件数ではなく名前で絞るのは、上位に出てこない変種（US基準・REIT など）を
 #: 取りこぼさないためである。
@@ -119,14 +113,6 @@ class Event:
 
     超過リターンの水準が偏っているとき、それが銘柄側の話なのか
     ベンチマーク側の話なのかを、引き算の内訳として読めるようにする。
-    """
-    placebo: float | None = None
-    """同じ銘柄・同じ計算を、決算から離れた日で回した超過リターン。
-
-    **判定には使わない。診断用である。** 分位ごとの水準が大きく偏っている
-    とき、それが決算イベントの性質なのか、ユニバースとベンチマークの
-    組成差（等金額 vs 時価総額加重など）なのかを切り分ける。プラセボにも
-    同じだけの偏りが出るなら、それはイベントの性質ではない。
     """
 
     @property
@@ -255,7 +241,6 @@ class EventSet:
                     "turnover_20d": e.turnover_20d,
                     "same_day_count": e.same_day_count,
                     "market_forward": e.market_forward,
-                    "placebo": e.placebo,
                 }
                 for e in self.events
             ]
@@ -385,7 +370,6 @@ def build_events(
                         forward_short=_excess(stock_short, bench_short),
                         turnover_20d=float(floor),
                         market_forward=bench_forward,
-                        placebo=_placebo_return(adjusted, bench_frame, index, position),
                     )
                 )
 
@@ -400,37 +384,6 @@ def build_events(
         excluded_thin=thin,
         excluded_no_benchmark=no_bench,
     )
-
-
-def _placebo_return(
-    adjusted: pd.DataFrame,
-    bench: pd.DataFrame | None,
-    index: pd.DatetimeIndex,
-    position: int,
-) -> float | None:
-    """決算から離れた日を起点に、同じ計算をした超過リターン。
-
-    **判定には使わない。** 分位ごとの水準が偏っているとき、その偏りが決算
-    イベントの性質なのか、ユニバースとベンチマークの組成差なのかを切り分ける
-    ためだけに出す。同じ銘柄・同じ保有期間・同じベンチマークで、起点だけを
-    ``PLACEBO_OFFSET`` 営業日前にずらす。
-
-    プラセボにも同じ偏りが出るなら、それは決算とは無関係な水準差であり、
-    上位分位と下位分位の差では相殺される。出ないなら、イベント窓に固有の
-    何かが起きている。
-    """
-    anchor = position - PLACEBO_OFFSET
-    exit_at = anchor + 1 + HOLDING_DAYS
-    if anchor < 1 or exit_at >= len(index):
-        return None
-    entry = float(adjusted[OPEN].iloc[anchor + 1])
-    if not entry or pd.isna(entry):
-        return None
-    stock = float(adjusted[CLOSE].iloc[exit_at]) / entry - 1.0
-    market = _benchmark_return(bench, index, anchor + 1, exit_at, start_column=OPEN)
-    if bench is not None and market is None:
-        return None
-    return _excess(stock, market)
 
 
 def _with_same_day_counts(events: list[Event]) -> list[Event]:
@@ -455,7 +408,6 @@ def _with_same_day_counts(events: list[Event]) -> list[Event]:
             turnover_20d=e.turnover_20d,
             same_day_count=per_day[e.reaction_on],
             market_forward=e.market_forward,
-            placebo=e.placebo,
         )
         for e in events
     ]
@@ -476,6 +428,14 @@ class Spread:
     clusters: int
     """独立した反応日の数。クラスタ数が30を切ると t 値は信用できない。"""
     events: int
+    days_without_both_legs: int = 0
+    """上位と下位のどちらかしか出なかったため、差を取れなかった日の数。
+
+    その日はロング・ショートを組めないので落とすのが正しい（セクション4の
+    「同一日に複数イベントが出た場合は等金額で分散」に従う）。ただし落ちるのは
+    発表の少ない日に偏るので、**残った日は混雑日寄りになる**。混雑度が結果に
+    効く場合、この偏りは無視できない。数を出しておく。
+    """
 
     @property
     def reliable(self) -> bool:
@@ -562,14 +522,16 @@ def spread(
 
     # 差は日ごとに取る。ロングとショートを別々に平均してから引くと、
     # 上位と下位でイベント数の違う日の重みがずれる。
-    per_day = pd.DataFrame(
+    both = pd.DataFrame(
         {
             "high": high_net.groupby(high["reaction_on"]).mean(),
             "low": low_net.groupby(low["reaction_on"]).mean(),
         }
-    ).dropna()
+    )
+    per_day = both.dropna()
+    dropped = len(both) - len(per_day)
     if per_day.empty:
-        return Spread(float("nan"), float("nan"), float("nan"), float("nan"), 0, 0)
+        return Spread(float("nan"), float("nan"), float("nan"), float("nan"), 0, 0, dropped)
 
     difference = per_day["high"] - per_day["low"]
     count = len(difference)
@@ -583,7 +545,39 @@ def spread(
         t_statistic=t_value,
         clusters=count,
         events=len(high) + len(low),
+        days_without_both_legs=dropped,
     )
+
+
+def quantile_ladder(
+    frame: pd.DataFrame, column: str = "forward", quantiles: int = QUANTILES
+) -> pd.DataFrame:
+    """分位ごとの平均超過リターンを、驚きの小さい順に並べる。
+
+    **上位と下位の差だけを見ていても、それが本物かは分からない。** 差は2点
+    しか使わないので、外れ値の多い分位が1つあるだけで動く。分位が驚きの順に
+    単調に並んでいれば、2点の差よりずっと強い証拠になる。並んでいなければ、
+    差が出ていても機構の説明が付かない。
+
+    水準の偏りを読むためでもある。全分位が同じだけ沈んでいるなら、その水準は
+    分位に依らない何か（ユニバースとベンチマークの組成差など）であり、差では
+    相殺される。特定の分位だけが沈んでいるなら、それは差に効く。
+
+    Returns:
+        ``quantile``（0が最下位）、``mean``、``events``、``days`` の表。
+    """
+    ranked = assign_quantiles(frame, quantiles)
+    if ranked.empty:
+        return pd.DataFrame(columns=["quantile", "mean", "events", "days"])
+    grouped = ranked.groupby("quantile", observed=True)
+    return pd.DataFrame(
+        {
+            "quantile": list(grouped.groups),
+            "mean": grouped[column].mean().to_numpy(),
+            "events": grouped.size().to_numpy(),
+            "days": grouped["reaction_on"].nunique().to_numpy(),
+        }
+    ).sort_values("quantile", ignore_index=True)
 
 
 def crowding_split(frame: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:

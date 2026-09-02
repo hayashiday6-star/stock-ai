@@ -21,6 +21,7 @@ from stock_ai.backtest.pead import (
     clustered_t,
     crowding_split,
     is_earnings,
+    quantile_ladder,
     reaction_position,
     session_close_on,
     spread,
@@ -445,55 +446,69 @@ def test_the_spread_is_unchanged_by_the_benchmark() -> None:
     assert against.high < plain.high
 
 
-def test_the_placebo_uses_the_same_recipe_from_an_earlier_anchor() -> None:
-    """水準の偏りが決算由来かどうかを、推測でなく数字で切り分けるための診断。"""
-    base = _frame(bars=500)
-    reaction = 300
-    symbol = "7203"
-    # 決算とは無関係に、系列全体をなだらかに上げておく。プラセボにも同じ
-    # 傾きが出るはずで、それが「決算とは関係のない水準」になる。
-    frame = base.copy()
-    trend = pd.Series(range(len(base)), index=base.index) * 2.0 + 2_000.0
-    for column in (OPEN, HIGH, LOW, CLOSE, ADJ_CLOSE):
-        frame[column] = trend
-    reports = {symbol: [_report(symbol, base.index[reaction - 1].date())]}
+def test_the_ladder_orders_quantiles_by_surprise() -> None:
+    """差は2点しか使わない。はしごが単調なら、差よりずっと強い証拠になる。"""
+    rows = [
+        {
+            "month": "2023-01",
+            "surprise": i * 0.01,
+            "forward": i * 0.02,
+            "reaction_on": dt.date(2023, 1, (i % 20) + 1),
+        }
+        for i in range(20)
+    ]
+    ladder = quantile_ladder(pd.DataFrame(rows))
 
-    built = build_events(_database({symbol: frame}, reports), Period.ALL)
-
-    event = built.events[0]
-    assert event.placebo is not None
-    # 同じ傾きの系列なので、プラセボもリターンと同じ符号の大きさになる。
-    assert event.placebo > 0
+    assert list(ladder["quantile"]) == [0, 1, 2, 3, 4]
+    assert ladder["mean"].is_monotonic_increasing
+    assert ladder["events"].sum() == 20
 
 
-def test_the_placebo_is_absent_when_there_is_no_room_before_the_event() -> None:
-    """起点が価格の外に出る場合は None。ゼロで埋めると診断が歪む。"""
-    base = _frame()
-    reaction = 100  # PLACEBO_OFFSET=120 より手前なので遡れない
-    symbol = "7203"
-    frame = _with_drift(base, reaction, 0.05, 0.0)
-    reports = {symbol: [_report(symbol, base.index[reaction - 1].date())]}
+def test_a_uniform_level_shows_up_in_every_rung() -> None:
+    """全分位が同じだけ沈んでいるなら、その水準は差では相殺される。
 
-    built = build_events(_database({symbol: frame}, reports), Period.ALL)
+    日付は4日に散らす。差は上位と下位が**同じ日に揃っている日**でしか
+    取れないので、1日1イベントにすると差そのものが計算されない。
+    """
+    offset = -0.05
+    rows = [
+        {
+            "month": "2023-01",
+            "surprise": i * 0.01,
+            "forward": offset,
+            "reaction_on": dt.date(2023, 1, (i % 4) + 1),
+        }
+        for i in range(20)
+    ]
+    ladder = quantile_ladder(pd.DataFrame(rows))
 
-    assert built.events[0].placebo is None
+    assert all(abs(m - offset) < 1e-12 for m in ladder["mean"])
+    assert spread(pd.DataFrame(rows)).difference == pytest.approx(-0.006, abs=1e-9)
 
 
-def test_the_excess_return_decomposes_into_stock_minus_market() -> None:
-    """水準が銘柄側の話かベンチマーク側の話かを、引き算の内訳で読めるようにする。"""
-    base = _frame()
-    reaction = 100
-    symbol, bench = "7203", "1306"
-    frames = {
-        symbol: _with_drift(base, reaction, 0.0, 0.06),
-        bench: _with_drift(base, reaction, 0.0, 0.02),
+def test_an_empty_frame_gives_an_empty_ladder() -> None:
+    assert quantile_ladder(
+        pd.DataFrame(columns=["month", "surprise", "forward", "reaction_on"])
+    ).empty
+
+
+def test_days_with_only_one_leg_are_counted_not_hidden() -> None:
+    """片側しか出ない日は差を取れない。落とすのは正しいが、偏りは見えるようにする。
+
+    1月4日は上位と下位の両方が出るので差が取れる。1月5日は下位だけ、
+    1月6日は上位だけなので取れない。落ちた2日が数えられていることを見る。
+    """
+    surprises_by_day = {
+        dt.date(2023, 1, 4): [0.00, 0.01, 0.90, 0.91],  # 両極そろう
+        dt.date(2023, 1, 5): [0.02, 0.50],  # 下位のみ
+        dt.date(2023, 1, 6): [0.92, 0.51, 0.52, 0.53, 0.54, 0.55, 0.56, 0.57, 0.58],
     }
-    reports = {symbol: [_report(symbol, base.index[reaction - 1].date())]}
+    rows = [
+        {"month": "2023-01", "surprise": value, "forward": 0.01, "reaction_on": day}
+        for day, values in surprises_by_day.items()
+        for value in values
+    ]
+    result = spread(pd.DataFrame(rows))
 
-    built = build_events(_database(frames, reports), Period.ALL, benchmark=bench)
-
-    event = built.events[0]
-    assert event.market_forward == pytest.approx(0.02, abs=1e-9)
-    assert event.forward == pytest.approx(0.06 - 0.02, abs=1e-9)
-    # 内訳が足し戻せる。表示している式そのものを固定する。
-    assert event.forward + event.market_forward == pytest.approx(0.06, abs=1e-9)
+    assert result.clusters == 1  # 1月4日だけ
+    assert result.days_without_both_legs == 2  # 1月5日と1月6日
