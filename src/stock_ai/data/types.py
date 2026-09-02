@@ -142,6 +142,19 @@ class FinancialReport(BaseModel):
     fiscal_year: int
     period: FiscalPeriod = FiscalPeriod.FY
     disclosed_on: dt.date | None = None
+    disclosed_at: dt.time | None = None
+    """開示時刻。日付だけでは、場中開示と引け後開示を区別できない。
+
+    決算後ドリフトのような開示イベントの検証では、この区別が結果を左右する。
+    引け後開示なら当日の値動きにニュースは入っておらず、反応は翌日から始まる。
+    場中開示ならその日のうちに動く。取り違えると、驚きの大きさを測る窓と
+    エントリー日の両方がずれる。
+
+    J-Quants の ``DiscTime``。実データで存在を確認済み（例: ``14:00:00``。
+    東証の後場は15:00までなので、これは**場中**開示である）。
+    """
+    doc_type: str | None = None
+    """開示の種類。決算短信と予想修正は別のイベントで、混ぜて数えられない。"""
     fiscal_year_end: dt.date | None = None
     """The fiscal year-end date. ``fiscal_year`` cannot say which month it is."""
 

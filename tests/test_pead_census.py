@@ -15,6 +15,7 @@ from stock_ai.backtest.pead_census import (
     DRIFT_WINDOW,
     ENTRY_OFFSET,
     TURNOVER_WINDOW,
+    Disclosure,
     run_census,
 )
 from stock_ai.data.schema import ADJ_CLOSE, CLOSE, HIGH, LOW, OPEN, VOLUME
@@ -178,3 +179,122 @@ def test_us_securities_are_not_censused() -> None:
     report = run_census(database)
 
     assert report.symbols_scanned == 1
+
+
+# --- 開示のタイミング ---------------------------------------------------------
+
+
+def _with_time(disclosed_at: dt.time | None, on_date: dt.date) -> Disclosure:
+    return Disclosure(
+        symbol="7203",
+        disclosed_on=on_date,
+        fiscal_year=on_date.year,
+        period="FY",
+        turnover_20d=None,
+        has_entry_bar=True,
+        has_exit_bar=True,
+        disclosed_at=disclosed_at,
+    )
+
+
+def test_a_disclosure_before_the_close_is_intraday() -> None:
+    """実データで見た 14:00 の開示は場中。当日の値動きにニュースが入っている。"""
+    assert _with_time(dt.time(14, 0), dt.date(2024, 5, 10)).timing() == "場中"
+
+
+def test_a_disclosure_after_the_close_is_after_hours() -> None:
+    assert _with_time(dt.time(15, 30), dt.date(2024, 5, 10)).timing() == "引け後"
+
+
+def test_the_boundary_leans_to_intraday_before_the_session_was_extended() -> None:
+    """15:00 ちょうどは引け後に倒す。
+
+    誤って引け後にした場中開示は、当日に織り込まれた反応をドリフトとして
+    数えてしまう。逆向きの誤りより高くつくので、境界は保守側に置く。
+    """
+    assert _with_time(dt.time(15, 0), dt.date(2024, 5, 10)).timing() == "引け後"
+
+
+def test_the_extended_session_is_counted_separately() -> None:
+    """延長後の 15:00-15:30 は当日中だが残り時間が短い。混ぜない。"""
+    late = _with_time(dt.time(15, 10), dt.date(2025, 5, 10))
+    assert late.timing() == "延長後の場中（15:00-15:30）"
+    # 延長前の同じ時刻は引け後。
+    assert _with_time(dt.time(15, 10), dt.date(2024, 5, 10)).timing() == "引け後"
+
+
+def test_a_missing_time_is_unknown_not_after_hours() -> None:
+    """時刻なしを引け後に倒すと、取り込み漏れが黙って結論に混ざる。"""
+    assert _with_time(None, dt.date(2024, 5, 10)).timing() == "時刻なし"
+
+
+def test_the_census_carries_the_stored_disclosure_time() -> None:
+    frame = _frame()
+    disclosed = frame.index[100].date()
+    database = Database("sqlite:///:memory:")
+    database.create_all()
+    with database.session() as session:
+        PriceRepository(session).upsert_prices("7203", frame, market="JP")
+        FinancialStatementRepository(session).upsert_reports(
+            "7203",
+            [
+                FinancialReport(
+                    symbol="7203",
+                    fiscal_year=2024,
+                    disclosed_on=disclosed,
+                    disclosed_at=dt.time(15, 30),
+                )
+            ],
+            market="JP",
+        )
+
+    report = run_census(database)
+
+    assert report.disclosures[0].disclosed_at == dt.time(15, 30)
+    assert report.timing_counts()["引け後"] == 1
+
+
+def test_slots_per_fiscal_year_shows_how_many_quarters_are_on_file() -> None:
+    """「1銘柄あたり年3件」の理由は、この分布を見るまで分からない。
+
+    四半期が落ちているのか、四半期開示をしない銘柄が混ざっているのか、
+    年別の件数だけでは区別できない。
+    """
+    frame = _frame()
+    database = Database("sqlite:///:memory:")
+    database.create_all()
+    with database.session() as session:
+        PriceRepository(session).upsert_prices("7203", frame, market="JP")
+        PriceRepository(session).upsert_prices("6758", frame, market="JP")
+        # 7203 は4四半期そろい、6758 は2つだけ。
+        FinancialStatementRepository(session).upsert_reports(
+            "7203",
+            [
+                FinancialReport(
+                    symbol="7203",
+                    fiscal_year=2024,
+                    period=period,
+                    disclosed_on=frame.index[60 + offset].date(),
+                )
+                for offset, period in enumerate(("Q1", "Q2", "Q3", "FY"))
+            ],
+            market="JP",
+        )
+        FinancialStatementRepository(session).upsert_reports(
+            "6758",
+            [
+                FinancialReport(
+                    symbol="6758",
+                    fiscal_year=2024,
+                    period=period,
+                    disclosed_on=frame.index[60 + offset].date(),
+                )
+                for offset, period in enumerate(("Q2", "FY"))
+            ],
+            market="JP",
+        )
+
+    slots = run_census(database).slots_per_fiscal_year()
+
+    assert slots[4] == 1  # 7203
+    assert slots[2] == 1  # 6758
