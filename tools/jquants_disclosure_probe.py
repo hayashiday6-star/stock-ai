@@ -60,6 +60,10 @@ _DATE_SHAPE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 _SUMMARY_URL = "https://api.jquants.com/v2/fins/summary"
 _ANNOUNCEMENT_URL = "https://api.jquants.com/v2/fins/announcement"
 
+#: 指数の日足。PEAD の驚きは市場対比で測るので、この系列が要る。
+#: プランに含まれるかは実機で叩くまで分からない（fins/announcement は403だった）。
+_INDICES_URL = "https://api.jquants.com/v2/indices/daily"
+
 
 def _fingerprint(value: str) -> str:
     """秘密そのものではなく、値が変わったかどうかだけ分かる表示にする。"""
@@ -203,6 +207,12 @@ def main() -> int:
     _report(
         "fins/announcement（決算発表予定日）",
         _fetch(_ANNOUNCEMENT_URL, {}, api_key),
+    )
+    # TOPIX が取れるかどうかで、PEAD の驚きの測り方が変わる。取れなければ
+    # 指数連動ETF（1306 など）で代替することになり、信託報酬ぶんの乖離が入る。
+    _report(
+        "indices/daily（TOPIX。驚きを市場対比で測るのに要る）",
+        _fetch(_INDICES_URL, {"code": "0000"}, api_key),
     )
 
     _trace_losses(args.symbol, summary)

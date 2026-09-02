@@ -60,6 +60,13 @@ from stock_ai.backtest.factor_test import (
     suggest_formation,
     walk_forward,
 )
+from stock_ai.backtest.pead import (
+    MIN_TURNOVER,
+    Period,
+    build_events,
+    crowding_split,
+    spread,
+)
 from stock_ai.backtest.pead_census import DRIFT_WINDOW, ENTRY_OFFSET, run_census
 from stock_ai.backtest.report import metrics_frame
 from stock_ai.backtest.seasonality import (
@@ -1675,6 +1682,108 @@ def pead_census(
     console.print(
         "[dim]注意分散仮説（混雑日ほど初期反応が小さくドリフトが大きい）は、"
         "この分布に幅がなければ測れない。[/]"
+    )
+
+
+@app.command(name="pead-run")
+def pead_run(
+    period: str = typer.Argument(
+        ..., help="is | oos | all. Required on purpose - see the docstring."
+    ),
+    benchmark: str | None = typer.Option(
+        None,
+        "--benchmark",
+        help="Symbol to measure excess return against, e.g. a TOPIX-tracking ETF. "
+        "Omitted means raw returns; the top-minus-bottom spread is unaffected "
+        "either way, but the surprise ranking is.",
+    ),
+    min_turnover: float = typer.Option(
+        MIN_TURNOVER, "--min-turnover", help="Section 2's liquidity floor in yen."
+    ),
+    i_am_ready_for_oos: bool = typer.Option(
+        False,
+        "--i-am-ready-for-oos",
+        help="Required to run the OOS period. The registration judges once on OOS.",
+    ),
+) -> None:
+    """Run the sealed PEAD registration (docs/PREREG_PEAD_JP.md).
+
+    PERIOD has no default. The registration judges on OOS exactly once, and a
+    default would make that one look accidental - "just print everything" is
+    how a held-out period stops being held out. Running ``oos`` additionally
+    needs ``--i-am-ready-for-oos``.
+    """
+    settings = get_settings()
+    configure_logging(settings.log_level)
+
+    try:
+        chosen = Period(period.strip().lower())
+    except ValueError as exc:
+        raise typer.BadParameter(f"period must be is, oos or all; got {period!r}.") from exc
+
+    if chosen is not Period.IS and not i_am_ready_for_oos:
+        raise typer.BadParameter(
+            f"'{chosen.value}' includes the held-out period. Pass --i-am-ready-for-oos "
+            "once the implementation and the IS checks are done (section 6)."
+        )
+
+    database = Database()
+    database.create_all()
+
+    built = build_events(
+        database, chosen, benchmark=benchmark, min_turnover=min_turnover or MIN_TURNOVER
+    )
+
+    console.print(
+        f"期間: [bold]{chosen.value}[/] ／ 銘柄 {built.symbols_scanned} 件 ／ "
+        f"イベント [bold]{built.total}[/] 件 ／ 独立 {built.unique_days} 日"
+    )
+    console.print(
+        f"[dim]除外: 決算短信でない {built.excluded_not_earnings} ／ "
+        f"開示時刻なし {built.excluded_no_time} ／ 窓が取れない {built.excluded_no_window} ／ "
+        f"売買代金不足 {built.excluded_thin} ／ ベンチマークの営業日ずれ "
+        f"{built.excluded_no_benchmark}[/]"
+    )
+    if built.benchmark is None:
+        console.print(
+            "[yellow]ベンチマークなしで計算した。[/] 上位分位と下位分位の差では"
+            "ベンチマークが相殺されるので主要指標は成立するが、驚きの並べ替えは"
+            "地合いの影響を受ける。--benchmark で指数連動ETFを指定できる。"
+        )
+
+    if built.total == 0:
+        console.print("[yellow]イベントなし。[/]")
+        return
+
+    frame = built.frame()
+    table = Table(title=f"上位分位 − 下位分位（{chosen.value}、コスト控除後）")
+    for column in ("区分", "上位", "下位", "差", "t値", "クラスタ", "イベント"):
+        table.add_column(column, justify="right")
+
+    def add(label: str, rows: pd.DataFrame, column: str = "forward") -> None:
+        result = spread(rows, column=column)
+        flag = "" if result.reliable else "  [yellow](クラスタ<30)[/]"
+        table.add_row(
+            label,
+            f"{result.high * 100:+.2f}%",
+            f"{result.low * 100:+.2f}%",
+            f"[bold]{result.difference * 100:+.2f}%[/]",
+            f"{result.t_statistic:.2f}{flag}",
+            str(result.clusters),
+            str(result.events),
+        )
+
+    add("主要指標 R+60", frame)
+    add("副次 R+20", frame, column="forward_short")
+    busy, quiet = crowding_split(frame)
+    add("混雑日 R+60", busy)
+    add("閑散日 R+60", quiet)
+    add("場中 R+60", frame[frame["intraday"]])
+    add("引け後 R+60", frame[~frame["intraday"]])
+    console.print(table)
+    console.print(
+        "[dim]合否に使うのは「主要指標 R+60」の差1つだけ（セクション5）。"
+        "他はすべて副次で、判定には使わない。[/]"
     )
 
 
