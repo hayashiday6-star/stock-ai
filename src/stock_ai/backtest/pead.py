@@ -114,6 +114,12 @@ class Event:
     """R を除く直近20営業日の平均売買代金。"""
     same_day_count: int = 0
     """同じ日に決算を出した会社数。混雑度（セクション3-4）。"""
+    market_forward: float | None = None
+    """同じ窓でベンチマークが動いた分。**判定には使わない。**
+
+    超過リターンの水準が偏っているとき、それが銘柄側の話なのか
+    ベンチマーク側の話なのかを、引き算の内訳として読めるようにする。
+    """
     placebo: float | None = None
     """同じ銘柄・同じ計算を、決算から離れた日で回した超過リターン。
 
@@ -248,6 +254,7 @@ class EventSet:
                     "forward_short": e.forward_short,
                     "turnover_20d": e.turnover_20d,
                     "same_day_count": e.same_day_count,
+                    "market_forward": e.market_forward,
                     "placebo": e.placebo,
                 }
                 for e in self.events
@@ -377,6 +384,7 @@ def build_events(
                         forward=_excess(stock_forward, bench_forward),
                         forward_short=_excess(stock_short, bench_short),
                         turnover_20d=float(floor),
+                        market_forward=bench_forward,
                         placebo=_placebo_return(adjusted, bench_frame, index, position),
                     )
                 )
@@ -446,6 +454,7 @@ def _with_same_day_counts(events: list[Event]) -> list[Event]:
             forward_short=e.forward_short,
             turnover_20d=e.turnover_20d,
             same_day_count=per_day[e.reaction_on],
+            market_forward=e.market_forward,
             placebo=e.placebo,
         )
         for e in events

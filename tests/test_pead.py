@@ -477,3 +477,23 @@ def test_the_placebo_is_absent_when_there_is_no_room_before_the_event() -> None:
     built = build_events(_database({symbol: frame}, reports), Period.ALL)
 
     assert built.events[0].placebo is None
+
+
+def test_the_excess_return_decomposes_into_stock_minus_market() -> None:
+    """水準が銘柄側の話かベンチマーク側の話かを、引き算の内訳で読めるようにする。"""
+    base = _frame()
+    reaction = 100
+    symbol, bench = "7203", "1306"
+    frames = {
+        symbol: _with_drift(base, reaction, 0.0, 0.06),
+        bench: _with_drift(base, reaction, 0.0, 0.02),
+    }
+    reports = {symbol: [_report(symbol, base.index[reaction - 1].date())]}
+
+    built = build_events(_database(frames, reports), Period.ALL, benchmark=bench)
+
+    event = built.events[0]
+    assert event.market_forward == pytest.approx(0.02, abs=1e-9)
+    assert event.forward == pytest.approx(0.06 - 0.02, abs=1e-9)
+    # 内訳が足し戻せる。表示している式そのものを固定する。
+    assert event.forward + event.market_forward == pytest.approx(0.06, abs=1e-9)
