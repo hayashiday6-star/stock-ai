@@ -61,6 +61,16 @@ ONE_WAY_COST = 0.0015
 #: 取りこぼさないためである。
 EARNINGS_DOC_MARKER = "FinancialStatements"
 
+#: 並べ替える変数。**これが2つの事前登録を分ける唯一の箇所である。**
+#:
+#: ``"reaction"`` は ``docs/PREREG_PEAD_JP.md``（不合格）が封印した、R 当日の
+#: 市場対比リターン。``"sue"`` は ``docs/PREREG_SUE_JP.md`` が封印する、通期
+#: 実績と直前に公表済みだった会社予想との乖離。**それ以外は全部同じ経路を
+#: 通る。** そうしないと、結果の差が並べ替え方の違いなのか実装の違いなのかを
+#: 分離できない。
+SORT_REACTION = "reaction"
+SORT_SUE = "sue"
+
 #: IS と OOS の境界。セクション6。**リターンを見て決めたものではない。**
 OOS_FROM = dt.date(2024, 1, 1)
 
@@ -215,6 +225,10 @@ class EventSet:
     excluded_no_window: int = 0
     excluded_thin: int = 0
     excluded_no_benchmark: int = 0
+    excluded_not_annual: int = 0
+    """``sue`` で並べ替えるときに、通期短信でないため落とした数。"""
+    excluded_no_forecast: int = 0
+    """通期短信だが、直前の短信に通期予想が無いため驚きを出せなかった数。"""
 
     @property
     def total(self) -> int:
@@ -253,6 +267,7 @@ def build_events(
     symbols: list[str] | None = None,
     benchmark: str | None = None,
     min_turnover: float = MIN_TURNOVER,
+    sort: str = SORT_REACTION,
 ) -> EventSet:
     """封印した定義どおりにイベントを組み立てる。
 
@@ -265,10 +280,21 @@ def build_events(
             素のリターンになる。主要指標は上位分位と下位分位の**差**なので
             ベンチマークは相殺されるが、驚きの並べ替えには効く。
         min_turnover: セクション2の流動性下限（円）。
+        sort: 並べ替える変数。``SORT_REACTION`` なら R 当日の市場対比リターン
+            （``docs/PREREG_PEAD_JP.md``）、``SORT_SUE`` なら通期実績と直前に
+            公表済みだった会社予想との乖離（``docs/PREREG_SUE_JP.md``）。
+            **これ以外は共通の経路を通る。** 別々に書くと、結果の違いが
+            並べ替え方の違いなのか実装の違いなのか分離できなくなる。
 
     Returns:
         イベント集合。除外の内訳つき。
     """
+    if sort not in (SORT_REACTION, SORT_SUE):
+        raise ValueError(f"unknown sort: {sort!r}")
+    # 局所インポート。forecast_revision がこのモジュールの定数と関数を使う
+    # ので、上に置くと循環する。
+    from stock_ai.backtest.forecast_revision import find_sue_events
+
     with database.session() as session:
         if symbols is None:
             symbols = [sym for sym, market in list_securities(session) if market == "JP"]
@@ -283,6 +309,7 @@ def build_events(
 
         events: list[Event] = []
         not_earnings = no_time = no_window = thin = no_bench = 0
+        not_annual = no_forecast = 0
 
         for symbol in symbols:
             if symbol == benchmark:
@@ -298,6 +325,15 @@ def build_events(
             # 売買代金は生値で測る。調整済み終値に実出来高を掛けると、分割前の
             # バーで売買代金を分割比率のぶん過小に見積もる。
             turnover = (raw[CLOSE] * raw[VOLUME]).rolling(TURNOVER_WINDOW).mean().shift(1)
+
+            # 会社予想との乖離は、その銘柄の短信の並びを見ないと出せない。
+            # 開示日で引けるようにしておく。予想はどれも開示日より前に公表
+            # 済みの値なので、先読みにならない。
+            sue_by_day: dict[dt.date, float] = {}
+            if sort == SORT_SUE:
+                sue_by_day = {
+                    event.disclosed_on: event.surprise for event in find_sue_events(reports).events
+                }
 
             for report in reports:
                 if report.disclosed_on is None:
@@ -326,6 +362,17 @@ def build_events(
                 if pd.isna(floor) or floor < min_turnover:
                     thin += 1
                     continue
+
+                if sort == SORT_SUE:
+                    # 四半期では驚きを定義できない。会社予想は通期12ヶ月ぶん、
+                    # 実績は期中累計なので、そのまま引くと季節性を測ることに
+                    # なる（PREREG_SUE_JP.md セクション3-4）。
+                    if str(report.period) != "FY":
+                        not_annual += 1
+                        continue
+                    if report.disclosed_on not in sue_by_day:
+                        no_forecast += 1
+                        continue
 
                 stock_surprise = (
                     float(adjusted[CLOSE].iloc[position])
@@ -365,7 +412,11 @@ def build_events(
                         disclosed_on=report.disclosed_on,
                         reaction_on=reaction_on,
                         intraday=report.disclosed_at < session_close_on(report.disclosed_on),
-                        surprise=_excess(stock_surprise, bench_surprise),
+                        surprise=(
+                            sue_by_day[report.disclosed_on]
+                            if sort == SORT_SUE
+                            else _excess(stock_surprise, bench_surprise)
+                        ),
                         forward=_excess(stock_forward, bench_forward),
                         forward_short=_excess(stock_short, bench_short),
                         turnover_20d=float(floor),
@@ -383,6 +434,8 @@ def build_events(
         excluded_no_window=no_window,
         excluded_thin=thin,
         excluded_no_benchmark=no_bench,
+        excluded_not_annual=not_annual,
+        excluded_no_forecast=no_forecast,
     )
 
 
@@ -440,6 +493,14 @@ class Explanation:
     bench_reaction_close: float | None
     bench_entry_open: float | None
     bench_exit_close: float | None
+    period_label: str = ""
+    """短信の期（Q1/Q2/Q3/FY）。SUE は FY だけが対象になる。"""
+    forecast: float | None = None
+    """直前の短信が出していた通期予想の純利益。**開示日より前に公表済み。**"""
+    actual: float | None = None
+    """通期短信が報告した純利益の実績。"""
+    sue_surprise: float | None = None
+    """``(実績 − 予想) / |予想|``。SUE 版が並べ替えに使う値そのもの。"""
 
     @property
     def stock_surprise(self) -> float:
@@ -501,7 +562,14 @@ def explain_events(
             except KeyError:
                 return None
 
-        for report in FinancialStatementRepository(session).get_reports(symbol, period=None):
+        # 局所インポート。forecast_revision がこのモジュールを使うので、
+        # 上に置くと循環する。
+        from stock_ai.backtest.forecast_revision import find_sue_events
+
+        reports = FinancialStatementRepository(session).get_reports(symbol, period=None)
+        sue_by_day = {e.disclosed_on: e for e in find_sue_events(reports).events}
+
+        for report in reports:
             if report.disclosed_on is None or not is_earnings(report.doc_type):
                 continue
             position = reaction_position(index, report.disclosed_on, report.disclosed_at)
@@ -532,6 +600,22 @@ def explain_events(
                     bench_reaction_close=bench_at(CLOSE, position),
                     bench_entry_open=bench_at(OPEN, position + 1),
                     bench_exit_close=bench_at(CLOSE, exit_at),
+                    period_label=str(report.period),
+                    forecast=(
+                        sue_by_day[report.disclosed_on].forecast
+                        if report.disclosed_on in sue_by_day
+                        else None
+                    ),
+                    actual=(
+                        sue_by_day[report.disclosed_on].actual
+                        if report.disclosed_on in sue_by_day
+                        else None
+                    ),
+                    sue_surprise=(
+                        sue_by_day[report.disclosed_on].surprise
+                        if report.disclosed_on in sue_by_day
+                        else None
+                    ),
                 )
             )
     return out

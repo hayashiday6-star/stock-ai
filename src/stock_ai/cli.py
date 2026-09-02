@@ -67,6 +67,8 @@ from stock_ai.backtest.forecast_revision import (
 )
 from stock_ai.backtest.pead import (
     MIN_TURNOVER,
+    SORT_REACTION,
+    SORT_SUE,
     Period,
     build_events,
     crowding_split,
@@ -1707,18 +1709,29 @@ def pead_run(
     min_turnover: float = typer.Option(
         MIN_TURNOVER, "--min-turnover", help="Section 2's liquidity floor in yen."
     ),
+    surprise: str = typer.Option(
+        SORT_REACTION,
+        "--surprise",
+        help="reaction (PREREG_PEAD_JP.md) | sue (PREREG_SUE_JP.md). The sorting "
+        "variable is the only thing the two registrations differ on.",
+    ),
     i_am_ready_for_oos: bool = typer.Option(
         False,
         "--i-am-ready-for-oos",
         help="Required to run the OOS period. The registration judges once on OOS.",
     ),
 ) -> None:
-    """Run the sealed PEAD registration (docs/PREREG_PEAD_JP.md).
+    """Run a sealed registration: PREREG_PEAD_JP.md or PREREG_SUE_JP.md.
 
-    PERIOD has no default. The registration judges on OOS exactly once, and a
+    PERIOD has no default. Each registration judges on OOS exactly once, and a
     default would make that one look accidental - "just print everything" is
     how a held-out period stops being held out. Running ``oos`` additionally
     needs ``--i-am-ready-for-oos``.
+
+    ``--surprise`` picks which registration is being run. Everything else --
+    the reaction day, the trading rule, the costs, the period split, the
+    metric -- is shared, so a difference in the result is a difference in the
+    sorting variable and not in the implementation.
     """
     settings = get_settings()
     configure_logging(settings.log_level)
@@ -1737,10 +1750,25 @@ def pead_run(
     database = Database()
     database.create_all()
 
+    chosen_sort = surprise.strip().lower()
+    if chosen_sort not in (SORT_REACTION, SORT_SUE):
+        raise typer.BadParameter(
+            f"--surprise must be {SORT_REACTION} or {SORT_SUE}; got {surprise!r}."
+        )
+
     built = build_events(
-        database, chosen, benchmark=benchmark, min_turnover=min_turnover or MIN_TURNOVER
+        database,
+        chosen,
+        benchmark=benchmark,
+        min_turnover=min_turnover or MIN_TURNOVER,
+        sort=chosen_sort,
     )
 
+    registration = "PREREG_SUE_JP.md" if chosen_sort == SORT_SUE else "PREREG_PEAD_JP.md"
+    sorted_by = (
+        "会社予想からの乖離（通期のみ）" if chosen_sort == SORT_SUE else "R 当日の市場対比リターン"
+    )
+    console.print(f"事前登録: [bold]docs/{registration}[/] ／ 並べ替え: {sorted_by}")
     console.print(
         f"期間: [bold]{chosen.value}[/] ／ 銘柄 {built.symbols_scanned} 件 ／ "
         f"イベント [bold]{built.total}[/] 件 ／ 独立 {built.unique_days} 日"
@@ -1751,6 +1779,11 @@ def pead_run(
         f"売買代金不足 {built.excluded_thin} ／ ベンチマークの営業日ずれ "
         f"{built.excluded_no_benchmark}[/]"
     )
+    if chosen_sort == SORT_SUE:
+        console.print(
+            f"[dim]  さらに: 通期短信でない {built.excluded_not_annual} ／ "
+            f"直前の短信に通期予想が無い {built.excluded_no_forecast}[/]"
+        )
     if built.benchmark is None:
         console.print(
             "[yellow]ベンチマークなしで計算した。[/] 上位分位と下位分位の差では"
@@ -2110,9 +2143,17 @@ def pead_explain(
             f" → 反応日 R = [bold]{row.reaction_on}[/]"
         )
         console.print(
-            f"  驚き : {row.reaction_close:,.2f} ÷ {row.prior_close:,.2f} − 1 = "
+            f"  驚き（株価反応）: {row.reaction_close:,.2f} ÷ {row.prior_close:,.2f} − 1 = "
             f"[bold]{row.stock_surprise * 100:+.2f}%[/]"
         )
+        if row.sue_surprise is not None:
+            console.print(
+                f"  驚き（会社予想）: 実績 {row.actual:,.0f} − 予想 {row.forecast:,.0f} "
+                f"÷ |予想| = [bold]{row.sue_surprise * 100:+.2f}%[/]"
+                f"  [dim]（{row.period_label} 短信。予想は開示日より前に公表済み）[/]"
+            )
+        elif row.period_label == "FY":
+            console.print("  驚き（会社予想）: [yellow]直前の短信に通期予想が無く、出せない[/]")
         if row.bench_surprise is not None:
             console.print(
                 f"         ベンチマーク {row.bench_reaction_close:,.2f} ÷ "
