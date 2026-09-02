@@ -330,6 +330,30 @@ def _parse_date(value: str | None) -> dt.date | None:
         return None
 
 
+def _parse_time(value: str | None) -> dt.time | None:
+    """開示時刻を読む。``14:00:00`` も ``14:00`` も受ける。
+
+    時刻は日付と違って**無いことがある**。読めなければ ``None`` を返し、
+    「時刻不明」として扱わせる。ここで正午などの既定値を入れると、場中開示か
+    引け後開示かを取り違えたまま先に進んでしまう - 一番避けたい壊れ方である。
+    """
+    if not value:
+        return None
+    text = str(value).strip()
+    for shape in ("%H:%M:%S", "%H:%M"):
+        try:
+            return dt.datetime.strptime(text, shape).time()
+        except ValueError:
+            continue
+    return None
+
+
+#: 開示時刻を名乗りうるキー。v2 は略記、v1 は綴り。
+_TIME_KEYS = ("DiscTime", "DisclosedTime")
+
+#: 開示の種類を名乗りうるキー。
+_DOC_TYPE_KEYS = ("DocType", "TypeOfDocument")
+
 #: Field names that may carry the period marker, newest spelling first.
 _PERIOD_FIELDS = ("CurPerType", "Period", "TypeOfCurrentPeriod", "PeriodType")
 
@@ -430,6 +454,8 @@ def normalize_statements(symbol: str, records: list[dict[str, Any]]) -> list[Fin
             fiscal_year=fiscal_year,
             period=period,
             disclosed_on=_parse_date(disclosed_text),
+            disclosed_at=_parse_time(_text(record, *_TIME_KEYS)),
+            doc_type=_text(record, *_DOC_TYPE_KEYS),
             fiscal_year_end=_fiscal_year_end_of(record),
             revenue=_first(record, "Sales", "NetSales"),
             operating_income=_first(record, "OP", "OperatingProfit"),

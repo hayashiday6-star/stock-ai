@@ -8,7 +8,16 @@ from __future__ import annotations
 
 import datetime as dt
 
-from sqlalchemy import Date, DateTime, ForeignKey, Integer, String, UniqueConstraint, func
+from sqlalchemy import (
+    Date,
+    DateTime,
+    ForeignKey,
+    Integer,
+    String,
+    Time,
+    UniqueConstraint,
+    func,
+)
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
@@ -172,6 +181,16 @@ class FinancialStatement(Base):
     fiscal_year: Mapped[int] = mapped_column(Integer, index=True)
     period: Mapped[str] = mapped_column(String(4), default="FY")
     disclosed_on: Mapped[dt.date | None] = mapped_column(Date, default=None)
+    disclosed_at: Mapped[dt.time | None] = mapped_column(Time, default=None)
+    """開示時刻。日付だけでは場中開示と引け後開示を区別できない。
+
+    開示イベントの検証では、この区別がエントリー日と「驚き」を測る窓の
+    両方を決める。引け後開示なら当日の値動きにニュースは入っておらず反応は
+    翌日から、場中開示ならその日のうちに動く。取り違えると、反応そのものを
+    ドリフトとして数えるか、逆に反応を取り逃がすかのどちらかになる。
+    """
+    doc_type: Mapped[str | None] = mapped_column(String(80), default=None)
+    """開示の種類。決算短信と予想修正は別のイベントで、混ぜて数えられない。"""
     fiscal_year_end: Mapped[dt.date | None] = mapped_column(Date, default=None)
     """The company's fiscal year-end *date*, not just its year.
 

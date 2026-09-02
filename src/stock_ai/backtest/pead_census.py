@@ -14,6 +14,9 @@
 - **リターン窓が実際に取れるか。** D+1の寄りと D+60 の終値が価格データに
   存在しない開示は、件数に数えても検証には使えない
 - 同日発表社数の分布（注意分散仮説がそのまま測れるか）
+- **開示が場中か引け後か。** 引け後開示なら当日の値動きにニュースは入って
+  おらず反応は翌日から始まる。場中なら当日に動く。取り違えると、反応そのものを
+  ドリフトとして数えるか、逆に反応を取り逃がすかのどちらかになる
 
 数えた結果を見てから事前登録を書く。これは合否判定に使うバックテストでは
 ないので、この順序は事前登録の原則に反しない。
@@ -45,6 +48,18 @@ DRIFT_WINDOW = 60
 #: エントリーは D+1。開示当日の終値は使えない（引け後開示なら約定できない）。
 ENTRY_OFFSET = 1
 
+#: 東証の後場が終わる時刻。これ以降の開示は、その日の値動きに入っていない。
+#:
+#: 2024-11-05 に 15:00 から 15:30 へ延長されたが、ここでは**遅いほう**を使わない。
+#: 15:10 の開示を「引け後」と誤って扱うと、実際には当日に織り込まれた反応を
+#: ドリフトとして数えてしまう。境界に載る開示は少数なので、保守側に倒して
+#: 15:00 以降を引け後とみなし、延長後の 15:00-15:30 は別枠で数える。
+SESSION_CLOSE = dt.time(15, 0)
+
+#: 立会時間の延長日。これ以降は 15:30 が引け。
+SESSION_EXTENDED_FROM = dt.date(2024, 11, 5)
+EXTENDED_CLOSE = dt.time(15, 30)
+
 #: 流動性帯の区切り（円）。前回の事前登録が使った1億円を含む。どの帯なら
 #: 件数が残るかを見るためのもので、閾値をここで決めるものではない。
 TURNOVER_BANDS: tuple[float, ...] = (0.0, 20_000_000.0, 50_000_000.0, 100_000_000.0, 300_000_000.0)
@@ -64,6 +79,23 @@ class Disclosure:
     """D+1 に価格がある（エントリーできる）。"""
     has_exit_bar: bool
     """D+60 に価格がある（決済できる）。"""
+    disclosed_at: dt.time | None = None
+    """開示時刻。``None`` は「取り込んでいない」であって「無い」ではない。"""
+
+    def timing(self) -> str:
+        """場中 / 引け後 / 判定不能 のどれか。
+
+        延長後（2024-11-05 以降）の 15:00-15:30 は、当日中の開示ではあるが
+        残り時間が短い。まとめてしまうと「引け後」の中に当日反応を持つものが
+        混ざるので、別枠で数える。
+        """
+        if self.disclosed_at is None:
+            return "時刻なし"
+        if self.disclosed_at < SESSION_CLOSE:
+            return "場中"
+        if self.disclosed_on >= SESSION_EXTENDED_FROM and self.disclosed_at < EXTENDED_CLOSE:
+            return "延長後の場中（15:00-15:30）"
+        return "引け後"
 
     @property
     def measurable(self) -> bool:
@@ -128,6 +160,28 @@ class CensusReport:
         if counts.get(None):
             ordered.append((None, counts[None]))
         return ordered
+
+    def timing_counts(self, disclosures: list[Disclosure] | None = None) -> Counter[str]:
+        """場中 / 引け後 の内訳。PEAD のエントリー日はこれで決まる。"""
+        rows = self.disclosures if disclosures is None else disclosures
+        return Counter(d.timing() for d in rows)
+
+    def slots_per_fiscal_year(self, disclosures: list[Disclosure] | None = None) -> Counter[int]:
+        """1銘柄・1会計年度あたり、開示が何件あるかの分布。
+
+        DBは ``(銘柄, 会計年度, 四半期)`` を一意キーにしているので、**1銘柄・
+        1会計年度に4件までしか入らない**。日本の上場企業は四半期ごとに短信を
+        出すので、揃っていれば4のはずである。
+
+        3が並ぶなら、四半期が1つ落ちているか、同じ期の再開示が先のものを
+        上書きしている。2が多いなら、そもそも四半期開示をしない銘柄
+        （REITなど）が混ざっている。**この分布を見るまでは、どちらとも
+        言えない。** 年別の件数だけでは「1銘柄あたり3件」の理由が分からず、
+        原因を取り違えたまま事前登録を書くことになる。
+        """
+        rows = self.disclosures if disclosures is None else disclosures
+        filled: Counter[tuple[str, int]] = Counter((d.symbol, d.fiscal_year) for d in rows)
+        return Counter(filled.values())
 
     def same_day_counts(self, disclosures: list[Disclosure] | None = None) -> Counter[dt.date]:
         """開示日ごとの発表社数。注意分散仮説はこの分布の上でしか測れない。"""
@@ -207,6 +261,7 @@ def run_census(database: Database, symbols: list[str] | None = None) -> CensusRe
                         turnover_20d=_turnover_before(raw, when),
                         has_entry_bar=_bar_exists(raw.index, when, ENTRY_OFFSET),
                         has_exit_bar=_bar_exists(raw.index, when, ENTRY_OFFSET + DRIFT_WINDOW),
+                        disclosed_at=report.disclosed_at,
                     )
                 )
 

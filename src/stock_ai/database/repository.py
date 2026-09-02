@@ -61,6 +61,8 @@ _FUNDAMENTAL_COLUMNS = [
 ]
 _STATEMENT_COLUMNS = [
     "disclosed_on",
+    "disclosed_at",
+    "doc_type",
     "fiscal_year_end",
     "revenue",
     "operating_income",

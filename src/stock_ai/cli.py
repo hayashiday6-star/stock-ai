@@ -1565,6 +1565,40 @@ def pead_census(
         "使ったユニバースに相当する。ここが薄ければ前回と同じ結末になる。[/]"
     )
 
+    slots = report.slots_per_fiscal_year(usable)
+    slot_table = Table(title="1銘柄・1会計年度あたりの開示件数")
+    slot_table.add_column("件数", justify="right")
+    slot_table.add_column("該当する銘柄年", justify="right")
+    slot_table.add_column("割合", justify="right")
+    slot_total = sum(slots.values())
+    for count in sorted(slots):
+        share = slots[count] / slot_total * 100 if slot_total else 0.0
+        slot_table.add_row(str(count), str(slots[count]), f"{share:.1f}%")
+    console.print(slot_table)
+    console.print(
+        "[dim]DBは（銘柄, 会計年度, 四半期）を一意キーにしているので4件が上限。"
+        "四半期ごとに短信が出る以上、揃っていれば4のはず。3が並ぶなら四半期が"
+        "落ちているか同じ期の再開示が上書きしている。2が多いなら四半期開示を"
+        "しない銘柄が混ざっている。[/]"
+    )
+
+    timing = report.timing_counts(usable)
+    timing_table = Table(title="開示のタイミング（エントリー日がこれで決まる）")
+    timing_table.add_column("区分", justify="left")
+    timing_table.add_column("開示件数", justify="right")
+    timing_table.add_column("割合", justify="right")
+    for label in ("場中", "延長後の場中（15:00-15:30）", "引け後", "時刻なし"):
+        count = timing.get(label, 0)
+        if count:
+            timing_table.add_row(label, str(count), f"{count / len(usable) * 100:.1f}%")
+    console.print(timing_table)
+    if timing.get("時刻なし"):
+        console.print(
+            "[yellow]「時刻なし」は「場中でも引け後でもない」ではなく"
+            "「取り込んでいない」である。J-Quants の DiscTime を保存するように"
+            "したので、3-データ取得.bat で財務を取り直すと埋まる。[/]"
+        )
+
     per_day = report.same_day_counts(usable)
     counts = sorted(per_day.values())
     busiest = per_day.most_common(5)
