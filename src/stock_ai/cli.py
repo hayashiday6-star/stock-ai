@@ -1967,7 +1967,10 @@ def sue_census(
         + "、".join(f"{period} {count:,}" for period, count in report.forecast_sources())
     )
     quantiles = report.surprise_quantiles()
-    console.print("驚きの分布: " + "、".join(f"{name} {value:+.1%}" for name, value in quantiles))
+    console.print(
+        "驚きの分布（相対変化率）: "
+        + "、".join(f"{name} {value:+.1%}" for name, value in quantiles)
+    )
     share = report.near_zero / report.total
     console.print(f"±1%未満に収まったイベント: [bold]{report.near_zero:,}[/]（{share:.1%}）")
     if share > 0.3:
@@ -1976,6 +1979,51 @@ def sue_census(
             "見えた時点で予想を出し直すため、分位の中央付近が潰れうる。分位に"
             "分けても上位と下位が同じものにならないか、封印前に確認する。"
         )
+
+    console.print()
+    console.print("[bold]並べ替える変数の候補を2つ比べる[/]")
+    if report.scaled_available == 0:
+        console.print(
+            "[yellow]時価総額を1件も出せなかった。[/] 発行済株式数か、開示日より"
+            "前の株価が入っていない。相対変化率で進めるしかない。"
+        )
+    else:
+        console.print(
+            f"時価総額を出せたイベント: {report.scaled_available:,} / {report.total:,}"
+            f"（出せなかった {report.without_market_cap:,}）"
+        )
+        console.print(
+            "驚きの分布（時価総額比・bp）: "
+            + "、".join(f"{name} {value:+.0f}" for name, value in report.scaled_quantiles())
+        )
+        rho = report.rank_correlation()
+        if rho is not None:
+            console.print(f"2定義の順位相関（スピアマン）: [bold]{rho:.3f}[/]")
+            if rho > 0.9:
+                console.print(
+                    "[dim]  どちらで並べてもほぼ同じ顔ぶれになる。定義の選択は結果を"
+                    "変えないので、議論する必要は無い。[/]"
+                )
+            else:
+                console.print(
+                    "[yellow]  どちらを選ぶかで顔ぶれが変わる。[/] 結果を見る前に、"
+                    "理屈で決めて封印する必要がある。"
+                )
+        profile = report.size_profile()
+        if profile:
+            table = Table(title="5分位ごとの時価総額の中央値（億円）")
+            table.add_column("並べ替えた変数")
+            for column in ("下位20%", "中位20%", "上位20%"):
+                table.add_column(column, justify="right")
+            for name, low, mid, high in profile:
+                table.add_row(name, f"{low:,.0f}", f"{mid:,.0f}", f"{high:,.0f}")
+            console.print(table)
+            console.print(
+                "[dim]端の分位だけ時価総額が小さければ、その定義は驚きの大きさでは"
+                "なく会社の小ささを並べている。[/]"
+            )
+
+    console.print()
     console.print("[dim]件数と分布のみ。リターンは計算していない。[/]")
 
 
