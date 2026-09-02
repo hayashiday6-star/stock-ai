@@ -150,7 +150,7 @@ def find_revisions(
     reports: list[FinancialReport],
     field: str = "net_income",
     min_change: float = DEFAULT_MIN_CHANGE,
-) -> tuple[list[Revision], int, int, int]:
+) -> _Found:
     """1銘柄の短信列から、同じ会計年度内の予想修正を拾う。
 
     **会計年度をまたいだ比較はしない。** 通期予想は当期のものなので、
@@ -253,4 +253,190 @@ def census_revisions(
         missing_current_only=only_current,
         missing_both=neither,
         missing_by_transition=by_transition,
+    )
+
+
+# --- SUE（実績と会社予想の差）--------------------------------------------------
+
+
+@dataclass(frozen=True)
+class SueEvent:
+    """通期短信1件。実績と、その直前に公表されていた通期予想の組。"""
+
+    symbol: str
+    fiscal_year_end: dt.date
+    disclosed_on: dt.date
+    forecast: float
+    """直前の短信が出していた通期予想。**開示日より前に公開済みの値である。**"""
+    actual: float
+    """通期短信が報告した実績。この日の新情報。"""
+    forecast_from_period: str
+    """予想を出した短信の期。通常は Q3。"""
+
+    @property
+    def surprise(self) -> float:
+        """予想からの乖離。予想を分母にする。"""
+        return self.actual / self.forecast - 1.0
+
+
+@dataclass(frozen=True)
+class SueReport:
+    """SUE を計算できるイベントの件数。**リターンは計算しない。**"""
+
+    events: list[SueEvent]
+    symbols_scanned: int
+    fy_statements: int
+    """通期短信の総数。"""
+    without_actual: int
+    """実績が入っていない通期短信。"""
+    without_prior_forecast: int
+    """直前の短信に通期予想が無かった通期短信。"""
+
+    @property
+    def total(self) -> int:
+        """SUE を計算できたイベント数。"""
+        return len(self.events)
+
+    @property
+    def unique_days(self) -> int:
+        """独立した開示日数。日次クラスタの有効サンプルサイズ。
+
+        通期短信は5月に極端に集中するので、**イベント数のわりに日数が
+        少なくなる**。差の検定はこの日数で効くので、件数だけを見て
+        サンプルが足りると判断してはいけない。
+        """
+        return len({e.disclosed_on for e in self.events})
+
+    @property
+    def near_zero(self) -> int:
+        """驚きが±1%未満だったイベント数。
+
+        **多すぎると SUE で並べ替えられない。** 日本の会社は着地が見えた
+        時点で予想を出し直すので、実績が予想にぴたりと寄る。分位に分けても
+        上位と下位が同じものになっていないかを、リターンを見る前に確かめる。
+        """
+        return sum(1 for e in self.events if abs(e.surprise) < 0.01)
+
+    def surprise_quantiles(self) -> list[tuple[str, float]]:
+        """驚きの分布。分位の境目が潰れていないかを見る。"""
+        if not self.events:
+            return []
+        values = sorted(e.surprise for e in self.events)
+
+        def at(fraction: float) -> float:
+            return values[min(len(values) - 1, int(fraction * len(values)))]
+
+        return [(f"p{int(f * 100)}", at(f)) for f in (0.05, 0.2, 0.4, 0.5, 0.6, 0.8, 0.95)]
+
+    def forecast_sources(self) -> list[tuple[str, int]]:
+        """予想を出した短信の期ごとの件数。通常は Q3 が大半になるはず。"""
+        counts: dict[str, int] = {}
+        for event in self.events:
+            counts[event.forecast_from_period] = counts.get(event.forecast_from_period, 0) + 1
+        return sorted(counts.items(), key=lambda kv: -kv[1])
+
+    def by_year(self) -> list[tuple[int, int, int]]:
+        """年ごとの (年, イベント数, 独立開示日数)。"""
+        years = sorted({e.disclosed_on.year for e in self.events})
+        return [
+            (
+                year,
+                len([e for e in self.events if e.disclosed_on.year == year]),
+                len({e.disclosed_on for e in self.events if e.disclosed_on.year == year}),
+            )
+            for year in years
+        ]
+
+
+@dataclass(frozen=True)
+class _SueFound:
+    """:func:`find_sue_events` の返り値。"""
+
+    events: list[SueEvent]
+    fy_statements: int
+    without_actual: int
+    without_prior_forecast: int
+
+
+def find_sue_events(reports: list[FinancialReport], field: str = "net_income") -> _SueFound:
+    """通期短信について、実績と直前の通期予想を組にする。
+
+    **四半期では SUE を定義しない。** 日本の短信は通期予想と期中累計の実績を
+    出すので、Q1時点では実績3ヶ月ぶんと予想12ヶ月ぶんになり、直接引き算
+    できない。四半期でやるには「期待累計＝通期予想×季節配分」が要り、季節配分の
+    推定という可動部が増える。校正用の物差しに可動部は持ち込まない。
+
+    通期短信だけなら、実績も予想も同じ12ヶ月ぶんで、そのまま引ける。
+    """
+    by_year: dict[dt.date, list[FinancialReport]] = {}
+    for report in reports:
+        if report.disclosed_on is None or report.fiscal_year_end is None:
+            continue
+        by_year.setdefault(report.fiscal_year_end, []).append(report)
+
+    events: list[SueEvent] = []
+    annual = no_actual = no_forecast = 0
+
+    for fiscal_year_end, group in by_year.items():
+        ordered = sorted(group, key=lambda r: (_ORDER.get(str(r.period), 9), r.disclosed_on))
+        for index, report in enumerate(ordered):
+            if str(report.period) != "FY":
+                continue
+            annual += 1
+            actual = getattr(report, field, None)
+            if actual is None:
+                no_actual += 1
+                continue
+            # 直前の短信が出していた通期予想。無ければさらに前を見る -
+            # Q3が予想を出していない会社でも、Q2の予想は公開済みである。
+            prior = next(
+                (
+                    earlier
+                    for earlier in reversed(ordered[:index])
+                    if _forecast_of(earlier, field) is not None
+                ),
+                None,
+            )
+            if prior is None:
+                no_forecast += 1
+                continue
+            forecast = _forecast_of(prior, field)
+            assert forecast is not None  # 上の next() で絞り込み済み
+            events.append(
+                SueEvent(
+                    symbol=report.symbol,
+                    fiscal_year_end=fiscal_year_end,
+                    disclosed_on=report.disclosed_on,
+                    forecast=forecast,
+                    actual=float(actual),
+                    forecast_from_period=str(prior.period),
+                )
+            )
+    return _SueFound(events, annual, no_actual, no_forecast)
+
+
+def census_sue(
+    database: Database, symbols: list[str] | None = None, field: str = "net_income"
+) -> SueReport:
+    """SUE を計算できる通期短信を数える。**リターンは計算しない。**"""
+    events: list[SueEvent] = []
+    annual = no_actual = no_forecast = 0
+
+    with database.session() as session:
+        if symbols is None:
+            symbols = [sym for sym, market in list_securities(session) if market == "JP"]
+        repo = FinancialStatementRepository(session)
+        for symbol in symbols:
+            found = find_sue_events(repo.get_reports(symbol, period=None), field=field)
+            events.extend(found.events)
+            annual += found.fy_statements
+            no_actual += found.without_actual
+            no_forecast += found.without_prior_forecast
+
+    return SueReport(
+        events=events,
+        symbols_scanned=len(symbols),
+        fy_statements=annual,
+        without_actual=no_actual,
+        without_prior_forecast=no_forecast,
     )
