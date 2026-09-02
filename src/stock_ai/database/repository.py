@@ -504,6 +504,31 @@ class FinancialStatementRepository:
             for row in self.session.execute(stmt).scalars().all()
         ]
 
+    def delete_reports(self, symbol: str) -> int:
+        """``symbol`` の財務行を全部消す。取り直しの前だけに使う。
+
+        ``upsert_reports`` は鍵が一致する行しか置き換えないので、**鍵の意味が
+        変わったり、5年ローリング窓がずれたりすると、古い行がそのまま残る**。
+        実測で 7203 は API が返す20件に対しDBに21行あった。この1行は現在の
+        窓の外にあり、取り直しても消えない。開示イベントを数える側から見れば
+        存在しない開示が1件増えているのと同じである。
+
+        消してから入れ直せば、DBの中身は「いまAPIが返すもの」と一致する。
+
+        Returns:
+            消した行数。
+        """
+        security_id = self.session.execute(
+            select(Security.id).where(Security.symbol == symbol)
+        ).scalar_one_or_none()
+        if security_id is None:
+            return 0
+        result = self.session.execute(
+            delete(FinancialStatement).where(FinancialStatement.security_id == security_id)
+        )
+        self.session.commit()
+        return int(result.rowcount or 0)
+
     def latest_fiscal_year(self, symbol: str) -> int | None:
         """Return the most recent stored annual fiscal year, or ``None``."""
         return self.session.execute(

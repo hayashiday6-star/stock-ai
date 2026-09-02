@@ -865,6 +865,13 @@ def bulk_fetch(
         help="Override JP_STATEMENT_SOURCE for this run only: jquants | edinet. "
         "For a one-off backfill of a field only one source carries.",
     ),
+    replace: bool = typer.Option(
+        False,
+        "--replace",
+        help="Statements only: DELETE each symbol's stored statements before "
+        "fetching, so the result matches exactly what the API returns now. "
+        "Without this, rows the API no longer returns are kept forever.",
+    ),
 ) -> None:
     """Backfill prices or statements across a whole universe.
 
@@ -894,6 +901,21 @@ def bulk_fetch(
         f"Fetching [bold]{dataset.value}[/] for {len(targets)} symbol(s). "
         "Interrupting is safe - re-run to resume."
     )
+    if replace and dataset is not Dataset.STATEMENTS:
+        raise typer.BadParameter("--replace applies to --what statements only.")
+    if replace:
+        # 鍵が一致する行しか置き換わらないので、鍵の意味が変わったり5年ローリング
+        # 窓がずれたりすると古い行が残る。実測で 7203 は API の20件に対しDBに
+        # 21行あった。数える側から見れば、存在しない開示が1件増えているのと同じ。
+        removed = 0
+        with database.session() as session:
+            statement_repo = FinancialStatementRepository(session)
+            for symbol in targets:
+                removed += statement_repo.delete_reports(symbol)
+        console.print(
+            f"[yellow]--replace:[/] 既存の財務 {removed} 行を消した。"
+            "取得が終われば、DBの中身は「いまAPIが返すもの」と一致する。"
+        )
     if dataset is Dataset.PRICES and not backfill:
         _warn_if_lookback_will_not_reach(database, targets, lookback)
     # Each dataset reads its own source setting - JP_PRICE_SOURCE for prices,
