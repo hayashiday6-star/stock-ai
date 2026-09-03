@@ -13,6 +13,7 @@ import sys
 from collections import Counter
 from collections.abc import Callable
 from pathlib import Path
+from statistics import median
 
 import pandas as pd
 import typer
@@ -67,6 +68,7 @@ from stock_ai.backtest.forecast_revision import (
 )
 from stock_ai.backtest.pead import (
     MIN_TURNOVER,
+    OOS_FROM,
     SORT_REACTION,
     SORT_SUE,
     Period,
@@ -77,7 +79,15 @@ from stock_ai.backtest.pead import (
     spread,
 )
 from stock_ai.backtest.pead_census import DRIFT_WINDOW, ENTRY_OFFSET, run_census
+from stock_ai.backtest.power import DEFAULT_LAGS, TARGET_T, estimate_power
 from stock_ai.backtest.report import metrics_frame
+from stock_ai.backtest.reversal import (
+    BENCHMARK,
+    COST_ROUND_TRIP,
+    JUDGMENT_FROM,
+    build_series,
+    survivorship_gap,
+)
 from stock_ai.backtest.reversal_census import HOLDING_DAYS as REVERSAL_HOLDING
 from stock_ai.backtest.reversal_census import LOOKBACK_DAYS as REVERSAL_LOOKBACK
 from stock_ai.backtest.reversal_census import run_census as run_reversal_census
@@ -120,6 +130,7 @@ from stock_ai.data.delisted import (
     snapshot_dates,
 )
 from stock_ai.data.fx import FxConverter
+from stock_ai.data.jquants_exit import CANCELLATION, audit
 from stock_ai.data.jquants_fundamentals import JQuantsFundamentalsProvider
 from stock_ai.data.jquants_profile import JQuantsProfileProvider
 from stock_ai.data.jquants_provider import JQuantsPriceProvider
@@ -2481,6 +2492,376 @@ def delisted_harvest(
         "[bold]これで、廃止銘柄を含む universe が日付ごとに手元にある。[/] "
         "分位を組むときは「その日以前で最も新しい名簿」を使う——全期間の和集合を"
         "使うと、まだ上場していない銘柄を過去に置くことになる。"
+    )
+
+
+@app.command(name="jquants-inventory")
+def jquants_inventory(
+    directory: str = typer.Option(
+        str(DEFAULT_SNAPSHOT_DIR), "--dir", help="Where the dated rosters live."
+    ),
+) -> None:
+    """List what the cancellation takes away, and how much is already local.
+
+    The plan ends 2026-09-22. Anything that can be refetched afterwards is not
+    urgent: Tachibana still serves prices, EDINET still serves annual reports.
+    Three things cannot be rebuilt from anywhere, so those are what this counts.
+
+    1. **Dated listing rosters.** The Tachibana master returns currently-listed
+       names only.
+    2. **Prices for delisted symbols.** Those codes no longer exist at Tachibana.
+    3. **Company full-year forecasts and disclosure times.** EDINET's annual
+       reports carry actuals, and neither of these.
+
+    The five-year rolling window bites before the cancellation does: the oldest
+    end is already gone and recedes daily. Nothing is fetched here - counting
+    only. ``delisted-harvest`` and ``bulk-fetch`` do the fetching.
+    """
+    settings = get_settings()
+    configure_logging(settings.log_level)
+
+    database = Database()
+    database.create_all()
+    snapshots = membership(Path(directory))
+    coverage = audit(database, snapshots)
+    left = coverage.days_left()
+
+    console.print(
+        f"解約日 [bold]{CANCELLATION}[/] まで "
+        + (f"[bold]{left}[/] 日。" if left >= 0 else "[red]過ぎている。[/]")
+    )
+    console.print()
+
+    have = Table(title="いま手元にあるもの")
+    for column in ("データ", "量", "期間"):
+        have.add_column(column, justify="left" if column != "量" else "right")
+    have.add_row(
+        "日足の価格",
+        f"{coverage.symbols_with_prices:,} 銘柄",
+        f"{coverage.price_first} 〜 {coverage.price_last}"
+        if coverage.price_first
+        else "[yellow]無い[/]",
+    )
+    have.add_row(
+        "財務諸表",
+        f"{coverage.statements:,} 行 / {coverage.symbols_with_statements:,} 銘柄",
+        f"{coverage.statement_first} 〜 {coverage.statement_last}"
+        if coverage.statement_first
+        else "[yellow]無い[/]",
+    )
+    have.add_row("　うち開示時刻あり", f"{coverage.with_disclosed_at:,} 行", "")
+    have.add_row("　うち会社予想あり", f"{coverage.with_forecast:,} 行", "")
+    have.add_row(
+        "日付ごとの名簿",
+        f"{coverage.snapshots:,} 件",
+        f"{coverage.snapshot_first} 〜 {coverage.snapshot_last}"
+        if coverage.snapshot_first
+        else "[yellow]無い[/]",
+    )
+    console.print(have)
+
+    risk = Table(title="解約後に作り直せないもの")
+    for column in ("失われるもの", "状態", "取り方"):
+        risk.add_column(column, overflow="fold")
+    roster_state = (
+        f"[green]{coverage.snapshots} 件保存済み[/]" if coverage.snapshots else "[red]1件も無い[/]"
+    )
+    risk.add_row("日付ごとの上場名簿", roster_state, "checks\\廃止銘柄の取り込み.bat")
+    if coverage.snapshots:
+        missing = coverage.roster_without_prices
+        price_state = (
+            "[green]名簿の全銘柄に株価がある[/]"
+            if missing == 0
+            else f"[red]{missing:,} 銘柄の株価が無い[/]"
+        )
+    else:
+        price_state = "[yellow]名簿が無いので数えられない[/]"
+    risk.add_row("上場廃止銘柄の株価", price_state, "同上（名簿と同時に取る）")
+    risk.add_row(
+        "会社の通期予想",
+        f"{coverage.with_forecast:,} 行",
+        "bulk-fetch --what statements --statement-source jquants",
+    )
+    risk.add_row(
+        "開示時刻（DiscTime）",
+        f"{coverage.with_disclosed_at:,} 行",
+        "checks\\開示時刻の取り込み.bat",
+    )
+    console.print(risk)
+
+    console.print()
+    console.print(
+        "[dim]5年ローリング窓は解約より先に効く。いま取れるのは 2021-09 以降で、"
+        "その端は**毎日後ろへ動く**。「解約日まで待てる」ものは1つも無い。[/]"
+    )
+    if coverage.snapshots and coverage.roster_without_prices:
+        console.print(
+            f"[yellow]名簿にあって株価が無い {coverage.roster_without_prices:,} 銘柄が"
+            "残っている。[/] これがそのまま生存バイアスの残りである。"
+        )
+    console.print(
+        "[dim]会社予想と開示時刻は決算ドリフトのテーマ用で、そのテーマは"
+        "2026-09-03 に閉じた（docs/HYPOTHESES.md）。**再開する予定が無いなら"
+        "取り直す必要は無い。** 再開しうるなら、解約前が最後の機会になる。[/]"
+    )
+
+
+@app.command(name="reversal-power")
+def reversal_power(
+    end: str = typer.Option(
+        "2020-12-31",
+        "--end",
+        help="Last day used to estimate the variance. Must be before the judged period.",
+    ),
+    start: str | None = typer.Option(None, "--start", help="First day. Defaults to all history."),
+    oos_days: int = typer.Option(
+        0, "--oos-days", help="Sessions the OOS test will have. 0 counts them from the calendar."
+    ),
+    lags: int = typer.Option(DEFAULT_LAGS, "--lags", help="Newey-West lags. Match the holding."),
+    min_turnover: float = typer.Option(MIN_TURNOVER, "--min-turnover", help="Liquidity floor."),
+    lookback: int = typer.Option(REVERSAL_LOOKBACK, "--lookback", help="Sessions the fall spans."),
+    holding: int = typer.Option(REVERSAL_HOLDING, "--holding", help="Sessions held."),
+    benchmark: str = typer.Option(BENCHMARK, "--benchmark", help="Market series and calendar."),
+) -> None:
+    """Work out what size of effect the OOS test could detect - before sealing.
+
+    Both earnings-drift registrations were sealed first and found short of power
+    afterwards. SUE only revealed it through a daily standard deviation of
+    21.08%, which came from having one or two names per quintile. That order was
+    wrong, so this runs first.
+
+    **No mean is computed or printed.** Only the variance and autocovariances of
+    the daily series, taken from a stretch that the judged period does not use.
+    Estimating a variance does not spend a hypothesis test; estimating a mean
+    does. ``--end`` is refused if it reaches the judged period, so the guard is
+    not a matter of remembering.
+
+    Overlapping windows are the whole difficulty: entering daily and holding 20
+    sessions makes neighbouring observations share 19 days out of 20. Treating
+    them as independent understates the standard error roughly fourfold, so the
+    long-run variance uses Newey-West with Bartlett weights.
+    """
+    settings = get_settings()
+    configure_logging(settings.log_level)
+
+    last = _parse_date(end)
+    if last is None:
+        raise typer.BadParameter(f"--end must be YYYY-MM-DD; got {end!r}.")
+    if last >= JUDGMENT_FROM:
+        raise typer.BadParameter(
+            f"--end ({last}) reaches the judged period, which starts {JUDGMENT_FROM}. "
+            "検出力の推定に判定期間を混ぜると、平均を見ていなくても"
+            "「その期間なら何%出るか」を選べてしまう。"
+        )
+    first = _parse_date(start) if start else None
+    if start and first is None:
+        raise typer.BadParameter(f"--start must be YYYY-MM-DD; got {start!r}.")
+
+    database = Database()
+    database.create_all()
+    console.print(
+        f"分散だけを {first or '最初'} 〜 {last} から推定する。"
+        "[bold]平均は計算しないし、出さない。[/]"
+    )
+
+    try:
+        series = build_series(
+            database,
+            Period.ALL,
+            benchmark=benchmark,
+            start=first,
+            end=last,
+            min_turnover=min_turnover,
+            lookback=lookback,
+            holding=holding,
+        )
+    except ValueError as exc:
+        console.print(f"[red]{exc}[/]")
+        raise typer.Exit(code=1) from exc
+
+    console.print(
+        f"{len(series.days):,} 営業日、1日あたり中央値 "
+        f"{int(median(series.counts)) if series.counts else 0} 銘柄。"
+        f"（暦が合わず落ちた銘柄日 {series.excluded_calendar:,}）"
+    )
+
+    target = oos_days or _oos_session_count(database, benchmark, holding)
+    console.print(f"OOS の想定日数: [bold]{target:,}[/] 営業日（{OOS_FROM} 以降）")
+
+    table = Table(title="重なりを織り込んだ検出力（平均は含まない）")
+    table.add_column("指標")
+    for column in ("日次SD", "重なりの膨張", "OOS の標準誤差", f"t≥{TARGET_T} に必要な差"):
+        table.add_column(column, justify="right")
+
+    verdicts: list[tuple[str, float]] = []
+    for label, values in (
+        ("分位1 − ベンチ（主要）", series.long_only()),
+        ("分位1 − 分位5（副次）", series.long_short()),
+    ):
+        estimate = estimate_power(values, lags=lags)
+        needed = estimate.detectable(target)
+        verdicts.append((label, needed))
+        table.add_row(
+            label,
+            f"{estimate.daily_sd * 100:.2f}%",
+            f"{estimate.inflation:.2f}x",
+            f"{estimate.standard_error(target) * 100:.2f}%",
+            f"[bold]{needed * 100:.2f}%[/]",
+        )
+    console.print(table)
+
+    threshold = COST_ROUND_TRIP
+    console.print()
+    console.print(
+        f"費用のしきい値は保有{holding}営業日あたり [bold]{threshold * 100:.2f}%[/]"
+        "（ロングオンリーなので両建て前提の 0.80% の半分）。"
+    )
+    primary_needed = verdicts[0][1]
+    if primary_needed > threshold:
+        console.print(
+            f"[yellow]必要な差 {primary_needed * 100:.2f}% が、しきい値 "
+            f"{threshold * 100:.2f}% を上回る。[/]\n"
+            "  **費用を賄うだけの効果では、この日数では有意にならない。** "
+            "合格が出るとしたら、費用を大きく超える効果のときだけになる。\n"
+            "  期間を延ばすか、前向きに貯めるかを、封印の前に決める。"
+        )
+    else:
+        console.print(
+            f"[green]必要な差 {primary_needed * 100:.2f}% は、しきい値 "
+            f"{threshold * 100:.2f}% を下回る。[/]\n"
+            "  費用を賄う水準の効果なら、この日数で有意になりうる。"
+        )
+    console.print(
+        "[dim]この数字は「どれだけ大きければ検出できるか」であって、"
+        "「どれだけ出るか」ではない。後者は判定でしか分からない。[/]"
+    )
+
+
+def _oos_session_count(database: Database, benchmark: str, holding: int) -> int:
+    """Count the sessions the OOS test will have. Counts days, never values."""
+    with database.session() as session:
+        frame = PriceRepository(session).get_raw_prices(benchmark)
+    if frame.empty:
+        return 0
+    days = [stamp.date() for stamp in frame.index if stamp.date() >= OOS_FROM]
+    return max(0, len(days) - (holding + 1))
+
+
+@app.command(name="reversal-bias")
+def reversal_bias(
+    directory: str = typer.Option(
+        str(DEFAULT_SNAPSHOT_DIR), "--dir", help="Where the dated rosters live."
+    ),
+    end: str | None = typer.Option(
+        None, "--end", help="Last day. Defaults to the day before OOS starts."
+    ),
+    min_turnover: float = typer.Option(MIN_TURNOVER, "--min-turnover", help="Liquidity floor."),
+    lookback: int = typer.Option(REVERSAL_LOOKBACK, "--lookback", help="Sessions the fall spans."),
+    holding: int = typer.Option(REVERSAL_HOLDING, "--holding", help="Sessions held."),
+    benchmark: str = typer.Option(BENCHMARK, "--benchmark", help="Market series and calendar."),
+) -> None:
+    """Measure how big survivorship bias actually is, and which way it points.
+
+    Runs the same window twice over the same days, changing exactly one thing:
+    the universe. Once with the dated rosters - which hold the companies that
+    were later delisted - and once with only the names still listed today. The
+    difference is the bias, in size and in sign.
+
+    **In-sample only.** ``--end`` is refused if it reaches the out-of-sample
+    period; looking there would spend the one judgment the design has.
+
+    Worth having beyond this hypothesis: every registration so far asserted the
+    bias existed without a number, and the direction was never obvious - a
+    takeover leaves at a premium while a failure goes to zero.
+    """
+    settings = get_settings()
+    configure_logging(settings.log_level)
+
+    stop = _parse_date(end) if end else OOS_FROM - dt.timedelta(days=1)
+    if stop is None:
+        raise typer.BadParameter(f"--end must be YYYY-MM-DD; got {end!r}.")
+    if stop >= OOS_FROM:
+        raise typer.BadParameter(
+            f"--end ({stop}) reaches the out-of-sample period, which starts {OOS_FROM}. "
+            "バイアスの実測でOOSを覗くと、判定に使える一度が失われる。"
+        )
+
+    snapshots = membership(Path(directory))
+    if len(snapshots) < 2:
+        console.print(
+            f"[yellow]名簿が {len(snapshots)} 件しかない。[/] "
+            "先に [cyan]checks\\廃止銘柄の取り込み.bat[/] を実行する。"
+        )
+        raise typer.Exit(code=1)
+    console.print(
+        f"名簿 {len(snapshots)} 件（{min(snapshots)} 〜 {max(snapshots)}）。"
+        f"測る期間は {JUDGMENT_FROM} 〜 {stop}。"
+    )
+
+    database = Database()
+    database.create_all()
+    runs: dict[str, object] = {}
+    for label, survivors_only in (("名簿あり", False), ("生存者のみ", True)):
+        try:
+            runs[label] = build_series(
+                database,
+                Period.ALL,
+                benchmark=benchmark,
+                start=JUDGMENT_FROM,
+                end=stop,
+                min_turnover=min_turnover,
+                lookback=lookback,
+                holding=holding,
+                snapshots=snapshots,
+                survivors_only=survivors_only,
+            )
+        except ValueError as exc:
+            console.print(f"[red]{label}: {exc}[/]")
+            raise typer.Exit(code=1) from exc
+
+    clean = runs["名簿あり"]
+    survivors = runs["生存者のみ"]
+    counts = Table(title="universe を差し替えると何が変わるか")
+    for column in ("universe", "営業日", "1日あたり中央値"):
+        counts.add_column(column, justify="left" if column == "universe" else "right")
+    for label, run in (("名簿あり", clean), ("生存者のみ", survivors)):
+        counts.add_row(
+            label,
+            f"{len(run.days):,}",
+            f"{int(median(run.counts)) if run.counts else 0:,}",
+        )
+    console.print(counts)
+
+    # **同じ日で揃える。** 片方にしか無い日を混ぜると、バイアスではなく期間の
+    # 違いを測ることになる。
+    left = dict(zip(clean.days, clean.long_only(), strict=True))
+    right = dict(zip(survivors.days, survivors.long_only(), strict=True))
+    shared = sorted(set(left) & set(right))
+    if not shared:
+        console.print("[red]両方に共通する営業日が無い。[/]")
+        raise typer.Exit(code=1)
+    gap = survivorship_gap([left[day] for day in shared], [right[day] for day in shared])
+    average = sum(gap) / len(gap)
+
+    console.print()
+    console.print(
+        f"共通の {len(shared):,} 営業日で、[bold]名簿あり − 生存者のみ = "
+        f"{average * 100:+.3f}%[/]（保有{holding}営業日あたり）"
+    )
+    if average < 0:
+        console.print(
+            "  負である＝**生存者だけで測ると効果を大きく見せる。** "
+            "廃止銘柄を入れると下がる。従来の「上振れするかもしれない」という"
+            "推測が、符号つきの実測になった。"
+        )
+    elif average > 0:
+        console.print(
+            "  正である＝**生存者だけで測ると効果を小さく見せる。** "
+            "TOB・完全子会社化がプレミアム付きで消えるぶんが効いている可能性がある。"
+        )
+    console.print(
+        "[dim]これは IS の数字である。判定には使わない。"
+        "**プロジェクト全体で使い回せる数字**として登録に書く。[/]"
     )
 
 

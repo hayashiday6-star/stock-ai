@@ -911,3 +911,21 @@ def test_pead_run_requires_a_period() -> None:
 def test_pead_run_rejects_an_unknown_period() -> None:
     result = runner.invoke(app, ["pead-run", "everything"])
     assert result.exit_code != 0
+
+
+def test_reversal_power_refuses_to_reach_the_judged_period() -> None:
+    """**封印前の検出力計算が、判定期間を選べてしまわないこと。**
+
+    平均を出していなくても、期間を後から選べるなら「その期間なら何%出るか」
+    を選んだのと同じになる。忘れずに守るのではなく、拒否させる。
+    """
+    result = runner.invoke(app, ["reversal-power", "--end", "2022-01-01"])
+    assert result.exit_code != 0
+    assert "2021-09-01" in result.output
+
+
+def test_reversal_bias_refuses_to_reach_out_of_sample() -> None:
+    """バイアスの実測でOOSを覗くと、判定に使える一度が失われる。"""
+    result = runner.invoke(app, ["reversal-bias", "--end", "2024-06-01"])
+    assert result.exit_code != 0
+    assert "2024-01-01" in result.output
