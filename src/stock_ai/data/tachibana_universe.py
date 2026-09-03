@@ -91,16 +91,29 @@ def normalize_masters(
     ない。ETF・REIT・TPM は上場区分が 00 や 21 で返るので、ここで落ちる。
     J-Quants 側の ``normalize_listings`` がファンドを落とすのと同じ結果になる。
     """
-    by_code = {code: row for row in kabu if (code := _code_of(row)) is not None}
+    by_code: dict[str, dict[str, Any]] = {}
+    bad_code_in_kabu = 0
+    for row in kabu:
+        code = _code_of(row)
+        if code is None:
+            bad_code_in_kabu += 1
+            continue
+        by_code[code] = row
 
     profiles: dict[str, SecurityProfile] = {}
+    bad_code = 0
     unlisted = 0
     unmatched = 0
     unclassified = 0
+    duplicate = 0
 
     for row in sizyou:
         code = _code_of(row)
         if code is None:
+            # **黙って落とさない。** 実測（2026-09-03）でプライムが見込みより
+            # 7件少なく、どこで落ちたのかを推測するしかない状態になった。
+            # 落ちる経路すべてに数え口を置く。
+            bad_code += 1
             continue
         kubun = _text(row, "sZyouzyouKubun")
         listed_on = _SEGMENT_OF_KUBUN.get(kubun or "")
@@ -120,6 +133,9 @@ def normalize_masters(
         sector = from_tse33(industry) if industry else Sector.OTHER
         if industry is None or industry == _UNCLASSIFIED:
             unclassified += 1
+        if code in profiles:
+            # 同じ銘柄コードが2度来た。dict に入れると後勝ちで静かに1件消える。
+            duplicate += 1
 
         profiles[code] = SecurityProfile(
             symbol=code,
@@ -133,8 +149,23 @@ def normalize_masters(
         logger.info(
             "上場区分が東証3区分でない %d 件を除外しました（ETF・REIT・TPM など）", unlisted
         )
+    if bad_code or bad_code_in_kabu:
+        # 4桁でないコードは、優先株・新株予約権など普通株でないものか、
+        # 項目の形が変わったかのどちらかである。**どちらなのかは件数だけでは
+        # 決まらないので、実例を出す。**
+        examples = [
+            str(row.get("sIssueCode", "")).strip() for row in sizyou if _code_of(row) is None
+        ][:5]
+        logger.warning(
+            "銘柄コードが4桁でない %d 件（市場マスタ）／ %d 件（銘柄マスタ）を除外しました。例: %s",
+            bad_code,
+            bad_code_in_kabu,
+            examples or "(なし)",
+        )
     if unmatched:
         logger.warning("銘柄マスタに対応が無い %d 件を除外しました", unmatched)
+    if duplicate:
+        logger.warning("同じ銘柄コードが %d 件重複していました（後勝ちで1件に）", duplicate)
     if unclassified:
         logger.info("業種コードが無い、または 9999 の %d 件を Other にしました", unclassified)
     if sizyou and not profiles:

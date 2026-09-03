@@ -594,6 +594,20 @@ def _report_fill(rows: list[dict[str, Any]]) -> None:
     if blank:
         print("空または0の件数: " + "、".join(blank))
 
+    # 銘柄コードが4桁でないものは、実装側で黙って落ちる。**件数が合わない
+    # 原因の筆頭なので、センサスの段階で数える。** 実測でプライムが見込みより
+    # 7件少なく、どこで落ちたのかを後から推測する羽目になった。
+    if "sIssueCode" in keys:
+        odd = [
+            str(row.get("sIssueCode", "")).strip()
+            for row in rows
+            if len(str(row.get("sIssueCode", "")).strip()) != 4
+        ]
+        codes = [str(row.get("sIssueCode", "")).strip() for row in rows]
+        repeated = len(codes) - len(set(codes))
+        print(f"  銘柄コードが4桁でない: {len(odd)} 件" + (f"  例: {odd[:5]}" if odd else ""))
+        print(f"  銘柄コードの重複: {repeated} 件")
+
     for key in _DISTRIBUTION_KEYS:
         if key not in keys:
             continue
