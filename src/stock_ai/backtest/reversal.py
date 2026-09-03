@@ -49,19 +49,31 @@ logger = get_logger(__name__)
 #: ベンチマーク。TOPIX連動ETF。暦もこれに合わせる。
 BENCHMARK = "1306"
 
-#: 判定に使える最初の日。**実測値であって、窓の理屈からの逆算ではない。**
+#: 判定に使える最初の日。**API が名指しした境界であって、逆算ではない。**
 #:
-#: 2026-09-04 に名簿を落としたところ、2021-09-01 は5年ローリング窓の外で
-#: 断られ、**実際に返った最も古い名簿は 2021-10-01** だった（61件、
-#: `docs/JQUANTS_EXIT.md`）。分位を組むにはその日の名簿が要るので、名簿の
-#: 無い日は判定日になれない。
+#: 2026-09-04 に 2021-09-01 の名簿を頼んだところ、こう断られた。
+#:
+#:   ``Your subscription covers the following dates: 2021-09-04 ~``
+#:
+#: 30日刻みで集めた名簿の最も古いものは 2021-10-01 だったが、**それは刻みが
+#: たまたまそこに乗っただけ**で、境界ではない。刻みから逆算していたら4週間ぶん
+#: 取り逃していた。
 #:
 #: **これより前は今後も直せない。** 廃止銘柄の株価も同じ窓の中にしか無い。
-JUDGMENT_FROM = dt.date(2021, 10, 1)
+#: しかも窓は解約を待たずに毎日後ろへ動く。
+JUDGMENT_FROM = dt.date(2021, 9, 4)
 
 #: 1往復の費用。ロングオンリーなので、両建て前提の 0.8% の半分。
 #: 保有20営業日あたりの数字である。
 COST_ROUND_TRIP = 0.004
+
+#: これを超えるフォワードリターンは、20営業日の値動きとしては説明がつかない。
+#: 実測では 8308 の 2005-07-25 が **+125,028%** で、これ1件だけで162銘柄の
+#: 分位平均が +772% 動く。株価の動きではなく、分割・併合の調整漏れである。
+#:
+#: **除外はしない。数えるだけにする。** 黙って落とすと、同じ欠陥が別の場所で
+#: 効いているときに気付けなくなる。
+IMPLAUSIBLE_FORWARD = 1.0
 
 #: 日付を受けて、その日に入場を許す銘柄集合を返す呼び出し。
 UniverseAt = Callable[[dt.date], set[str]]
@@ -98,6 +110,12 @@ class ReversalSeries:
     分位1に約160銘柄入るなら、平均のばらつきは個別のばらつきよりずっと
     小さくなるはずである。そうなっていなければ、平均が数件の極端値に
     引っ張られている——つまり測っているのは現象ではなくデータの傷である。
+    """
+    implausible: int = 0
+    """フォワードリターンが ±100% を超えた銘柄日の数。
+
+    **0 でなければ、この系列から出した分散は使えない。** 20営業日でそこまで
+    動くのは値動きではなく、分割・併合の調整漏れである。
     """
     extremes: list[tuple[str, dt.date, float, float]] = field(default_factory=list)
     """(銘柄, 判定日, 5日リターン, フォワード) を絶対値の大きい順に。
@@ -338,6 +356,7 @@ def build_series(
         (f"p{cut}", float(value))
         for cut, value in zip(cuts, np.percentile(forwards, cuts), strict=True)
     ]
+    implausible = int((np.abs(forwards) > IMPLAUSIBLE_FORWARD).sum())
     worst.sort(reverse=True)
     biggest = [
         (symbol, calendar[position].date(), back, ahead)
@@ -360,6 +379,7 @@ def build_series(
         excluded_thin_day=thin_days,
         universe_label=label,
         forward_percentiles=percentiles,
+        implausible=implausible,
         extremes=biggest,
     )
     logger.info("リバーサル日次系列: %s", series.summary())

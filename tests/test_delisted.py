@@ -12,6 +12,7 @@ import datetime as dt
 import pytest
 
 from stock_ai.data.delisted import (
+    covered_from,
     delistings,
     harvest_snapshots,
     membership,
@@ -131,3 +132,24 @@ def test_unparseable_filenames_are_ignored(tmp_path) -> None:
     (tmp_path / "メモ.csv").write_text("symbol\n7203\n", encoding="utf-8")
     write_snapshot(tmp_path, dt.date(2024, 1, 1), [_profile("7203")])
     assert list(membership(tmp_path)) == [dt.date(2024, 1, 1)]
+
+
+def test_the_covered_range_is_read_from_the_refusal() -> None:
+    """**境界は API が知っている。刻み幅から逆算しない。**
+
+    実測（2026-09-04）で 2021-09-01 を頼むとこの文面で断られた。30日刻みでは
+    最初の名簿が 2021-10-01 になったが、境界は 2021-09-04 で、逆算していたら
+    4週間ぶん取り逃していた。窓は毎日後ろへ動くので取り返せない。
+    """
+    message = (
+        "J-Quants listed/info returned 400 for 2021-09-01: Your subscription "
+        "covers the following dates: 2021-09-04 ~ . If you want more data, "
+        "please check other plans:https://jpx-jquants.com/#dataset"
+    )
+    assert covered_from(message) == dt.date(2021, 9, 4)
+
+
+def test_an_unreadable_refusal_returns_none_rather_than_raising() -> None:
+    """文面が変わっただけで、取り直せないデータの取得を止めない。"""
+    assert covered_from("429 Too Many Requests") is None
+    assert covered_from("covers the following dates: nonsense ~") is None

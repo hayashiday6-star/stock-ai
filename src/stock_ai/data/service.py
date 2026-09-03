@@ -11,7 +11,7 @@ import datetime as dt
 import logging
 from dataclasses import dataclass
 
-from stock_ai.core.exceptions import NoDataError, StockAIError
+from stock_ai.core.exceptions import NoDataError, RateLimitError, StockAIError
 from stock_ai.core.logging import get_logger
 from stock_ai.data.base import FundamentalsProvider, PriceProvider
 from stock_ai.database.engine import Database
@@ -95,6 +95,17 @@ class IngestionService:
 
         Returns:
             An :class:`IngestResult`; failures are captured, never raised.
+
+        Raises:
+            RateLimitError: **The one exception that is not captured.** A 429
+                belongs to the run, not to the symbol: the symbol was never
+                really attempted, and folding it into a failed result sends the
+                caller straight into the same closed door with the next one.
+                :class:`~stock_ai.data.bulk.BulkIngester` waits it out and, if
+                it persists, stops. Observed live before this was wired through:
+                a 429 partway into a 399-symbol backfill was recorded against
+                every remaining symbol and 315 names "failed" in two minutes,
+                none of them fetched.
         """
         end = end or dt.date.today()
         try:
@@ -125,6 +136,11 @@ class IngestionService:
                 rows = repo.upsert_prices(symbol, prices, market=market)
                 logger.info("Ingested %d bars for %s", rows, symbol)
                 return IngestResult(symbol, rows, ok=True)
+        except RateLimitError:
+            # **``RateLimitError`` は ``StockAIError`` の一種なので、下の except に
+            # 先回りしてここで通す。** 順序を入れ替えると、レート制限が銘柄ごとの
+            # 失敗に化けて、呼び出し側は閉じた扉に残り全部を叩きつける。
+            raise
         except StockAIError as exc:
             logger.warning("Ingest failed for %s: %s", symbol, _summarize(exc))
             return IngestResult(symbol, 0, ok=False, error=_summarize(exc))
@@ -148,7 +164,13 @@ class IngestionService:
         end: dt.date | None = None,
         market: str = "US",
     ) -> list[IngestResult]:
-        """Ingest each symbol, continuing past individual failures."""
+        """Ingest each symbol, continuing past individual failures.
+
+        Raises:
+            RateLimitError: A rate limit is not an individual failure - it
+                belongs to the run - so it ends the batch instead of being
+                collected. Re-run later; stored symbols are skipped.
+        """
         return [self.ingest_symbol(sym, start, end, market) for sym in symbols]
 
     def _resolve_start(self, repo: PriceRepository, symbol: str, end: dt.date) -> dt.date:
@@ -208,6 +230,8 @@ class FundamentalsService:
                 FundamentalsRepository(session).upsert_fundamentals(fundamentals, market=market)
                 logger.info("Ingested fundamentals for %s", symbol)
                 return IngestResult(symbol, 1, ok=True)
+        except RateLimitError:
+            raise  # 銘柄の失敗ではなく、実行そのものの失敗（上の説明と同じ理由）
         except StockAIError as exc:
             logger.warning("Fundamentals ingest failed for %s: %s", symbol, exc)
             return IngestResult(symbol, 0, ok=False, error=str(exc))

@@ -124,6 +124,7 @@ from stock_ai.data.delisted import (
     DEFAULT_SNAPSHOT_DIR,
     DEFAULT_STEP_DAYS,
     ROLLING_WINDOW_START,
+    covered_from,
     delistings,
     harvest_snapshots,
     membership,
@@ -135,6 +136,7 @@ from stock_ai.data.jquants_fundamentals import JQuantsFundamentalsProvider
 from stock_ai.data.jquants_profile import JQuantsProfileProvider
 from stock_ai.data.jquants_provider import JQuantsPriceProvider
 from stock_ai.data.markets import split_by_market, to_yahoo_symbol
+from stock_ai.data.schema import ADJ_CLOSE, CLOSE, OPEN
 from stock_ai.data.service import FundamentalsService, IngestionService, IngestResult
 from stock_ai.data.tachibana import TachibanaPriceProvider
 from stock_ai.data.tachibana import build_client as build_tachibana_client
@@ -2403,6 +2405,26 @@ def delisted_harvest(
         report = harvest_snapshots(target, wanted, one, refetch=refetch)
         progress.update(task, completed=len(wanted))
 
+    # **境界は API が知っている。** 断られた文面が「ここからなら取れる」と言って
+    # いるなら、その日を1回だけ取りに行く。刻み幅から逆算すると、たまたま刻みが
+    # 乗った日を境界だと思い込む（30日刻みでは 2021-10-01 が最初になったが、
+    # 本当の境界は 2021-09-04 で、4週間ぶん取り逃していた）。
+    # 窓は毎日後ろへ動くので、いま取らなければ二度と取れない。
+    boundaries = {
+        edge for message in report.refused.values() if (edge := covered_from(message)) is not None
+    }
+    extra = min(boundaries) if boundaries else None
+    if extra is not None and extra not in membership(target):
+        console.print(
+            f"[yellow]断られた文面が「{extra} 以降なら取れる」と言っている。[/] "
+            "その日を取りに行く（窓は毎日後ろへ動くので、いま取らないと二度と取れない）。"
+        )
+        boundary_report = harvest_snapshots(target, [extra], fetch)
+        report.written.extend(boundary_report.written)
+        report.profiles.update(boundary_report.profiles)
+        for when, why in boundary_report.refused.items():
+            report.refused[when] = why
+
     console.print(report.summary())
     if report.refused:
         refusals = Table(title=f"取れなかった日付 ({len(report.refused)})")
@@ -2610,6 +2632,80 @@ def jquants_inventory(
     )
 
 
+@app.command(name="price-audit")
+def price_audit(
+    symbol: str = typer.Argument(..., help="Symbol to inspect."),
+    around: str = typer.Option(..., "--around", help="Date to centre the window on."),
+    window: int = typer.Option(6, "--window", help="Bars to show either side."),
+) -> None:
+    """Show raw against adjusted bars, so a price jump can be attributed.
+
+    A 20-session return of +125,028% is not a price move. It is a split or a
+    consolidation that the stored series does not carry an adjustment for. This
+    prints ``close``, ``adj_close`` and the factor between them, so the answer
+    is visible rather than inferred:
+
+    - **factor changes across the jump** - the series is adjusted, and the jump
+      is in the raw close only. Analysis reading ``split_adjusted`` is fine.
+    - **factor stays at 1.00 across the jump** - the source carries no
+      adjustment for that action. Every return spanning it is wrong, and no
+      amount of care downstream fixes it.
+
+    This is the check for the failure this project keeps meeting: not a crash,
+    but a plausible-looking number built from two different scales.
+    """
+    settings = get_settings()
+    configure_logging(settings.log_level)
+
+    centre = _parse_date(around)
+    if centre is None:
+        raise typer.BadParameter(f"--around must be YYYY-MM-DD; got {around!r}.")
+
+    database = Database()
+    database.create_all()
+    with database.session() as session:
+        raw = PriceRepository(session).get_raw_prices(symbol)
+    if raw.empty:
+        console.print(f"[yellow]{symbol} の価格が無い。[/]")
+        raise typer.Exit(code=1)
+
+    stamps = [stamp.date() for stamp in raw.index]
+    nearest = min(range(len(stamps)), key=lambda index: abs(stamps[index] - centre))
+    lo = max(0, nearest - window)
+    hi = min(len(stamps), nearest + window + 1)
+
+    table = Table(title=f"{symbol} — {centre} の前後")
+    for column in ("日付", "始値", "終値", "調整後終値", "調整係数", "前日比(調整後)"):
+        table.add_column(column, justify="right" if column != "日付" else "left")
+
+    previous: float | None = None
+    for index in range(lo, hi):
+        row = raw.iloc[index]
+        close = float(row[CLOSE])
+        adjusted = float(row[ADJ_CLOSE]) if ADJ_CLOSE in raw.columns else float("nan")
+        factor = adjusted / close if close else float("nan")
+        move = (
+            "" if previous is None or not previous else f"{(adjusted / previous - 1) * 100:+.1f}%"
+        )
+        # 調整後で見て±50%を超える1日の動きは、値動きではまず起きない。
+        if move and abs(adjusted / previous - 1) > 0.5:
+            move = f"[bold red]{move}[/]"
+        table.add_row(
+            str(stamps[index]),
+            f"{float(row[OPEN]):,.1f}",
+            f"{close:,.1f}",
+            f"{adjusted:,.1f}",
+            f"{factor:.4f}",
+            move,
+        )
+        previous = adjusted
+    console.print(table)
+    console.print(
+        "[dim]調整係数が窓の中で変わっていれば、系列は調整されている。"
+        "**1.0000 のまま前日比だけが飛んでいれば、その銘柄には調整が入っていない。**[/]"
+    )
+
+
 @app.command(name="reversal-power")
 def reversal_power(
     end: str = typer.Option(
@@ -2689,6 +2785,18 @@ def reversal_power(
         f"（暦が合わず落ちた銘柄日 {series.excluded_calendar:,}）"
     )
     _report_spread(series, per_day)
+
+    if series.implausible:
+        console.print(
+            f"[red]フォワードリターンが ±100% を超えた銘柄日が "
+            f"{series.implausible:,} 件ある。[/]\n"
+            "  20営業日でそこまで動くのは値動きではない。**分割・併合の調整漏れ**である。\n"
+            "  1件でも、162銘柄の分位平均を大きく動かす（+125,028% なら +772%）。\n"
+            "  [bold]この系列から出した分散は使えないので、必要な差も出さない。[/]\n"
+            "  上の一覧の銘柄と日付を [cyan]stock-ai price-audit <銘柄> --around <日付>[/] "
+            "で見て、生値と調整済みのどちらが飛んでいるかを確かめる。"
+        )
+        raise typer.Exit(code=1)
 
     target = oos_days or _oos_session_count(database, benchmark, holding)
     console.print(f"OOS の想定日数: [bold]{target:,}[/] 営業日（{OOS_FROM} 以降）")
