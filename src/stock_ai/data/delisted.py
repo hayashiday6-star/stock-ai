@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import csv
 import datetime as dt
+import re
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -54,6 +55,31 @@ ROLLING_WINDOW_START = dt.date(2021, 9, 1)
 
 #: 名簿を取りに行くための呼び出し。日付を受け、その日の上場一覧を返す。
 SnapshotFetcher = Callable[[dt.date], list[SecurityProfile]]
+
+#: 窓の外を頼んだときに J-Quants が返す文面から、実際の境界日を読む。
+#:
+#: 実測（2026-09-04）:
+#: ``Your subscription covers the following dates: 2021-09-04 ~``
+#:
+#: **境界は API が知っている。** こちらで刻み幅から逆算すると、たまたま刻みが
+#: 乗った日を境界だと思い込む。実際 30日刻みでは 2021-10-01 が最初の名簿に
+#: なったが、本当の境界は 2021-09-04 で、4週間ぶん取り逃していた。
+_COVERED_FROM = re.compile(r"covers the following dates:\s*(\d{4}-\d{2}-\d{2})")
+
+
+def covered_from(message: str) -> dt.date | None:
+    """断られた文面から「ここからなら取れる」日付を読む。読めなければ ``None``。
+
+    文面が変わったら黙って ``None`` を返す。ここで例外を投げると、取り直せない
+    データの取得が、エラーメッセージの書式変更で止まる。
+    """
+    found = _COVERED_FROM.search(message)
+    if not found:
+        return None
+    try:
+        return dt.date.fromisoformat(found.group(1))
+    except ValueError:
+        return None
 
 
 def snapshot_dates(

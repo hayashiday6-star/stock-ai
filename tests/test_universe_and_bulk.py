@@ -845,3 +845,59 @@ def test_an_all_jp_database_is_unaffected(database: Database) -> None:
             get_or_create_security(session, code, market="JP")
 
     assert _bulk_symbols("stored", None, _NO_SETTINGS, database, None) == ["1301", "7203", "9984"]
+
+
+class _RateLimitedPrices:
+    """価格側で ``budget`` 件だけ返し、あとは 429 を返すプロバイダ。"""
+
+    def __init__(self, budget: int) -> None:
+        self.budget = budget
+        self.calls = 0
+
+    def fetch_prices(self, symbol: str, start: dt.date, end: dt.date):
+        self.calls += 1
+        if self.calls > self.budget:
+            raise RateLimitError(f"429 for {symbol}", retry_after=1.0)
+        index = pd.bdate_range("2024-01-01", periods=3, name="date")
+        return pd.DataFrame(
+            {
+                "open": 100.0,
+                "high": 100.0,
+                "low": 100.0,
+                "close": 100.0,
+                "adj_close": 100.0,
+                "volume": 1_000.0,
+            },
+            index=index,
+        )
+
+
+def test_a_price_rate_limit_stops_the_run_instead_of_failing_every_symbol(
+    database: Database,
+) -> None:
+    """**価格側でも 429 が銘柄の失敗に化けないこと。**
+
+    財務側は最初からこの経路を通っていたが、価格側は
+    ``IngestionService.ingest_prices`` の ``except StockAIError`` が
+    ``RateLimitError`` を先に飲み込んでいた。本番（2026-09-04、廃止銘柄399件の
+    取り込み）で、84件を取ったあと **315件が2分で「失敗」し、そのどれ1つも
+    実際には取りに行っていなかった**。閉じた扉に300回叩きつけた形になる。
+    """
+    symbols = [f"{1300 + i:04d}" for i in range(12)]
+    provider = _RateLimitedPrices(budget=4)
+    ingester = BulkIngester(
+        database,
+        price_provider=provider,
+        sleeper=lambda seconds: None,
+        throttle_seconds=0.0,
+        max_rate_limit_retries=1,
+    )
+
+    report = ingester.run(symbols, Dataset.PRICES)
+
+    assert len(report.succeeded) == 4
+    assert report.aborted is not None  # 残りを失敗として数え上げない
+    assert report.rate_limited > 0
+    # 429 を受けてからの要求は、再試行1回ぶんだけ。残り全部を叩かない。
+    assert provider.calls <= 7
+    assert len(report.failed) <= 1
