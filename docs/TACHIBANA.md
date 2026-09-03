@@ -298,7 +298,7 @@ uv run stock-ai statements 6501 --source edinet
 ```
 
 残っているのは、日本基準の会社で要素名が同じかどうかの確認だけ
-（`9-EDINET財務確認.bat`）。
+（`checks\EDINET財務確認.bat`）。
 
 ## まだ確認していないこと
 

@@ -78,6 +78,22 @@ def _non_ascii_lines(path) -> list[int]:
     return [n for n, line in enumerate(body.split(b"\n"), 1) if any(byte > 0x7F for byte in line)]
 
 
+def _batch_files() -> list:
+    """Every ``.bat`` in the repository, at any depth.
+
+    **Not just the root.** The launchers were tidied into subfolders once, and
+    a root-only glob would have stopped checking the moved ones without
+    failing - the check would have gone quiet rather than gone wrong, which is
+    the harder kind to notice.
+    """
+    root = _repo_root()
+    return sorted(
+        path
+        for path in root.rglob("*.bat")
+        if not any(part in {".git", ".venv"} for part in path.relative_to(root).parts)
+    )
+
+
 def test_batch_launchers_are_pure_ascii() -> None:
     """cmd.exe reads a .bat in the console codepage, not UTF-8.
 
@@ -92,8 +108,8 @@ def test_batch_launchers_are_pure_ascii() -> None:
     is read as UTF-8 when it carries a BOM.
     """
     offenders = {
-        path.name: _non_ascii_lines(path)
-        for path in sorted(_repo_root().glob("*.bat"))
+        str(path.relative_to(_repo_root())): _non_ascii_lines(path)
+        for path in _batch_files()
         if _non_ascii_lines(path)
     }
     assert not offenders, (
@@ -118,4 +134,19 @@ def test_powershell_scripts_with_japanese_carry_a_utf8_bom() -> None:
     assert not missing, (
         f"these .ps1 files hold non-ASCII but have no UTF-8 BOM: {missing}. "
         "Windows PowerShell 5.1 will read them as cp932 and fail to parse."
+    )
+
+
+def test_the_batch_scan_actually_finds_files() -> None:
+    """A glob that matches nothing passes every check above it.
+
+    The ASCII check asserts an *empty* set of offenders, so it also passes when
+    it looked at no files at all. That is exactly how a moved folder would
+    silence it.
+    """
+    found = _batch_files()
+    assert len(found) > 10, f"expected the launchers to be found; got {found}"
+    assert any(path.parent != _repo_root() for path in found), (
+        "no .bat outside the root - if the launchers were moved back, drop this "
+        "assertion; if they were not, the recursive scan is not working."
     )

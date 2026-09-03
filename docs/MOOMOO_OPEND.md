@@ -98,7 +98,7 @@ MOOMOO_TRADE_PASSWORD=            # 実口座で使うときだけ
 
 ## 6. 接続を確認する
 
-**`moomoo接続確認.bat` をダブルクリック**します。メニューで口座を選びます
+**`checks\moomoo接続確認.bat` をダブルクリック**します。メニューで口座を選びます
 （模擬口座が無ければ `2` の実口座を選んでください。参照のみで発注はしません）。
 次の順に一つずつ確認し、**最初に壊れているところで止まって、その場所を名指し**します。
 
@@ -247,7 +247,7 @@ super + big             = main_in_flow 22/22 行
 | `OpenD is running but no account is logged in` | OpenD は起動しているがログインしていない、または認証コード待ち | OpenD のウィンドウを見る。コード入力画面で止まっていることが多い |
 | `trading: NO`（相場だけ通る） | 取引側のログインだけ切れている | OpenD を再起動してログインし直す |
 | **口座一覧が空で返る**（エラーは出ない） | `MOOMOO_SECURITY_FIRM` か `MOOMOO_TRD_MARKET` が口座と合っていない | 確認コマンドが「見つかった口座」を一覧表示するので、そこに出ている法人・市場に合わせる |
-| `no SIMULATE account on this login; it has REAL instead` | 模擬口座が無いだけ。**設定は間違っていません** | `moomoo接続確認.bat` で `2` を選ぶ、または `MOOMOO_TRD_ENV=REAL` にする |
+| `no SIMULATE account on this login; it has REAL instead` | 模擬口座が無いだけ。**設定は間違っていません** | `checks\moomoo接続確認.bat` で `2` を選ぶ、または `MOOMOO_TRD_ENV=REAL` にする |
 | `no account at all for FUTUJP with JP permission`（一覧も空） | 法人・市場の指定が口座と合っていない／その市場が未承認 | 法人 (`FUTUJP`) と市場 (`JP` / `US`) を見直す。口座の開設状況を moomoo 側で確認する |
 | `unlock_trade was refused` | ログインパスワードを取引暗証番号として入れている | 取引暗証番号は**6 桁の別物**。`set-key.ps1 MOOMOO_TRADE_PASSWORD` で入れ直す |
 | `暗号資産相場に対応していません` | `OpenQuoteContext` に `security_firm` を渡している | 渡さない。この項目は取引コンテキスト専用 |
@@ -270,7 +270,7 @@ super + big             = main_in_flow 22/22 行
 ## 相場データの利用権限は、取引権限とは別物です
 
 ここが一番はまるところです。**口座で取引できる市場と、API で相場データを
-取得できる市場は一致しません。** `moomoo接続確認.bat` が全部 OK になっても、
+取得できる市場は一致しません。** `checks\moomoo接続確認.bat` が全部 OK になっても、
 それは口座に届いたことの証明であって、相場データが取れることの証明では
 ありません。
 

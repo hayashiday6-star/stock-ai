@@ -488,7 +488,7 @@ def diagnose(
                 hint = (
                     "Nothing is wrong with the login or the settings. Re-run against "
                     f"the account you actually have: choose {choice} in "
-                    f"moomoo接続確認.bat, or set MOOMOO_TRD_ENV={other} in .env. "
+                    f"checks/moomoo接続確認.bat, or set MOOMOO_TRD_ENV={other} in .env. "
                     "Reading a REAL account never places an order."
                 )
             else:
@@ -696,7 +696,7 @@ def capital_flow(
     if not port_is_open(config.host, config.port, timeout=timeout):
         raise BrokerError(
             f"Nothing is listening on {endpoint}. Start moomoo OpenD and log in, "
-            "then try again - moomoo接続確認.bat checks the whole chain."
+            "then try again - checks/moomoo接続確認.bat checks the whole chain."
         )
 
     code = to_moomoo_code(symbol)

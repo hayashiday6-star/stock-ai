@@ -87,7 +87,7 @@ if ($code -ne 0) {
 }
 else {
     Write-Host ''
-    Write-Ok '終わりました。PEAD件数センサス.bat で開示時刻の内訳を確認してください。'
+    Write-Ok '終わりました。research\PEAD件数センサス.bat で開示時刻の内訳を確認してください。'
 }
 
 Exit-WithPause $code

@@ -17,7 +17,7 @@ uv run stock-ai accumulation AAPL MSFT --volume-multiple 3 --max-range 0.15
 ```
 
 **前提**: 株価は yfinance、資金フローは moomoo OpenD から取ります。OpenD が
-起動・ログイン済みであることを `moomoo接続確認.bat` で先に確認してください。
+起動・ログイン済みであることを `checks\moomoo接続確認.bat` で先に確認してください。
 
 ---
 
@@ -89,7 +89,7 @@ uv run stock-ai accumulation AAPL MSFT --volume-multiple 3 --max-range 0.15
 
 ## 毎日実行して Discord に通知する
 
-**`アキュムレーション日次.bat` をダブルクリック**し、メニューから選びます。
+**`research\アキュムレーション日次.bat` をダブルクリック**し、メニューから選びます。
 
 ```
 1 = 今すぐ実行、コンソールに出すだけ（まず動作確認に）

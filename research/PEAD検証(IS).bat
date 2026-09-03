@@ -1,6 +1,6 @@
 @echo off
 setlocal
-cd /d "%~dp0"
+cd /d "%~dp0.."
 rem This .bat pauses at the end; stop the script pausing too.
 set STOCK_AI_NO_PAUSE=1
 
@@ -15,7 +15,7 @@ echo Runs the sealed pre-registration on the IN-SAMPLE period only.
 echo The out-of-sample period stays untouched until the checks pass.
 echo.
 
-powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0scripts\pead-run.ps1" -Period is %*
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0..\scripts\pead-run.ps1" -Period is %*
 set CODE=%ERRORLEVEL%
 
 echo.

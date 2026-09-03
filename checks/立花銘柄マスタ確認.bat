@@ -1,6 +1,6 @@
 @echo off
 setlocal
-cd /d "%~dp0"
+cd /d "%~dp0.."
 rem This .bat pauses at the end; stop the script pausing too.
 set STOCK_AI_NO_PAUSE=1
 
@@ -22,7 +22,7 @@ echo.
 echo No prices, no returns. Codes and classifications only.
 echo.
 
-powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0scripts\tachibana-master.ps1" %*
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0..\scripts\tachibana-master.ps1" %*
 set CODE=%ERRORLEVEL%
 
 echo.
