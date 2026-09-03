@@ -36,6 +36,7 @@ import json
 import os
 import pathlib
 import sys
+import time
 from typing import Any
 
 from stock_ai.data.tachibana import (
@@ -393,6 +394,101 @@ def probe(
     return 0
 
 
+def throughput(
+    base: str,
+    auth_id: str,
+    private_path: pathlib.Path,
+    symbols: list[str],
+    universe_size: int,
+    *,
+    use_post: bool,
+    session_path: pathlib.Path,
+    fresh: bool = False,
+    pause: float = 0.0,
+) -> int:
+    """数銘柄を実測し、全銘柄を回したときの所要時間と転送量に外挿する。
+
+    ``docs/TACHIBANA.md`` の「まだ確認していないこと」に挙げた宿題である。
+    ``CLMMfdsGetMarketPriceHistory`` は日付範囲を取れず毎回全期間が返るので、
+    1銘柄あたりの転送量が大きい。**J-Quants を解約してから「全銘柄を回すと
+    何時間もかかる」と分かるのが、いちばん困る形である。** 解約する前に
+    実測しておく。
+
+    リターンも価格そのものも保存しない。測るのは件数・バイト数・秒だけ。
+    """
+    if not private_path.exists():
+        sys.exit(f"秘密鍵が見つかりません: {private_path}\n先に `keygen` を実行してください。")
+
+    print(f"接続先: {base.rstrip('/')}   送信方法: {'POST' if use_post else 'GET'}")
+    print(f"認証ID 指紋: {_fingerprint(auth_id)}  (値そのものは表示しません)")
+    print(f"計測する銘柄: {len(symbols)} 件   外挿先: {universe_size:,} 銘柄\n")
+
+    session = Session(session_path)
+    if fresh:
+        session.discard()
+    reused = session.load()
+
+    measured: list[tuple[str, int, int, float]] = []
+    with Client(base, session, use_post=use_post) as client:
+        price_url = (
+            session.urls.get("sUrlPrice") if reused else _login(client, auth_id, private_path)
+        )
+        if not price_url:
+            return 1
+        if reused:
+            print(f"--- 当日のセッションを再利用 ({session_path}) ---\n")
+
+        for index, symbol in enumerate(symbols):
+            if index and pause:
+                time.sleep(pause)
+            started = time.monotonic()
+            try:
+                history, _ = client.request(
+                    price_url,
+                    {
+                        "sCLMID": "CLMMfdsGetMarketPriceHistory",
+                        "sIssueCode": symbol,
+                        "sSizyouC": "00",
+                    },
+                )
+            except RuntimeError as exc:
+                print(f"{symbol}: 失敗 ({exc})")
+                continue
+            elapsed = time.monotonic() - started
+            problem = Client.check(history)
+            if problem:
+                print(f"{symbol}: {problem}")
+                continue
+            bars = history.get("aCLMMfdsMarketPriceHistory") or []
+            # 応答の大きさは、復号済みの JSON をそのまま数える。転送量そのもの
+            # ではないが（圧縮の有無で変わる）、桁を見るには足りる。
+            size = len(json.dumps(history, ensure_ascii=False).encode("utf-8"))
+            measured.append((symbol, len(bars), size, elapsed))
+            print(f"{symbol}: {len(bars):>6,} 本  {size / 1e6:>6.2f} MB  {elapsed:>6.2f} 秒")
+
+    if not measured:
+        print("\n1銘柄も取れなかった。上の出力をそのまま貼ってください。")
+        return 1
+
+    total_bytes = sum(row[2] for row in measured)
+    total_seconds = sum(row[3] for row in measured)
+    per_symbol_bytes = total_bytes / len(measured)
+    per_symbol_seconds = total_seconds / len(measured)
+
+    print(f"\n--- 実測 {len(measured)} 銘柄 ---")
+    print(f"1銘柄あたり: {per_symbol_bytes / 1e6:.2f} MB / {per_symbol_seconds:.2f} 秒")
+    print(f"\n--- {universe_size:,} 銘柄への外挿（間隔 {pause:.1f} 秒を含む）---")
+    projected_bytes = per_symbol_bytes * universe_size
+    projected_seconds = (per_symbol_seconds + pause) * universe_size
+    print(f"転送量: {projected_bytes / 1e9:.1f} GB")
+    print(f"所要時間: {projected_seconds / 3600:.1f} 時間 ({projected_seconds / 60:.0f} 分)")
+    print(
+        "\n外挿は線形で、絞り込みも再試行も見ていない。"
+        "\n実際にはこれより悪くなりうる（レート制限・再試行・DB書き込み）。"
+    )
+    return 0
+
+
 def main() -> int:
     """コマンドラインから keygen / probe を実行する。"""
     parser = argparse.ArgumentParser(description="立花証券・ｅ支店・ＡＰＩの疎通プローブ")
@@ -443,6 +539,36 @@ def main() -> int:
         "--fresh", action="store_true", help="保存済みセッションを捨ててログインからやり直す"
     )
 
+    rate = sub.add_parser(
+        "throughput", help="数銘柄を実測し、全銘柄を回したときの時間と転送量に外挿する"
+    )
+    rate.add_argument("--private", type=pathlib.Path, default=pathlib.Path("tachibana_private.pem"))
+    rate.add_argument(
+        "--symbols",
+        default="6501,7203,6758,4847,1306",
+        help="計測する銘柄をカンマ区切りで（既定: 大型・小型・ETF を混ぜた5銘柄）",
+    )
+    rate.add_argument(
+        "--universe",
+        type=int,
+        default=3607,
+        help="外挿先の銘柄数（既定: 本番DBに入っている 3607）",
+    )
+    rate.add_argument(
+        "--pause",
+        type=float,
+        default=0.0,
+        help="要求と要求の間隔（秒）。上限の記載を見つけていないので既定は0",
+    )
+    rate.add_argument("--base", default=os.environ.get("TACHIBANA_BASE_URL") or "")
+    rate.add_argument("--version", default=os.environ.get("TACHIBANA_API_VERSION") or "")
+    rate.add_argument("--demo", action="store_true")
+    rate.add_argument("--get", action="store_true", help="POST ではなく GET で送る")
+    rate.add_argument(
+        "--session", type=pathlib.Path, default=pathlib.Path("tachibana_session.json")
+    )
+    rate.add_argument("--fresh", action="store_true")
+
     args = parser.parse_args()
     if args.command == "keygen":
         keygen(args.private, args.public, args.bits)
@@ -466,6 +592,19 @@ def main() -> int:
     warning = version_warning(version)
     if warning and not args.base:
         print(f"[注意] {warning}\n")
+    if args.command == "throughput":
+        symbols = [s.strip() for s in str(args.symbols).split(",") if s.strip()]
+        return throughput(
+            base,
+            auth_id,
+            args.private,
+            symbols,
+            args.universe,
+            use_post=not args.get,
+            session_path=args.session,
+            fresh=args.fresh,
+            pause=args.pause,
+        )
     return probe(
         base,
         auth_id,
