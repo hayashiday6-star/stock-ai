@@ -145,19 +145,43 @@ def test_the_universe_sorts_by_code_and_honours_the_limit() -> None:
 # 推測するしかない状態になるのが、この実装のいちばんまずい欠陥である。**
 
 
-def test_a_code_that_is_not_four_characters_is_counted_not_dropped_silently(
+def test_a_five_digit_code_is_excluded_as_a_non_common_share_at_info_level(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    row = _sizyou("1301")
-    row["sIssueCode"] = "13010"  # 5桁
+    # 実測（2026-09-03）で落ちた7件はすべて5桁・末尾5で、先頭4桁は既存の普通株
+    # コードだった（25935 / 50765 / 75505 / 92015 / 92025）。優先株・種類株である。
+    # **正しく落ちている。** 正しい除外を毎回 WARNING にすると、本物の警告が
+    # 見えなくなる。
+    preferred = _sizyou("1301")
+    preferred["sIssueCode"] = "25935"
+    # 普通株も1件入れる。ユニバースが空になると別の（正しい）警告が出るので、
+    # 「警告が出ないこと」を確かめられなくなる。
+    kabu = [_kabu("1301"), _kabu("2593")]
+    sizyou = [_sizyou("1301"), preferred]
+
+    with caplog.at_level("INFO"):
+        found = normalize_masters(kabu, sizyou, Segment.PRIME)
+
+    assert [p.symbol for p in found] == ["1301"]
+    assert "優先株・種類株" in caplog.text
+    assert "25935" in caplog.text
+    assert "WARNING" not in caplog.text
+
+
+def test_a_code_of_an_unexpected_length_is_warned_about_with_examples(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    # 5桁は説明がつく。それ以外の桁数は「項目の形が変わった」を疑う形なので、
+    # 警告に上げる。件数だけでは判断できないので実例を出す。
+    odd = _sizyou("1301")
+    odd["sIssueCode"] = "130"
 
     with caplog.at_level("WARNING"):
-        found = normalize_masters([_kabu("1301")], [row], Segment.PRIME)
+        found = normalize_masters([_kabu("1301")], [_sizyou("1301"), odd], Segment.PRIME)
 
-    assert found == []
-    assert "4桁でない 1 件" in caplog.text
-    # 件数だけでは、普通株でないものか項目の形が変わったのかを決められない。
-    assert "13010" in caplog.text
+    assert [p.symbol for p in found] == ["1301"]
+    assert "想定外の 1 件" in caplog.text
+    assert "130" in caplog.text
 
 
 def test_a_duplicate_code_is_counted_because_a_dict_would_hide_it(
@@ -181,8 +205,8 @@ def test_a_bad_code_in_the_stock_master_is_counted_separately(
     bad = _kabu("1301")
     bad["sIssueCode"] = "1"
 
-    with caplog.at_level("WARNING"):
+    with caplog.at_level("INFO"):
         normalize_masters([bad], [_sizyou("1301")], Segment.PRIME)
 
-    assert "1 件（銘柄マスタ）" in caplog.text
+    assert "銘柄マスタ側 1 件" in caplog.text
     assert "銘柄マスタに対応が無い 1 件" in caplog.text
