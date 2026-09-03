@@ -136,3 +136,53 @@ def test_the_universe_sorts_by_code_and_honours_the_limit() -> None:
     assert [p.symbol for p in source.profiles(Segment.PRIME)] == ["1301", "4385", "7203"]
     assert [p.symbol for p in source.profiles(Segment.PRIME, limit=2)] == ["1301", "4385"]
     assert source.name == "tachibana"
+
+
+# --- 落ちる経路はすべて数える -------------------------------------------------
+#
+# 実測（2026-09-03）でプライムが見込み 1,556 に対して 1,549 だった。7件が
+# どこで落ちたのかを、ログからは特定できなかった。**件数が合わないときに
+# 推測するしかない状態になるのが、この実装のいちばんまずい欠陥である。**
+
+
+def test_a_code_that_is_not_four_characters_is_counted_not_dropped_silently(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    row = _sizyou("1301")
+    row["sIssueCode"] = "13010"  # 5桁
+
+    with caplog.at_level("WARNING"):
+        found = normalize_masters([_kabu("1301")], [row], Segment.PRIME)
+
+    assert found == []
+    assert "4桁でない 1 件" in caplog.text
+    # 件数だけでは、普通株でないものか項目の形が変わったのかを決められない。
+    assert "13010" in caplog.text
+
+
+def test_a_duplicate_code_is_counted_because_a_dict_would_hide_it(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    # dict に入れると後勝ちで静かに1件消える。合計が合わない原因になる。
+    with caplog.at_level("WARNING"):
+        found = normalize_masters(
+            [_kabu("1301")], [_sizyou("1301"), _sizyou("1301")], Segment.PRIME
+        )
+
+    assert len(found) == 1
+    assert "重複" in caplog.text
+
+
+def test_a_bad_code_in_the_stock_master_is_counted_separately(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    # 銘柄マスタ側で落ちると、市場マスタ側では「対応が無い」に化ける。
+    # どちらで落ちたのかが分かるように、別々に数える。
+    bad = _kabu("1301")
+    bad["sIssueCode"] = "1"
+
+    with caplog.at_level("WARNING"):
+        normalize_masters([bad], [_sizyou("1301")], Segment.PRIME)
+
+    assert "1 件（銘柄マスタ）" in caplog.text
+    assert "銘柄マスタに対応が無い 1 件" in caplog.text
