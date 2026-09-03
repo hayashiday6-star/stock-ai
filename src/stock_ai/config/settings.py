@@ -62,6 +62,13 @@ class Settings(BaseSettings):
     # 日本株の財務諸表をどこから取るか。'edinet' は有報の「主要な経営指標等」から
     # 5期ぶんを読む。無料だが、有報を探すのに1日1リクエストで数百日ぶん走査する。
     jp_statement_source: str = Field(default="jquants", validation_alias="JP_STATEMENT_SOURCE")
+    # 日本株の銘柄一覧（市場区分・業種）をどこから取るか。
+    #
+    # **JP_PRICE_SOURCE も JP_STATEMENT_SOURCE もここには効かない。** 価格と
+    # 財務を立花・EDINET に移しても、銘柄一覧だけ J-Quants を叩き続けていた
+    # （docs/JQUANTS_EXIT.md）。切り替えられる形にしておかないと、解約した日に
+    # 銘柄一覧の更新だけが黙って止まる。
+    jp_universe_source: str = Field(default="jquants", validation_alias="JP_UNIVERSE_SOURCE")
 
     # --- AI providers (Phase 6) ---
     #: Which provider the commands use when none is named on the command line.
