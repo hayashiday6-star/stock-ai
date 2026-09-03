@@ -49,7 +49,7 @@ if (-not (Test-EnvKeySet 'EDINET_API_KEY')) {
     Write-Section 'EDINET XBRL probe'
     Write-Err '.env に EDINET_API_KEY がありません。'
     Write-Host ''
-    Write-Host 'EDINET確認.bat で鍵の状態を先に確かめてください。'
+    Write-Host 'checks\EDINET確認.bat で鍵の状態を先に確かめてください。'
     Exit-WithPause 1
 }
 

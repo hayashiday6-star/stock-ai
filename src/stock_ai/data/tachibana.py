@@ -434,7 +434,7 @@ def build_client(
     if not key_path.exists():
         raise DataError(
             f"立花の秘密鍵が見つかりません: {key_path}。"
-            "`7-立花API確認.bat` を実行すると鍵を作れます。"
+            "`checks/立花API確認.bat` を実行すると鍵を作れます。"
         )
 
     resolved = version or default_version()

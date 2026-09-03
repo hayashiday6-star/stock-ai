@@ -1,6 +1,6 @@
 @echo off
 setlocal
-cd /d "%~dp0"
+cd /d "%~dp0.."
 rem This .bat pauses at the end; stop the script pausing too.
 set STOCK_AI_NO_PAUSE=1
 
@@ -33,7 +33,7 @@ if "%CHOICE%"=="2" set "ARGS=-Real"
 if "%CHOICE%"=="3" set "ARGS=-Real -Unlock"
 
 echo.
-powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0scripts\moomoo-check.ps1" %ARGS%
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0..\scripts\moomoo-check.ps1" %ARGS%
 if errorlevel 1 (
   echo.
   echo [ERROR] The check did not finish. See the messages above.

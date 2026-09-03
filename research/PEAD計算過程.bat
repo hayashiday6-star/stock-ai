@@ -1,6 +1,6 @@
 @echo off
 setlocal
-cd /d "%~dp0"
+cd /d "%~dp0.."
 rem This .bat pauses at the end; stop the script pausing too.
 set STOCK_AI_NO_PAUSE=1
 
@@ -17,7 +17,7 @@ echo.
 set /p SYMBOL=Symbol code (e.g. 7203): 
 echo.
 
-powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0scripts\pead-explain.ps1" -Symbol %SYMBOL%
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0..\scripts\pead-explain.ps1" -Symbol %SYMBOL%
 set CODE=%ERRORLEVEL%
 
 echo.

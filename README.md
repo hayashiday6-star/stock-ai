@@ -139,8 +139,26 @@ project folder itself, so it does not matter where Windows opens:
 | `5-分析.bat` | Fill any gaps, screen, then test whether the score holds up |
 | `ダッシュボード起動.bat` | Open the dashboard in a browser |
 | `ダッシュボード起動(スマホ).bat` | Same, reachable from a phone on the same Wi-Fi |
-| `EDINET確認.bat` | Diagnose an EDINET key by trying every way of sending it |
+| `6-検証の進捗を見る.bat` | Open the hypothesis ledger |
 | `PowerShellを開く.bat` | A terminal already in this folder, for one-off commands |
+
+### The other launchers live in two folders
+
+The project root held 29 `.bat` files at one point, which made it hard to find
+the handful used regularly. The rest were sorted by how often they are needed,
+not by what they do:
+
+| Folder | What is in it |
+|---|---|
+| `checks\` | One-off diagnostics: does this API answer, is this key accepted, what does this endpoint actually return. Run when something looks wrong, or once before trusting a new data source. |
+| `research\` | One hypothesis at a time: count the population, run the in-sample pass, walk through the arithmetic of a single symbol. Each file belongs to an entry in `docs/HYPOTHESES.md`. |
+
+They work exactly the same when double-clicked; each one moves to the project
+root before doing anything.
+
+**A `.bat` cannot announce itself, and it cannot announce its own
+disappearance either.** `0-最新にする.bat` therefore lists both — a move shows
+up as the same name leaving one folder and arriving in another.
 
 The phone launcher is separate on purpose. The dashboard has **no login**:
 serving it to the network means anyone on that network can read the database,
@@ -808,7 +826,7 @@ free. Details, including the full obtainable/not-obtainable table, are in
 **[docs/ACCUMULATION.md](docs/ACCUMULATION.md)** (Japanese). It is not advice.
 
 Run it daily with `scripts\7-accumulation-daily.ps1 -Register -Channel discord`
-(or the `アキュムレーション日次.bat` menu), which registers a Windows task and
+(or the `research\アキュムレーション日次.bat` menu), which registers a Windows task and
 pushes a summary to Discord. Two details are deliberate there. A quiet day is
 silent by default — this shape finds nothing most days, and a "該当なし" message
 every morning is one nobody reads by the second week — so `-Heartbeat` exists
@@ -943,6 +961,6 @@ uv run pre-commit run --all-files # run every hook manually
 (`data`, `screening`, `technical`, `backtest`, `ai`, `broker`, ...).
 **[docs/HYPOTHESES.md](docs/HYPOTHESES.md)** (Japanese). Every idea that has
 been tested, and how each one ended. Closed ideas keep their entry: what was
-tried matters as much as what is left. `19-検証の進捗を見る.bat` opens it.
+tried matters as much as what is left. `6-検証の進捗を見る.bat` opens it.
 
 See [docs/](docs/) for design notes.

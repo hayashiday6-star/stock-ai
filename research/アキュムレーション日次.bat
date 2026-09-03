@@ -1,6 +1,6 @@
 @echo off
 setlocal
-cd /d "%~dp0"
+cd /d "%~dp0.."
 rem This .bat pauses at the end; stop the script pausing too.
 set STOCK_AI_NO_PAUSE=1
 
@@ -30,6 +30,6 @@ if "%CHOICE%"=="4" set "ARGS=-Register -At 07:00 -Channel discord -Heartbeat"
 echo.
 echo A whole-market scan takes several minutes.
 echo.
-powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0scripts\7-accumulation-daily.ps1" %ARGS%
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0..\scripts\7-accumulation-daily.ps1" %ARGS%
 echo.
 pause

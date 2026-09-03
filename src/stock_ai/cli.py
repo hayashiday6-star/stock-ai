@@ -1976,7 +1976,7 @@ def revision_census(
     if report.pairs_compared and report.pairs_without_forecast == report.pairs_compared:
         console.print(
             "[yellow]全組で予想が空だった。[/] 予想フィールドは後から足した列なので、"
-            "財務を取り直すまで埋まらない。11-開示時刻の取り込み.bat を先に実行する。"
+            "財務を取り直すまで埋まらない。checks/開示時刻の取り込み.bat を先に実行する。"
         )
         return
     if report.total == 0:
@@ -2036,7 +2036,7 @@ def sue_census(
     if report.total == 0:
         console.print(
             "[yellow]1件も組めなかった。[/] 予想フィールドは後から足した列なので、"
-            "財務を取り直すまで埋まらない。11-開示時刻の取り込み.bat を先に実行する。"
+            "財務を取り直すまで埋まらない。checks/開示時刻の取り込み.bat を先に実行する。"
         )
         return
 

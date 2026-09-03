@@ -6,7 +6,7 @@
     押されたけれど手元に来ていない修正は、動かない修正と見分けが付かない。
     同じ行番号から同じ例外が出る。既存の .bat は起動時に「N コミット遅れて
     います」と言うが、それは**その .bat を既に持っている**場合の話で、新しく
-    増えたファイルは自分の存在を知らせられない。9-EDINET財務確認.bat が
+    増えたファイルは自分の存在を知らせられない。checks\EDINET財務確認.bat が
     出てこなかったのがまさにそれ。
 
     そこでこれは、取り込んだ後に**増えた .bat の名前を並べる**。次に何を
@@ -47,8 +47,19 @@ Write-Host "枝      : $branch"
 Write-Host "現在    : $before"
 Write-Host ''
 
-# 取り込む前の .bat 一覧。増えた分を後で差分で出す。
-$batsBefore = @(Get-ChildItem -Path . -Filter '*.bat' -File | Select-Object -ExpandProperty Name)
+# 取り込む前の .bat 一覧。増えた分と減った分を後で差分で出す。
+#
+# **サブフォルダも見る。** .bat は自分の存在を知らせられないが、自分が
+# 消えたことも知らせられない。整理でフォルダを移すと、手元から黙って
+# 消えたように見える。相対パスで持つので、移動は「消えて増えた」と出る。
+function Get-BatList {
+    @(
+        Get-ChildItem -Path . -Filter '*.bat' -File -Recurse |
+            Where-Object { $_.FullName -notmatch '\\\.(git|venv)\\' } |
+            ForEach-Object { Resolve-Path -Relative $_.FullName }
+    )
+}
+$batsBefore = Get-BatList
 
 $env:GIT_HTTP_LOW_SPEED_LIMIT = '1000'
 $env:GIT_HTTP_LOW_SPEED_TIME = '20'
@@ -101,20 +112,27 @@ if (Test-UvInstalled) {
     }
 }
 
-$batsAfter = @(Get-ChildItem -Path . -Filter '*.bat' -File | Select-Object -ExpandProperty Name)
+$batsAfter = Get-BatList
 $added = @($batsAfter | Where-Object { $batsBefore -notcontains $_ })
+$gone = @($batsBefore | Where-Object { $batsAfter -notcontains $_ })
 
 Write-Host ''
-if ($added.Count -gt 0) {
-    Write-Section '増えたファイル'
+if ($added.Count -gt 0 -or $gone.Count -gt 0) {
+    Write-Section '.bat の増減'
     foreach ($name in ($added | Sort-Object)) {
-        Write-Host "  $name" -ForegroundColor Green
+        Write-Host "  + $name" -ForegroundColor Green
+    }
+    foreach ($name in ($gone | Sort-Object)) {
+        Write-Host "  - $name" -ForegroundColor Yellow
     }
     Write-Host ''
-    Write-Host 'エクスプローラで見えているはずです。ダブルクリックしてください。'
+    if ($gone.Count -gt 0 -and $added.Count -gt 0) {
+        Write-Host '同じ名前が + と - の両方にあれば、フォルダを移しただけです。'
+    }
+    Write-Host 'エクスプローラで見えているはずです。'
 }
 else {
-    Write-Host '新しい .bat はありません（中身だけの更新です）。' -ForegroundColor DarkGray
+    Write-Host '.bat の増減はありません（中身だけの更新です）。' -ForegroundColor DarkGray
 }
 
 Exit-WithPause 0

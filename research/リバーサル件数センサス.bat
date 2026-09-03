@@ -1,6 +1,6 @@
 @echo off
 setlocal
-cd /d "%~dp0"
+cd /d "%~dp0.."
 rem This .bat pauses at the end; stop the script pausing too.
 set STOCK_AI_NO_PAUSE=1
 
@@ -25,7 +25,7 @@ echo No returns are computed. Scans every symbol and session, so
 echo it takes a few minutes.
 echo.
 
-powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0scripts\reversal-census.ps1" %*
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0..\scripts\reversal-census.ps1" %*
 set CODE=%ERRORLEVEL%
 
 echo.

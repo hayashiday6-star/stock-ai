@@ -47,7 +47,7 @@ if (-not (Test-UvInstalled)) { Exit-WithPause 1 }
 if (-not (Test-Path $PrivateKey)) {
     Write-Err "秘密鍵が見つかりません: $PrivateKey"
     Write-Host ''
-    Write-Host '先に 7-立花API確認.bat を実行して鍵を作り、登録してください。'
+    Write-Host '先に checks\立花API確認.bat を実行して鍵を作り、登録してください。'
     Exit-WithPause 1
 }
 

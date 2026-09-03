@@ -43,7 +43,7 @@ if (-not (Test-UvInstalled)) { Exit-WithPause 1 }
 Write-Section "予想修正の件数センサス ($Field)"
 Write-Host '予想フィールドは後から足した列です。財務を取り直していないDBでは' -ForegroundColor DarkGray
 Write-Host '「予想が入っておらず比較できず」に全件落ちます。その場合は' -ForegroundColor DarkGray
-Write-Host '11-開示時刻の取り込み.bat を先に実行してください。' -ForegroundColor DarkGray
+Write-Host 'checks\開示時刻の取り込み.bat を先に実行してください。' -ForegroundColor DarkGray
 Write-Host ''
 
 uv run stock-ai revision-census --field $Field --min-change $MinChange

@@ -47,7 +47,7 @@ if (-not (Test-UvInstalled)) { Exit-WithPause 1 }
 
 Write-Section "SUE の件数センサス ($Field)"
 Write-Host '予想フィールドは後から足した列です。財務を取り直していないDBでは' -ForegroundColor DarkGray
-Write-Host '1件も組めません。その場合は 11-開示時刻の取り込み.bat を先に' -ForegroundColor DarkGray
+Write-Host '1件も組めません。その場合は checks\開示時刻の取り込み.bat を先に' -ForegroundColor DarkGray
 Write-Host '実行してください。' -ForegroundColor DarkGray
 Write-Host ''
 
