@@ -79,7 +79,12 @@ from stock_ai.backtest.pead import (
     spread,
 )
 from stock_ai.backtest.pead_census import DRIFT_WINDOW, ENTRY_OFFSET, run_census
-from stock_ai.backtest.power import DEFAULT_LAGS, TARGET_T, estimate_power
+from stock_ai.backtest.power import (
+    DEFAULT_LAGS,
+    TARGET_T,
+    estimate_power,
+    trimmed_variance,
+)
 from stock_ai.backtest.report import metrics_frame
 from stock_ai.backtest.reversal import (
     BENCHMARK,
@@ -2790,22 +2795,27 @@ def reversal_power(
 
     if series.implausible:
         console.print(
-            f"[red]フォワードリターンが ±100% を超えた銘柄日が "
+            f"[yellow]フォワードリターンが ±100% を超えた銘柄日が "
             f"{series.implausible:,} 件ある。[/]\n"
-            "  20営業日でそこまで動くのは値動きではない。**分割・併合の調整漏れ**である。\n"
-            "  1件でも、162銘柄の分位平均を大きく動かす（+125,028% なら +772%）。\n"
-            "  [bold]この系列から出した分散は使えないので、必要な差も出さない。[/]\n"
-            "  上の一覧の銘柄と日付を [cyan]stock-ai price-audit <銘柄> --around <日付>[/] "
-            "で見て、生値と調整済みのどちらが飛んでいるかを確かめる。"
+            "  [dim]不連続の除外を通ったということは、**1日で ±50% を超える動きは"
+            "含まれていない**。連続ストップ高を20営業日積み上げれば届く水準なので、"
+            "これ自体は欠陥の証拠にならない。下の感度で効いているかどうかを見る。[/]"
         )
-        raise typer.Exit(code=1)
 
     target = oos_days or _oos_session_count(database, benchmark, holding)
     console.print(f"OOS の想定日数: [bold]{target:,}[/] 営業日（{OOS_FROM} 以降）")
 
+    _report_daily_spread(series)
+
     table = Table(title="重なりを織り込んだ検出力（平均は含まない）")
     table.add_column("指標")
-    for column in ("日次SD", "重なりの膨張", "OOS の標準誤差", f"t≥{TARGET_T} に必要な差"):
+    for column in (
+        "日次SD",
+        "上位1%を除いたSD",
+        "重なりの膨張",
+        "OOS の標準誤差",
+        f"t≥{TARGET_T} に必要な差",
+    ):
         table.add_column(column, justify="right")
 
     verdicts: list[tuple[str, float]] = []
@@ -2816,14 +2826,21 @@ def reversal_power(
         estimate = estimate_power(values, lags=lags)
         needed = estimate.detectable(target)
         verdicts.append((label, needed))
+        trimmed, dropped = trimmed_variance(values, fraction=0.01)
         table.add_row(
             label,
             f"{estimate.daily_sd * 100:.2f}%",
+            f"{trimmed**0.5 * 100:.2f}%",
             f"{estimate.inflation:.2f}x",
             f"{estimate.standard_error(target) * 100:.2f}%",
             f"[bold]{needed * 100:.2f}%[/]",
         )
     console.print(table)
+    console.print(
+        f"[dim]「上位1%を除いたSD」は感度であって推定量ではない（{dropped} 日を除外）。"
+        "**全体のSDがこれの何倍もあるなら、分散は「毎日どれくらい散らばるか」ではなく"
+        "「まれに何が起きるか」を測っている。**[/]"
+    )
 
     threshold = COST_ROUND_TRIP
     console.print()
@@ -2889,6 +2906,42 @@ def _report_spread(series: object, per_day: int) -> None:
             "[dim]**+900% のような値が出たら分割・併合の調整漏れを疑う。** "
             "その銘柄と日付を [cyan]stock-ai prices[/] で直接見る。[/dim]"
         )
+
+
+def _report_daily_spread(series: object) -> None:
+    """Show the daily series itself - the object the variance belongs to.
+
+    それまで見ていたのは分位平均の**材料**（銘柄日ごとのリターン）で、分散が
+    付いているのは**分位平均そのもの**である。材料が正常でも、少数の日が桁違い
+    なら分散はその日でできている。対象を取り違えていた。
+
+    1分位に何銘柄入るかも一緒に出す。銘柄数が少ない日は、平均が個別銘柄の
+    リターンそのものになるので、その日だけ機械的に散らばりが大きくなる。
+    """
+    values = series.long_only()  # type: ignore[attr-defined]
+    counts = series.counts  # type: ignore[attr-defined]
+    if not values:
+        return
+
+    ordered = sorted(values)
+
+    def at(fraction: float) -> float:
+        return ordered[min(len(ordered) - 1, int(fraction * len(ordered)))]
+
+    spread = Table(title="日次系列そのもの（分位1 − ベンチ）")
+    cuts = (0.0, 0.01, 0.5, 0.99, 1.0)
+    for label in ("最小", "p1", "p50", "p99", "最大"):
+        spread.add_column(label, justify="right")
+    spread.add_row(*[f"{at(min(cut, 0.999)) * 100:+.1f}%" for cut in cuts])
+    console.print(spread)
+
+    wild = sum(1 for value in values if abs(value) > 0.5)
+    console.print(
+        f"[dim]±50% を超えた営業日: {wild:,} / {len(values):,}。"
+        f"1分位の銘柄数は 最小 {min(counts) // 5} ／ 中央値 "
+        f"{int(median(counts)) // 5}。**銘柄数が少ない日は、平均が1銘柄の"
+        "リターンそのものになる。**[/]"
+    )
 
 
 def _oos_session_count(database: Database, benchmark: str, holding: int) -> int:

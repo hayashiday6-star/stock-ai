@@ -133,6 +133,36 @@ class PowerEstimate:
         return target_t * self.standard_error(sample_days)
 
 
+def trimmed_variance(values: Sequence[float], fraction: float = 0.01) -> tuple[float, int]:
+    """最も外れた ``fraction`` を落としたときの分散と、落とした件数。
+
+    **推定量ではない。感度である。** 分散の 90% が全体の 1% の日でできている
+    なら、その分散は「毎日どれくらい散らばるか」ではなく「まれに何が起きるか」
+    を測っている。どちらを検出力の根拠にするかは設計の判断で、この関数は
+    どちらかを選ばない——両方を見せるためだけにある。
+
+    外れの大きさは**中央値**からの距離で測る。平均を使うと、外れ値自身が
+    中心を引っ張って外れて見えなくなる。中央値は位置の統計量なので、これを
+    内部で使っても効果の点推定は漏れない（返すのは散らばりだけである）。
+
+    Raises:
+        ValueError: ``fraction`` が 0 以上 1 未満でない。
+    """
+    if not 0.0 <= fraction < 1.0:
+        raise ValueError(f"fraction must be in [0, 1); got {fraction}.")
+    count = len(values)
+    drop = int(count * fraction)
+    if count - drop < 2:
+        raise ValueError(f"trimming {drop} of {count} leaves too few observations.")
+
+    ordered = sorted(values)
+    centre = ordered[count // 2]
+    kept = sorted(values, key=lambda value: abs(value - centre))[: count - drop]
+    mean = sum(kept) / len(kept)
+    variance = sum((value - mean) ** 2 for value in kept) / len(kept)
+    return variance, drop
+
+
 def estimate_power(values: Sequence[float], lags: int = DEFAULT_LAGS) -> PowerEstimate:
     """日次系列から :class:`PowerEstimate` を作る。**平均は返さない。**"""
     gammas = autocovariances(values, lags)
