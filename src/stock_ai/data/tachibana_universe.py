@@ -150,18 +150,31 @@ def normalize_masters(
             "上場区分が東証3区分でない %d 件を除外しました（ETF・REIT・TPM など）", unlisted
         )
     if bad_code or bad_code_in_kabu:
-        # 4桁でないコードは、優先株・新株予約権など普通株でないものか、
-        # 項目の形が変わったかのどちらかである。**どちらなのかは件数だけでは
-        # 決まらないので、実例を出す。**
-        examples = [
-            str(row.get("sIssueCode", "")).strip() for row in sizyou if _code_of(row) is None
-        ][:5]
-        logger.warning(
-            "銘柄コードが4桁でない %d 件（市場マスタ）／ %d 件（銘柄マスタ）を除外しました。例: %s",
-            bad_code,
-            bad_code_in_kabu,
-            examples or "(なし)",
-        )
+        odd = [str(row.get("sIssueCode", "")).strip() for row in sizyou if _code_of(row) is None]
+        # 5桁は普通株でない銘柄（優先株・種類株）に割り当てられる。実測
+        # （2026-09-03）で落ちた7件はすべて5桁で末尾が 5 で、先頭4桁は既存の
+        # 普通株コードだった（2593 / 5076 / 7550 / 9201 / 9202 など）。
+        # **これは正しく落ちている。** ユニバースは普通株だけを対象にする。
+        #
+        # 正しい除外を毎回 WARNING で出すと、本物の警告が見えなくなる。
+        # 想定どおりの形（5桁）は INFO、それ以外は WARNING に分ける。
+        unexpected = [code for code in odd if len(code) != 5]
+        if unexpected:
+            logger.warning(
+                "銘柄コードの桁数が想定外の %d 件を除外しました。例: %s。"
+                "普通株でない銘柄は5桁で来るので、これはそれとも違う形である。",
+                len(unexpected),
+                unexpected[:5],
+            )
+        preferred = len(odd) - len(unexpected)
+        if preferred or bad_code_in_kabu:
+            logger.info(
+                "普通株でない銘柄（優先株・種類株、5桁コード）%d 件を除外しました"
+                "（銘柄マスタ側 %d 件）。例: %s",
+                preferred,
+                bad_code_in_kabu,
+                [code for code in odd if len(code) == 5][:5] or "(なし)",
+            )
     if unmatched:
         logger.warning("銘柄マスタに対応が無い %d 件を除外しました", unmatched)
     if duplicate:
