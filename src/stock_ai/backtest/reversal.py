@@ -67,6 +67,19 @@ JUDGMENT_FROM = dt.date(2021, 9, 4)
 #: 保有20営業日あたりの数字である。
 COST_ROUND_TRIP = 0.004
 
+#: エントリーまでに空ける営業日数。1 なら D+1 の寄付き。
+#:
+#: 主要指標は 1（D の終値で分位、D+1 の寄付きで入る）。2 を渡した版は副次で、
+#: 微細構造由来かどうかの切り分けに使う（`PREREG_REVERSAL_JP.md` §5）。
+DEFAULT_SKIP = 1
+
+#: §7 で事前に計算した「t≥2.0 に必要な差」。**封印済みの値である。**
+#:
+#: 2001–2020 の分散から、OOS 630営業日・Newey-West(20) で求めた。判定期間は
+#: 1分位あたりの銘柄数が当時より多いので、実際の標準誤差はこれより小さくなる
+#: 方向だが、**見てから下げるのは事後的な緩和**なのでこの値を使う。
+DETECTABLE = 0.0085
+
 #: 1営業日でこれを超える動きは、日本株では値動きではない。
 #:
 #: **東証には値幅制限がある。** 制限は株価帯ごとに決まっていて、いちばん緩い
@@ -227,6 +240,7 @@ def build_series(
     snapshots: dict[dt.date, set[str]] | None = None,
     survivors_only: bool = False,
     extremes: int = 12,
+    skip: int = DEFAULT_SKIP,
 ) -> ReversalSeries:
     """日次の分位リターンを作る。
 
@@ -246,6 +260,7 @@ def build_series(
         survivors_only: 最新の名簿を全期間に当てる（生存バイアスの対照）。
         extremes: フォワードリターンの絶対値が大きい銘柄日を何件持ち帰るか。
             **0 にしない。** 分散が説明できるかを確かめる唯一の手掛かりになる。
+        skip: 判定日からエントリーまでに空ける営業日数。主要指標は 1。
 
     Raises:
         ValueError: ベンチマークの価格が無い。暦が決められない。
@@ -262,7 +277,9 @@ def build_series(
         bench_open = bench[OPEN].to_numpy(dtype=float)
 
         total = len(calendar)
-        exit_offset = 1 + holding
+        if skip < 1:
+            raise ValueError(f"skip must be at least 1; got {skip}.")
+        exit_offset = skip + holding
         first = lookback
         last = total - exit_offset  # この位置までが退場日を持つ
         if last <= first:
@@ -352,7 +369,7 @@ def build_series(
             if allowed.size == 0:
                 continue
 
-            entry = opens[allowed + 1]
+            entry = opens[allowed + skip]
             exit_price = opens[allowed + exit_offset]
             tradeable = (
                 np.isfinite(entry) & np.isfinite(exit_price) & (entry > 0) & (exit_price > 0)
@@ -371,7 +388,7 @@ def build_series(
                 continue
 
             symbol_lookback = close[allowed] / close[allowed - lookback] - 1.0
-            symbol_forward = opens[allowed + exit_offset] / opens[allowed + 1] - 1.0
+            symbol_forward = opens[allowed + exit_offset] / opens[allowed + skip] - 1.0
             chunks_pos.append(allowed)
             chunks_lb.append(symbol_lookback)
             chunks_fwd.append(symbol_forward)
@@ -395,7 +412,7 @@ def build_series(
     forwards = np.concatenate(chunks_fwd)
 
     days, counts, rows, bench_returns, thin_days = _aggregate(
-        pos, lookbacks, forwards, calendar, bench_open, exit_offset, quantiles
+        pos, lookbacks, forwards, calendar, bench_open, exit_offset, quantiles, skip
     )
 
     cuts = (1, 5, 25, 50, 75, 95, 99)
@@ -442,6 +459,7 @@ def _aggregate(
     bench_open: np.ndarray,
     exit_offset: int,
     quantiles: int,
+    skip: int,
 ) -> tuple[list[dt.date], list[int], list[tuple[float, ...]], list[float], int]:
     """銘柄日を営業日ごとの分位平均にまとめる。
 
@@ -476,7 +494,7 @@ def _aggregate(
         if values.isna().any():
             thin_days += 1
             continue
-        entry = bench_open[index + 1]
+        entry = bench_open[index + skip]
         exit_price = bench_open[index + exit_offset]
         if not (entry > 0) or not (exit_price > 0):
             thin_days += 1
@@ -486,6 +504,53 @@ def _aggregate(
         rows.append(tuple(float(value) for value in values.to_numpy()))
         bench_returns.append(float(exit_price / entry - 1.0))
     return days, counts, rows, bench_returns, thin_days
+
+
+#: 封印済みの読み方の表（`PREREG_REVERSAL_JP.md` §8）。
+#:
+#: ``(合否, 読み方)`` を返す。**判定を人が読んで解釈しない。** 表は結果を
+#: 見る前に確定させてあるので、当てはめるだけにする。SUE版では「惜しかった」
+#: と基準が動きかけたので、当てはめをコードにした。
+PASS = "合格"
+FAIL = "不合格"
+
+
+def verdict(
+    mean: float,
+    t_statistic: float,
+    cost: float = COST_ROUND_TRIP,
+    detectable: float = DETECTABLE,
+    target_t: float = 2.0,
+) -> tuple[str, str]:
+    """封印済みの表に当てはめる。**解釈の余地を残さない。**
+
+    Args:
+        mean: OOS の分位1 − ベンチの平均（20営業日あたり）。
+        t_statistic: Newey-West(20) の t。
+        cost: 費用のしきい値。既定は1往復 0.40%。
+        detectable: §7 で事前に計算した「t≥2.0 に必要な差」。
+        target_t: 合格に要する t。
+
+    Returns:
+        ``(合否, 読み方)``。
+    """
+    if mean <= 0:
+        return FAIL, "効果なし。説を閉じる。"
+    if mean < cost:
+        return FAIL, (
+            f"効果はあるかもしれないが費用（{cost * 100:.2f}%）を賄えない。実行できないので閉じる。"
+        )
+    if t_statistic >= target_t:
+        return PASS, f"点推定が費用を超え、t≥{target_t} を満たした。"
+    if mean < detectable:
+        return FAIL, (
+            f"**構造的な帯（{cost * 100:.2f}%〜{detectable * 100:.2f}%）に入った。**"
+            "儲かる水準だが、この検出力では有意にならない。"
+            "「効果が無い」ではない。基準は緩めず、前向きに貯める。"
+        )
+    return FAIL, (
+        f"点推定は必要な差（{detectable * 100:.2f}%）を超えたが、t が届かなかった。前向き検証へ。"
+    )
 
 
 def survivorship_gap(clean: Sequence[float], survivors: Sequence[float]) -> list[float]:
