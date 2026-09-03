@@ -2157,6 +2157,71 @@ def sue_census(
     console.print("[dim]件数と分布のみ。リターンは計算していない。[/]")
 
 
+@app.command(name="universe-snapshots")
+def universe_snapshots(
+    dates: str = typer.Option(
+        "2018-06-01,2021-06-01,2023-06-01,2025-06-01",
+        "--dates",
+        help="Comma-separated snapshot dates to ask J-Quants for.",
+    ),
+) -> None:
+    """Ask whether a past listing snapshot brings back the companies that left.
+
+    Every registration so far carries the same limitation: **delisted companies
+    are not in the universe.** For a reversal test that buys the biggest
+    losers, that is not a footnote - the names that fell to nothing are exactly
+    the ones missing.
+
+    ``equities/master`` takes a ``date``. If a 2018 snapshot returns codes that
+    are not in today's database, the bias is fixable rather than permanent.
+
+    **This needs the J-Quants plan being cancelled on 2026-09-22.** If it works,
+    the snapshots have to be pulled before that date, not after.
+    """
+    settings = get_settings()
+    configure_logging(settings.log_level)
+
+    database = Database()
+    database.create_all()
+    with database.session() as session:
+        stored = {sym for sym, market in list_securities(session) if market == "JP"}
+    console.print(f"いまの DB: [bold]{len(stored):,}[/] 銘柄（JP）")
+
+    wanted = [_parse_date(text.strip()) for text in dates.split(",") if text.strip()]
+    table = Table(title="過去スナップショットに、いま無い銘柄が含まれるか")
+    for column in ("日付", "返った件数", "DBに無い", "例"):
+        table.add_column(column, justify="right" if column != "例" else "left")
+
+    for when in wanted:
+        if when is None:
+            continue
+        try:
+            found = JQuantsUniverse(api_key=settings.jquants_api_key, as_of=when).profiles(
+                Segment.ALL
+            )
+        except Exception as exc:  # noqa: BLE001 - 断られ方そのものが知りたい
+            table.add_row(str(when), "[red]取れず[/]", "-", f"{type(exc).__name__}: {exc}"[:70])
+            continue
+        codes = {profile.symbol for profile in found}
+        missing = sorted(codes - stored)
+        table.add_row(
+            str(when),
+            f"{len(codes):,}",
+            f"[bold]{len(missing):,}[/]" if missing else "0",
+            ", ".join(missing[:6]) if missing else "(なし)",
+        )
+    console.print(table)
+    console.print(
+        "[dim]「DBに無い」が0より大きければ、その日に上場していて今は無い会社が"
+        "取れているということ。**生存バイアスは制約ではなく作業になる。**\n"
+        "0なら、返っているのは今日の一覧と同じで、日付は効いていない。[/]"
+    )
+    console.print(
+        "[yellow]取れる場合は、解約（2026-09-22）より前にスナップショットを"
+        "貯めること。[/] 解約後は同じ要求が通らなくなる。"
+    )
+
+
 @app.command(name="reversal-census")
 def reversal_census(
     period: str = typer.Option("all", "--period", help="is | oos | all."),

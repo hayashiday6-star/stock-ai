@@ -580,7 +580,16 @@ def master(
 #: - ``sGyousyuCode``    業種コード（33業種）。セクターの代わりになるか
 #: - ``sZyouzyouHaisiDay`` 上場廃止日。**J-Quants にも無かった**。生存バイアス
 #:   を測れるようになるかもしれない
-_DISTRIBUTION_KEYS = ("sZyouzyouKubun", "sGyousyuCode", "sYusenSizyou", "sZyouzyouSizyou")
+#: - ``sSinyouC``       信用Ｃ。1 貸借銘柄 / 2 制度信用銘柄 / 3 一般信用銘柄。
+#:   **貸借銘柄でなければ制度信用の空売りができない。** ロング・ショートを
+#:   前提にした設計が実行可能かは、この分布で決まる。
+_DISTRIBUTION_KEYS = (
+    "sZyouzyouKubun",
+    "sGyousyuCode",
+    "sYusenSizyou",
+    "sZyouzyouSizyou",
+    "sSinyouC",
+)
 
 
 def _report_fill(rows: list[dict[str, Any]]) -> None:
