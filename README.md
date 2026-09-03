@@ -941,4 +941,8 @@ uv run pre-commit run --all-files # run every hook manually
 
 `src/stock_ai/` uses a src-layout; each subpackage is one pipeline layer
 (`data`, `screening`, `technical`, `backtest`, `ai`, `broker`, ...).
+**[docs/HYPOTHESES.md](docs/HYPOTHESES.md)** (Japanese). Every idea that has
+been tested, and how each one ended. Closed ideas keep their entry: what was
+tried matters as much as what is left. `19-検証の進捗を見る.bat` opens it.
+
 See [docs/](docs/) for design notes.
