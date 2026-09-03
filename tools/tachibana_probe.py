@@ -489,6 +489,122 @@ def throughput(
     return 0
 
 
+def master(
+    base: str,
+    auth_id: str,
+    private_path: pathlib.Path,
+    out: pathlib.Path,
+    *,
+    use_post: bool,
+    session_path: pathlib.Path,
+    fresh: bool = False,
+) -> int:
+    """銘柄マスタと銘柄市場マスタを取得し、**件数と分布だけ**を報告する。
+
+    v4r10 のマニュアルで要求形式が確定した（2026-09-03）。要求は機能ＩＤだけ
+    で、全銘柄が1回で返る。仮想ＵＲＬは ``sUrlMaster`` を使う（株価履歴の
+    ``sUrlPrice`` とは別）。
+
+    **マニュアルは仕様であって実測ではない。** 項目名が書いてあっても、実際に
+    値が入っているとは限らない。J-Quants では ``_FY_END_KEYS`` に推測した名前
+    だけを並べて、決算期末日が1件も入らないまま気付かなかった。同じ形を
+    繰り返さないために、値が入っている件数を数える。
+
+    リターンも価格も扱わない。銘柄コードと分類だけである。
+    """
+    if not private_path.exists():
+        sys.exit(f"秘密鍵が見つかりません: {private_path}\n先に `keygen` を実行してください。")
+
+    print(f"接続先: {base.rstrip('/')}   送信方法: {'POST' if use_post else 'GET'}")
+    print(f"認証ID 指紋: {_fingerprint(auth_id)}  (値そのものは表示しません)\n")
+
+    session = Session(session_path)
+    if fresh:
+        session.discard()
+    reused = session.load()
+
+    payload: dict[str, Any] = {}
+    with Client(base, session, use_post=use_post) as client:
+        if reused:
+            print(f"--- 当日のセッションを再利用 ({session_path}) ---\n")
+            master_url: str | None = session.urls.get("sUrlMaster")
+        else:
+            if not _login(client, auth_id, private_path):
+                return 1
+            master_url = session.urls.get("sUrlMaster")
+
+        if not master_url:
+            print("マスタの仮想ＵＲＬ (sUrlMaster) がありません。")
+            print("ログイン応答で復号できていない可能性があります。--fresh で取り直してください。")
+            return 1
+
+        for clmid, key in (
+            ("CLMStkGetIssueMstKabu", "aCLMStkIssueMstKabu"),
+            ("CLMStkGetIssueSizyouMstKabu", "aCLMStkIssueSizyouMstKabu"),
+        ):
+            print(f"--- {clmid} ---")
+            try:
+                answer, _ = client.request(master_url, {"sCLMID": clmid})
+            except RuntimeError as exc:
+                print(f"失敗: {exc}\n")
+                continue
+            problem = Client.check(answer)
+            if problem:
+                print(f"{problem}\n")
+                continue
+            rows = answer.get(key) or []
+            payload[clmid] = rows
+            print(f"レコード数: {len(rows):,}")
+            if not rows:
+                print("（空）\n")
+                continue
+            print(f"項目名: {', '.join(rows[0].keys())}")
+            _report_fill(rows)
+            print(f"\n先頭のレコード: {json.dumps(rows[0], ensure_ascii=False)}\n")
+
+    if not payload:
+        print("1つも取れなかった。上の出力をそのまま貼ってください。")
+        return 1
+
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(json.dumps(payload, ensure_ascii=False, indent=1), encoding="utf-8")
+    print(f"生の応答を書きました: {out}")
+    print("銘柄マスタに個人情報は含まれません。このファイルはそのまま貼って構いません。")
+    return 0
+
+
+#: 分布まで見たい項目。**代替になるかどうかがこれで決まる。**
+#:
+#: - ``sZyouzyouKubun``  上場区分。01プライム / 02スタンダード / 09グロース。
+#:   J-Quants の市場区分の代わりになるか
+#: - ``sGyousyuCode``    業種コード（33業種）。セクターの代わりになるか
+#: - ``sZyouzyouHaisiDay`` 上場廃止日。**J-Quants にも無かった**。生存バイアス
+#:   を測れるようになるかもしれない
+_DISTRIBUTION_KEYS = ("sZyouzyouKubun", "sGyousyuCode", "sYusenSizyou", "sZyouzyouSizyou")
+
+
+def _report_fill(rows: list[dict[str, Any]]) -> None:
+    """項目ごとに「値が入っている件数」と、分類項目の分布を出す。"""
+    keys = list(rows[0].keys())
+    empty = {
+        key: sum(1 for row in rows if str(row.get(key, "")).strip() in ("", "0", "00000000"))
+        for key in keys
+    }
+    blank = [f"{key} {count:,}" for key, count in empty.items() if count]
+    if blank:
+        print("空または0の件数: " + "、".join(blank))
+
+    for key in _DISTRIBUTION_KEYS:
+        if key not in keys:
+            continue
+        counts: dict[str, int] = {}
+        for row in rows:
+            value = str(row.get(key, "")).strip()
+            counts[value] = counts.get(value, 0) + 1
+        ordered = sorted(counts.items(), key=lambda kv: -kv[1])[:12]
+        print(f"  {key} の分布: " + "、".join(f"{k or '(空)'}={v:,}" for k, v in ordered))
+
+
 def main() -> int:
     """コマンドラインから keygen / probe を実行する。"""
     parser = argparse.ArgumentParser(description="立花証券・ｅ支店・ＡＰＩの疎通プローブ")
@@ -569,6 +685,18 @@ def main() -> int:
     )
     rate.add_argument("--fresh", action="store_true")
 
+    mst = sub.add_parser(
+        "master", help="銘柄マスタと銘柄市場マスタを取り、件数と分布を報告する（v4r10）"
+    )
+    mst.add_argument("--private", type=pathlib.Path, default=pathlib.Path("tachibana_private.pem"))
+    mst.add_argument("--base", default=os.environ.get("TACHIBANA_BASE_URL") or "")
+    mst.add_argument("--version", default=os.environ.get("TACHIBANA_API_VERSION") or "")
+    mst.add_argument("--demo", action="store_true")
+    mst.add_argument("--get", action="store_true", help="POST ではなく GET で送る")
+    mst.add_argument("--out", type=pathlib.Path, default=pathlib.Path("tachibana_master.json"))
+    mst.add_argument("--session", type=pathlib.Path, default=pathlib.Path("tachibana_session.json"))
+    mst.add_argument("--fresh", action="store_true")
+
     args = parser.parse_args()
     if args.command == "keygen":
         keygen(args.private, args.public, args.bits)
@@ -592,6 +720,16 @@ def main() -> int:
     warning = version_warning(version)
     if warning and not args.base:
         print(f"[注意] {warning}\n")
+    if args.command == "master":
+        return master(
+            base,
+            auth_id,
+            args.private,
+            args.out,
+            use_post=not args.get,
+            session_path=args.session,
+            fresh=args.fresh,
+        )
     if args.command == "throughput":
         symbols = [s.strip() for s in str(args.symbols).split(",") if s.strip()]
         return throughput(
