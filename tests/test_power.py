@@ -15,6 +15,7 @@ from stock_ai.backtest.power import (
     autocovariances,
     estimate_power,
     long_run_variance,
+    trimmed_variance,
 )
 
 
@@ -95,3 +96,37 @@ def test_zero_variance_reports_nan_inflation_rather_than_dividing_by_zero() -> N
     estimate = estimate_power([0.5] * 50, lags=3)
     assert estimate.variance == pytest.approx(0.0)
     assert math.isnan(estimate.inflation)
+
+
+def test_trimming_shows_when_the_spread_is_a_handful_of_days() -> None:
+    """**分散が「毎日の散らばり」か「まれな出来事」かを分ける。**
+
+    静かな日が99日、桁違いの日が1日。全体のSDはその1日でできている。
+    """
+    values = [0.01, -0.01] * 50 + [50.0]
+    full = estimate_power(values, lags=0)
+    trimmed, dropped = trimmed_variance(values, fraction=0.01)
+
+    assert dropped == 1
+    assert full.variance > 20.0
+    assert trimmed < 0.001  # 1日落とすだけで消える
+
+
+def test_trimming_a_well_behaved_series_barely_moves_it() -> None:
+    values = [0.02, -0.01, 0.015, -0.02] * 100
+    full = estimate_power(values, lags=0)
+    trimmed, _dropped = trimmed_variance(values, fraction=0.01)
+    assert trimmed == pytest.approx(full.variance, rel=0.15)
+
+
+def test_the_centre_is_the_median_so_an_outlier_cannot_hide_itself() -> None:
+    """平均を中心にすると、外れ値自身が中心を引っ張って外れて見えなくなる。"""
+    values = [0.0] * 99 + [100.0]
+    trimmed, dropped = trimmed_variance(values, fraction=0.01)
+    assert dropped == 1
+    assert trimmed == pytest.approx(0.0)
+
+
+def test_trimming_rejects_a_fraction_that_would_empty_the_series() -> None:
+    with pytest.raises(ValueError, match="too few"):
+        trimmed_variance([0.1, 0.2, 0.3], fraction=0.9)
