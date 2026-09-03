@@ -32,7 +32,7 @@ from __future__ import annotations
 
 import datetime as dt
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import numpy as np
 import pandas as pd
@@ -49,9 +49,15 @@ logger = get_logger(__name__)
 #: ベンチマーク。TOPIX連動ETF。暦もこれに合わせる。
 BENCHMARK = "1306"
 
-#: 生存バイアスを直せる最初の日。J-Quants の5年ローリング窓の境界
-#: （`docs/JQUANTS_EXIT.md`）。**これより前は今後も直せない。**
-JUDGMENT_FROM = dt.date(2021, 9, 1)
+#: 判定に使える最初の日。**実測値であって、窓の理屈からの逆算ではない。**
+#:
+#: 2026-09-04 に名簿を落としたところ、2021-09-01 は5年ローリング窓の外で
+#: 断られ、**実際に返った最も古い名簿は 2021-10-01** だった（61件、
+#: `docs/JQUANTS_EXIT.md`）。分位を組むにはその日の名簿が要るので、名簿の
+#: 無い日は判定日になれない。
+#:
+#: **これより前は今後も直せない。** 廃止銘柄の株価も同じ窓の中にしか無い。
+JUDGMENT_FROM = dt.date(2021, 10, 1)
 
 #: 1往復の費用。ロングオンリーなので、両建て前提の 0.8% の半分。
 #: 保有20営業日あたりの数字である。
@@ -85,6 +91,20 @@ class ReversalSeries:
     """分位を作れる銘柄数に届かなかった営業日。"""
     universe_label: str = "db"
     """どの universe で回したか。生存バイアスの実測で取り違えないため。"""
+    forward_percentiles: list[tuple[str, float]] = field(default_factory=list)
+    """銘柄日ごとのフォワードリターンの分位。**日次系列の分散が説明できるか
+    を確かめるためだけに持つ。**
+
+    分位1に約160銘柄入るなら、平均のばらつきは個別のばらつきよりずっと
+    小さくなるはずである。そうなっていなければ、平均が数件の極端値に
+    引っ張られている——つまり測っているのは現象ではなくデータの傷である。
+    """
+    extremes: list[tuple[str, dt.date, float, float]] = field(default_factory=list)
+    """(銘柄, 判定日, 5日リターン, フォワード) を絶対値の大きい順に。
+
+    銘柄ごとに最悪の1件だけを見る。同じ銘柄で埋まると他が見えなくなるため。
+    **+900% のような値が出たら分割・併合の調整漏れを疑う。**
+    """
 
     def long_only(self) -> list[float]:
         """主要指標。**分位1 − ベンチマーク。**
@@ -160,6 +180,7 @@ def build_series(
     quantiles: int = QUANTILES,
     snapshots: dict[dt.date, set[str]] | None = None,
     survivors_only: bool = False,
+    extremes: int = 12,
 ) -> ReversalSeries:
     """日次の分位リターンを作る。
 
@@ -177,6 +198,8 @@ def build_series(
         quantiles: 分位数。
         snapshots: 日付ごとの名簿。``None`` なら DB にある銘柄をそのまま使う。
         survivors_only: 最新の名簿を全期間に当てる（生存バイアスの対照）。
+        extremes: フォワードリターンの絶対値が大きい銘柄日を何件持ち帰るか。
+            **0 にしない。** 分散が説明できるかを確かめる唯一の手掛かりになる。
 
     Raises:
         ValueError: ベンチマークの価格が無い。暦が決められない。
@@ -229,6 +252,8 @@ def build_series(
         chunks_lb: list[np.ndarray] = []
         chunks_fwd: list[np.ndarray] = []
         no_prices = no_lookback = thin = calendar_gap = 0
+        # 銘柄ごとに最悪の1件。同じ銘柄で枠が埋まると他の銘柄が見えなくなる。
+        worst: list[tuple[float, str, int, float, float]] = []
 
         for symbol in targets:
             raw = price_repo.get_raw_prices(symbol)
@@ -280,9 +305,22 @@ def build_series(
             if allowed.size == 0:
                 continue
 
+            symbol_lookback = close[allowed] / close[allowed - lookback] - 1.0
+            symbol_forward = opens[allowed + exit_offset] / opens[allowed + 1] - 1.0
             chunks_pos.append(allowed)
-            chunks_lb.append(close[allowed] / close[allowed - lookback] - 1.0)
-            chunks_fwd.append(opens[allowed + exit_offset] / opens[allowed + 1] - 1.0)
+            chunks_lb.append(symbol_lookback)
+            chunks_fwd.append(symbol_forward)
+            if extremes:
+                pick = int(np.argmax(np.abs(symbol_forward)))
+                worst.append(
+                    (
+                        float(abs(symbol_forward[pick])),
+                        symbol,
+                        int(allowed[pick]),
+                        float(symbol_lookback[pick]),
+                        float(symbol_forward[pick]),
+                    )
+                )
 
     if not chunks_pos:
         raise ValueError("条件を通る銘柄日が1つも無い。フィルタか期間を見直す。")
@@ -294,6 +332,17 @@ def build_series(
     days, counts, rows, bench_returns, thin_days = _aggregate(
         pos, lookbacks, forwards, calendar, bench_open, exit_offset, quantiles
     )
+
+    cuts = (1, 5, 25, 50, 75, 95, 99)
+    percentiles = [
+        (f"p{cut}", float(value))
+        for cut, value in zip(cuts, np.percentile(forwards, cuts), strict=True)
+    ]
+    worst.sort(reverse=True)
+    biggest = [
+        (symbol, calendar[position].date(), back, ahead)
+        for _size, symbol, position, back, ahead in worst[:extremes]
+    ]
 
     label = "snapshots" if snapshots and not survivors_only else "db"
     if snapshots and survivors_only:
@@ -310,6 +359,8 @@ def build_series(
         excluded_calendar=calendar_gap,
         excluded_thin_day=thin_days,
         universe_label=label,
+        forward_percentiles=percentiles,
+        extremes=biggest,
     )
     logger.info("リバーサル日次系列: %s", series.summary())
     return series

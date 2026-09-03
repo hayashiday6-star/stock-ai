@@ -244,3 +244,38 @@ def test_the_gap_refuses_series_that_are_not_aligned() -> None:
 
 def test_the_gap_is_clean_minus_survivors() -> None:
     assert survivorship_gap([0.03, 0.01], [0.01, 0.02]) == pytest.approx([0.02, -0.01])
+
+
+def test_the_spread_diagnostic_is_populated() -> None:
+    """**分散が説明できるかを確かめる材料が、必ず付いてくること。**
+
+    日次系列のSDだけを見て「必要な差」を信じると、平均が数件の極端値で
+    できている場合に気付けない。SUE 版はそこを封印後に知った。
+    """
+    series = _one_day(_database(_ten_symbols()))
+
+    assert [label for label, _value in series.forward_percentiles] == [
+        "p1",
+        "p5",
+        "p25",
+        "p50",
+        "p75",
+        "p95",
+        "p99",
+    ]
+    assert series.extremes  # 銘柄ごとに最悪の1件
+
+
+def test_an_unadjusted_split_shows_up_in_the_extremes() -> None:
+    """調整漏れは平均に紛れる前に、極端値の一覧に出る。
+
+    1:10 の併合を調整せずに持つと +900% になる。分位に約160銘柄あっても、
+    1件で平均が +5.6% 動く。**気付けるようにしておく。**
+    """
+    frames = _ten_symbols()
+    frames["1004"] = _frame(lookback_return=-0.02, forward_return=9.0)
+
+    series = _one_day(_database(frames))
+
+    assert series.extremes[0][0] == "1004"
+    assert series.extremes[0][3] == pytest.approx(9.0)
