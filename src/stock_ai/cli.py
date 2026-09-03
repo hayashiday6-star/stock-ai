@@ -110,6 +110,15 @@ from stock_ai.core.version import describe as describe_version
 from stock_ai.data.base import PriceProvider
 from stock_ai.data.bulk import BulkIngester, Dataset, store_universe
 from stock_ai.data.bulk import latest_close as bulk_latest_close
+from stock_ai.data.delisted import (
+    DEFAULT_SNAPSHOT_DIR,
+    DEFAULT_STEP_DAYS,
+    ROLLING_WINDOW_START,
+    delistings,
+    harvest_snapshots,
+    membership,
+    snapshot_dates,
+)
 from stock_ai.data.fx import FxConverter
 from stock_ai.data.jquants_fundamentals import JQuantsFundamentalsProvider
 from stock_ai.data.jquants_profile import JQuantsProfileProvider
@@ -121,7 +130,7 @@ from stock_ai.data.tachibana import build_client as build_tachibana_client
 from stock_ai.data.tachibana import default_version as tachibana_default_version
 from stock_ai.data.tachibana import version_warning as tachibana_version_warning
 from stock_ai.data.tachibana_universe import TachibanaUniverse
-from stock_ai.data.types import FinancialReport, Importance
+from stock_ai.data.types import FinancialReport, Importance, SecurityProfile
 from stock_ai.data.universe import JQuantsUniverse, Segment
 from stock_ai.data.yfinance_provider import (
     YFinanceFundamentalsProvider,
@@ -2286,6 +2295,193 @@ def universe_snapshots(
             "[yellow]株価が取れなかった。[/] 銘柄コードは分かるが価格が無いので、"
             "**一覧だけでは生存バイアスを直せない。** 制約として登録に残す。"
         )
+
+
+@app.command(name="delisted-harvest")
+def delisted_harvest(
+    start: str = typer.Option(
+        ROLLING_WINDOW_START.isoformat(),
+        "--start",
+        help="First snapshot date. J-Quants refuses anything outside its 5-year window.",
+    ),
+    end: str | None = typer.Option(None, "--end", help="Last snapshot date. Defaults to today."),
+    step_days: int = typer.Option(
+        DEFAULT_STEP_DAYS, "--step-days", help="Days between snapshots. Monthly by default."
+    ),
+    directory: str = typer.Option(
+        str(DEFAULT_SNAPSHOT_DIR), "--dir", help="Where the snapshots are written."
+    ),
+    refetch: bool = typer.Option(
+        False, "--refetch", help="Re-request dates whose file already exists."
+    ),
+    prices: bool = typer.Option(
+        True, "--prices/--no-prices", help="Also backfill prices for symbols the DB lacks."
+    ),
+    limit: int | None = typer.Option(None, help="Cap how many missing symbols get prices."),
+    throttle: float = typer.Option(0.2, help="Seconds to pause between symbols."),
+) -> None:
+    """Save the listing roster, dated, before the plan that serves it is cancelled.
+
+    Every registration so far has carried the same limitation: **delisted
+    companies are not in the universe.** For a reversal test that buys the
+    biggest losers that is not a footnote - the names that fell and vanished
+    are exactly the ones missing.
+
+    ``universe-snapshots`` established this is fixable: snapshot-to-snapshot
+    diffs found 49-106 delistings a year, and prices came back for 5 of 5 of
+    them. This command does the work that finding implies, in two steps:
+
+    1. Walk monthly ``equities/master`` snapshots and write each to its own
+       CSV. **Dated rosters, not a union** - a union lets a 2023 listing into a
+       2021 quintile, which is look-ahead dressed up as a bias fix.
+    2. Backfill prices for every symbol in those rosters that the database does
+       not hold.
+
+    **This is deliberately pinned to J-Quants**, ignoring ``JP_PRICE_SOURCE``.
+    Tachibana's master carries currently-listed names only, so routing this
+    through the configured source would silently collect nothing - the exact
+    failure this project keeps hitting. It follows that the run only works
+    while the J-Quants plan is live.
+
+    Safe to interrupt: a date whose file exists is not re-requested, and a
+    symbol whose prices are current is skipped.
+    """
+    settings = get_settings()
+    configure_logging(settings.log_level)
+
+    first = _parse_date(start)
+    if first is None:
+        raise typer.BadParameter(f"--start must be YYYY-MM-DD; got {start!r}.")
+    last = dt.date.today() if end is None else _parse_date(end)
+    if last is None:
+        raise typer.BadParameter(f"--end must be YYYY-MM-DD; got {end!r}.")
+    try:
+        wanted = snapshot_dates(first, last, step_days)
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc)) from exc
+
+    target = Path(directory)
+    console.print(
+        f"名簿を [bold]{len(wanted)}[/] 日ぶん集める（{first} 〜 {last}、{step_days}日刻み）。"
+    )
+    console.print(f"[dim]置き場所: {target}[/dim]")
+    console.print(
+        "[dim]取得元は J-Quants に固定（JP_PRICE_SOURCE は見ない）。立花のマスタは"
+        "現存銘柄のみで、廃止銘柄は返らないため。[/dim]"
+    )
+
+    def fetch(on: dt.date) -> list[SecurityProfile]:
+        return JQuantsUniverse(api_key=settings.jquants_api_key, as_of=on).profiles(Segment.ALL)
+
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        BarColumn(),
+        TaskProgressColumn(),
+        TimeRemainingColumn(),
+        console=console,
+    ) as progress:
+        task = progress.add_task("snapshots", total=len(wanted))
+
+        def one(on: dt.date) -> list[SecurityProfile]:
+            progress.update(task, description=f"snapshot {on}")
+            found = fetch(on)
+            progress.advance(task)
+            return found
+
+        report = harvest_snapshots(target, wanted, one, refetch=refetch)
+        progress.update(task, completed=len(wanted))
+
+    console.print(report.summary())
+    if report.refused:
+        refusals = Table(title=f"取れなかった日付 ({len(report.refused)})")
+        refusals.add_column("日付")
+        refusals.add_column("断られ方", overflow="fold")
+        for on, why in list(report.refused.items())[:10]:
+            refusals.add_row(str(on), why)
+        console.print(refusals)
+        console.print(
+            "[dim]5年ローリング窓の外は必ず断られる。異常ではないが、**その期間の"
+            "生存バイアスはこの方法では直せない**ので、登録に境界日を書く。[/dim]"
+        )
+
+    stored = membership(target)
+    if len(stored) >= 2:
+        gone = delistings(stored)
+        diff = Table(title="名簿同士の差 = 廃止された銘柄")
+        for column in ("期間", "前", "後", "消えた"):
+            diff.add_column(column, justify="left" if column == "期間" else "right")
+        total_gone = sum(len(codes) for _earlier, _later, codes in gone)
+        shown = gone[-24:]
+        if len(shown) < len(gone):
+            console.print(f"[dim]{len(gone)} 期間ぶん。表は最後の {len(shown)} 期間のみ。[/dim]")
+        for earlier, later, codes in shown:
+            diff.add_row(
+                f"{earlier} → {later}",
+                f"{len(stored[earlier]):,}",
+                f"{len(stored[later]):,}",
+                f"{len(codes):,}",
+            )
+        console.print(diff)
+        console.print(f"延べ [bold]{total_gone:,}[/] 銘柄が期間中に消えた。")
+
+    if not prices:
+        console.print("[dim]--no-prices なので株価は取っていない。名簿だけ。[/dim]")
+        return
+
+    database = Database()
+    database.create_all()
+    with database.session() as session:
+        covered = {symbol for symbol, market, *_ in price_history_spans(session) if market == "JP"}
+    missing = sorted(report.union - covered)
+    console.print(
+        f"名簿にあって DB に株価が無い銘柄: [bold]{len(missing):,}[/] 件"
+        f"（名簿 {len(report.union):,} 件中）。"
+    )
+    if not missing:
+        console.print("[green]取り込むものは無い。[/]")
+        return
+    if limit:
+        missing = missing[:limit]
+        console.print(f"[yellow]--limit により {len(missing)} 件だけ取る。[/]")
+
+    store_universe(database, [report.profiles[symbol] for symbol in missing])
+    lookback = max(1, (dt.date.today() - first).days + 365)
+    ingester = BulkIngester(
+        database,
+        api_key=settings.jquants_api_key,
+        throttle_seconds=throttle,
+        price_provider=JQuantsPriceProvider(api_key=settings.jquants_api_key),
+    )
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        BarColumn(),
+        TaskProgressColumn(),
+        TimeRemainingColumn(),
+        console=console,
+    ) as progress:
+        task = progress.add_task("prices", total=len(missing))
+
+        def advance(index: int, total: int, symbol: str) -> None:
+            progress.update(task, completed=index - 1, description=f"prices {symbol}")
+
+        prices_report = ingester.run(
+            missing, Dataset.PRICES, lookback_days=lookback, progress=advance, backfill=True
+        )
+        progress.update(task, completed=len(missing))
+
+    console.print(prices_report.summary())
+    if prices_report.failed:
+        console.print(
+            f"[yellow]{len(prices_report.failed)} 件は取れなかった。[/] "
+            "同じコマンドを再実行すれば、取れた分は飛ばして失敗分だけ retry する。"
+        )
+    console.print(
+        "[bold]これで、廃止銘柄を含む universe が日付ごとに手元にある。[/] "
+        "分位を組むときは「その日以前で最も新しい名簿」を使う——全期間の和集合を"
+        "使うと、まだ上場していない銘柄を過去に置くことになる。"
+    )
 
 
 @app.command(name="reversal-census")
