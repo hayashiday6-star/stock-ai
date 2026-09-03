@@ -2535,6 +2535,10 @@ def jquants_inventory(
     have = Table(title="いま手元にあるもの")
     for column in ("データ", "量", "期間"):
         have.add_column(column, justify="left" if column != "量" else "right")
+    # **銘柄が登録されていることと、株価があることは別。** delisted-harvest は
+    # 先に銘柄を作ってから株価を取るので、途中で止まると差が開く。その差が
+    # 見えないと「取り込み済み」と取り違える。
+    have.add_row("銘柄の登録", f"{coverage.securities:,} 銘柄", "")
     have.add_row(
         "日足の価格",
         f"{coverage.symbols_with_prices:,} 銘柄",
@@ -2679,11 +2683,12 @@ def reversal_power(
         console.print(f"[red]{exc}[/]")
         raise typer.Exit(code=1) from exc
 
+    per_day = int(median(series.counts)) if series.counts else 0
     console.print(
-        f"{len(series.days):,} 営業日、1日あたり中央値 "
-        f"{int(median(series.counts)) if series.counts else 0} 銘柄。"
+        f"{len(series.days):,} 営業日、1日あたり中央値 {per_day} 銘柄。"
         f"（暦が合わず落ちた銘柄日 {series.excluded_calendar:,}）"
     )
+    _report_spread(series, per_day)
 
     target = oos_days or _oos_session_count(database, benchmark, holding)
     console.print(f"OOS の想定日数: [bold]{target:,}[/] 営業日（{OOS_FROM} 以降）")
@@ -2735,6 +2740,45 @@ def reversal_power(
         "[dim]この数字は「どれだけ大きければ検出できるか」であって、"
         "「どれだけ出るか」ではない。後者は判定でしか分からない。[/]"
     )
+
+
+def _report_spread(series: object, per_day: int) -> None:
+    """Show whether the per-symbol spread can explain the portfolio spread.
+
+    **これを見ずに「必要な差」を信じない。** 1分位に約 n 銘柄入るなら、平均の
+    ばらつきは個別のばらつきのおよそ 1/sqrt(n) まで落ちるはずである。落ちて
+    いなければ、平均は数件の極端値に引っ張られている——測っているのは現象では
+    なくデータの傷になる。SUE 版の 21.08% は1分位1〜2銘柄で説明がついたが、
+    ここは約160銘柄なので、同じ桁が出たら説明がつかない。
+    """
+    if not series.forward_percentiles:  # type: ignore[attr-defined]
+        return
+    spread = Table(title="銘柄日ごとのフォワードリターン（分位平均の材料）")
+    for label, _value in series.forward_percentiles:  # type: ignore[attr-defined]
+        spread.add_column(label, justify="right")
+    spread.add_row(
+        *[f"{value * 100:+.1f}%" for _label, value in series.forward_percentiles]  # type: ignore[attr-defined]
+    )
+    console.print(spread)
+
+    bucket = max(1, per_day // 5)
+    console.print(
+        f"[dim]1分位あたり約 {bucket} 銘柄。個別のばらつきがこの平方根ぶん"
+        f"（÷{bucket**0.5:.1f}）まで落ちていなければ、平均は少数の極端値で"
+        "できている。[/dim]"
+    )
+
+    if series.extremes:  # type: ignore[attr-defined]
+        outliers = Table(title="フォワードリターンが大きい銘柄日（銘柄ごとに最悪の1件）")
+        for column in ("銘柄", "判定日", "5日リターン", "フォワード"):
+            outliers.add_column(column, justify="right" if "リターン" in column else "left")
+        for symbol, day, back, ahead in series.extremes:  # type: ignore[attr-defined]
+            outliers.add_row(symbol, str(day), f"{back * 100:+.1f}%", f"{ahead * 100:+.1f}%")
+        console.print(outliers)
+        console.print(
+            "[dim]**+900% のような値が出たら分割・併合の調整漏れを疑う。** "
+            "その銘柄と日付を [cyan]stock-ai prices[/] で直接見る。[/dim]"
+        )
 
 
 def _oos_session_count(database: Database, benchmark: str, holding: int) -> int:
@@ -2793,9 +2837,13 @@ def reversal_bias(
             "先に [cyan]checks\\廃止銘柄の取り込み.bat[/] を実行する。"
         )
         raise typer.Exit(code=1)
+    # **名簿の実際の先頭から測る。** 定数を信じて名簿の無い日を判定日にすると、
+    # その期間だけ universe が空になり、静かに落ちる。落ちること自体は正しいが、
+    # 「いつから測ったか」を推測することになる。
+    begin = max(JUDGMENT_FROM, min(snapshots))
     console.print(
         f"名簿 {len(snapshots)} 件（{min(snapshots)} 〜 {max(snapshots)}）。"
-        f"測る期間は {JUDGMENT_FROM} 〜 {stop}。"
+        f"測る期間は {begin} 〜 {stop}。"
     )
 
     database = Database()
@@ -2807,7 +2855,7 @@ def reversal_bias(
                 database,
                 Period.ALL,
                 benchmark=benchmark,
-                start=JUDGMENT_FROM,
+                start=begin,
                 end=stop,
                 min_turnover=min_turnover,
                 lookback=lookback,

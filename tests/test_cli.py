@@ -921,7 +921,7 @@ def test_reversal_power_refuses_to_reach_the_judged_period() -> None:
     """
     result = runner.invoke(app, ["reversal-power", "--end", "2022-01-01"])
     assert result.exit_code != 0
-    assert "2021-09-01" in result.output
+    assert "2021-10-01" in result.output  # 実際に返った最も古い名簿の日付
 
 
 def test_reversal_bias_refuses_to_reach_out_of_sample() -> None:
