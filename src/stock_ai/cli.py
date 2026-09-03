@@ -78,6 +78,9 @@ from stock_ai.backtest.pead import (
 )
 from stock_ai.backtest.pead_census import DRIFT_WINDOW, ENTRY_OFFSET, run_census
 from stock_ai.backtest.report import metrics_frame
+from stock_ai.backtest.reversal_census import HOLDING_DAYS as REVERSAL_HOLDING
+from stock_ai.backtest.reversal_census import LOOKBACK_DAYS as REVERSAL_LOOKBACK
+from stock_ai.backtest.reversal_census import run_census as run_reversal_census
 from stock_ai.backtest.seasonality import (
     DEFAULT_MIN_YEARS,
     holdout_check,
@@ -2149,6 +2152,109 @@ def sue_census(
                 "[dim]分位は流動性フィルタの後に切っている。封印する手順がそうなって"
                 "いるためで、実際に売買できる銘柄の中での上位・下位になる。[/]"
             )
+
+    console.print()
+    console.print("[dim]件数と分布のみ。リターンは計算していない。[/]")
+
+
+@app.command(name="reversal-census")
+def reversal_census(
+    period: str = typer.Option("all", "--period", help="is | oos | all."),
+    min_turnover: float = typer.Option(
+        MIN_TURNOVER, "--min-turnover", help="Liquidity floor in yen. Same as pead-run."
+    ),
+    lookback: int = typer.Option(
+        REVERSAL_LOOKBACK, "--lookback", help="Sessions over which the fall is measured."
+    ),
+    holding: int = typer.Option(REVERSAL_HOLDING, "--holding", help="Sessions held."),
+) -> None:
+    """Count what a short-term reversal test would have to work with.
+
+    Reversal is not event-driven: every symbol carries a trailing return on
+    every session, so the population is symbol-days rather than events. That
+    changes what has to be counted - the binding number is **how many symbols
+    clear the filter on a single day**, because a day with too few cannot be
+    cut into quintiles at all.
+
+    **No returns are computed.** This runs before the registration is written,
+    which is the order the two earnings-drift registrations did not follow.
+    """
+    settings = get_settings()
+    configure_logging(settings.log_level)
+
+    try:
+        chosen = Period(period.strip().lower())
+    except ValueError as exc:
+        raise typer.BadParameter(f"--period must be is, oos or all; got {period!r}.") from exc
+
+    database = Database()
+    database.create_all()
+    report = run_reversal_census(
+        database,
+        chosen,
+        min_turnover=min_turnover or MIN_TURNOVER,
+        lookback=lookback,
+        holding=holding,
+    )
+
+    console.print(
+        f"期間 [bold]{chosen.value}[/] ／ 銘柄 {report.symbols_scanned} 件 ／ "
+        f"{lookback}日下落・{holding}日保有・売買代金 {min_turnover / 1e8:.0f}億円以上"
+    )
+    console.print(
+        f"[bold]観測 {report.observations:,}[/]（銘柄×営業日） ／ "
+        f"営業日 [bold]{report.trading_days:,}[/] 日"
+    )
+    console.print(
+        f"[dim]除外: 価格が無い銘柄 {report.symbols_without_prices} ／ "
+        f"起点が無い {report.excluded_no_lookback:,} ／ "
+        f"売買代金不足 {report.excluded_thin:,} ／ "
+        f"前後のバーが無い {report.excluded_no_window:,}[/]"
+    )
+
+    if report.observations == 0:
+        console.print("[yellow]観測なし。価格が入っているか確認する。[/]")
+        return
+
+    table = Table(title="年別")
+    for column in ("年", "観測数", "営業日数", "1日あたり"):
+        table.add_column(column, justify="right")
+    for year, count, day_count in report.by_year():
+        table.add_row(str(year), f"{count:,}", f"{day_count:,}", f"{count / day_count:,.0f}")
+    console.print(table)
+
+    console.print(
+        "1日あたりの通過銘柄数: "
+        + "、".join(f"{name} {value:,}" for name, value in report.breadth())
+    )
+    if report.thin_days:
+        console.print(
+            f"[yellow]5銘柄に満たない日が {report.thin_days} 日ある。[/] "
+            "その日は分位に切れないので、差を取れない。"
+        )
+    else:
+        console.print(
+            "[dim]どの営業日も5分位に切れる。決算ドリフトで効いた「両分位が同じ日に"
+            "揃うか」という制約は、ここでは効かない。[/]"
+        )
+
+    console.print(
+        f"{lookback}日リターンの分布: "
+        + "、".join(f"{name} {value:+.1%}" for name, value in report.return_quantiles())
+    )
+
+    profile = report.turnover_profile()
+    if profile:
+        bar = Table(title="日次5分位ごとの売買代金の中央値（億円）")
+        for name, _ in profile:
+            bar.add_column(name, justify="right")
+        bar.add_row(*[f"{value:,.1f}" for _, value in profile])
+        console.print(bar)
+        console.print(
+            "[dim]リバーサルは小型・低流動性で強いことが知られている。端の分位だけ"
+            "売買代金が小さければ、フィルタを通った後でも売買しにくい銘柄を並べて"
+            "いることになる。[/]"
+        )
 
     console.print()
     console.print("[dim]件数と分布のみ。リターンは計算していない。[/]")
