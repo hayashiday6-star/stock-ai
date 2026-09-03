@@ -2782,7 +2782,9 @@ def reversal_power(
     per_day = int(median(series.counts)) if series.counts else 0
     console.print(
         f"{len(series.days):,} 営業日、1日あたり中央値 {per_day} 銘柄。"
-        f"（暦が合わず落ちた銘柄日 {series.excluded_calendar:,}）"
+        f"（暦が合わず落ちた銘柄日 {series.excluded_calendar:,}、"
+        f"[bold]価格系列の不連続をまたいで落ちた銘柄日 "
+        f"{series.excluded_discontinuity:,}[/]）"
     )
     _report_spread(series, per_day)
 
