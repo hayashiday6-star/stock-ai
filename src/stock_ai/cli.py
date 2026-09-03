@@ -2188,9 +2188,10 @@ def universe_snapshots(
     console.print(f"いまの DB: [bold]{len(stored):,}[/] 銘柄（JP）")
 
     wanted = [_parse_date(text.strip()) for text in dates.split(",") if text.strip()]
-    table = Table(title="過去スナップショットに、いま無い銘柄が含まれるか")
-    for column in ("日付", "返った件数", "DBに無い", "例"):
-        table.add_column(column, justify="right" if column != "例" else "left")
+    snapshots: dict[dt.date, set[str]] = {}
+    table = Table(title="スナップショットが日付ごとに違うか")
+    for column in ("日付", "返った件数", "DBに無い", "備考"):
+        table.add_column(column, justify="right" if column != "備考" else "left")
 
     for when in wanted:
         if when is None:
@@ -2200,26 +2201,91 @@ def universe_snapshots(
                 Segment.ALL
             )
         except Exception as exc:  # noqa: BLE001 - 断られ方そのものが知りたい
-            table.add_row(str(when), "[red]取れず[/]", "-", f"{type(exc).__name__}: {exc}"[:70])
+            table.add_row(str(when), "[red]取れず[/]", "-", f"{type(exc).__name__}: {exc}"[:60])
             continue
         codes = {profile.symbol for profile in found}
-        missing = sorted(codes - stored)
-        table.add_row(
-            str(when),
-            f"{len(codes):,}",
-            f"[bold]{len(missing):,}[/]" if missing else "0",
-            ", ".join(missing[:6]) if missing else "(なし)",
-        )
+        snapshots[when] = codes
+        # **DB との差は「廃止された数」ではない。** DB は過去に取り込んだ分の
+        # 集合であって、上場一覧そのものではない。取りこぼしと廃止が混ざる。
+        table.add_row(str(when), f"{len(codes):,}", f"{len(codes - stored):,}", "")
     console.print(table)
     console.print(
-        "[dim]「DBに無い」が0より大きければ、その日に上場していて今は無い会社が"
-        "取れているということ。**生存バイアスは制約ではなく作業になる。**\n"
-        "0なら、返っているのは今日の一覧と同じで、日付は効いていない。[/]"
+        "[dim]「DBに無い」は廃止数ではない。DB は過去に取り込んだ分の集合で、"
+        "上場一覧そのものではないので、取りこぼしと廃止が混ざる。**廃止を数える"
+        "にはスナップショット同士を比べる。**[/]"
     )
-    console.print(
-        "[yellow]取れる場合は、解約（2026-09-22）より前にスナップショットを"
-        "貯めること。[/] 解約後は同じ要求が通らなくなる。"
-    )
+
+    if len(snapshots) < 2:
+        console.print("[yellow]比較できるスナップショットが2つ未満。[/]")
+        return
+
+    console.print()
+    console.print("[bold]スナップショット同士の差 — これが廃止された銘柄[/]")
+    ordered = sorted(snapshots)
+    left_behind: list[str] = []
+    diff = Table()
+    for column in ("期間", "前", "後", "消えた", "増えた"):
+        diff.add_column(column, justify="right" if column != "期間" else "left")
+    for earlier, later in zip(ordered, ordered[1:], strict=False):
+        gone = sorted(snapshots[earlier] - snapshots[later])
+        added = snapshots[later] - snapshots[earlier]
+        left_behind.extend(gone)
+        diff.add_row(
+            f"{earlier} → {later}",
+            f"{len(snapshots[earlier]):,}",
+            f"{len(snapshots[later]):,}",
+            f"[bold]{len(gone):,}[/]",
+            f"{len(added):,}",
+        )
+    console.print(diff)
+
+    if not left_behind:
+        console.print("[yellow]消えた銘柄が1つも無い。日付が効いていない可能性がある。[/]")
+        return
+
+    # ★ここが本題。銘柄コードが分かっても、価格が取れなければ何もできない。
+    console.print()
+    console.print("[bold]消えた銘柄の株価が取れるか — ここが取れないと一覧だけでは使えない[/]")
+    provider = JQuantsPriceProvider(api_key=settings.jquants_api_key)
+    sample = left_behind[:5]
+    prices = Table()
+    for column in ("銘柄", "取れた本数", "期間", "結果"):
+        prices.add_column(column, justify="right" if column == "取れた本数" else "left")
+    usable = 0
+    for symbol in sample:
+        try:
+            frame = provider.fetch_prices(
+                symbol, dt.date.today() - dt.timedelta(days=365 * 5), dt.date.today()
+            )
+        except Exception as exc:  # noqa: BLE001 - 断られ方そのものが知りたい
+            prices.add_row(symbol, "-", "-", f"[red]{type(exc).__name__}: {exc}[/]"[:60])
+            continue
+        if frame.empty:
+            prices.add_row(symbol, "0", "-", "[yellow]空で返った[/]")
+            continue
+        usable += 1
+        prices.add_row(
+            symbol,
+            f"{len(frame):,}",
+            f"{frame.index[0].date()} 〜 {frame.index[-1].date()}",
+            "[green]取れた[/]",
+        )
+    console.print(prices)
+    console.print()
+    if usable:
+        console.print(
+            f"[bold]廃止銘柄の株価が {usable}/{len(sample)} 件で取れた。[/] "
+            "生存バイアスは制約ではなく作業になる。"
+        )
+        console.print(
+            "[yellow]ただし解約（2026-09-22）より前に取り込む必要がある。[/] "
+            "立花のマスタは現存銘柄のみなので、解約後は同じ要求が通らない。"
+        )
+    else:
+        console.print(
+            "[yellow]株価が取れなかった。[/] 銘柄コードは分かるが価格が無いので、"
+            "**一覧だけでは生存バイアスを直せない。** 制約として登録に残す。"
+        )
 
 
 @app.command(name="reversal-census")
