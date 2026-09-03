@@ -114,8 +114,10 @@ from stock_ai.data.jquants_provider import JQuantsPriceProvider
 from stock_ai.data.markets import split_by_market, to_yahoo_symbol
 from stock_ai.data.service import FundamentalsService, IngestionService, IngestResult
 from stock_ai.data.tachibana import TachibanaPriceProvider
+from stock_ai.data.tachibana import build_client as build_tachibana_client
 from stock_ai.data.tachibana import default_version as tachibana_default_version
 from stock_ai.data.tachibana import version_warning as tachibana_version_warning
+from stock_ai.data.tachibana_universe import TachibanaUniverse
 from stock_ai.data.types import FinancialReport, Importance
 from stock_ai.data.universe import JQuantsUniverse, Segment
 from stock_ai.data.yfinance_provider import (
@@ -237,11 +239,13 @@ def info() -> None:
     # make a single call. Both halves are needed, so both are shown, and the
     # one that goes missing on its own is the one that is easy to overlook.
     table.add_row("anthropic sdk", _import_status("anthropic"))
-    # 日本株のデータが全部どこから来るかを決める2つ。ここに出ていないと、切り替えた
+    # 日本株のデータが全部どこから来るかを決める3つ。ここに出ていないと、切り替えた
     # つもりで切り替わっていないことに、数字が変わらないという形でしか気付けない。
+    # 銘柄一覧は価格・財務とは別の設定である（docs/JQUANTS_EXIT.md）。
     for label, chosen, allowed in (
         ("jp_price_source", settings.jp_price_source, JP_SOURCES),
         ("jp_statement_source", settings.jp_statement_source, STATEMENT_SOURCES),
+        ("jp_universe_source", settings.jp_universe_source, UNIVERSE_SOURCES),
     ):
         note = "" if chosen.strip().lower() in allowed else "  [red](未対応の値)[/]"
         table.add_row(label, f"{chosen or '(未設定)'}{note}")
@@ -392,6 +396,37 @@ def _resolve_symbols(symbols: list[str] | None, symbols_file: Path | None) -> li
 #: it is not offered here: it has no listing endpoint to enumerate the market
 #: from, so it cannot serve ``bulk-fetch``.
 JP_SOURCES = ("jquants", "tachibana")
+
+#: 銘柄一覧（市場区分・業種）の取得元。価格・財務とは別の設定である。
+UNIVERSE_SOURCES = ("jquants", "tachibana")
+
+
+def _universe_source(
+    settings: Settings, override: str | None = None
+) -> JQuantsUniverse | TachibanaUniverse:
+    """Build the listed-universe source named by ``JP_UNIVERSE_SOURCE``.
+
+    ``JP_PRICE_SOURCE`` deliberately does not reach here. Moving prices to
+    Tachibana left the universe still calling J-Quants, and nothing said so -
+    that is the gap that would have surfaced on the day the plan was cancelled
+    (``docs/JQUANTS_EXIT.md``). Splitting the setting only helps if it is
+    visible, so ``info`` prints it too.
+    """
+    chosen = (override or settings.jp_universe_source or "jquants").strip().lower()
+    if chosen not in UNIVERSE_SOURCES:
+        raise typer.BadParameter(
+            f"Unknown universe source {chosen!r}; use one of {', '.join(UNIVERSE_SOURCES)}."
+        )
+    if chosen == "tachibana":
+        client = build_tachibana_client(
+            settings.tachibana_auth_id,
+            settings.tachibana_private_key,
+            version=settings.tachibana_api_version,
+            base=settings.tachibana_base_url,
+            session_file=settings.tachibana_session_file,
+        )
+        return TachibanaUniverse(client.issue_masters)
+    return JQuantsUniverse(api_key=settings.jquants_api_key)
 
 
 def _price_source(source: str, settings: Settings) -> tuple[PriceProvider, str]:
@@ -790,11 +825,22 @@ def universe(
     as_of: str | None = typer.Option(
         None, "--as-of", help="Snapshot date (YYYY-MM-DD) for a delayed J-Quants plan."
     ),
+    universe_source: str | None = typer.Option(
+        None,
+        "--source",
+        help="Override JP_UNIVERSE_SOURCE for this run: jquants | tachibana.",
+    ),
 ) -> None:
     """List (and store) the JP listed universe for a market segment.
 
     One request. Run this before ``bulk-fetch``: it gives every later step a
     symbol list, a company name, and a sector.
+
+    The source is ``JP_UNIVERSE_SOURCE``, which is deliberately separate from
+    ``JP_PRICE_SOURCE``: moving prices to Tachibana left this path still
+    calling J-Quants, which is exactly the gap that would have surfaced the day
+    the plan was cancelled (``docs/JQUANTS_EXIT.md``). ``--as-of`` only means
+    anything to J-Quants; Tachibana's master is a snapshot of today.
     """
     settings = get_settings()
     configure_logging(settings.log_level)
@@ -808,7 +854,10 @@ def universe(
 
     snapshot = _parse_date(as_of)
     try:
-        source = JQuantsUniverse(api_key=settings.jquants_api_key, as_of=snapshot)
+        source = _universe_source(settings, universe_source)
+        if isinstance(source, JQuantsUniverse) and snapshot is not None:
+            source = JQuantsUniverse(api_key=settings.jquants_api_key, as_of=snapshot)
+        console.print(f"[dim]銘柄一覧の取得元: {source.name}[/dim]")
         profiles = source.profiles(chosen, limit=limit)
     except DataError as exc:
         console.print(f"[red]{exc}[/]")
@@ -1073,7 +1122,7 @@ def _bulk_symbols(
             raise typer.BadParameter(
                 f"segment must be prime, standard, growth, all, or stored; got {segment!r}."
             ) from exc
-        profiles = JQuantsUniverse(api_key=settings.jquants_api_key).profiles(chosen)
+        profiles = _universe_source(settings).profiles(chosen)
         store_universe(database, profiles)
         symbols = [profile.symbol for profile in profiles]
     return symbols[:limit] if limit else symbols

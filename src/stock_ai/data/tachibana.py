@@ -268,11 +268,27 @@ class TachibanaClient:
 
     def price_url(self) -> str:
         """時価情報の仮想ＵＲＬ。当日分があれば使い回し、無ければログインする。"""
-        if self.session.urls.get("sUrlPrice") or self.session.load():
-            url = self.session.urls.get("sUrlPrice")
+        return self._virtual_url("sUrlPrice")
+
+    def master_url(self) -> str:
+        """マスタの仮想ＵＲＬ。**時価情報とは別の口である。**
+
+        銘柄マスタを ``sUrlPrice`` に投げても通らない。ログイン応答は5本の
+        仮想ＵＲＬを返し、機能ごとに使う口が決まっている。
+        """
+        return self._virtual_url("sUrlMaster")
+
+    def _virtual_url(self, field: str) -> str:
+        """当日分の仮想ＵＲＬがあれば使い回し、無ければログインして取り直す。"""
+        if self.session.urls.get(field) or self.session.load():
+            url = self.session.urls.get(field)
             if url:
                 return url
-        return self._login()
+        self._login()
+        url = self.session.urls.get(field)
+        if not url:
+            raise DataError(f"立花が仮想ＵＲＬ {field} を返しませんでした。")
+        return url
 
     def _login(self) -> str:
         """ログインし、仮想ＵＲＬを復号して保存する。時価情報の口を返す。"""
@@ -325,6 +341,24 @@ class TachibanaClient:
         )
         return answer.get("aCLMMfdsMarketPriceHistory") or []
 
+    def issue_masters(self) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        """株式銘柄マスタと株式銘柄市場マスタを取る。要求は機能ＩＤだけ。
+
+        マスタ機能は**システム稼働中に更新されない**ので、1営業日に1回取れば
+        足りる。実測（2026-09-03）でどちらも 4,441 件だった。
+
+        Returns:
+            ``(銘柄マスタ, 銘柄市場マスタ)``。
+        """
+        url = self.master_url()
+        kabu = self.request(url, {"sCLMID": "CLMStkGetIssueMstKabu"}, what="株式銘柄マスタ").get(
+            "aCLMStkIssueMstKabu"
+        )
+        sizyou = self.request(
+            url, {"sCLMID": "CLMStkGetIssueSizyouMstKabu"}, what="株式銘柄市場マスタ"
+        ).get("aCLMStkIssueSizyouMstKabu")
+        return list(kabu or []), list(sizyou or [])
+
 
 def normalize_history(records: list[dict[str, Any]], symbol: str) -> pd.DataFrame:
     """立花の日足レコードを正規化 OHLCV に直す。
@@ -374,6 +408,48 @@ def normalize_history(records: list[dict[str, Any]], symbol: str) -> pd.DataFram
     return frame.set_index(DATE)
 
 
+def build_client(
+    auth_id: SecretStr | None,
+    private_key_path: pathlib.Path | str = "tachibana_private.pem",
+    *,
+    version: str | None = None,
+    base: str | None = None,
+    session_file: pathlib.Path | str = "tachibana_session.json",
+) -> TachibanaClient:
+    """設定から接続済みでないクライアントを組み立てる。
+
+    価格とマスタで**同じ組み立て方**を使うためにここに出してある。別々に
+    書くと、版の既定やセッションファイルの場所が片方だけずれる。ずれても
+    例外は出ないので気付けない。
+
+    Raises:
+        DataError: 認証ＩＤまたは秘密鍵が無い。
+    """
+    if auth_id is None:
+        raise DataError(
+            "TACHIBANA_AUTH_ID が設定されていません。"
+            "ｅ支店の利用設定画面で認証ＩＤを生成し、.env に書いてください。"
+        )
+    key_path = pathlib.Path(private_key_path)
+    if not key_path.exists():
+        raise DataError(
+            f"立花の秘密鍵が見つかりません: {key_path}。"
+            "`7-立花API確認.bat` を実行すると鍵を作れます。"
+        )
+
+    resolved = version or default_version()
+    warning = version_warning(resolved)
+    if warning and base is None:
+        logger.warning("立花ＡＰＩ: %s", warning)
+
+    return TachibanaClient(
+        auth_id,
+        key_path.read_bytes(),
+        base=base or base_url(resolved),
+        session=Session(pathlib.Path(session_file)),
+    )
+
+
 class TachibanaPriceProvider:
     """立花証券・ｅ支店・ＡＰＩ から日本株の日足を取る。
 
@@ -405,32 +481,12 @@ class TachibanaPriceProvider:
         Raises:
             DataError: 認証ＩＤまたは秘密鍵が無い。
         """
-        self._client = client
-        if client is not None:
-            return
-
-        if auth_id is None:
-            raise DataError(
-                "TACHIBANA_AUTH_ID が設定されていません。"
-                "ｅ支店の利用設定画面で認証ＩＤを生成し、.env に書いてください。"
-            )
-        key_path = pathlib.Path(private_key_path)
-        if not key_path.exists():
-            raise DataError(
-                f"立花の秘密鍵が見つかりません: {key_path}。"
-                "`7-立花API確認.bat` を実行すると鍵を作れます。"
-            )
-
-        resolved = version or default_version()
-        warning = version_warning(resolved)
-        if warning and base is None:
-            logger.warning("立花ＡＰＩ: %s", warning)
-
-        self._client = TachibanaClient(
+        self._client = client or build_client(
             auth_id,
-            key_path.read_bytes(),
-            base=base or base_url(resolved),
-            session=Session(pathlib.Path(session_file)),
+            private_key_path,
+            version=version,
+            base=base,
+            session_file=session_file,
         )
 
     def fetch_prices(self, symbol: str, start: dt.date, end: dt.date) -> pd.DataFrame:
