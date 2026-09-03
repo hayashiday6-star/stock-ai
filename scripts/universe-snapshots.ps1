@@ -21,7 +21,9 @@
 #>
 [CmdletBinding()]
 param(
-    [string]$Dates = '2018-06-01,2021-06-01,2023-06-01,2025-06-01'
+    # 5年ローリングの外は 400 で断られる（2026-09 時点の境界は 2021-09 前後）。
+    # 断られる日付を入れておくと境界がどこかが分かる。
+    [string]$Dates = '2021-06-01,2021-10-01,2022-06-01,2023-06-01,2024-06-01,2025-06-01'
 )
 
 $ErrorActionPreference = 'Continue'
@@ -34,7 +36,9 @@ Show-Version
 if (-not (Test-UvInstalled)) { Exit-WithPause 1 }
 
 Write-Section '過去の銘柄一覧が取れるか（生存バイアスが直せるか）'
-Write-Host '見るのは1つ。「DBに無い」が0より大きいかどうかです。' -ForegroundColor DarkGray
+Write-Host '見るのは2つです。' -ForegroundColor DarkGray
+Write-Host '  1. スナップショット同士の差 = その期間に廃止された銘柄' -ForegroundColor DarkGray
+Write-Host '  2. その銘柄の株価が取れるか（取れないと一覧だけでは使えない）' -ForegroundColor DarkGray
 Write-Host ''
 
 uv run stock-ai universe-snapshots --dates $Dates
