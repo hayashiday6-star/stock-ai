@@ -362,3 +362,65 @@ def test_an_ordinary_large_move_is_kept() -> None:
 
     assert series.excluded_discontinuity == 0
     assert series.counts == [10]
+
+
+def test_the_sealed_table_is_applied_rather_than_interpreted() -> None:
+    """**判定を人が読んで解釈しない。** 表は結果を見る前に確定させてある。
+
+    SUE版では「惜しかった」と基準が動きかけた。当てはめをコードにする。
+    """
+    from stock_ai.backtest.reversal import FAIL, PASS, verdict
+
+    # 効果なし
+    assert verdict(-0.001, 5.0)[0] == FAIL
+    assert "効果なし" in verdict(-0.001, 5.0)[1]
+
+    # 費用を賄えない（t がいくら大きくても合格にしない）
+    assert verdict(0.002, 9.0)[0] == FAIL
+    assert "費用" in verdict(0.002, 9.0)[1]
+
+    # 構造的な帯 — ここがいちばん重要
+    outcome, reading = verdict(0.006, 1.5)
+    assert outcome == FAIL
+    assert "構造的な帯" in reading
+    assert "「効果が無い」ではない" in reading
+
+    # 帯の中でも t が届けば合格（見積もりより分散が小さかった場合）
+    assert verdict(0.006, 2.1)[0] == PASS
+
+    # 点推定は十分だが t が届かない
+    assert verdict(0.012, 1.2)[0] == FAIL
+    assert "前向き検証" in verdict(0.012, 1.2)[1]
+
+    # 合格
+    assert verdict(0.012, 2.5)[0] == PASS
+
+
+def test_the_skip_moves_both_entry_and_exit() -> None:
+    """副次の「2営業日空けた版」。窓の長さは変えず、まるごとずらす。"""
+    frames = _ten_symbols()
+    # D+22 の寄付きだけを動かす（skip=2 のときの退場日）。
+    moved = frames["1004"].copy()
+    moved.loc[_INDEX[_JUDGE + 22], OPEN] = 1_000.0 * 1.5
+    frames["1004"] = moved
+
+    base = _one_day(_database(frames))
+    skipped = build_series(
+        _database(frames),
+        Period.ALL,
+        start=_JUDGE_DAY,
+        end=_JUDGE_DAY,
+        quantiles=5,
+        skip=2,
+    )
+
+    assert base.counts == [10]
+    assert skipped.counts == [10]
+    # skip=1 では D+22 を見ないので、動かした値は入らない。
+    assert base.quantiles != skipped.quantiles
+
+
+def test_a_skip_below_one_is_refused() -> None:
+    """0 にすると判定日の寄付きで買うことになり、終値で並べた情報を先取りする。"""
+    with pytest.raises(ValueError, match="skip must be at least 1"):
+        _one_day(_database(_ten_symbols()), skip=0)

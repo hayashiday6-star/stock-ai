@@ -163,6 +163,43 @@ def trimmed_variance(values: Sequence[float], fraction: float = 0.01) -> tuple[f
     return variance, drop
 
 
+@dataclass(frozen=True)
+class Judgement:
+    """判定に使う3点。**ここには平均がある。**
+
+    :class:`PowerEstimate` が平均を持たないのと対になっている。検出力の
+    見積もりは判定を先食いしてはならないが、判定そのものは平均を出すのが
+    仕事である。**同じ dataclass に混ぜないことで、どちらの計算をしているかが
+    型で分かる。**
+    """
+
+    days: int
+    mean: float
+    """平均。20営業日あたりのリターン差。"""
+    standard_error: float
+    """Newey-West（Bartlett 重み）の標準誤差。"""
+
+    @property
+    def t_statistic(self) -> float:
+        """``mean / standard_error``。標準誤差が0なら ``nan``。"""
+        return self.mean / self.standard_error if self.standard_error > 0 else float("nan")
+
+
+def judge(values: Sequence[float], lags: int = DEFAULT_LAGS) -> Judgement:
+    """日次系列から平均・標準誤差・t を求める。**判定にだけ使う。**
+
+    重なりの扱いは :func:`estimate_power` と同一である。検出力の見積もりと
+    判定で別の分散を使うと、「必要な差」と「出た差」が比較できなくなる。
+    """
+    gammas = autocovariances(values, lags)
+    count = len(values)
+    return Judgement(
+        days=count,
+        mean=sum(values) / count,
+        standard_error=math.sqrt(long_run_variance(gammas) / count),
+    )
+
+
 def estimate_power(values: Sequence[float], lags: int = DEFAULT_LAGS) -> PowerEstimate:
     """日次系列から :class:`PowerEstimate` を作る。**平均は返さない。**"""
     gammas = autocovariances(values, lags)

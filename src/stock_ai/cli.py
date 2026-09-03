@@ -83,15 +83,19 @@ from stock_ai.backtest.power import (
     DEFAULT_LAGS,
     TARGET_T,
     estimate_power,
+    judge,
     trimmed_variance,
 )
 from stock_ai.backtest.report import metrics_frame
 from stock_ai.backtest.reversal import (
     BENCHMARK,
     COST_ROUND_TRIP,
+    DETECTABLE,
     JUDGMENT_FROM,
+    PASS,
     build_series,
     survivorship_gap,
+    verdict,
 )
 from stock_ai.backtest.reversal_census import HOLDING_DAYS as REVERSAL_HOLDING
 from stock_ai.backtest.reversal_census import LOOKBACK_DAYS as REVERSAL_LOOKBACK
@@ -2708,6 +2712,149 @@ def price_audit(
     console.print(
         "[dim]調整係数が窓の中で変わっていれば、系列は調整されている。"
         "**1.0000 のまま前日比だけが飛んでいれば、その銘柄には調整が入っていない。**[/]"
+    )
+
+
+@app.command(name="reversal-run")
+def reversal_run(
+    period: str = typer.Option("oos", "--period", help="oos | is. Judgment is oos, once."),
+    directory: str = typer.Option(
+        str(DEFAULT_SNAPSHOT_DIR), "--dir", help="Where the dated rosters live."
+    ),
+    min_turnover: float = typer.Option(MIN_TURNOVER, "--min-turnover", help="Liquidity floor."),
+    lookback: int = typer.Option(REVERSAL_LOOKBACK, "--lookback", help="Sessions the fall spans."),
+    holding: int = typer.Option(REVERSAL_HOLDING, "--holding", help="Sessions held."),
+    benchmark: str = typer.Option(BENCHMARK, "--benchmark", help="Market series and calendar."),
+    lags: int = typer.Option(DEFAULT_LAGS, "--lags", help="Newey-West lags. Match the holding."),
+) -> None:
+    """Run the sealed short-reversal test and apply the sealed reading.
+
+    ``docs/PREREG_REVERSAL_JP.md`` was sealed on 2026-09-04 without one reversal
+    return having been looked at. **This is the single judgment that design
+    bought.**
+
+    The verdict is not written here and not read off by a person: §8's table is
+    applied in code. On the previous hypothesis the standard nearly moved after
+    the number was seen - "so close" is exactly what a pre-registration is for.
+
+    The universe is the dated rosters, so companies that were later delisted are
+    in it. The measured survivorship bias is -0.040% per 20 sessions; without the
+    rosters the result would read that much better than it is.
+    """
+    settings = get_settings()
+    configure_logging(settings.log_level)
+
+    try:
+        chosen = Period(period.strip().lower())
+    except ValueError as exc:
+        raise typer.BadParameter(f"--period must be oos or is; got {period!r}.") from exc
+    if chosen is Period.ALL:
+        raise typer.BadParameter("--period all は判定にならない。oos か is を選ぶ。")
+
+    snapshots = membership(Path(directory))
+    if len(snapshots) < 2:
+        console.print(
+            f"[yellow]名簿が {len(snapshots)} 件しかない。[/] "
+            "先に [cyan]checks\\廃止銘柄の取り込み.bat[/] を実行する。"
+        )
+        raise typer.Exit(code=1)
+
+    begin = max(JUDGMENT_FROM, min(snapshots))
+    console.print(
+        f"[bold]{chosen.value.upper()}[/] で回す。universe は日付ごとの名簿 "
+        f"{len(snapshots)} 件（{min(snapshots)} 〜 {max(snapshots)}）。"
+    )
+    if chosen is Period.OOS:
+        console.print(
+            "[bold yellow]これは封印済みの判定である。一度だけ回す。[/] "
+            "結果を見てから条件を変えない。"
+        )
+
+    database = Database()
+    database.create_all()
+    variants: dict[str, object] = {}
+    for label, skip in (("主要（D+1 で入る）", 1), ("副次（D+2 で入る）", 2)):
+        try:
+            variants[label] = build_series(
+                database,
+                chosen,
+                benchmark=benchmark,
+                start=begin,
+                min_turnover=min_turnover,
+                lookback=lookback,
+                holding=holding,
+                snapshots=snapshots,
+                skip=skip,
+            )
+        except ValueError as exc:
+            console.print(f"[red]{label}: {exc}[/]")
+            raise typer.Exit(code=1) from exc
+
+    series = variants["主要（D+1 で入る）"]
+    console.print(
+        f"{len(series.days):,} 営業日、1日あたり中央値 "
+        f"{int(median(series.counts)) if series.counts else 0} 銘柄"
+        f"（1分位あたり約 {int(median(series.counts)) // 5 if series.counts else 0}）。"
+        f"不連続をまたいで落とした銘柄日 {series.excluded_discontinuity:,}。"
+    )
+
+    shape = Table(title="分位ごとの平均リターン（20営業日、ベンチマーク差引き前）")
+    for column in ("分位1（最も下げた）", "分位2", "分位3", "分位4", "分位5", "ベンチマーク"):
+        shape.add_column(column, justify="right")
+    means = [
+        sum(row[index] for row in series.quantiles) / len(series.quantiles) for index in range(5)
+    ]
+    shape.add_row(
+        *[f"{value * 100:+.2f}%" for value in means],
+        f"{sum(series.benchmark) / len(series.benchmark) * 100:+.2f}%",
+    )
+    console.print(shape)
+
+    outcome = judge(series.long_only(), lags=lags)
+    result, reading = verdict(outcome.mean, outcome.t_statistic)
+
+    headline = Table(title="主要指標：分位1 − ベンチマーク")
+    for column in ("営業日", "平均", "標準誤差(NW)", "t", "費用しきい値", "必要な差(事前)"):
+        headline.add_column(column, justify="right")
+    headline.add_row(
+        f"{outcome.days:,}",
+        f"[bold]{outcome.mean * 100:+.3f}%[/]",
+        f"{outcome.standard_error * 100:.3f}%",
+        f"[bold]{outcome.t_statistic:+.2f}[/]",
+        f"{COST_ROUND_TRIP * 100:.2f}%",
+        f"{DETECTABLE * 100:.2f}%",
+    )
+    console.print(headline)
+
+    colour = "green" if result == PASS else "yellow"
+    console.print()
+    console.print(f"[bold {colour}]判定：{result}[/]")
+    console.print(f"  {reading}")
+    console.print(
+        "[dim]この読み方は 2026-09-04 に封印した表（PREREG_REVERSAL_JP.md §8）を"
+        "当てはめたものである。結果を見てから決めていない。[/]"
+    )
+
+    console.print()
+    console.print("[bold]副次指標（判定には使わない）[/]")
+    extra = Table()
+    for column in ("指標", "平均", "t"):
+        extra.add_column(column, justify="left" if column == "指標" else "right")
+    long_short = judge(series.long_short(), lags=lags)
+    extra.add_row(
+        "分位1 − 分位5", f"{long_short.mean * 100:+.3f}%", f"{long_short.t_statistic:+.2f}"
+    )
+    skipped = judge(variants["副次（D+2 で入る）"].long_only(), lags=lags)
+    extra.add_row("2営業日空けた版", f"{skipped.mean * 100:+.3f}%", f"{skipped.t_statistic:+.2f}")
+    extra.add_row(
+        "費用 0.60% で見たとき",
+        f"{(outcome.mean - 0.002) * 100:+.3f}%",
+        "[dim]—[/]",
+    )
+    console.print(extra)
+    console.print(
+        "[dim]「費用 0.60%」は主要指標から追加の 0.20% を引いただけの感度である"
+        "（費用は分散に効かないので t は変わらない）。[/]"
     )
 
 

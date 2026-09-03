@@ -14,6 +14,7 @@ import pytest
 from stock_ai.backtest.power import (
     autocovariances,
     estimate_power,
+    judge,
     long_run_variance,
     trimmed_variance,
 )
@@ -130,3 +131,26 @@ def test_the_centre_is_the_median_so_an_outlier_cannot_hide_itself() -> None:
 def test_trimming_rejects_a_fraction_that_would_empty_the_series() -> None:
     with pytest.raises(ValueError, match="too few"):
         trimmed_variance([0.1, 0.2, 0.3], fraction=0.9)
+
+
+def test_the_judgement_carries_the_mean_and_the_estimate_does_not() -> None:
+    """**型でどちらの計算かが分かること。**
+
+    検出力の見積もりは判定を先食いしてはならないが、判定そのものは平均を
+    出すのが仕事である。同じ dataclass に混ぜない。
+    """
+    values = [0.01, -0.005, 0.02, -0.01] * 50
+    assert "mean" in vars(judge(values))
+    assert not any("mean" in name for name in vars(estimate_power(values)))
+
+
+def test_the_judgement_uses_the_same_variance_as_the_power_estimate() -> None:
+    """別の分散を使うと「必要な差」と「出た差」が比較できなくなる。"""
+    values = [0.01, -0.005, 0.02, -0.01] * 50
+    estimate = estimate_power(values, lags=5)
+    verdict_of = judge(values, lags=5)
+    assert verdict_of.standard_error == pytest.approx(estimate.standard_error(len(values)))
+
+
+def test_a_zero_standard_error_reports_nan_rather_than_dividing() -> None:
+    assert math.isnan(judge([0.05] * 40, lags=2).t_statistic)
