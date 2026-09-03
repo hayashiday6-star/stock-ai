@@ -279,3 +279,86 @@ def test_an_unadjusted_split_shows_up_in_the_extremes() -> None:
 
     assert series.extremes[0][0] == "1004"
     assert series.extremes[0][3] == pytest.approx(9.0)
+
+
+def _split_frame(jump_at: int, factor: float, gap: tuple[int, int] | None = None):
+    """``jump_at`` から価格が ``factor`` 倍になる系列。調整はしない。
+
+    8308 の 2005年（1:1000 の株式併合）と同じ形。調整係数は前後とも同じで、
+    ``adj_close`` 自体が不連続になる。
+    """
+    close = [1_000.0 if index < jump_at else 1_000.0 * factor for index in range(_BARS)]
+    frame = pd.DataFrame(
+        {
+            OPEN: close,
+            HIGH: close,
+            LOW: close,
+            CLOSE: close,
+            ADJ_CLOSE: [value * 0.01 for value in close],  # 係数は一定
+            VOLUME: [500_000.0] * _BARS,
+        },
+        index=_INDEX,
+    )
+    if gap is not None:  # 併合による売買停止
+        frame = frame.drop(index=_INDEX[gap[0] : gap[1]])
+    return frame
+
+
+def test_a_window_spanning_an_unadjusted_consolidation_is_excluded() -> None:
+    """**捨てているのは極端なリターンではなく、尺度の変わり目をまたぐ窓。**
+
+    併合の前後で価格の単位が違うので、その2点を割り算した値はリターンでは
+    ない。8308 の1件は162銘柄の分位平均を +772% 動かした。
+    """
+    frames = _ten_symbols()
+    # 保有期間（D+1 〜 D+21）の中で1000倍になる。
+    frames["1004"] = _split_frame(jump_at=_JUDGE + 10, factor=1_000.0)
+
+    series = _one_day(_database(frames))
+
+    assert series.counts == [9]
+    assert series.excluded_discontinuity == 1
+    assert series.implausible == 0  # 残った観測に説明のつかない値は無い
+
+
+def test_the_break_is_found_even_when_a_suspension_hides_it() -> None:
+    """**暦の NaN と比べると、売買停止を挟んだ併合が素通りする。**
+
+    8308 はまさにこれだった。2005-07-27 〜 08-01 の足が無く、その間に併合が
+    起きている。直前に値のあった日と比べないと見つからない。
+    """
+    frames = _ten_symbols()
+    frames["1004"] = _split_frame(
+        jump_at=_JUDGE + 10, factor=1_000.0, gap=(_JUDGE + 6, _JUDGE + 10)
+    )
+
+    series = _one_day(_database(frames))
+
+    assert series.excluded_discontinuity == 1
+    assert series.counts == [9]
+
+
+def test_a_break_inside_the_lookback_is_excluded_too() -> None:
+    """判定日側が汚れると「大きく下げた」の中身が変わる。
+
+    併合で価格が跳ねた銘柄は、逆向きなら「大きく下げた」ことにされて分位1に
+    入り続ける。保有側だけ見ていると取り逃す。
+    """
+    frames = _ten_symbols()
+    frames["1004"] = _split_frame(jump_at=_JUDGE - 2, factor=0.001)
+
+    series = _one_day(_database(frames))
+
+    assert series.excluded_discontinuity == 1
+    assert series.counts == [9]
+
+
+def test_an_ordinary_large_move_is_kept() -> None:
+    """±50% は値幅制限から来ている。**普通の大商いを捨てない。**"""
+    frames = _ten_symbols()
+    frames["1004"] = _split_frame(jump_at=_JUDGE + 10, factor=1.3)  # +30%
+
+    series = _one_day(_database(frames))
+
+    assert series.excluded_discontinuity == 0
+    assert series.counts == [10]

@@ -67,6 +67,26 @@ JUDGMENT_FROM = dt.date(2021, 9, 4)
 #: 保有20営業日あたりの数字である。
 COST_ROUND_TRIP = 0.004
 
+#: 1営業日でこれを超える動きは、日本株では値動きではない。
+#:
+#: **東証には値幅制限がある。** 制限は株価帯ごとに決まっていて、いちばん緩い
+#: 低位株でも1日で ±50% を超えることはまず無い。超えているなら、価格の系列が
+#: そこで**不連続**になっている——分割・併合か、売買停止をまたいだ再開である。
+#:
+#: 実測（8308、2005年）:
+#:
+#:   2005-07-26  終値     197   調整後     2.0   調整係数 0.0100
+#:   （2005-07-27 〜 08-01 は足が無い＝併合による売買停止）
+#:   2005-08-02  終値 204,000   調整後 2,040.0   調整係数 0.0100
+#:
+#: **調整係数は前後とも 0.0100 のまま**である。1:1000 の株式併合を、系列が
+#: またいでいない。``adj_close`` 自体が不連続なので、``split_adjusted`` を
+#: 通しても直らない。
+#:
+#: 検出は「直前に値のあった日」と比べる。暦に載せ替えたあとの NaN と比べると、
+#: **売買停止を挟んだ併合が必ず素通りする**（8308 がまさにこれ）。
+MAX_SESSION_MOVE = 0.5
+
 #: これを超えるフォワードリターンは、20営業日の値動きとしては説明がつかない。
 #: 実測では 8308 の 2005-07-25 が **+125,028%** で、これ1件だけで162銘柄の
 #: 分位平均が +772% 動く。株価の動きではなく、分割・併合の調整漏れである。
@@ -110,6 +130,14 @@ class ReversalSeries:
     分位1に約160銘柄入るなら、平均のばらつきは個別のばらつきよりずっと
     小さくなるはずである。そうなっていなければ、平均が数件の極端値に
     引っ張られている——つまり測っているのは現象ではなくデータの傷である。
+    """
+    excluded_discontinuity: int = 0
+    """窓が価格系列の不連続をまたいでいた銘柄日。
+
+    **極端なリターンを捨てているのではなく、尺度の変わり目をまたぐ窓を捨てて
+    いる。** 併合の前後で価格の単位が違うので、その2点を割り算した値は
+    リターンではない。判定日側（5日リターン）と保有側の両方を見る——前者が
+    汚れれば「大きく下げた」の中身が変わり、後者が汚れれば結果が変わる。
     """
     implausible: int = 0
     """フォワードリターンが ±100% を超えた銘柄日の数。
@@ -269,7 +297,7 @@ def build_series(
         chunks_pos: list[np.ndarray] = []
         chunks_lb: list[np.ndarray] = []
         chunks_fwd: list[np.ndarray] = []
-        no_prices = no_lookback = thin = calendar_gap = 0
+        no_prices = no_lookback = thin = calendar_gap = discontinuous = 0
         # 銘柄ごとに最悪の1件。同じ銘柄で枠が埋まると他の銘柄が見えなくなる。
         worst: list[tuple[float, str, int, float, float]] = []
 
@@ -286,6 +314,17 @@ def build_series(
             close = adjusted[CLOSE].to_numpy(dtype=float)
             opens = adjusted[OPEN].to_numpy(dtype=float)
             floor = turnover.reindex(calendar).to_numpy(dtype=float)
+
+            # **不連続の検出は「直前に値のあった日」と比べる。** 暦に載せ替えた
+            # あとの NaN と比べると、売買停止を挟んだ併合が素通りする。
+            filled = adjusted[CLOSE].ffill().to_numpy(dtype=float)
+            with np.errstate(divide="ignore", invalid="ignore"):
+                step = filled[1:] / filled[:-1]
+            broken = np.zeros(len(calendar), dtype=bool)
+            broken[1:] = np.isfinite(step) & (np.abs(step - 1.0) > MAX_SESSION_MOVE)
+            # breaks[i] = 位置 i より前にある不連続の数。区間 [a, b] の個数は
+            # breaks[b + 1] - breaks[a] で取れる。
+            breaks = np.concatenate(([0], np.cumsum(broken)))
 
             allowed = positions
             if snapshot_at is not None:
@@ -320,6 +359,14 @@ def build_series(
             )
             calendar_gap += int((~tradeable).sum())
             allowed = allowed[tradeable]
+            if allowed.size == 0:
+                continue
+
+            # 5日リターンにも保有リターンにも入る移動を見る。片方だけ調べると、
+            # 併合で「大きく下げた」ことにされた銘柄が分位1に入り続ける。
+            spanned = (breaks[allowed + exit_offset + 1] - breaks[allowed - lookback + 1]) > 0
+            discontinuous += int(spanned.sum())
+            allowed = allowed[~spanned]
             if allowed.size == 0:
                 continue
 
@@ -376,6 +423,7 @@ def build_series(
         excluded_no_lookback=no_lookback,
         excluded_thin=thin,
         excluded_calendar=calendar_gap,
+        excluded_discontinuity=discontinuous,
         excluded_thin_day=thin_days,
         universe_label=label,
         forward_percentiles=percentiles,
