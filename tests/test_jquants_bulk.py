@@ -351,3 +351,61 @@ def test_the_bulk_and_the_json_path_share_one_symbol_rule() -> None:
         expected = four_digit_code(code or None)
         grouped = group_by_symbol([{"Code": code}])
         assert list(grouped) == ([expected] if expected else [])
+
+
+# --- 自己資本と純資産は別の量である ------------------------------------------
+#
+# 実測（トヨタ 7203、2026-09-04）: 一括取り込みが `Eq` を書いた結果、全年で
+# 自己資本が 0.91〜1.10兆 増えた。**差はちょうど非支配株主持分。** EDINET が
+# 入れていた親会社持分（26.2兆）が純資産（27.15兆）に化けていた。
+# 同じ行の BPS は親会社持分ベースのままなので、1行に定義が2つ入った。
+
+
+def _equity_record(**extra: str) -> dict[str, str]:
+    return {"Code": "72030", "DiscDate": "2022-05-11", "CurPerType": "FY", **extra}
+
+
+def test_equity_prefers_shareholders_equity_over_net_assets() -> None:
+    """列は「自己資本」。``ShEq`` がそれで、``Eq`` は純資産である。"""
+    from stock_ai.data.jquants_fundamentals import normalize_statements
+
+    reports = normalize_statements("7203", [_equity_record(ShEq="262460", Eq="271548")])
+
+    assert reports[0].equity == pytest.approx(262460)
+
+
+def test_equity_falls_back_to_net_assets_but_says_so(caplog) -> None:
+    """代用してよいが、**黙って代用しない。** ROE と PBR がこの列を読む。"""
+    import logging
+
+    from stock_ai.data.jquants_fundamentals import normalize_statements
+
+    with caplog.at_level(logging.WARNING):
+        reports = normalize_statements("7203", [_equity_record(Eq="271548")])
+
+    assert reports[0].equity == pytest.approx(271548)
+    assert any("ShEq" in message and "Eq" in message for message in caplog.messages)
+
+
+def test_no_warning_when_shareholders_equity_is_present(caplog) -> None:
+    """毎回警告が出ると、本当に混ざった回に誰も気付かない。"""
+    import logging
+
+    from stock_ai.data.jquants_fundamentals import normalize_statements
+
+    with caplog.at_level(logging.WARNING):
+        normalize_statements("7203", [_equity_record(ShEq="262460", Eq="271548")])
+
+    assert not any("ShEq" in message for message in caplog.messages)
+
+
+def test_the_two_equity_fields_are_not_treated_as_synonyms() -> None:
+    """同じ意味なら順番はどうでもよい。**違う意味だから順番がある。**"""
+    from stock_ai.data.jquants_fundamentals import (
+        _EQUITY_FALLBACK_KEYS,
+        _EQUITY_KEYS,
+    )
+
+    assert "ShEq" in _EQUITY_KEYS
+    assert "Eq" in _EQUITY_FALLBACK_KEYS
+    assert not set(_EQUITY_KEYS) & set(_EQUITY_FALLBACK_KEYS)

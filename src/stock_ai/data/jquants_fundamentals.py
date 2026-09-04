@@ -368,6 +368,37 @@ _FORECAST_KEYS: dict[str, tuple[str, ...]] = {
     "eps": ("FEPS",),
 }
 
+
+#: 自己資本を名乗りうるキー。**順番に意味がある。**
+#:
+#: `ShEq` は「自己資本」（親会社持分）、`Eq` は「純資産」（非支配株主持分を
+#: 含む）である。J-Quants 自身のスキーマがそう書いている。**別の量である。**
+#:
+#: 実測（トヨタ 7203、2026-09-04）: 一括取り込みが `Eq` で上書きした結果、
+#: 全年で自己資本が 0.91〜1.10兆 増えた。**差はちょうど非支配株主持分**で、
+#: EDINET が入れていた親会社持分（26.2兆）が純資産（27.15兆）に化けていた。
+#: 同じ行の BPS は親会社持分ベースのままなので、1行の中で定義が2つになった。
+#:
+#: この列は ROE（自己資本利益率）と PBR の分母に使われる。どちらも慣行として
+#: 自己資本を使う。だから `ShEq` が先である。
+_EQUITY_KEYS = ("ShEq", "ShareholdersEquity")
+
+#: `ShEq` が無いときに代わりに読むもの。**黙って使わない。**
+_EQUITY_FALLBACK_KEYS = ("Eq", "Equity")
+
+
+def _equity_of(record: dict[str, Any]) -> tuple[float | None, bool]:
+    """自己資本と、「純資産で代用したか」を返す。
+
+    代用したこと自体は返り値に出す。**黙って混ぜない**——混ざったことに
+    気付けないのが、この種の不具合が高く付く理由である。
+    """
+    equity = _first(record, *_EQUITY_KEYS)
+    if equity is not None:
+        return equity, False
+    return _first(record, *_EQUITY_FALLBACK_KEYS), True
+
+
 #: Field names that may carry the period marker, newest spelling first.
 _PERIOD_FIELDS = ("CurPerType", "Period", "TypeOfCurrentPeriod", "PeriodType")
 
@@ -459,6 +490,7 @@ def normalize_statements(symbol: str, records: list[dict[str, Any]]) -> list[Fin
     by_period: dict[tuple[int, FiscalPeriod], tuple[str, FinancialReport]] = {}
     skipped = 0
     unmarked = 0
+    substituted_equity = 0
 
     for record in records:
         fiscal_year = _fiscal_year_of(record)
@@ -470,6 +502,9 @@ def normalize_statements(symbol: str, records: list[dict[str, Any]]) -> list[Fin
         if not _has_period_marker(record):
             unmarked += 1
         disclosed_text = _text(record, "DiscDate", "DisclosedDate") or ""
+        equity, borrowed = _equity_of(record)
+        if borrowed and equity is not None:
+            substituted_equity += 1
         report = FinancialReport(
             symbol=symbol,
             fiscal_year=fiscal_year,
@@ -485,7 +520,7 @@ def normalize_statements(symbol: str, records: list[dict[str, Any]]) -> list[Fin
             revenue=_first(record, "Sales", "NetSales"),
             operating_income=_first(record, "OP", "OperatingProfit"),
             net_income=_first(record, "NP", "Profit"),
-            equity=_first(record, "Eq", "Equity"),
+            equity=equity,
             eps=_first(record, "EPS"),
             bps=_first(record, "BPS"),
             dividend_per_share=_first(record, "DivAnn"),
@@ -513,6 +548,18 @@ def normalize_statements(symbol: str, records: list[dict[str, Any]]) -> list[Fin
             len(records),
             symbol,
             ", ".join(_PERIOD_FIELDS),
+        )
+
+    if substituted_equity:
+        # **列は「自己資本」である。** 純資産を入れるなら、入れたと言う。
+        # 混ざったこと自体は誰も例外で教えてくれない。
+        logger.warning(
+            "%d of %d %s statement(s) had no ShEq (自己資本) and fell back to "
+            "Eq (純資産, 非支配株主持分を含む). The two differ by the minority "
+            "interest, and ROE and PBR read this column.",
+            substituted_equity,
+            len(records),
+            symbol,
         )
 
     ordered = sorted(by_period.items(), key=lambda kv: (kv[0][0], _PERIOD_ORDER[kv[0][1]]))
