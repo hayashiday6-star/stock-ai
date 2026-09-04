@@ -48,14 +48,14 @@ class Settings(BaseSettings):
     # (docs/TACHIBANA.md)。空にしておけば、その日の既定が使われる。
     tachibana_auth_id: SecretStr | None = Field(default=None, validation_alias="TACHIBANA_AUTH_ID")
     tachibana_private_key: str = Field(
-        default="tachibana_private.pem", validation_alias="TACHIBANA_PRIVATE_KEY"
+        default="tachibana/private.pem", validation_alias="TACHIBANA_PRIVATE_KEY"
     )
     tachibana_api_version: str | None = Field(
         default=None, validation_alias="TACHIBANA_API_VERSION"
     )
     tachibana_base_url: str | None = Field(default=None, validation_alias="TACHIBANA_BASE_URL")
     tachibana_session_file: str = Field(
-        default="tachibana_session.json", validation_alias="TACHIBANA_SESSION_FILE"
+        default="tachibana/session.json", validation_alias="TACHIBANA_SESSION_FILE"
     )
     # 日本株の株価をどこから取るか。J-Quants の有料プランをやめるなら 'tachibana'。
     jp_price_source: str = Field(default="jquants", validation_alias="JP_PRICE_SOURCE")

@@ -25,6 +25,10 @@ htmlcov/
 # 立花の仮想URLを復号する秘密鍵。.env と同じ扱い。
 *.pem
 tachibana_private*
+# 立花関係のファイルはこのフォルダにまとめる（秘密鍵・当日のセッション・
+# 登録用の公開鍵・プローブの生出力）。README だけ追跡する。
+tachibana/*
+!tachibana/README.md
 
 # --- Data / logs / DB (runtime artifacts) ---
 logs/*
@@ -33,12 +37,11 @@ data/*.db
 data/*.sqlite
 data/*.sqlite3
 *.db-journal
-# プローブが書き出す生の応答（株価のみ。個人情報は含まない）。
+# 整理前の置き場所（プロジェクト直下）。移し終えるまで無視し続ける。
 tachibana_history*.json
-# 当日の仮想URL。復号済みなので、これ自体が資格情報。
 tachibana_session*.json
-# 登録用に書き出した公開鍵（秘密ではないが、生成物なので追跡しない）。
 tachibana_public*.txt
+tachibana_master*.json
 # EDINET から落とした書類本体（公開情報だが、生成物なので追跡しない）。
 edinet_probe/
 

@@ -408,13 +408,63 @@ def normalize_history(records: list[dict[str, Any]], symbol: str) -> pd.DataFram
     return frame.set_index(DATE)
 
 
+#: 立花関係のファイルの置き場所。**プロジェクト直下に散らばらせない。**
+#:
+#: 秘密鍵・その日のセッション・公開鍵・プローブの生出力の4種類が直下にあり、
+#: どれが資格情報でどれが生成物か見分けが付かなくなっていた。1つの
+#: フォルダにまとめ、フォルダごと gitignore する。
+TACHIBANA_DIR = pathlib.Path("tachibana")
+
+DEFAULT_PRIVATE_KEY = TACHIBANA_DIR / "private.pem"
+DEFAULT_SESSION_FILE = TACHIBANA_DIR / "session.json"
+DEFAULT_PUBLIC_KEY = TACHIBANA_DIR / "public.txt"
+DEFAULT_HISTORY_FILE = TACHIBANA_DIR / "history.json"
+
+#: 整理する前の置き場所。**消さずに読みに行く。**
+LEGACY_PATHS: dict[pathlib.Path, pathlib.Path] = {
+    DEFAULT_PRIVATE_KEY: pathlib.Path("tachibana_private.pem"),
+    DEFAULT_SESSION_FILE: pathlib.Path("tachibana_session.json"),
+    DEFAULT_PUBLIC_KEY: pathlib.Path("tachibana_public.txt"),
+    DEFAULT_HISTORY_FILE: pathlib.Path("tachibana_history.json"),
+}
+
+
+def resolve_path(path: pathlib.Path | str) -> pathlib.Path:
+    """新しい置き場所を使う。旧い場所にしか無ければ、そちらを使って知らせる。
+
+    **黙って「無い」と言わないのが肝心である。** 秘密鍵が見つからないと、
+    次にやることは鍵の作り直しになる。作り直すと立花に登録済みの公開鍵と
+    合わなくなり、**登録し直しになる**。整理のせいでそれが起きてはいけない。
+
+    Args:
+        path: 設定または既定のパス。
+
+    Returns:
+        実際に読むパス。どちらにも無ければ新しい方（作るならそこ）。
+    """
+    wanted = pathlib.Path(path)
+    if wanted.exists():
+        return wanted
+    legacy = LEGACY_PATHS.get(wanted)
+    if legacy is not None and legacy.exists():
+        logger.warning(
+            "%s が %s にあります。`checks/立花のファイルを整理.bat` で %s へ移せます"
+            "（移すまでは今の場所を読みます）。",
+            legacy.name,
+            legacy.parent if str(legacy.parent) != "." else "プロジェクト直下",
+            wanted,
+        )
+        return legacy
+    return wanted
+
+
 def build_client(
     auth_id: SecretStr | None,
-    private_key_path: pathlib.Path | str = "tachibana_private.pem",
+    private_key_path: pathlib.Path | str = DEFAULT_PRIVATE_KEY,
     *,
     version: str | None = None,
     base: str | None = None,
-    session_file: pathlib.Path | str = "tachibana_session.json",
+    session_file: pathlib.Path | str = DEFAULT_SESSION_FILE,
 ) -> TachibanaClient:
     """設定から接続済みでないクライアントを組み立てる。
 
@@ -430,7 +480,7 @@ def build_client(
             "TACHIBANA_AUTH_ID が設定されていません。"
             "ｅ支店の利用設定画面で認証ＩＤを生成し、.env に書いてください。"
         )
-    key_path = pathlib.Path(private_key_path)
+    key_path = resolve_path(private_key_path)
     if not key_path.exists():
         raise DataError(
             f"立花の秘密鍵が見つかりません: {key_path}。"
@@ -469,11 +519,11 @@ class TachibanaPriceProvider:
     def __init__(
         self,
         auth_id: SecretStr | None,
-        private_key_path: pathlib.Path | str = "tachibana_private.pem",
+        private_key_path: pathlib.Path | str = DEFAULT_PRIVATE_KEY,
         *,
         version: str | None = None,
         base: str | None = None,
-        session_file: pathlib.Path | str = "tachibana_session.json",
+        session_file: pathlib.Path | str = DEFAULT_SESSION_FILE,
         client: TachibanaClient | None = None,
     ) -> None:
         """接続に必要なものを受け取る。``client`` を渡せば通信を差し替えられる。
