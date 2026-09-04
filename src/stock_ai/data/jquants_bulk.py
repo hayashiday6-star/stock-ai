@@ -66,6 +66,67 @@ BULK_ENDPOINTS: tuple[str, ...] = (
 #: 解約前に取り切りたいもの。`docs/JQUANTS_EXIT.md` の期限作業に対応する。
 DEADLINE_ENDPOINTS: tuple[str, ...] = ("/fins/summary", "/equities/bars/daily")
 
+#: プラン別の1分あたりリクエスト上限。出典は J-Quants 同梱の
+#: `.claude/skills/jquants-cli-usage/SKILL.md`（Rate Limits）。
+#:
+#: **`BulkIngester` の既定 `throttle_seconds=0.5` は 120回／分**、つまり
+#: Standard の上限ちょうどで余裕が無く、Light の上限の2倍である。銘柄ごとの
+#: 取得が 84件で止まったのは、これで説明が付く可能性がある。
+PLAN_REQUESTS_PER_MINUTE: dict[str, int] = {
+    "Free": 5,
+    "Light": 60,
+    "Standard": 120,
+    "Premium": 500,
+}
+
+#: プラン別に遡れる年数。同じ出典。**一括も個別APIも同じ範囲である。**
+#:
+#: 一覧が覆っている期間からプランを言い当てられる、という意味でもある。
+#: 契約内容を人に思い出してもらうより、返ってきたファイルを数えるほうが早い。
+PLAN_HISTORY_YEARS: dict[str, int] = {
+    "Light": 5,
+    "Standard": 10,
+    "Premium": 20,
+}
+
+#: 上限に対してどれだけ余裕を取るか。**上限ちょうどを狙わない。**
+#:
+#: 大幅超過が続くと約5分アクセスが完全に遮断される（同出典）。取り切るまでの
+#: 総時間で見れば、2割遅いほうが5分止まるより速い。
+RATE_LIMIT_HEADROOM = 1.2
+
+
+def recommended_throttle(plan: str) -> float | None:
+    """そのプランで銘柄ごとに叩くときの、1件あたりの間隔（秒）。"""
+    limit = PLAN_REQUESTS_PER_MINUTE.get(plan)
+    if not limit:
+        return None
+    return 60.0 / limit * RATE_LIMIT_HEADROOM
+
+
+def infer_plan(span_years: float) -> str | None:
+    """覆っている年数から、契約しているプランを言い当てる。
+
+    **当てずっぽうではなく、返ってきたファイルから読む。** 5年ぶんしか無ければ
+    Light である。プランが分かれば1分あたりの上限が決まり、上限が決まれば
+    銘柄ごとに叩くときの間隔が決まる。
+
+    Args:
+        span_years: 一覧が覆っている年数。
+
+    Returns:
+        いちばん近いプラン名。判断できなければ ``None``。
+    """
+    if span_years <= 0:
+        return None
+    # 上の段から見て、覆っている年数がその段に届いていれば、そのプラン。
+    # 境目ちょうどで下に落ちないよう、少しだけ甘く見る。
+    for plan in ("Premium", "Standard", "Light"):
+        if span_years >= PLAN_HISTORY_YEARS[plan] * 0.9:
+            return plan
+    return None
+
+
 #: `bulk/get` が返す署名付きURLの寿命。**5分**。
 #:
 #: 一覧を全部取ってから順に落とすと、後ろのURLが死ぬ。1本ずつ「取得して

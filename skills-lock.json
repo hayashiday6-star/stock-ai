@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "skills": {
+    "jquants-cli-usage": {
+      "source": "J-Quants/jquants-cli",
+      "sourceType": "github",
+      "skillPath": ".claude/skills/jquants-cli-usage/SKILL.md",
+      "computedHash": "29da4c4bf486a726e8ab15be6596a69e4e2c724a97417eac6a042ad7e83fff03"
+    }
+  }
+}

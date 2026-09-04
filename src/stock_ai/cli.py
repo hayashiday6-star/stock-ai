@@ -167,8 +167,11 @@ from stock_ai.data.fx import FxConverter
 from stock_ai.data.jquants_bulk import (
     BULK_ENDPOINTS,
     DEADLINE_ENDPOINTS,
+    PLAN_REQUESTS_PER_MINUTE,
     PRESIGNED_URL_TTL,
     BulkFile,
+    infer_plan,
+    recommended_throttle,
 )
 from stock_ai.data.jquants_bulk import coverage as bulk_coverage
 from stock_ai.data.jquants_bulk import list_files as bulk_list_files
@@ -2637,6 +2640,61 @@ def universe_snapshot(
     console.print(table)
 
 
+def _report_plan(found: dict[str, list[BulkFile]]) -> None:
+    """Name the plan from how far back the files go, and the pace it allows.
+
+    Counting the files that came back beats asking anyone to recall which plan
+    they are on. The plan fixes the per-minute ceiling, and the ceiling fixes
+    the interval a per-symbol loop may use. The delisted harvest stopping at 84
+    symbols is consistent with the default 0.5s - 120 a minute - sitting exactly
+    on Standard's ceiling with no headroom at all.
+    """
+    spans: list[float] = []
+    for files in found.values():
+        span = bulk_coverage(files)
+        if span is None:
+            continue
+        try:
+            first = int(span[0][:4])
+            last = int(span[1][:4])
+        except ValueError:
+            continue
+        spans.append(last - first)
+    if not spans:
+        return
+
+    widest = max(spans)
+    plan = infer_plan(widest)
+    console.print()
+    if plan is None:
+        console.print(
+            f"[yellow]覆っているのは約 {widest:.0f} 年ぶん。[/] "
+            "プランの区切り（Light 5年 / Standard 10年 / Premium 20年）の"
+            "どれにも寄らないので、上限は決め打ちしない。"
+        )
+        return
+
+    limit = PLAN_REQUESTS_PER_MINUTE[plan]
+    interval = recommended_throttle(plan)
+    console.print(
+        f"覆っているのは約 [bold]{widest:.0f}[/] 年ぶん。"
+        f"契約はおそらく [bold]{plan}[/]（1分あたり [bold]{limit}[/] 回）。"
+    )
+    if interval is not None:
+        console.print(
+            f"[dim]銘柄ごとに叩くなら1件 [bold]{interval:.1f}[/] 秒あける。"
+            f"いまの既定は 0.5 秒＝120回／分で、"
+            + (
+                "上限ちょうどで余裕が無い。"
+                if limit == 120
+                else f"{plan} の上限の {120 / limit:.1f} 倍にあたる。"
+                if limit < 120
+                else "余裕がある。"
+            )
+            + "大幅超過が続くと約5分あいだ完全に遮断される。[/dim]"
+        )
+
+
 @app.command(name="jquants-bulk-list")
 def jquants_bulk_list(
     endpoint: str | None = typer.Option(
@@ -2739,6 +2797,8 @@ def jquants_bulk_list(
             console.print(f"  [dim]… 途中 {len(files) - show * 2:,} 本 …[/dim]")
         for item in files[-show:] if len(files) > show else []:
             console.print(f"  [dim]{item.megabytes:8.1f} MB[/dim]  {item.key}")
+
+    _report_plan(found)
 
     console.print()
     console.print(

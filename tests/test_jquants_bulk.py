@@ -177,3 +177,64 @@ def test_the_deadline_set_is_a_subset_of_the_bulk_endpoints() -> None:
     """期限で取り切るものが、一括対応の一覧に載っていること。"""
     assert set(DEADLINE_ENDPOINTS) <= set(BULK_ENDPOINTS)
     assert "/fins/summary" in DEADLINE_ENDPOINTS
+
+
+# --- プランを覆っている年数から言い当てる ------------------------------------
+#
+# 契約を思い出してもらうより、返ってきたファイルを数えるほうが速い。
+# プランが決まれば1分あたりの上限が決まり、上限が決まれば叩く間隔が決まる。
+
+
+def test_infer_plan_reads_the_span_back_to_a_plan() -> None:
+    from stock_ai.data.jquants_bulk import infer_plan
+
+    assert infer_plan(20) == "Premium"
+    assert infer_plan(10) == "Standard"
+    assert infer_plan(5) == "Light"
+
+
+def test_infer_plan_does_not_round_a_short_span_up() -> None:
+    """5年ぶんしか無いのを Standard と読むと、上限を2倍に見誤る。"""
+    from stock_ai.data.jquants_bulk import infer_plan
+
+    assert infer_plan(6) == "Light"
+    assert infer_plan(0) is None
+    assert infer_plan(1) is None
+
+
+def test_recommended_throttle_leaves_headroom_under_the_ceiling() -> None:
+    """上限ちょうどを狙わない。大幅超過が続くと約5分まるごと遮断される。"""
+    from stock_ai.data.jquants_bulk import (
+        PLAN_REQUESTS_PER_MINUTE,
+        recommended_throttle,
+    )
+
+    for plan, limit in PLAN_REQUESTS_PER_MINUTE.items():
+        interval = recommended_throttle(plan)
+        assert interval is not None
+        # その間隔で1分間叩き続けても、上限を超えないこと。
+        assert 60.0 / interval < limit, plan
+
+    assert recommended_throttle("Nonexistent") is None
+
+
+def test_the_default_throttle_is_too_fast_for_light() -> None:
+    """``BulkIngester`` の既定 0.5 秒は 120回／分。Light の上限の2倍である。
+
+    ここは「直したことを固定する」テストではなく、**既定とプランの上限が
+    ずれていることを記録する**テストである。取り込みが 84 件で止まった
+    説明として、いちばんもっともらしい。
+    """
+    import inspect
+
+    from stock_ai.data.bulk import BulkIngester
+    from stock_ai.data.jquants_bulk import PLAN_REQUESTS_PER_MINUTE
+
+    # **既定値は書き写さず、実物から読む。** 書き写すと、既定が動いたあとも
+    # このテストは古い値について通り続ける。
+    throttle = inspect.signature(BulkIngester.__init__).parameters["throttle_seconds"].default
+    assert throttle > 0
+    default_per_minute = 60.0 / throttle
+
+    assert default_per_minute > PLAN_REQUESTS_PER_MINUTE["Light"]
+    assert default_per_minute >= PLAN_REQUESTS_PER_MINUTE["Standard"]
