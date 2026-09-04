@@ -12,6 +12,7 @@ import datetime as dt
 import pytest
 
 from stock_ai.data.delisted import (
+    all_profiles,
     covered_from,
     delistings,
     harvest_snapshots,
@@ -167,3 +168,33 @@ def test_snapshots_are_written_with_lf_endings(tmp_path) -> None:
 
     assert b"\r\n" not in raw
     assert raw.count(b"\n") == 3  # ヘッダ + 2行
+
+
+def test_all_profiles_sees_rosters_the_run_did_not_ask_for(tmp_path) -> None:
+    """**`HarvestReport.union` と混同しない。**
+
+    あちらは「今回要求した日付」の範囲でしか集めない。境界の名簿や前日に
+    取った名簿は翌日の実行では要求されないので、その分だけ少なく数える。
+    実測で 4,097 と報告し、ディスク上の実際は 4,124 だった。差の27銘柄は
+    株価を取りに行く対象から漏れていた。
+    """
+    write_snapshot(tmp_path, dt.date(2024, 1, 1), [_profile("1301"), _profile("7203")])
+    write_snapshot(tmp_path, dt.date(2024, 2, 1), [_profile("7203"), _profile("9999")])
+
+    # 2月ぶんだけを要求する実行。1月にしか無い 1301 は report に入らない。
+    report = harvest_snapshots(tmp_path, [dt.date(2024, 2, 1)], lambda on: [])
+
+    assert report.union == {"7203", "9999"}
+    assert set(all_profiles(tmp_path)) == {"1301", "7203", "9999"}
+
+
+def test_all_profiles_keeps_the_most_recent_name(tmp_path) -> None:
+    """社名が変わった銘柄は、最後に出た名簿のものを使う。"""
+    write_snapshot(tmp_path, dt.date(2024, 1, 1), [_profile("7203", "旧社名")])
+    write_snapshot(tmp_path, dt.date(2024, 2, 1), [_profile("7203", "新社名")])
+
+    assert all_profiles(tmp_path)["7203"].name == "新社名"
+
+
+def test_all_profiles_is_empty_without_rosters(tmp_path) -> None:
+    assert all_profiles(tmp_path) == {}
