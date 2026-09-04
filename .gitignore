@@ -30,6 +30,11 @@ tachibana_private*
 tachibana/*
 !tachibana/README.md
 
+# 米国株のシンボル一覧。README と docs/ACCUMULATION.md が
+# `--symbols-file us.txt` として案内している、利用者が自分で置くファイル。
+# 中身は各自の対象銘柄なので追跡しない。
+us.txt
+
 # --- Data / logs / DB (runtime artifacts) ---
 logs/*
 !logs/.gitkeep
