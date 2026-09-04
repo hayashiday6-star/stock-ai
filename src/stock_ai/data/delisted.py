@@ -53,6 +53,21 @@ DEFAULT_STEP_DAYS = 30
 #: 前に進むのではなく**後ろに動く**ので、断られ方そのものが記録に値する。
 ROLLING_WINDOW_START = dt.date(2021, 9, 1)
 
+#: 立花のマスタから毎月1枚ずつ残す名簿の置き場所。
+#:
+#: **J-Quants の名簿と混ぜない。** 除外の仕方が違う（J-Quants は投信・指数を
+#: 396件除き、立花は上場区分で絞る）ので、境目をまたいで差を取ると、消えても
+#: いない銘柄が「消えた」ことになる。別のフォルダに置けば、混ぜるときは必ず
+#: 意図的になる。
+TACHIBANA_SNAPSHOT_DIR: Path = DATA_DIR / "tachibana_snapshots"
+
+#: 月次の名簿のファイル名。``YYYY-MM.csv``。
+#:
+#: **日付ではなく月で名前を付ける。** 日次の自動処理から毎日呼んでも、その月の
+#: ファイルが既にあれば書かない。運用を「毎月やる」と覚えておく必要が無くなる
+#: ——覚えておく必要のある運用は、いずれ忘れられる。
+MONTH_FORMAT = "%Y-%m"
+
 #: 名簿を取りに行くための呼び出し。日付を受け、その日の上場一覧を返す。
 SnapshotFetcher = Callable[[dt.date], list[SecurityProfile]]
 
@@ -305,3 +320,62 @@ def delistings(snapshots: dict[dt.date, set[str]]) -> list[tuple[dt.date, dt.dat
         (earlier, later, sorted(snapshots[earlier] - snapshots[later]))
         for earlier, later in zip(ordered, ordered[1:], strict=False)
     ]
+
+
+def month_path(directory: Path, on: dt.date) -> Path:
+    """``on`` の属する月の名簿を置くパス。"""
+    return directory / f"{on.strftime(MONTH_FORMAT)}.csv"
+
+
+def monthly_snapshot(
+    directory: Path,
+    profiles: Iterable[SecurityProfile],
+    on: dt.date | None = None,
+    force: bool = False,
+) -> Path | None:
+    """その月の名簿がまだ無ければ書き、パスを返す。あれば ``None``。
+
+    立花のマスタは現存銘柄しか返さないが、**毎月1枚ずつ残せば、その差分が
+    「その月に消えた銘柄」になる。** J-Quants の名簿が 2026-09 で止まっても、
+    それ以降の生存バイアスは自前で直せる。
+
+    Args:
+        directory: 置き場所。
+        profiles: いまの上場一覧。
+        on: どの月として保存するか。省略時は今日。
+        force: その月のファイルがあっても上書きする。
+
+    Returns:
+        書いたパス。既にあって書かなかった場合は ``None``。
+    """
+    when = on or dt.date.today()
+    path = month_path(directory, when)
+    if path.exists() and not force:
+        logger.debug("%s は既にあるので書かない。", path.name)
+        return None
+    directory.mkdir(parents=True, exist_ok=True)
+    rows = sorted(profiles, key=lambda profile: profile.symbol)
+    with path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.writer(handle, lineterminator="\n")
+        writer.writerow(COLUMNS)
+        for profile in rows:
+            writer.writerow(
+                [profile.symbol, profile.name or "", profile.sector or "", profile.industry or ""]
+            )
+    logger.info("%s に %d 銘柄を保存した（月次の名簿）。", path.name, len(rows))
+    return path
+
+
+def monthly_membership(directory: Path) -> dict[str, set[str]]:
+    """月次の名簿を ``YYYY-MM -> 銘柄コード`` で返す。"""
+    if not directory.is_dir():
+        return {}
+    result: dict[str, set[str]] = {}
+    for path in sorted(directory.glob("*.csv")):
+        try:
+            dt.datetime.strptime(path.stem, MONTH_FORMAT)
+        except ValueError:
+            logger.debug("%s を飛ばす（月の名前ではない）。", path.name)
+            continue
+        result[path.stem] = {profile.symbol for profile in read_snapshot(path)}
+    return result

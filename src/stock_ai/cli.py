@@ -133,11 +133,14 @@ from stock_ai.data.delisted import (
     DEFAULT_SNAPSHOT_DIR,
     DEFAULT_STEP_DAYS,
     ROLLING_WINDOW_START,
+    TACHIBANA_SNAPSHOT_DIR,
     all_profiles,
     covered_from,
     delistings,
     harvest_snapshots,
     membership,
+    monthly_membership,
+    monthly_snapshot,
     snapshot_dates,
 )
 from stock_ai.data.fx import FxConverter
@@ -2529,6 +2532,81 @@ def delisted_harvest(
         "分位を組むときは「その日以前で最も新しい名簿」を使う——全期間の和集合を"
         "使うと、まだ上場していない銘柄を過去に置くことになる。"
     )
+
+
+@app.command(name="universe-snapshot")
+def universe_snapshot(
+    directory: str = typer.Option(
+        str(TACHIBANA_SNAPSHOT_DIR), "--dir", help="Where the monthly rosters are kept."
+    ),
+    universe_source: str | None = typer.Option(
+        None, "--source", help="Override JP_UNIVERSE_SOURCE: jquants | tachibana."
+    ),
+    force: bool = typer.Option(False, "--force", help="Rewrite this month's file if it exists."),
+) -> None:
+    """Keep one listing roster per month, so delistings stay recoverable.
+
+    Tachibana's master returns currently-listed names only, which is why
+    survivorship bias could not be fixed from it. **But saving one roster a
+    month makes the difference between consecutive months the delistings.**
+    When the J-Quants rosters stop at 2026-09, this is what keeps the record
+    going.
+
+    Safe to call every day: the file is named by month and an existing month is
+    left alone. A routine that has to be *remembered* monthly is a routine that
+    eventually is not.
+
+    Written to its own directory, apart from the J-Quants rosters. The two
+    exclude different things - J-Quants drops 396 fund and index listings,
+    Tachibana filters by listing section - so differencing across the join
+    would report names as delisted that never left.
+    """
+    settings = get_settings()
+    configure_logging(settings.log_level)
+
+    target = Path(directory)
+    try:
+        source = _universe_source(settings, universe_source)
+        profiles = source.profiles(Segment.ALL)
+    except DataError as exc:
+        console.print(f"[red]{exc}[/]")
+        raise typer.Exit(code=1) from exc
+
+    written = monthly_snapshot(target, profiles, force=force)
+    if written is None:
+        console.print(
+            f"[dim]{dt.date.today():%Y-%m} の名簿は既にある（{target}）。書かない。[/dim]"
+        )
+    else:
+        console.print(
+            f"[green]{written.name}[/] に [bold]{len(profiles):,}[/] 銘柄を保存した"
+            f"（取得元: {source.name}）。"
+        )
+        console.print("[dim]取り直せないデータなので、git にコミットして残す。[/dim]")
+
+    stored = monthly_membership(target)
+    if len(stored) < 2:
+        console.print(
+            f"[dim]月次の名簿は {len(stored)} 件。2件たまると、差分が"
+            "「その月に消えた銘柄」になる。[/dim]"
+        )
+        return
+
+    months = sorted(stored)
+    table = Table(title="月次の名簿の差 = その月に消えた銘柄")
+    for column in ("期間", "前", "後", "消えた", "増えた"):
+        table.add_column(column, justify="left" if column == "期間" else "right")
+    for earlier, later in list(zip(months, months[1:], strict=False))[-12:]:
+        gone = stored[earlier] - stored[later]
+        added = stored[later] - stored[earlier]
+        table.add_row(
+            f"{earlier} → {later}",
+            f"{len(stored[earlier]):,}",
+            f"{len(stored[later]):,}",
+            f"[bold]{len(gone):,}[/]",
+            f"{len(added):,}",
+        )
+    console.print(table)
 
 
 @app.command(name="jquants-inventory")
