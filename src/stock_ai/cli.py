@@ -3240,29 +3240,40 @@ def lowvol_run(
         "当てはめたものである。結果を見てから決めていない。[/]"
     )
 
-    # **α が正でも指数に勝つとは限らない。** 判定のたびに併記する。
+    # **α が何と比べた差なのかを、判定のたびに書く。** 無リスク金利を 0 と
+    # 置いているので、α は「指数を β の比率で持ち、残りを現金にした場合」との
+    # 差そのものである。100%指数との比較は別の問いで、それは生の差が答える。
     raw = judge(series.long_only(), lags=lags)
     break_even = break_even_alpha(beta, bench_mean)
     console.print()
-    console.print("[bold]指数を上回ったか（判定には使わない）[/]")
-    index_beat = Table()
-    for column in ("この期間の市場", "指数超えに要る α", "実際の α", "生の差（分位1 − 指数）"):
-        index_beat.add_column(column, justify="right")
-    index_beat.add_row(
-        f"{bench_mean * 100:+.2f}%／月",
-        f"{break_even * 100:+.3f}%",
-        f"{outcome.mean * 100:+.3f}%",
-        f"[bold]{raw.mean * 100:+.3f}%[/]（t {raw.t_statistic:+.2f}）",
-    )
-    console.print(index_beat)
     console.print(
-        f"[dim]β={beta:.3f} なので 分位1 − 指数 ＝ α − {1 - beta:.3f}×市場。"
-        "**α が正でも上げ相場では指数に負ける。** 低ボラの見返りはリターンでは"
-        "なく下落の浅さで来るので、これは欠陥ではなく性質である。[/dim]"
+        f"[bold]α は何と比べた差か（指数 {beta * 100:.1f}% ＋ 現金 {(1 - beta) * 100:.1f}%）[/]"
+    )
+    compare = Table()
+    for column in (
+        "この期間の市場",
+        "α（対 β揃えの代替案）",
+        "生の差（対 100%指数）",
+        "100%指数超えに要る α",
+    ):
+        compare.add_column(column, justify="right")
+    compare.add_row(
+        f"{bench_mean * 100:+.2f}%／月",
+        f"[bold]{outcome.mean * 100:+.3f}%[/]",
+        f"{raw.mean * 100:+.3f}%（t {raw.t_statistic:+.2f}）",
+        f"{break_even * 100:+.3f}%",
+    )
+    console.print(compare)
+    console.print(
+        f"[dim]無リスク金利を 0 と置いているので、α ＝ 分位1 − (指数 {beta * 100:.1f}% ＋ "
+        f"現金 {(1 - beta) * 100:.1f}%)。**α>0 は「β を揃えた最も素朴な代替案に勝った」"
+        "であって「100%指数に勝った」ではない。** 後者は生の差が答える別の問いで、"
+        "判定には使わない（PREREG_LOWVOL_JP.md §17）。[/dim]"
     )
 
     first = [row[0] for row in series.quantiles]
-    risk = Table(title="下落の浅さ（判定には使わない）")
+    # **判定基準に含めない。** 含めれば2つ目の基準になり、多重検定になる。
+    risk = Table(title="下落の浅さ（記録のみ。判定基準に含めない）")
     for column in ("", "月次SD", "最大下落"):
         risk.add_column(column, justify="right" if column else "left")
     risk.add_row(
