@@ -8,6 +8,8 @@
 from __future__ import annotations
 
 import datetime as dt
+import pathlib
+import re
 
 import numpy as np
 import pandas as pd
@@ -258,3 +260,66 @@ def test_end_excludes_months_whose_holding_period_would_run_past_it() -> None:
     loose = build_series(database, Period.ALL, window=60, min_symbols=10)
     within = [month for month in loose.months if month <= cut]
     assert len(series.months) < len(within)
+
+
+# --- 封印した定数と事前登録文書が食い違わないこと -----------------------------
+#
+# β は文書の中に **4つの姿**で出てくる: ``0.542`` / 補数の ``0.458`` /
+# ``54.2%`` / ``45.8%``。再導出したときに1つ書き換え忘れても例外は出ず、
+# 「もっともらしいが違う値」がそのまま残る。ここで機械に照合させる。
+
+_PREREG = pathlib.Path(__file__).resolve().parents[1] / "docs" / "PREREG_LOWVOL_JP.md"
+
+
+def _prereg_text() -> str:
+    return _PREREG.read_text(encoding="utf-8")
+
+
+def test_document_beta_matches_the_sealed_constant() -> None:
+    """文書が名指しする β が、コードの ``SEALED_BETA`` と同じこと。"""
+    from stock_ai.backtest.lowvol import SEALED_BETA
+
+    written = re.findall(r"β\s*(?:は|=|＝)\s*\*{0,2}(\d\.\d{3})", _prereg_text())
+    assert written, "文書に β の値が書かれていない。"
+    assert set(written) == {f"{SEALED_BETA:.3f}"}
+
+
+def test_document_uses_one_minus_beta_consistently() -> None:
+    """``1 − β`` を掛ける箇所が、すべて同じ補数であること。"""
+    from stock_ai.backtest.lowvol import SEALED_BETA
+
+    complements = re.findall(r"(\d\.\d{3})\s*×\s*市場リターン", _prereg_text())
+    assert complements, "文書に「× 市場リターン」の項が無い。"
+    assert set(complements) == {f"{1 - SEALED_BETA:.3f}"}
+
+
+def test_document_cash_and_index_weights_match_beta() -> None:
+    """「指数 54.2% ＋ 現金 45.8%」の比率が β から出ていること。"""
+    from stock_ai.backtest.lowvol import SEALED_BETA
+
+    text = _prereg_text()
+    index = re.findall(r"指数\s*(\d{1,2}\.\d)%", text)
+    cash = re.findall(r"現金\s*(\d{1,2}\.\d)%", text)
+    assert index and cash, "合格時の持ち方の比率が文書に無い。"
+    assert set(index) == {f"{SEALED_BETA * 100:.1f}"}
+    assert set(cash) == {f"{(1 - SEALED_BETA) * 100:.1f}"}
+
+
+def test_detectable_comes_from_the_beta_adjusted_row_not_the_raw_one() -> None:
+    """``DETECTABLE`` が §8 の表の **β×ベンチ** 行から来ていること。
+
+    主要指標は α である。生の差の行（値が大きい）を写すと、判定のしきい値が
+    緩む向きにずれる——落ちるべきものが通る。
+    """
+    from stock_ai.backtest.lowvol import DETECTABLE
+
+    rows: dict[str, list[str]] = {}
+    for line in _prereg_text().splitlines():
+        if line.startswith("|") and "分位1 −" in line:
+            cells = line.split("|")
+            rows[cells[1].strip().strip("*")] = cells
+    adjusted = rows["分位1 − β×ベンチ"][-2]
+    raw = rows["分位1 − ベンチ（生）"][-2]
+
+    assert f"{DETECTABLE * 100:.2f}%" in adjusted
+    assert f"{DETECTABLE * 100:.2f}%" not in raw
