@@ -118,24 +118,64 @@ def test_list_files_sends_from_and_to_under_the_api_names(patched) -> None:
     assert params["to"] == "2024-03-31"
 
 
-def test_coverage_reads_daily_stamps_out_of_the_key() -> None:
-    """日次ファイルは名前に ``YYYYMMDD`` が入っている。"""
+# 本番の `bulk/list` が返した実物のキー（2026-09-04）。**作り物ではない。**
+#
+# historical は月（6桁）、live は日（8桁）で、名前の形が違う。最初に書いた型は
+# 8桁しか見ておらず、``/2021/`` は年しか持たないので月の型にも掛からなかった。
+# **historical の73本が黙って落ち、5年ぶんの範囲が「2026-08〜2026-09」と出た。**
+# 例外は出ない。この関数が防ぐために書かれた、まさにその形の間違いである。
+_REAL_KEYS = [
+    "fins/summary/historical/2021/fins_summary_202109.csv.gz",
+    "fins/summary/historical/2021/fins_summary_202110.csv.gz",
+    "fins/summary/historical/2021/fins_summary_202111.csv.gz",
+    "fins/summary/historical/2021/fins_summary_202112.csv.gz",
+    "fins/summary/historical/2022/fins_summary_202201.csv.gz",
+    "fins/summary/live/fins_summary_20260831.csv.gz",
+    "fins/summary/live/fins_summary_20260901.csv.gz",
+    "fins/summary/live/fins_summary_20260904.csv.gz",
+]
+
+
+def test_coverage_reads_both_the_historical_and_the_live_naming() -> None:
+    """片方の型しか見ないと、覆っている範囲が黙って縮む。"""
+    files = [BulkFile(key, "", 1) for key in _REAL_KEYS]
+
+    assert coverage(files) == ("2021-09", "2026-09")
+
+
+def test_coverage_does_not_lose_the_historical_files_to_the_live_ones() -> None:
+    """live だけを数えると 2026-08 始まりに見える。**これが実際に起きた。**"""
+    only_live = [BulkFile(key, "", 1) for key in _REAL_KEYS if "/live/" in key]
+    both = [BulkFile(key, "", 1) for key in _REAL_KEYS]
+
+    assert coverage(only_live) == ("2026-08", "2026-09")
+    assert coverage(both)[0] == "2021-09"
+
+
+def test_coverage_orders_months_and_days_on_the_same_scale() -> None:
+    """``"202612"`` と ``"20260904"`` を素で比べると、前者が大きいことになる。"""
     files = [
-        BulkFile("equities/bars/daily/2021/09/bars_daily_20210903.csv.gz", "", 1),
-        BulkFile("equities/bars/daily/2026/03/bars_daily_20260302.csv.gz", "", 1),
+        BulkFile("x/live/f_20260904.csv.gz", "", 1),
+        BulkFile("x/historical/2026/f_202612.csv.gz", "", 1),
     ]
 
-    assert coverage(files) == ("20210903", "20260302")
+    assert coverage(files) == ("2026-09", "2026-12")
 
 
-def test_coverage_falls_back_to_the_month_in_the_path() -> None:
-    """月次のものは日を持たない。``/2024/01/`` から読む。"""
-    files = [
-        BulkFile("fins/summary/2024/01/summary.csv.gz", "", 1),
-        BulkFile("fins/summary/2025/12/summary.csv.gz", "", 1),
-    ]
+def test_coverage_ignores_a_year_that_carries_no_month() -> None:
+    """``/2021/`` のようなディレクトリを日付として数えない。"""
+    assert coverage([BulkFile("fins/summary/historical/2021/summary.csv.gz", "", 1)]) is None
 
-    assert coverage(files) == ("202401", "202512")
+
+def test_span_years_counts_months_not_just_the_year_digits() -> None:
+    """年だけ引くと、プランの境目（5 / 10 / 20年）の判定が揺れる。"""
+    from stock_ai.data.jquants_bulk import span_years
+
+    files = [BulkFile(key, "", 1) for key in _REAL_KEYS]
+
+    # 2021-09 〜 2026-09 はちょうど5年。**Light の上限である。**
+    assert span_years(files) == pytest.approx(5.0)
+    assert span_years([]) is None
 
 
 def test_coverage_returns_none_when_the_name_carries_no_date() -> None:

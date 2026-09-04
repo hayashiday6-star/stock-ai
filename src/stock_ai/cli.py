@@ -175,6 +175,7 @@ from stock_ai.data.jquants_bulk import (
 )
 from stock_ai.data.jquants_bulk import coverage as bulk_coverage
 from stock_ai.data.jquants_bulk import list_files as bulk_list_files
+from stock_ai.data.jquants_bulk import span_years as bulk_span_years
 from stock_ai.data.jquants_exit import CANCELLATION, audit
 from stock_ai.data.jquants_fundamentals import JQuantsFundamentalsProvider
 from stock_ai.data.jquants_profile import JQuantsProfileProvider
@@ -2649,17 +2650,7 @@ def _report_plan(found: dict[str, list[BulkFile]]) -> None:
     symbols is consistent with the default 0.5s - 120 a minute - sitting exactly
     on Standard's ceiling with no headroom at all.
     """
-    spans: list[float] = []
-    for files in found.values():
-        span = bulk_coverage(files)
-        if span is None:
-            continue
-        try:
-            first = int(span[0][:4])
-            last = int(span[1][:4])
-        except ValueError:
-            continue
-        spans.append(last - first)
+    spans = [years for years in map(bulk_span_years, found.values()) if years is not None]
     if not spans:
         return
 
@@ -2668,7 +2659,7 @@ def _report_plan(found: dict[str, list[BulkFile]]) -> None:
     console.print()
     if plan is None:
         console.print(
-            f"[yellow]覆っているのは約 {widest:.0f} 年ぶん。[/] "
+            f"[yellow]覆っているのは約 {widest:.1f} 年ぶん。[/] "
             "プランの区切り（Light 5年 / Standard 10年 / Premium 20年）の"
             "どれにも寄らないので、上限は決め打ちしない。"
         )
@@ -2677,7 +2668,7 @@ def _report_plan(found: dict[str, list[BulkFile]]) -> None:
     limit = PLAN_REQUESTS_PER_MINUTE[plan]
     interval = recommended_throttle(plan)
     console.print(
-        f"覆っているのは約 [bold]{widest:.0f}[/] 年ぶん。"
+        f"覆っているのは約 [bold]{widest:.1f}[/] 年ぶん。"
         f"契約はおそらく [bold]{plan}[/]（1分あたり [bold]{limit}[/] 回）。"
     )
     if interval is not None:

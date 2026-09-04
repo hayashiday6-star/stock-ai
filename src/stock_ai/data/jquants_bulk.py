@@ -134,9 +134,20 @@ def infer_plan(span_years: float) -> str | None:
 #: 403 が並ぶ。
 PRESIGNED_URL_TTL = dt.timedelta(minutes=5)
 
-#: ファイル名に埋まっている日付を読むための型。
-_DAY = re.compile(r"(\d{8})")
-_MONTH = re.compile(r"/(\d{4})/(\d{2})/")
+#: ファイル名の末尾に埋まっている年月（＋あれば日）を読む。
+#:
+#: 実物は2通りある。**片方しか見ない型を書いて、実際に取り逃した。**
+#:
+#:   fins/summary/historical/2021/fins_summary_202109.csv.gz   → 202109
+#:   fins/summary/live/fins_summary_20260904.csv.gz            → 20260904
+#:
+#: 最初の型は8桁を探す型に掛からず、``/2021/`` は年しか持たないので月を
+#: 探す型にも掛からなかった。結果、**historical の73本が黙って落ち**、
+#: 5年ぶんのはずの範囲が「2026-08〜2026-09」と出た。例外は出ない。
+#:
+#: 日付はファイル名の側だけを見る。``/2021/`` のようなディレクトリまで
+#: 拾うと、同じ日付を二重に数えることになる。
+_STAMP = re.compile(r"(\d{4})(0[1-9]|1[0-2])(\d{2})?(?!\d)")
 
 
 @dataclasses.dataclass(frozen=True)
@@ -275,20 +286,40 @@ def presigned_url(
 
 
 def coverage(files: list[BulkFile]) -> tuple[str, str] | None:
-    """ファイル名に埋まっている日付から、覆っている範囲を返す。
+    """ファイル名から、覆っている範囲を ``YYYY-MM`` で返す。
 
     **これを出さずに一括へ乗り換えない。** 一括が銘柄ごとのAPIより短い期間しか
     覆っていなければ、行数が黙って減る。例外は出ない——このプロジェクトで
     繰り返し起きているのは、その形の不具合である。
+
+    月と日が混ざるので、**そろえてから比べる。** ``"202612"`` と
+    ``"20260904"`` を文字列のまま比べると、前者のほうが大きいことになる
+    （4文字目まで同じで、次が ``1`` 対 ``0``）。粒度の粗いほうに寄せる。
+
+    Args:
+        files: 一覧で返ってきたファイル。
+
+    Returns:
+        ``("2021-09", "2026-09")`` の形。1本も日付が読めなければ ``None``。
     """
-    stamps: list[str] = []
+    months: list[str] = []
     for item in files:
-        day = _DAY.findall(item.key)
-        if day:
-            stamps.extend(day)
-            continue
-        # 日次でないものは ``.../2026/03/...`` のように月までしか持たない。
-        stamps.extend(f"{year}{month}" for year, month in _MONTH.findall(item.key))
-    if not stamps:
+        name = item.key.rsplit("/", 1)[-1]
+        months.extend(f"{year}-{month}" for year, month, _day in _STAMP.findall(name))
+    if not months:
         return None
-    return min(stamps), max(stamps)
+    return min(months), max(months)
+
+
+def span_years(files: list[BulkFile]) -> float | None:
+    """覆っている範囲を年で返す。プランを言い当てるのに使う。
+
+    月まで数える。年だけを引き算すると、2021-09〜2026-09 も 2021-01〜2026-12 も
+    同じ「5年」になり、プランの境目（5 / 10 / 20年）の判定が揺れる。
+    """
+    span = coverage(files)
+    if span is None:
+        return None
+    first, last = span
+    months = (int(last[:4]) - int(first[:4])) * 12 + (int(last[5:]) - int(first[5:]))
+    return months / 12
