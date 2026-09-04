@@ -236,3 +236,25 @@ def test_max_drawdown_is_measured_on_compounded_returns() -> None:
     assert max_drawdown([-0.5]) == pytest.approx(-0.5)
     # 上げてから半分になれば、下落は高値から測る。
     assert max_drawdown([1.0, -0.5]) == pytest.approx(-0.5)
+
+
+def test_end_excludes_months_whose_holding_period_would_run_past_it() -> None:
+    """**``end`` は「この日より後のデータを1つも使わない」という意味である。**
+
+    組み替え日だけで切ると、その月の保有期間が越えて伸びる。実際、2013-12-31
+    で切ったつもりの推定期間は、最後の1ヶ月のリターンが 2014年1月まで入って
+    いた——判定期間の最初の月である。
+    """
+    database = _database(_universe())
+    cut = _INDEX[200].date()
+
+    series = build_series(database, Period.ALL, window=60, min_symbols=10, end=cut)
+
+    assert series.months
+    # 最後の月の保有は cut より前に終わっていなければならない。組み替え日が
+    # cut の直前なら、その月は落ちる。
+    assert series.months[-1] < cut
+    # 組み替え日で切っていたら残っていたはずの月が、実際に落ちている。
+    loose = build_series(database, Period.ALL, window=60, min_symbols=10)
+    within = [month for month in loose.months if month <= cut]
+    assert len(series.months) < len(within)

@@ -274,8 +274,9 @@ def build_series(
         symbols: 対象銘柄。省略時は ``market="JP"`` の全銘柄。
         benchmark: ベンチマーク。**暦もこれに合わせる。**
         start: この日より前の組み替え日を使わない。
-        end: この日より後の組み替え日を使わない。**検出力の推定で判定期間に
-            入り込まないための止め具。**
+        end: **この日より後のデータを1つも使わない。** 組み替え日だけでなく、
+            その月の退場日まで見る。組み替え日だけで切ると保有期間が越えて伸び、
+            推定期間の最後の1ヶ月が判定期間の最初の月と重なる。
         window: ボラティリティの測定窓（営業日）。
         min_turnover: 流動性の下限（円）。
         min_symbols: 分位を作るのに必要な最低銘柄数。
@@ -298,12 +299,24 @@ def build_series(
         if len(formations) < 2:
             raise ValueError("組み替え日が2つ未満。月次リバランスを作れない。")
 
+        # **``end`` は「この日より後のデータを1つも使わない」という意味である。**
+        #
+        # 組み替え日だけで切ると、その月の保有期間が ``end`` を越えて伸びる。
+        # 実際 2013-12-31 で切ったつもりの推定期間は、最後の1ヶ月の**リターンが
+        # 2014年1月まで**入っていた——判定期間の最初の月である。1/138 の重みで
+        # しかないが、止め具が漏れていること自体が問題なので、退場日まで見る。
         usable = [
             (index, position)
             for index, position in enumerate(formations[:-1])
             if period.contains(calendar[position].date())
             and (start is None or calendar[position].date() >= start)
-            and (end is None or calendar[position].date() <= end)
+            and (
+                end is None
+                or (
+                    formations[index + 1] + 1 < len(calendar)
+                    and calendar[formations[index + 1] + 1].date() <= end
+                )
+            )
         ]
         if not usable:
             raise ValueError("指定した期間に組み替え日が1つも無い。")
