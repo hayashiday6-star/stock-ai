@@ -3099,18 +3099,20 @@ def lowvol_power(
         "選んだ理由の一つが数字で確かめられたことになる**（#6 は 2.95倍）。[/dim]"
     )
 
-    primary = needed["分位1 − ベンチ（生）"]
-    adjusted = needed["分位1 − β×ベンチ"]
+    # **主要指標は α（β引き）である。** 生の差は副次。ここを取り違えると、
+    # 下の「検出できない帯」が別の指標の帯になる。
+    primary = needed["分位1 − β×ベンチ"]
+    secondary = needed["分位1 − ベンチ（生）"]
     console.print(
         "[dim]**仮説は「リスク調整後で高い」と言っている。** 生の差は、効果と"
         "「市場への感応度が低いこと」を混ぜて測る。β を引いた行がどれだけ小さく"
         "なるかが、指標を変える価値そのものである。[/dim]"
     )
-    if adjusted < primary:
+    if primary < secondary:
         console.print(
-            f"[green]β を引くと必要な差が {primary * 100:.2f}% → "
-            f"{adjusted * 100:.2f}% に下がる[/]（年 {primary * 12 * 100:.1f}% → "
-            f"年 {adjusted * 12 * 100:.1f}%）。"
+            f"[green]β を引くと必要な差が {secondary * 100:.2f}% → "
+            f"{primary * 100:.2f}% に下がる[/]（年 {secondary * 12 * 100:.1f}% → "
+            f"年 {primary * 12 * 100:.1f}%）。"
         )
 
     console.print()
@@ -3121,7 +3123,7 @@ def lowvol_power(
     )
     if primary > COST_PER_MONTH:
         console.print(
-            f"[yellow]必要な差 {primary * 100:.2f}% が、しきい値 "
+            f"[yellow]α で必要な差 {primary * 100:.2f}% が、しきい値 "
             f"{COST_PER_MONTH * 100:.3f}% を上回る。[/]\n"
             f"  **{COST_PER_MONTH * 100:.3f}% 〜 {primary * 100:.2f}% は、儲かるが"
             "検出できない帯である。** #6 と同じ形の限界なので、読み方の表に書く。"
