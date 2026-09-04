@@ -153,3 +153,17 @@ def test_an_unreadable_refusal_returns_none_rather_than_raising() -> None:
     """文面が変わっただけで、取り直せないデータの取得を止めない。"""
     assert covered_from("429 Too Many Requests") is None
     assert covered_from("covers the following dates: nonsense ~") is None
+
+
+def test_snapshots_are_written_with_lf_endings(tmp_path) -> None:
+    """**取り直せないファイルを pre-commit フックに触らせない。**
+
+    `csv.writer` の既定は CRLF だが、`.gitattributes` は LF に正規化し、
+    `mixed-line-ending` フックも `--fix=lf` である。CRLF で書くと、コミットの
+    たびにフックが63ファイルを書き換えてコミットが失敗する（実際に起きた）。
+    """
+    path = write_snapshot(tmp_path, dt.date(2024, 1, 1), [_profile("7203"), _profile("6758")])
+    raw = path.read_bytes()
+
+    assert b"\r\n" not in raw
+    assert raw.count(b"\n") == 3  # ヘッダ + 2行

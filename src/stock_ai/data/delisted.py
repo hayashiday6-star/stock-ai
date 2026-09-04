@@ -126,8 +126,13 @@ def write_snapshot(directory: Path, on: dt.date, profiles: Iterable[SecurityProf
     directory.mkdir(parents=True, exist_ok=True)
     path = snapshot_path(directory, on)
     rows = sorted(profiles, key=lambda profile: profile.symbol)
+    # **改行は LF で書く。** `csv.writer` の既定は CRLF だが、`.gitattributes`
+    # は `*.bat` 以外を LF に正規化し、pre-commit の `mixed-line-ending` も
+    # `--fix=lf` である。CRLF で書くと、コミットのたびにフックが63ファイルを
+    # 書き換えてコミットを失敗させる（実際に起きた）。取り直せないファイルを
+    # フックに触らせない。
     with path.open("w", encoding="utf-8", newline="") as handle:
-        writer = csv.writer(handle)
+        writer = csv.writer(handle, lineterminator="\n")
         writer.writerow(COLUMNS)
         for profile in rows:
             writer.writerow(

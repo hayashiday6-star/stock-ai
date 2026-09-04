@@ -2593,6 +2593,10 @@ def jquants_inventory(
         if coverage.snapshot_first
         else "[yellow]無い[/]",
     )
+    # **名簿が壊れていないかは、この数で分かる。** ファイルが1つ欠けても、
+    # 途中で切れても、延べ銘柄数が減る。改行コードの書き換えのような
+    # 「中身は同じはず」の操作のあとに確かめる先がここになる。
+    have.add_row("　名簿に一度でも出た銘柄", f"{coverage.roster_symbols:,} 銘柄", "")
     console.print(have)
 
     risk = Table(title="解約後に作り直せないもの")
