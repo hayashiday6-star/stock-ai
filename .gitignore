@@ -36,6 +36,8 @@ tachibana/*
 us.txt
 
 # --- Data / logs / DB (runtime artifacts) ---
+# data/universe_snapshots/ と data/tachibana_snapshots/ は**追跡する**。
+# 上場していた会社の名簿で、解約後どこからも作り直せない。
 logs/*
 !logs/.gitkeep
 data/*.db

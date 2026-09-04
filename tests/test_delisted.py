@@ -12,11 +12,15 @@ import datetime as dt
 import pytest
 
 from stock_ai.data.delisted import (
+    DEFAULT_SNAPSHOT_DIR,
+    TACHIBANA_SNAPSHOT_DIR,
     all_profiles,
     covered_from,
     delistings,
     harvest_snapshots,
     membership,
+    monthly_membership,
+    monthly_snapshot,
     read_snapshot,
     snapshot_dates,
     snapshot_path,
@@ -198,3 +202,56 @@ def test_all_profiles_keeps_the_most_recent_name(tmp_path) -> None:
 
 def test_all_profiles_is_empty_without_rosters(tmp_path) -> None:
     assert all_profiles(tmp_path) == {}
+
+
+def test_a_month_is_written_once_and_only_once(tmp_path) -> None:
+    """**毎日呼んでよいこと。** 覚えておく必要のある運用は、いずれ忘れられる。"""
+    first = monthly_snapshot(tmp_path, [_profile("7203")], on=dt.date(2026, 10, 5))
+    again = monthly_snapshot(
+        tmp_path, [_profile("7203"), _profile("6758")], on=dt.date(2026, 10, 20)
+    )
+
+    assert first is not None
+    assert first.name == "2026-10.csv"
+    assert again is None  # 同じ月なので書かない
+    assert len(read_snapshot(first)) == 1  # 最初の内容のまま
+
+
+def test_force_rewrites_the_month(tmp_path) -> None:
+    monthly_snapshot(tmp_path, [_profile("7203")], on=dt.date(2026, 10, 5))
+    again = monthly_snapshot(
+        tmp_path, [_profile("7203"), _profile("6758")], on=dt.date(2026, 10, 20), force=True
+    )
+    assert again is not None
+    assert len(read_snapshot(again)) == 2
+
+
+def test_consecutive_months_differ_into_delistings(tmp_path) -> None:
+    """**立花のマスタでも、毎月残せば差分が「その月に消えた銘柄」になる。**
+
+    マスタ自体は現存銘柄しか返さないが、それは1枚だけ見た場合の話である。
+    """
+    monthly_snapshot(tmp_path, [_profile("1301"), _profile("7203")], on=dt.date(2026, 10, 1))
+    monthly_snapshot(tmp_path, [_profile("7203")], on=dt.date(2026, 11, 1))
+
+    stored = monthly_membership(tmp_path)
+
+    assert list(stored) == ["2026-10", "2026-11"]
+    assert stored["2026-10"] - stored["2026-11"] == {"1301"}
+
+
+def test_monthly_snapshots_are_kept_apart_from_the_jquants_rosters() -> None:
+    """**混ぜない。** 除外の仕方が違うので、境目をまたぐ差は嘘になる。
+
+    J-Quants は投信・指数を396件除き、立花は上場区分で絞る。同じフォルダに
+    置くと、消えてもいない銘柄が「消えた」ことになる。
+    """
+    assert TACHIBANA_SNAPSHOT_DIR != DEFAULT_SNAPSHOT_DIR
+
+
+def test_a_daily_file_is_not_read_as_a_month(tmp_path) -> None:
+    """日次の名簿が紛れ込んでも、月次の一覧には入れない。"""
+    write_snapshot(tmp_path, dt.date(2026, 10, 5), [_profile("7203")])
+    monthly_snapshot(tmp_path, [_profile("7203")], on=dt.date(2026, 10, 5))
+
+    assert list(monthly_membership(tmp_path)) == ["2026-10"]

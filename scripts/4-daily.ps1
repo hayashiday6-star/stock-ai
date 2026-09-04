@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     The daily job: refresh prices, then check the watchlist.
 
@@ -269,6 +269,17 @@ try {
     }
 
     $ok = Invoke-Step 'Daily pipeline' $arguments
+
+    # 月に1枚だけ、上場銘柄の名簿を残す。
+    #
+    # 立花のマスタは現存銘柄しか返さないが、**毎月1枚ずつ残せば差分が
+    # 「その月に消えた銘柄」になる**。J-Quants の名簿が 2026-09 で止まっても、
+    # それ以降の生存バイアスは自前で直せる。
+    #
+    # 毎日呼んでよい。ファイル名が月なので、その月の分があれば書かない。
+    # **「毎月やる」と覚えておく必要のある運用は、いずれ忘れられる。**
+    Invoke-Step '月次の銘柄名簿' @('universe-snapshot') | Out-Null
+
     if ($ok) { Write-Ok 'Finished.' } else { Write-Err 'Finished with errors.' }
 }
 finally {
