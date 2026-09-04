@@ -40,10 +40,17 @@ import time
 from typing import Any
 
 from stock_ai.data.tachibana import (
+    DEFAULT_HISTORY_FILE,
+    DEFAULT_PRIVATE_KEY,
+    DEFAULT_PUBLIC_KEY,
+    DEFAULT_SESSION_FILE,
+    LEGACY_PATHS,
+    TACHIBANA_DIR,
     Session,
     base_url,
     decrypt_url,
     default_version,
+    resolve_path,
     version_warning,
 )
 
@@ -151,6 +158,19 @@ def keygen(private_path: pathlib.Path, public_path: pathlib.Path, bits: int = 20
 
     if private_path.exists():
         sys.exit(f"{private_path} は既にあります。上書きしないので、消すか別名を指定してください。")
+
+    # **整理のせいで鍵を作り直させない。** 置き場所を変えたあと、旧い場所にある
+    # 鍵を見落として新しく作ると、立花に登録済みの公開鍵と合わなくなり、登録から
+    # やり直しになる。存在チェックは新旧の両方を見る。
+    legacy = LEGACY_PATHS.get(private_path)
+    if legacy is not None and legacy.exists():
+        sys.exit(
+            f"{legacy} に秘密鍵があります。**作り直さないでください。**\n"
+            f"  作り直すと立花に登録済みの公開鍵と合わなくなり、登録し直しになります。\n"
+            f"  `checks/立花のファイルを整理.bat` で {private_path} へ移してください。"
+        )
+
+    private_path.parent.mkdir(parents=True, exist_ok=True)
 
     key = rsa.generate_private_key(public_exponent=65537, key_size=bits)
     private_path.write_bytes(
@@ -634,8 +654,8 @@ def main() -> int:
     sub = parser.add_subparsers(dest="command", required=True)
 
     gen = sub.add_parser("keygen", help="RSA鍵ペアを作り、登録用の公開鍵をファイルに書く")
-    gen.add_argument("--private", type=pathlib.Path, default=pathlib.Path("tachibana_private.pem"))
-    gen.add_argument("--public", type=pathlib.Path, default=pathlib.Path("tachibana_public.txt"))
+    gen.add_argument("--private", type=pathlib.Path, default=DEFAULT_PRIVATE_KEY)
+    gen.add_argument("--public", type=pathlib.Path, default=DEFAULT_PUBLIC_KEY)
     gen.add_argument(
         "--bits",
         type=int,
@@ -645,11 +665,11 @@ def main() -> int:
     )
 
     fmt = sub.add_parser("keyfmt", help="既存の秘密鍵から、登録用の公開鍵をあらゆる形式で書き直す")
-    fmt.add_argument("--private", type=pathlib.Path, default=pathlib.Path("tachibana_private.pem"))
-    fmt.add_argument("--public", type=pathlib.Path, default=pathlib.Path("tachibana_public.txt"))
+    fmt.add_argument("--private", type=pathlib.Path, default=DEFAULT_PRIVATE_KEY)
+    fmt.add_argument("--public", type=pathlib.Path, default=DEFAULT_PUBLIC_KEY)
 
     run = sub.add_parser("probe", help="ログイン〜株価履歴1銘柄までを実際に通す")
-    run.add_argument("--private", type=pathlib.Path, default=pathlib.Path("tachibana_private.pem"))
+    run.add_argument("--private", type=pathlib.Path, default=DEFAULT_PRIVATE_KEY)
     run.add_argument("--symbol", default="6501", help="試す銘柄コード（既定: 6501 日立）")
     run.add_argument(
         "--base",
@@ -667,11 +687,11 @@ def main() -> int:
         help="検証環境 (demo-kabuka) を使う。利用時間帯が決まっている点に注意",
     )
     run.add_argument("--get", action="store_true", help="POST ではなく GET で送る")
-    run.add_argument("--out", type=pathlib.Path, default=pathlib.Path("tachibana_history.json"))
+    run.add_argument("--out", type=pathlib.Path, default=DEFAULT_HISTORY_FILE)
     run.add_argument(
         "--session",
         type=pathlib.Path,
-        default=pathlib.Path("tachibana_session.json"),
+        default=DEFAULT_SESSION_FILE,
         help="当日の仮想ＵＲＬと p_no の保存先。復号済みＵＲＬが入るので資格情報扱い",
     )
     run.add_argument(
@@ -681,7 +701,7 @@ def main() -> int:
     rate = sub.add_parser(
         "throughput", help="数銘柄を実測し、全銘柄を回したときの時間と転送量に外挿する"
     )
-    rate.add_argument("--private", type=pathlib.Path, default=pathlib.Path("tachibana_private.pem"))
+    rate.add_argument("--private", type=pathlib.Path, default=DEFAULT_PRIVATE_KEY)
     rate.add_argument(
         "--symbols",
         default="6501,7203,6758,4847,1306",
@@ -703,21 +723,19 @@ def main() -> int:
     rate.add_argument("--version", default=os.environ.get("TACHIBANA_API_VERSION") or "")
     rate.add_argument("--demo", action="store_true")
     rate.add_argument("--get", action="store_true", help="POST ではなく GET で送る")
-    rate.add_argument(
-        "--session", type=pathlib.Path, default=pathlib.Path("tachibana_session.json")
-    )
+    rate.add_argument("--session", type=pathlib.Path, default=DEFAULT_SESSION_FILE)
     rate.add_argument("--fresh", action="store_true")
 
     mst = sub.add_parser(
         "master", help="銘柄マスタと銘柄市場マスタを取り、件数と分布を報告する（v4r10）"
     )
-    mst.add_argument("--private", type=pathlib.Path, default=pathlib.Path("tachibana_private.pem"))
+    mst.add_argument("--private", type=pathlib.Path, default=DEFAULT_PRIVATE_KEY)
     mst.add_argument("--base", default=os.environ.get("TACHIBANA_BASE_URL") or "")
     mst.add_argument("--version", default=os.environ.get("TACHIBANA_API_VERSION") or "")
     mst.add_argument("--demo", action="store_true")
     mst.add_argument("--get", action="store_true", help="POST ではなく GET で送る")
-    mst.add_argument("--out", type=pathlib.Path, default=pathlib.Path("tachibana_master.json"))
-    mst.add_argument("--session", type=pathlib.Path, default=pathlib.Path("tachibana_session.json"))
+    mst.add_argument("--out", type=pathlib.Path, default=TACHIBANA_DIR / "master.json")
+    mst.add_argument("--session", type=pathlib.Path, default=DEFAULT_SESSION_FILE)
     mst.add_argument("--fresh", action="store_true")
 
     args = parser.parse_args()
@@ -725,6 +743,7 @@ def main() -> int:
         keygen(args.private, args.public, args.bits)
         return 0
     if args.command == "keyfmt":
+        args.private = resolve_path(args.private)
         if not args.private.exists():
             sys.exit(f"秘密鍵が見つかりません: {args.private}\n先に `keygen` を実行してください。")
         write_public_formats(args.private, args.public)
@@ -738,6 +757,14 @@ def main() -> int:
             "環境変数 TACHIBANA_AUTH_ID が空です。\n"
             "利用設定画面で生成した認証IDを .env に書くか、実行前に設定してください。"
         )
+    # 読みに行くものは、旧い置き場所にしか無ければそちらを使う。移す前でも
+    # 動くようにしておかないと、整理そのものが作業を止める。
+    args.private = resolve_path(args.private)
+    if getattr(args, "session", None) is not None:
+        args.session = resolve_path(args.session)
+    if getattr(args, "out", None) is not None:
+        args.out.parent.mkdir(parents=True, exist_ok=True)
+
     version = args.version or default_version()
     base = args.base or base_url(version, demo=args.demo)
     warning = version_warning(version)

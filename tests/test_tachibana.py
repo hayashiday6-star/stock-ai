@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import logging
+import pathlib
 
 import pandas as pd
 import pytest
@@ -17,12 +19,19 @@ from pydantic import SecretStr
 from stock_ai.core.exceptions import DataError, NoDataError
 from stock_ai.data.schema import ADJ_CLOSE, CLOSE, OHLCV_COLUMNS, OPEN, VOLUME
 from stock_ai.data.tachibana import (
+    DEFAULT_HISTORY_FILE,
+    DEFAULT_PRIVATE_KEY,
+    DEFAULT_PUBLIC_KEY,
+    DEFAULT_SESSION_FILE,
+    LEGACY_PATHS,
+    TACHIBANA_DIR,
     Session,
     TachibanaClient,
     TachibanaPriceProvider,
     base_url,
     default_version,
     normalize_history,
+    resolve_path,
     version_warning,
 )
 
@@ -510,3 +519,65 @@ def test_the_batch_size_stays_under_the_portable_limit() -> None:
 
     assert list(chunked([], columns)) == []
     assert [len(b) for b in chunked([{"n": 1}], columns)] == [1]
+
+
+def test_the_new_location_is_used_when_it_exists(tmp_path, monkeypatch) -> None:
+    """整理後は新しい場所を読む。"""
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "tachibana").mkdir()
+    (tmp_path / "tachibana" / "private.pem").write_text("new", encoding="utf-8")
+    (tmp_path / "tachibana_private.pem").write_text("old", encoding="utf-8")
+
+    assert resolve_path(DEFAULT_PRIVATE_KEY).read_text(encoding="utf-8") == "new"
+
+
+def test_the_old_location_still_works_and_says_so(tmp_path, monkeypatch, caplog) -> None:
+    """**整理が作業を止めないこと。**
+
+    秘密鍵が見つからないと、次にやることは鍵の作り直しになる。作り直すと
+    立花に登録済みの公開鍵と合わなくなり、登録からやり直しになる。整理の
+    せいでそれが起きてはいけない。
+    """
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "tachibana_private.pem").write_text("old", encoding="utf-8")
+
+    with caplog.at_level(logging.WARNING):
+        found = resolve_path(DEFAULT_PRIVATE_KEY)
+
+    assert found.read_text(encoding="utf-8") == "old"
+    assert "立花のファイルを整理" in caplog.text  # どう直すかまで言う
+
+
+def test_a_missing_file_resolves_to_the_new_location(tmp_path, monkeypatch) -> None:
+    """どちらにも無ければ新しい方。作るならそこになる。"""
+    monkeypatch.chdir(tmp_path)
+    assert resolve_path(DEFAULT_PRIVATE_KEY) == DEFAULT_PRIVATE_KEY
+
+
+def test_an_unknown_path_is_returned_unchanged(tmp_path, monkeypatch) -> None:
+    """対応表に無いパスを勝手に読み替えない。"""
+    monkeypatch.chdir(tmp_path)
+    assert resolve_path("どこか/別の.pem") == pathlib.Path("どこか/別の.pem")
+
+
+def test_every_default_sits_under_the_folder() -> None:
+    """既定が1つでも直下に残ると、そこだけ散らかったままになる。"""
+    for path in (
+        DEFAULT_PRIVATE_KEY,
+        DEFAULT_SESSION_FILE,
+        DEFAULT_PUBLIC_KEY,
+        DEFAULT_HISTORY_FILE,
+    ):
+        assert path.parent == TACHIBANA_DIR
+
+
+def test_the_legacy_map_covers_every_default() -> None:
+    """新しい既定に対応する旧い名前が抜けると、そのファイルだけ見失う。"""
+    for path in (
+        DEFAULT_PRIVATE_KEY,
+        DEFAULT_SESSION_FILE,
+        DEFAULT_PUBLIC_KEY,
+        DEFAULT_HISTORY_FILE,
+    ):
+        assert path in LEGACY_PATHS
+        assert LEGACY_PATHS[path].parent == pathlib.Path(".")

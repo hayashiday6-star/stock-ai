@@ -25,7 +25,7 @@
     試す銘柄コード。既定は 6501（日立製作所）。
 
 .PARAMETER PrivateKey
-    秘密鍵のパス。既定は tachibana_private.pem（.gitignore 済み）。
+    秘密鍵のパス。既定は tachibana\private.pem（.gitignore 済み）。
 
 .PARAMETER Demo
     本番ではなく検証環境（demo-kabuka）へ接続する。デモ用の口座と認証IDが要る。
@@ -55,7 +55,7 @@ param(
     [switch]$Keygen,
     [ValidatePattern('^\d{4}$')]
     [string]$Symbol = '6501',
-    [string]$PrivateKey = 'tachibana_private.pem',
+    [string]$PrivateKey = 'tachibana\private.pem',
     [switch]$Demo,
     [switch]$UseGet,
     [switch]$Fresh,
@@ -72,7 +72,7 @@ Show-Version
 if (-not (Test-UvInstalled)) { Exit-WithPause 1 }
 
 $hasKey = Test-Path $PrivateKey
-$PublicKey = 'tachibana_public.txt'
+$PublicKey = 'tachibana\public.txt'
 
 function Show-RegistrationSteps {
     <#
@@ -91,7 +91,7 @@ function Show-RegistrationSteps {
     Write-Host '  3. このファイルをもう一度ダブルクリックする'
     Write-Host ''
     Write-Host "秘密鍵 $PrivateKey は .env と同じ扱いです。人に渡さないでください。" -ForegroundColor Yellow
-    Write-Host '同じ扱いのファイルがもう1つ、実行後に tachibana_session.json として' -ForegroundColor Yellow
+    Write-Host '同じ扱いのファイルがもう1つ、実行後に tachibana\session.json として' -ForegroundColor Yellow
     Write-Host 'できます。その日の仮想URLが復号済みで入っています。' -ForegroundColor Yellow
     Write-Host ''
     Write-Host "（公開鍵だけ出し直したいときは -KeyFmt を付けて実行してください）" -ForegroundColor DarkGray
@@ -151,7 +151,7 @@ if ($code -ne 0) {
 }
 else {
     Write-Host ''
-    Write-Ok '疎通しました。tachibana_history.json も貼ってください。'
+    Write-Ok '疎通しました。tachibana\history.json も貼ってください。'
 }
 
 Exit-WithPause $code

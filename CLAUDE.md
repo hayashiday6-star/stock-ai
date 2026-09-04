@@ -38,7 +38,12 @@ uv run ruff format --check .
 - `.env` は git-ignore 済み。API キー・トークンは `APIキー設定.bat`（`scripts/set-key.ps1`）経由で設定する。このスクリプトは入力を隠し、`ValidateSet` に載っているキー（`EDINET_API_KEY` / `JQUANTS_API_KEY` / `ANTHROPIC_API_KEY` など）専用。
 - **`JP_PRICE_SOURCE` や `JP_STATEMENT_SOURCE` のような設定値（秘密ではない）はこのツールでは扱えない。** `.env` を直接 `notepad .env` などで編集する。過去に両者を混同して、設定値を書くつもりが `EDINET_API_KEY` を上書きしてしまったことがある。
 - ログや例外メッセージに秘密情報の生値を出さない。長さとSHA-256指紋（先頭のみ）で「値が変わったか」を確認できるようにする（`uv run stock-ai info` の表示方式）。
-- `tachibana_private.pem` / `tachibana_session.json` は資格情報扱い。gitignore済み、POSIXでは0600、例外メッセージに内容を含めない。
+- **立花関係のファイルは `tachibana/` にまとめる**（`private.pem` / `public.txt` /
+  `session.json` / `history.json` / `master.json`）。README 以外は gitignore 済み、
+  秘密鍵はPOSIXで0600、例外メッセージに内容を含めない。
+- **秘密鍵を作り直させない。** 作り直すと立花に登録済みの公開鍵と合わなくなり、
+  登録からやり直しになる。`resolve_path` が旧い置き場所（直下の
+  `tachibana_private.pem`）も読み、鍵の作成コマンドは旧い場所に鍵があれば拒否する。
 
 ## 日本株データソース
 

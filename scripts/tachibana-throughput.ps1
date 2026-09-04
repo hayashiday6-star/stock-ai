@@ -36,7 +36,7 @@ param(
     [double]$Pause = 0,
     [switch]$Demo,
     [switch]$Fresh,
-    [string]$PrivateKey = 'tachibana_private.pem'
+    [string]$PrivateKey = 'tachibana\private.pem'
 )
 
 $ErrorActionPreference = 'Continue'
