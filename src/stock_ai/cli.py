@@ -10,6 +10,7 @@ import contextlib
 import datetime as dt
 import hashlib
 import sys
+import time
 from collections import Counter
 from collections.abc import Callable
 from pathlib import Path
@@ -141,6 +142,7 @@ from stock_ai.core.exceptions import (
     DataError,
     NotificationError,
     OpsError,
+    RateLimitError,
 )
 from stock_ai.core.logging import configure_logging
 from stock_ai.core.scheduler import DailyScheduler, JobResult
@@ -163,8 +165,23 @@ from stock_ai.data.delisted import (
     snapshot_dates,
 )
 from stock_ai.data.fx import FxConverter
+from stock_ai.data.jquants_bulk import (
+    BULK_ENDPOINTS,
+    DEADLINE_ENDPOINTS,
+    PLAN_REQUESTS_PER_MINUTE,
+    PRESIGNED_URL_TTL,
+    BulkFile,
+    infer_plan,
+    recommended_throttle,
+)
+from stock_ai.data.jquants_bulk import coverage as bulk_coverage
+from stock_ai.data.jquants_bulk import download as bulk_download
+from stock_ai.data.jquants_bulk import group_by_symbol as bulk_group_by_symbol
+from stock_ai.data.jquants_bulk import list_files as bulk_list_files
+from stock_ai.data.jquants_bulk import records_from_csv as bulk_records_from_csv
+from stock_ai.data.jquants_bulk import span_years as bulk_span_years
 from stock_ai.data.jquants_exit import CANCELLATION, audit
-from stock_ai.data.jquants_fundamentals import JQuantsFundamentalsProvider
+from stock_ai.data.jquants_fundamentals import JQuantsFundamentalsProvider, normalize_statements
 from stock_ai.data.jquants_profile import JQuantsProfileProvider
 from stock_ai.data.jquants_provider import JQuantsPriceProvider
 from stock_ai.data.markets import split_by_market, to_yahoo_symbol
@@ -2626,6 +2643,344 @@ def universe_snapshot(
             f"{len(added):,}",
         )
     console.print(table)
+
+
+def _report_plan(found: dict[str, list[BulkFile]]) -> None:
+    """Name the plan from how far back the files go, and the pace it allows.
+
+    Counting the files that came back beats asking anyone to recall which plan
+    they are on. The plan fixes the per-minute ceiling, and the ceiling fixes
+    the interval a per-symbol loop may use. The delisted harvest stopping at 84
+    symbols is consistent with the default 0.5s - 120 a minute - sitting exactly
+    on Standard's ceiling with no headroom at all.
+    """
+    spans = [years for years in map(bulk_span_years, found.values()) if years is not None]
+    if not spans:
+        return
+
+    widest = max(spans)
+    plan = infer_plan(widest)
+    console.print()
+    if plan is None:
+        console.print(
+            f"[yellow]覆っているのは約 {widest:.1f} 年ぶん。[/] "
+            "プランの区切り（Light 5年 / Standard 10年 / Premium 20年）の"
+            "どれにも寄らないので、上限は決め打ちしない。"
+        )
+        return
+
+    limit = PLAN_REQUESTS_PER_MINUTE[plan]
+    interval = recommended_throttle(plan)
+    console.print(
+        f"覆っているのは約 [bold]{widest:.1f}[/] 年ぶん。"
+        f"契約はおそらく [bold]{plan}[/]（1分あたり [bold]{limit}[/] 回）。"
+    )
+    if interval is not None:
+        console.print(
+            f"[dim]銘柄ごとに叩くなら1件 [bold]{interval:.1f}[/] 秒あける。"
+            f"いまの既定は 0.5 秒＝120回／分で、"
+            + (
+                "上限ちょうどで余裕が無い。"
+                if limit == 120
+                else f"{plan} の上限の {120 / limit:.1f} 倍にあたる。"
+                if limit < 120
+                else "余裕がある。"
+            )
+            + "大幅超過が続くと約5分あいだ完全に遮断される。[/dim]"
+        )
+
+
+@app.command(name="jquants-bulk-list")
+def jquants_bulk_list(
+    endpoint: str | None = typer.Option(
+        None, "--endpoint", help="e.g. /fins/summary. Omit to survey the deadline set."
+    ),
+    every: bool = typer.Option(False, "--all", help="Survey every bulk endpoint, not just two."),
+    show: int = typer.Option(5, "--show", help="How many file names to print per endpoint."),
+) -> None:
+    """Survey what the bulk download offers, without fetching a single byte.
+
+    The statements path spends one request per symbol and stopped on 429 at
+    3,700 of them. ``/fins/summary`` and ``/equities/bars/daily`` are both bulk
+    endpoints, where one gzipped CSV a month carries every symbol. With the
+    cancellation close, whether to move is worth measuring first.
+
+    Three numbers decide it.
+
+    1. **How many files.** That is what says monthly or daily.
+    2. **What range they cover.** If bulk covers less than the per-symbol API,
+       moving loses rows - and loses them *silently*, which is why this is
+       measured before anything is written.
+    3. **Total size.** Whether it can be pulled at all before the deadline.
+
+    Presigned URLs live five minutes, so the ingest has to fetch one URL and
+    use it immediately. Collecting them all first would let the later ones die.
+    """
+    settings = get_settings()
+    configure_logging(settings.log_level)
+
+    api_key = settings.jquants_api_key
+    if api_key is None:
+        console.print("[red].env に JQUANTS_API_KEY がない。[/] APIキー設定.bat で設定する。")
+        raise typer.Exit(code=1)
+
+    left = (CANCELLATION - dt.date.today()).days
+    console.print(
+        f"解約日 [bold]{CANCELLATION}[/] まで "
+        + (f"[bold]{left}[/] 日。" if left >= 0 else "[red]過ぎている。[/]")
+    )
+    console.print(
+        "[dim]ここでは1バイトも落とさない。一覧を見るだけである。[/dim]",
+    )
+    console.print()
+
+    if endpoint:
+        targets: tuple[str, ...] = (endpoint,)
+    elif every:
+        targets = BULK_ENDPOINTS
+    else:
+        targets = DEADLINE_ENDPOINTS
+
+    table = Table(title="一括ダウンロードで取れるもの")
+    for column, justify in (
+        ("エンドポイント", "left"),
+        ("本数", "right"),
+        ("覆っている範囲", "left"),
+        ("合計", "right"),
+    ):
+        table.add_column(column, justify=justify)
+
+    found: dict[str, list[BulkFile]] = {}
+    for target in targets:
+        try:
+            files = bulk_list_files(api_key, endpoint=target)
+        except RateLimitError:
+            # **レート制限はここで飲まない。** ``RateLimitError`` は
+            # ``DataError`` の一種なので、下の except より先に置く。飲むと
+            # 「このエンドポイントは取れない」に化けて、残りを閉じた扉に
+            # 叩きつけたうえで、表には嘘の理由が並ぶ。
+            raise
+        except DataError as exc:
+            # プランで開いていないエンドポイントは断られる。それは答えであって、
+            # ほかのエンドポイントを見に行けなくなる理由ではない。
+            table.add_row(target, "[yellow]—[/]", f"[yellow]{exc}[/]", "")
+            continue
+        found[target] = files
+        if not files:
+            table.add_row(target, "0", "[yellow]1本も無い[/]", "")
+            continue
+        span = bulk_coverage(files)
+        total = sum(item.size for item in files)
+        table.add_row(
+            target,
+            f"{len(files):,}",
+            f"{span[0]} 〜 {span[1]}" if span else "[dim]ファイル名から読めない[/dim]",
+            f"{total / 1_000_000_000:.2f} GB"
+            if total >= 1_000_000_000
+            else f"{total / 1_000_000:.0f} MB",
+        )
+    console.print(table)
+
+    for target, files in found.items():
+        if not files:
+            continue
+        console.print()
+        console.print(f"[bold]{target}[/] の最初と最後:")
+        for item in files[:show]:
+            console.print(f"  [dim]{item.megabytes:8.1f} MB[/dim]  {item.key}")
+        if len(files) > show * 2:
+            console.print(f"  [dim]… 途中 {len(files) - show * 2:,} 本 …[/dim]")
+        for item in files[-show:] if len(files) > show else []:
+            console.print(f"  [dim]{item.megabytes:8.1f} MB[/dim]  {item.key}")
+
+    _report_plan(found)
+
+    console.print()
+    console.print(
+        "[bold]この出力をそのまま貼ってほしい。[/] "
+        "本数と範囲を見てから取り込みを作る。"
+        "[dim]粒度を推測して作ると、行が少ないまま黙って入る。[/dim]"
+    )
+    console.print(
+        f"[dim]署名付きURLの寿命は {int(PRESIGNED_URL_TTL.total_seconds() // 60)} 分。"
+        "取り込みは1本ずつ「取ってすぐ落とす」形にする。[/dim]"
+    )
+
+
+@app.command(name="jquants-bulk-fetch")
+def jquants_bulk_fetch(
+    endpoint: str = typer.Option("/fins/summary", "--endpoint", help="Which bulk set to ingest."),
+    since: str | None = typer.Option(None, "--since", help="Skip files older than YYYY-MM."),
+    limit: int = typer.Option(0, "--limit", help="Stop after N files. 0 means all of them."),
+    throttle: float = typer.Option(
+        0.0, "--throttle", help="Seconds between files. 0 derives it from the plan."
+    ),
+) -> None:
+    """Ingest the statement history from the bulk files instead of per symbol.
+
+    The per-symbol path spends one request per code and stopped on 429 after 84
+    of 3,700. This spends two per *file* - one for the presigned URL, one for
+    the download - and the whole five-year history of every symbol is 83 files.
+
+    Rows land through the same normalizer the JSON path uses, because the CSV
+    column names are the API's own field names. Keeping one mapping means a
+    correction cannot be applied to one path and forgotten on the other.
+
+    Reruns are safe. ``upsert_reports`` is keyed by fiscal period and never
+    replaces a stored value with a blank, so re-ingesting a month rewrites what
+    changed and leaves the rest alone.
+    """
+    settings = get_settings()
+    configure_logging(settings.log_level)
+
+    api_key = settings.jquants_api_key
+    if api_key is None:
+        console.print("[red].env に JQUANTS_API_KEY がない。[/] APIキー設定.bat で設定する。")
+        raise typer.Exit(code=1)
+
+    database = Database()
+    database.create_all()
+
+    try:
+        files = bulk_list_files(api_key, endpoint=endpoint)
+    except DataError as exc:
+        console.print(f"[red]{exc}[/]")
+        raise typer.Exit(code=1) from exc
+
+    if not files:
+        console.print(f"[yellow]{endpoint} に落とせるファイルが1本も無い。[/]")
+        raise typer.Exit(code=1)
+
+    span = bulk_coverage(files)
+    years = bulk_span_years(files)
+    plan = infer_plan(years) if years is not None else None
+    if throttle <= 0:
+        # **プランから引く。** 既定の 0.5 秒は 120回／分で、Light の上限の
+        # 2倍にあたる。ここを速いままにすると、一括にしても遮断される。
+        throttle = recommended_throttle(plan or "") or 1.2
+
+    if since:
+        kept = [item for item in files if _file_month(item.key) >= since]
+        console.print(f"[dim]{since} 以降に絞って {len(kept)}/{len(files)} 本。[/dim]")
+        files = kept
+    if limit > 0:
+        files = files[:limit]
+
+    console.print(
+        f"[bold]{endpoint}[/] を {len(files):,} 本。"
+        + (f"覆っている範囲 {span[0]} 〜 {span[1]}。" if span else "")
+        + (f"契約はおそらく {plan}。" if plan else "")
+    )
+    console.print(
+        f"[dim]1本あたり {throttle:.1f} 秒あける。署名付きURLの寿命は "
+        f"{int(PRESIGNED_URL_TTL.total_seconds() // 60)} 分なので、"
+        "1本ずつ取ってすぐ落とす。[/dim]"
+    )
+
+    rows_read = 0
+    rows_without_code = 0
+    disclosures = 0
+    statements = 0
+    symbols: set[str] = set()
+    failed: list[tuple[str, str]] = []
+
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        BarColumn(),
+        TaskProgressColumn(),
+        TimeRemainingColumn(),
+        console=console,
+    ) as progress:
+        task = progress.add_task("一括ファイル", total=len(files))
+        for index, item in enumerate(files):
+            progress.update(task, description=item.key.rsplit("/", 1)[-1])
+            try:
+                payload = bulk_download(api_key, item.key)
+            except RateLimitError:
+                # 一括でも上限は上限である。**残りを閉じた扉に叩きつけない。**
+                console.print(
+                    f"\n[yellow]レート制限に当たった（{index} 本目まで完了）。[/] "
+                    "時間を置いて同じコマンドを再実行すれば、続きから入る。"
+                )
+                break
+            except (DataError, OSError) as exc:
+                failed.append((item.key, str(exc)))
+                progress.advance(task)
+                continue
+
+            records = bulk_records_from_csv(payload)
+            rows_read += len(records)
+            grouped = bulk_group_by_symbol(records)
+            rows_without_code += len(records) - sum(len(v) for v in grouped.values())
+
+            with database.session() as session:
+                repository = FinancialStatementRepository(session)
+                for symbol, rows in grouped.items():
+                    reports = normalize_statements(symbol, rows)
+                    if not reports:
+                        continue
+                    disclosures += len(reports)
+                    statements += repository.upsert_reports(symbol, reports, market="JP")
+                    symbols.add(symbol)
+
+            progress.advance(task)
+            if throttle and index + 1 < len(files):
+                time.sleep(throttle)
+
+    # **減る所を全部見せる。** 「読んだ行」と「書いた行」だけ出すと、差が
+    # 出たときに人が理由を考えることになる。考えて当たることもあるが、
+    # 当たったかどうかは分からない。段ごとに数える。
+    table = Table(title="一括で入れたもの")
+    table.add_column("段", justify="left")
+    table.add_column("数", justify="right")
+    table.add_column("前の段から", justify="right")
+    kept = rows_read - rows_without_code
+    table.add_row("読んだ行", f"{rows_read:,}", "")
+    table.add_row(
+        "銘柄コードが読めた行",
+        f"{kept:,}",
+        f"[yellow]−{rows_without_code:,}[/]" if rows_without_code else "0",
+    )
+    table.add_row(
+        "会計期にまとめた後",
+        f"{disclosures:,}",
+        f"−{kept - disclosures:,}" if kept >= disclosures else f"+{disclosures - kept:,}",
+    )
+    table.add_row(
+        "書いた財務諸表",
+        f"{statements:,}",
+        f"−{disclosures - statements:,}" if disclosures >= statements else "",
+    )
+    table.add_row("触れた銘柄", f"{len(symbols):,}", "")
+    console.print(table)
+    console.print(
+        "[dim]同じ銘柄が同じ会計期を2回開示していれば（訂正など）、"
+        "そこで1本にまとまる。**段の差はそれで説明が付く。**[/dim]"
+    )
+
+    if rows_without_code:
+        # **黙って捨てない。** 銘柄コードの無い行があるなら、列名か区切りの
+        # 読み違いを疑う。取り込み済みのつもりで足りていない、が最悪である。
+        console.print(
+            f"[yellow]銘柄コードの無い行が {rows_without_code:,} 行あった。[/] "
+            "列名の読み違いを疑う。"
+        )
+    if failed:
+        console.print(f"[yellow]{len(failed)} 本は落とせなかった。[/]")
+        for key, reason in failed[:5]:
+            console.print(f"  [dim]{key}: {reason}[/dim]")
+
+    console.print(
+        "[bold]同じコマンドを再実行して安全である。[/] "
+        "会計期をキーに上書きし、既にある値を空で潰さない。"
+    )
+
+
+def _file_month(key: str) -> str:
+    """Return the file's ``YYYY-MM``, or an empty string when unreadable."""
+    span = bulk_coverage([BulkFile(key, "", 0)])
+    return span[0] if span else ""
 
 
 @app.command(name="jquants-inventory")

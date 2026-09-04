@@ -118,19 +118,31 @@ def _matches_segment(record: dict[str, Any], segment: Segment) -> bool:
     return False
 
 
-def _code_of(record: dict[str, Any]) -> str | None:
-    """Return the four-digit securities code for a listing.
+def four_digit_code(raw: str | None) -> str | None:
+    """Return the four-digit securities code for a J-Quants code.
 
     J-Quants writes codes as five digits with a share-class suffix; the rest of
     this project keys on four, so the extra digit is dropped here rather than
     leaking a second symbol format into the database.
+
+    **A five-digit code that does not end in ``0`` is not an ordinary share**
+    (preferred and class shares get those), and it is rejected rather than
+    truncated onto the ordinary share's symbol.
+
+    Public because the bulk CSV path needs the same conversion. Two copies of
+    a symbol rule is one copy too many: the ingest that used its own would put
+    a second symbol format in the database and nothing would raise.
     """
-    raw = _text(record, "Code", "LocalCode", "SecCode")
     if raw is None:
         return None
     if len(raw) == 5 and raw.isdigit() and raw.endswith("0"):
         raw = raw[:4]
     return raw if len(raw) == 4 and raw.isdigit() else None
+
+
+def _code_of(record: dict[str, Any]) -> str | None:
+    """Return the four-digit securities code for a listing record."""
+    return four_digit_code(_text(record, "Code", "LocalCode", "SecCode"))
 
 
 def _is_operating_company(record: dict[str, Any]) -> bool:
