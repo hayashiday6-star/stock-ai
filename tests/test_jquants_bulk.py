@@ -278,3 +278,76 @@ def test_the_default_throttle_is_too_fast_for_light() -> None:
 
     assert default_per_minute > PLAN_REQUESTS_PER_MINUTE["Light"]
     assert default_per_minute >= PLAN_REQUESTS_PER_MINUTE["Standard"]
+
+
+# --- CSV から取り込む ---------------------------------------------------------
+
+
+def test_records_from_csv_keeps_the_api_field_names() -> None:
+    """列名は JSON API と同じ。取り込み側に別の対応表を作らない。"""
+    from stock_ai.data.jquants_bulk import records_from_csv
+
+    payload = b"DiscDate,DiscTime,Code,CurPerType,FSales,FNP\n2024-05-10,15:30:00,86970,FY,100,20\n"
+
+    records = records_from_csv(payload)
+
+    assert records == [
+        {
+            "DiscDate": "2024-05-10",
+            "DiscTime": "15:30:00",
+            "Code": "86970",
+            "CurPerType": "FY",
+            "FSales": "100",
+            "FNP": "20",
+        }
+    ]
+
+
+def test_records_from_csv_strips_a_utf8_bom() -> None:
+    """BOM が残ると、最初の列名が ``\\ufeffDiscDate`` になって誰も見つけられない。"""
+    from stock_ai.data.jquants_bulk import records_from_csv
+
+    records = records_from_csv("﻿Code,FSales\n86970,100\n".encode())
+
+    assert records[0]["Code"] == "86970"
+
+
+def test_group_by_symbol_uses_the_projects_four_digit_code() -> None:
+    """**5桁のまま入れない。** データベースに2種類のコードが混ざる。"""
+    from stock_ai.data.jquants_bulk import group_by_symbol
+
+    grouped = group_by_symbol([{"Code": "86970"}, {"Code": "72030"}, {"Code": "86970"}])
+
+    assert sorted(grouped) == ["7203", "8697"]
+    assert len(grouped["8697"]) == 2
+
+
+def test_group_by_symbol_drops_class_shares_rather_than_folding_them_in() -> None:
+    """末尾が ``0`` でない5桁は優先株・種類株。**普通株に混ぜない。**"""
+    from stock_ai.data.jquants_bulk import group_by_symbol
+
+    grouped = group_by_symbol([{"Code": "86970"}, {"Code": "86975"}, {"Code": ""}, {}])
+
+    assert sorted(grouped) == ["8697"]
+    assert len(grouped["8697"]) == 1
+
+
+def test_group_by_symbol_totals_reveal_the_dropped_rows() -> None:
+    """呼ぶ側が突き合わせられること。黙って減るのがいちばん高く付く。"""
+    from stock_ai.data.jquants_bulk import group_by_symbol
+
+    records = [{"Code": "86970"}, {"Code": "86975"}, {"Code": ""}]
+    grouped = group_by_symbol(records)
+
+    assert len(records) - sum(len(rows) for rows in grouped.values()) == 2
+
+
+def test_the_bulk_and_the_json_path_share_one_symbol_rule() -> None:
+    """取り込みが自前の変換を持つと、片方だけ直したときに気付けない。"""
+    from stock_ai.data.jquants_bulk import group_by_symbol
+    from stock_ai.data.universe import four_digit_code
+
+    for code in ("86970", "86975", "8697", "130A0", ""):
+        expected = four_digit_code(code or None)
+        grouped = group_by_symbol([{"Code": code}])
+        assert list(grouped) == ([expected] if expected else [])

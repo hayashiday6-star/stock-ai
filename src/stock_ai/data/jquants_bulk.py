@@ -323,3 +323,82 @@ def span_years(files: list[BulkFile]) -> float | None:
     first, last = span
     months = (int(last[:4]) - int(first[:4])) * 12 + (int(last[5:]) - int(first[5:]))
     return months / 12
+
+
+def download(api_key: SecretStr | None, key: str, *, timeout: float = 300.0) -> bytes:
+    """1本を落として、展開した中身を返す。
+
+    **URLを取ってから落とすまでを1つにしてある。** 寿命が5分しかないので、
+    先に全部のURLを集めてから順に落とすと、後ろが 403 で死ぬ。分けて呼べる
+    形にしておくと、いつか誰かがそう書く。
+
+    署名付きURLに ``x-api-key`` は付けない。付けても無視されるが、鍵を
+    こちらの管理外のホストへ送ることになる。
+
+    Args:
+        api_key: J-Quants の API キー。URL を取るときだけ使う。
+        key: `bulk/list` が返した ``Key``。
+        timeout: 1本あたりの制限時間。
+
+    Returns:
+        gzip を展開した中身。
+    """
+    import gzip
+
+    import httpx
+
+    url = presigned_url(api_key, key=key)
+    with httpx.Client(timeout=timeout, follow_redirects=True) as client:
+        response = client.get(url)
+        raise_for_status(response, f"bulk download for {key}")
+        payload = response.content
+
+    if key.endswith(".gz"):
+        payload = gzip.decompress(payload)
+    return payload
+
+
+def records_from_csv(payload: bytes) -> list[dict[str, str]]:
+    """展開した CSV を、API と同じ形の辞書の列にする。
+
+    **列名は JSON API のフィールド名と同じ**（`DiscDate` / `CurPerType` /
+    `FSales` …）なので、既存の正規化をそのまま通せる。取り込み側に別の
+    対応表を作らない——2つ持つと、片方だけ直したときに気付けない。
+
+    空文字は ``None`` ではなく空文字のまま返す。既存の ``_text`` /
+    ``_first`` が空文字を「無い」として扱うので、ここで変換すると
+    二重に判断することになる。
+    """
+    import csv
+    import io
+
+    text = payload.decode("utf-8-sig")
+    return list(csv.DictReader(io.StringIO(text)))
+
+
+def group_by_symbol(records: list[dict[str, str]]) -> dict[str, list[dict[str, str]]]:
+    """銘柄コードごとにまとめる。
+
+    一括ファイルは全銘柄が1本に入っているので、銘柄ごとの正規化に渡す前に
+    分ける必要がある。
+
+    まとめる鍵は**このプロジェクトの4桁コード**である。J-Quants は5桁で
+    返すので、`universe` 側の変換をそのまま借りる。**自前で書かない**——
+    2つ持つと、片方だけ直したときにデータベースへ2種類のコードが入り、
+    どこも例外を出さない。
+
+    **鍵にできない行は入らない**（コードが無い、あるいは末尾が ``0`` でない
+    5桁＝優先株・種類株）。ここでは数えないので、呼ぶ側が
+    ``sum(map(len, grouped.values()))`` と元の行数を突き合わせること。
+    落ちた行があるのに気付かないまま「取り込み済み」にするのが、いちばん
+    高く付く。
+    """
+    from stock_ai.data.universe import four_digit_code
+
+    grouped: dict[str, list[dict[str, str]]] = {}
+    for record in records:
+        symbol = four_digit_code((record.get("Code") or "").strip() or None)
+        if symbol is None:
+            continue
+        grouped.setdefault(symbol, []).append(record)
+    return grouped
