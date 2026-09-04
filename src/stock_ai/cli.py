@@ -66,6 +66,9 @@ from stock_ai.backtest.forecast_revision import (
     census_revisions,
     census_sue,
 )
+from stock_ai.backtest.lowvol import COST_PER_MONTH, DEFAULT_WINDOW, MIN_SYMBOLS_PER_MONTH
+from stock_ai.backtest.lowvol import DEFAULT_LAGS as LOWVOL_LAGS
+from stock_ai.backtest.lowvol import build_series as build_lowvol_series
 from stock_ai.backtest.lowvol_census import VOLATILITY_WINDOWS
 from stock_ai.backtest.lowvol_census import run_census as run_lowvol_census
 from stock_ai.backtest.pead import (
@@ -2944,6 +2947,153 @@ def reversal_run(
     console.print(
         "[dim]「費用 0.60%」は主要指標から追加の 0.20% を引いただけの感度である"
         "（費用は分散に効かないので t は変わらない）。[/]"
+    )
+
+
+@app.command(name="lowvol-power")
+def lowvol_power(
+    end: str = typer.Option(
+        "2013-12-31", "--end", help="Last month used to estimate the variance."
+    ),
+    oos_from: str = typer.Option(
+        "2014-01-01", "--oos-from", help="First month the judgment would use."
+    ),
+    window: int = typer.Option(DEFAULT_WINDOW, "--window", help="Volatility window in sessions."),
+    min_symbols: int = typer.Option(MIN_SYMBOLS_PER_MONTH, "--min-symbols", help="Per month."),
+    min_turnover: float = typer.Option(MIN_TURNOVER, "--min-turnover", help="Liquidity floor."),
+    lags: int = typer.Option(LOWVOL_LAGS, "--lags", help="Newey-West lags, in months."),
+    benchmark: str = typer.Option(BENCHMARK, "--benchmark", help="Sets the calendar."),
+) -> None:
+    """Work out what a low-volatility test could detect - before sealing.
+
+    **No mean is computed or printed.** Variance and autocovariances only, from
+    months the judgment will not use. ``--end`` must fall before ``--oos-from``,
+    and the command refuses otherwise.
+
+    The point of this hypothesis is that the windows do not overlap: monthly
+    rebalancing means each observation is a fresh month. Reversal entered daily
+    and held 20 sessions, so neighbouring observations shared 19 days out of 20
+    and the standard error inflated 2.95x. Expect that factor to be near 1 here,
+    and treat it as a check on the claim rather than an assumption.
+
+    The cost threshold is not assumed either. The census measured that 88.5% of
+    quintile 1 survives from one month to the next, so 11.5% turns over and the
+    effective cost is 0.40% x 0.115 = 0.046% a month.
+    """
+    settings = get_settings()
+    configure_logging(settings.log_level)
+
+    last = _parse_date(end)
+    judged_from = _parse_date(oos_from)
+    if last is None or judged_from is None:
+        raise typer.BadParameter("--end and --oos-from must be YYYY-MM-DD.")
+    if last >= judged_from:
+        raise typer.BadParameter(
+            f"--end ({last}) は --oos-from ({judged_from}) より前でなければならない。"
+            "判定期間を検出力の推定に混ぜると、平均を見ていなくても期間を選べてしまう。"
+        )
+
+    database = Database()
+    database.create_all()
+    console.print(
+        f"分散だけを 最初 〜 {last} から推定する。[bold]平均は計算しないし、出さない。[/]"
+    )
+
+    try:
+        series = build_lowvol_series(
+            database,
+            Period.ALL,
+            benchmark=benchmark,
+            end=last,
+            window=window,
+            min_turnover=min_turnover,
+            min_symbols=min_symbols,
+        )
+        judged = build_lowvol_series(
+            database,
+            Period.ALL,
+            benchmark=benchmark,
+            start=judged_from,
+            window=window,
+            min_turnover=min_turnover,
+            min_symbols=min_symbols,
+        )
+    except ValueError as exc:
+        console.print(f"[red]{exc}[/]")
+        raise typer.Exit(code=1) from exc
+
+    console.print(
+        f"推定に使う月: [bold]{len(series.months):,}[/]"
+        f"（{series.months[0]} 〜 {series.months[-1]}）、"
+        f"1ヶ月あたり中央値 {int(median(series.counts))} 銘柄。"
+    )
+    console.print(
+        f"判定に使える月: [bold]{len(judged.months):,}[/]"
+        f"（{judged.months[0]} 〜 {judged.months[-1]}）。"
+    )
+    console.print(
+        f"[dim]薄くて落とした月 {series.excluded_thin_month + judged.excluded_thin_month}、"
+        f"不連続をまたいで落とした銘柄月 "
+        f"{series.excluded_discontinuity + judged.excluded_discontinuity:,}。[/dim]"
+    )
+
+    target = len(judged.months)
+    table = Table(title="重なりを織り込んだ検出力（平均は含まない）")
+    for column in (
+        "指標",
+        "月次SD",
+        "上位1%除去",
+        "重なりの膨張",
+        "OOS の標準誤差",
+        f"t≥{TARGET_T}",
+    ):
+        table.add_column(column, justify="right" if column != "指標" else "left")
+
+    needed: dict[str, float] = {}
+    for label, values in (
+        ("分位1 − ベンチ（主要）", series.long_only()),
+        ("分位1 − 全分位平均", series.vs_average()),
+        ("分位1 − 分位5", series.long_short()),
+    ):
+        estimate = estimate_power(values, lags=lags)
+        trimmed, _dropped = trimmed_variance(values, fraction=0.01)
+        needed[label] = estimate.detectable(target)
+        table.add_row(
+            label,
+            f"{estimate.daily_sd * 100:.2f}%",
+            f"{trimmed**0.5 * 100:.2f}%",
+            f"{estimate.inflation:.2f}x",
+            f"{estimate.standard_error(target) * 100:.2f}%",
+            f"[bold]{needed[label] * 100:.2f}%[/]",
+        )
+    console.print(table)
+    console.print(
+        "[dim]月次リバランスなので窓が重ならない。**膨張が 1 に近ければ、この説を"
+        "選んだ理由の一つが数字で確かめられたことになる**（#6 は 2.95倍）。[/dim]"
+    )
+
+    primary = needed["分位1 − ベンチ（主要）"]
+    console.print()
+    console.print(
+        f"費用のしきい値は [bold]{COST_PER_MONTH * 100:.3f}%／月[/]"
+        f"（年 {COST_PER_MONTH * 12 * 100:.2f}%）。"
+        "0.40%／往復 × 実測の入れ替え 11.5%／月。**仮定ではなくセンサスの実測値。**"
+    )
+    if primary > COST_PER_MONTH:
+        console.print(
+            f"[yellow]必要な差 {primary * 100:.2f}% が、しきい値 "
+            f"{COST_PER_MONTH * 100:.3f}% を上回る。[/]\n"
+            f"  **{COST_PER_MONTH * 100:.3f}% 〜 {primary * 100:.2f}% は、儲かるが"
+            "検出できない帯である。** #6 と同じ形の限界なので、読み方の表に書く。"
+        )
+    else:
+        console.print(
+            f"[green]必要な差 {primary * 100:.2f}% が、しきい値を下回る。[/] "
+            "費用を賄う水準の効果なら検出できる。"
+        )
+    console.print(
+        "[dim]この数字は「どれだけ大きければ検出できるか」であって、"
+        "「どれだけ出るか」ではない。後者は判定でしか分からない。[/dim]"
     )
 
 
