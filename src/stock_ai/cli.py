@@ -13,7 +13,7 @@ import sys
 from collections import Counter
 from collections.abc import Callable
 from pathlib import Path
-from statistics import median
+from statistics import median, stdev
 
 import pandas as pd
 import typer
@@ -66,9 +66,23 @@ from stock_ai.backtest.forecast_revision import (
     census_revisions,
     census_sue,
 )
-from stock_ai.backtest.lowvol import COST_PER_MONTH, DEFAULT_WINDOW, MIN_SYMBOLS_PER_MONTH
+from stock_ai.backtest.lowvol import (
+    COST_PER_MONTH,
+    DEFAULT_WINDOW,
+    MIN_SYMBOLS_PER_MONTH,
+    SEALED_BETA,
+    break_even_alpha,
+    max_drawdown,
+)
 from stock_ai.backtest.lowvol import DEFAULT_LAGS as LOWVOL_LAGS
+from stock_ai.backtest.lowvol import (
+    DETECTABLE as LOWVOL_DETECTABLE,
+)
+from stock_ai.backtest.lowvol import (
+    PASS as LOWVOL_PASS,
+)
 from stock_ai.backtest.lowvol import build_series as build_lowvol_series
+from stock_ai.backtest.lowvol import verdict as lowvol_verdict
 from stock_ai.backtest.lowvol_census import VOLATILITY_WINDOWS
 from stock_ai.backtest.lowvol_census import run_census as run_lowvol_census
 from stock_ai.backtest.pead import (
@@ -3121,6 +3135,163 @@ def lowvol_power(
         "[dim]この数字は「どれだけ大きければ検出できるか」であって、"
         "「どれだけ出るか」ではない。後者は判定でしか分からない。[/dim]"
     )
+
+
+@app.command(name="lowvol-run")
+def lowvol_run(
+    period: str = typer.Option("oos", "--period", help="oos | is. Judgment is oos, once."),
+    oos_from: str = typer.Option("2014-01-01", "--oos-from", help="First judged month."),
+    beta: float = typer.Option(SEALED_BETA, "--beta", help="Sealed beta from 2002-2013."),
+    window: int = typer.Option(DEFAULT_WINDOW, "--window", help="Volatility window in sessions."),
+    min_symbols: int = typer.Option(MIN_SYMBOLS_PER_MONTH, "--min-symbols", help="Per month."),
+    min_turnover: float = typer.Option(MIN_TURNOVER, "--min-turnover", help="Liquidity floor."),
+    lags: int = typer.Option(LOWVOL_LAGS, "--lags", help="Newey-West lags, in months."),
+    benchmark: str = typer.Option(BENCHMARK, "--benchmark", help="Sets the calendar."),
+) -> None:
+    """Run the sealed low-volatility test and apply the sealed reading.
+
+    ``docs/PREREG_LOWVOL_JP.md`` was sealed on 2026-09-04 without one low-vol
+    return having been looked at. **This is the single judgment that bought.**
+
+    The primary measure is alpha - quintile 1 minus beta times the benchmark,
+    with beta fixed at 0.542 from 2002-2013. That matches what the hypothesis
+    claims ("higher risk-adjusted"), and the raw difference is reported beside
+    it because the two answer different questions: with beta at 0.542, holding
+    quintile 1 beats the index only when alpha exceeds 0.458 times the market's
+    return. In a rising market a positive alpha can still lose to the index.
+
+    The verdict is applied in code from section 16's table, not read off by a
+    person.
+    """
+    settings = get_settings()
+    configure_logging(settings.log_level)
+
+    try:
+        chosen = Period(period.strip().lower())
+    except ValueError as exc:
+        raise typer.BadParameter(f"--period must be oos or is; got {period!r}.") from exc
+    judged_from = _parse_date(oos_from)
+    if judged_from is None:
+        raise typer.BadParameter(f"--oos-from must be YYYY-MM-DD; got {oos_from!r}.")
+
+    database = Database()
+    database.create_all()
+    console.print(f"[bold]{chosen.value.upper()}[/] で回す。β は封印済みの {beta:.3f}。")
+    if chosen is Period.OOS:
+        console.print(
+            "[bold yellow]これは封印済みの判定である。一度だけ回す。[/] "
+            "結果を見てから条件を変えない。"
+        )
+
+    try:
+        series = build_lowvol_series(
+            database,
+            Period.ALL,
+            benchmark=benchmark,
+            start=judged_from,
+            window=window,
+            min_turnover=min_turnover,
+            min_symbols=min_symbols,
+        )
+    except ValueError as exc:
+        console.print(f"[red]{exc}[/]")
+        raise typer.Exit(code=1) from exc
+
+    console.print(
+        f"{len(series.months):,} ヶ月（{series.months[0]} 〜 {series.months[-1]}）、"
+        f"1ヶ月あたり中央値 {int(median(series.counts))} 銘柄"
+        f"（1分位あたり約 {int(median(series.counts)) // 5}）。"
+        f"薄くて落とした月 {series.excluded_thin_month}、"
+        f"不連続で落とした銘柄月 {series.excluded_discontinuity:,}。"
+    )
+
+    shape = Table(title="分位ごとの平均リターン（月次、ベンチマーク差引き前）")
+    for column in ("分位1（最も穏やか）", "分位2", "分位3", "分位4", "分位5", "ベンチマーク"):
+        shape.add_column(column, justify="right")
+    means = [
+        sum(row[index] for row in series.quantiles) / len(series.quantiles) for index in range(5)
+    ]
+    bench_mean = sum(series.benchmark) / len(series.benchmark)
+    shape.add_row(*[f"{value * 100:+.2f}%" for value in means], f"{bench_mean * 100:+.2f}%")
+    console.print(shape)
+
+    outcome = judge(series.beta_adjusted(beta), lags=lags)
+    result, reading = lowvol_verdict(outcome.mean, outcome.t_statistic)
+
+    headline = Table(title="主要指標：α（分位1 − β×ベンチマーク）")
+    for column in ("月数", "α", "標準誤差(NW)", "t", "費用しきい値", "必要な差(事前)"):
+        headline.add_column(column, justify="right")
+    headline.add_row(
+        f"{outcome.days:,}",
+        f"[bold]{outcome.mean * 100:+.3f}%[/]",
+        f"{outcome.standard_error * 100:.3f}%",
+        f"[bold]{outcome.t_statistic:+.2f}[/]",
+        f"{COST_PER_MONTH * 100:.3f}%",
+        f"{LOWVOL_DETECTABLE * 100:.2f}%",
+    )
+    console.print(headline)
+
+    colour = "green" if result == LOWVOL_PASS else "yellow"
+    console.print()
+    console.print(f"[bold {colour}]判定：{result}[/]")
+    console.print(f"  {reading}")
+    console.print(
+        "[dim]この読み方は 2026-09-04 に封印した表（PREREG_LOWVOL_JP.md §16）を"
+        "当てはめたものである。結果を見てから決めていない。[/]"
+    )
+
+    # **α が正でも指数に勝つとは限らない。** 判定のたびに併記する。
+    raw = judge(series.long_only(), lags=lags)
+    break_even = break_even_alpha(beta, bench_mean)
+    console.print()
+    console.print("[bold]指数を上回ったか（判定には使わない）[/]")
+    index_beat = Table()
+    for column in ("この期間の市場", "指数超えに要る α", "実際の α", "生の差（分位1 − 指数）"):
+        index_beat.add_column(column, justify="right")
+    index_beat.add_row(
+        f"{bench_mean * 100:+.2f}%／月",
+        f"{break_even * 100:+.3f}%",
+        f"{outcome.mean * 100:+.3f}%",
+        f"[bold]{raw.mean * 100:+.3f}%[/]（t {raw.t_statistic:+.2f}）",
+    )
+    console.print(index_beat)
+    console.print(
+        f"[dim]β={beta:.3f} なので 分位1 − 指数 ＝ α − {1 - beta:.3f}×市場。"
+        "**α が正でも上げ相場では指数に負ける。** 低ボラの見返りはリターンでは"
+        "なく下落の浅さで来るので、これは欠陥ではなく性質である。[/dim]"
+    )
+
+    first = [row[0] for row in series.quantiles]
+    risk = Table(title="下落の浅さ（判定には使わない）")
+    for column in ("", "月次SD", "最大下落"):
+        risk.add_column(column, justify="right" if column else "left")
+    risk.add_row(
+        "分位1",
+        f"{stdev(first) * 100:.2f}%",
+        f"{max_drawdown(first) * 100:.1f}%",
+    )
+    risk.add_row(
+        "ベンチマーク",
+        f"{stdev(series.benchmark) * 100:.2f}%",
+        f"{max_drawdown(series.benchmark) * 100:.1f}%",
+    )
+    console.print(risk)
+
+    extra = Table(title="そのほかの副次指標")
+    for column in ("指標", "平均", "t"):
+        extra.add_column(column, justify="left" if column == "指標" else "right")
+    average = judge(series.vs_average(), lags=lags)
+    extra.add_row(
+        "分位1 − 全分位平均", f"{average.mean * 100:+.3f}%", f"{average.t_statistic:+.2f}"
+    )
+    spread = judge(series.long_short(), lags=lags)
+    extra.add_row("分位1 − 分位5", f"{spread.mean * 100:+.3f}%", f"{spread.t_statistic:+.2f}")
+    extra.add_row(
+        "費用 1.5倍で見たとき",
+        f"{(outcome.mean - COST_PER_MONTH * 0.5) * 100:+.3f}%",
+        "[dim]—[/]",
+    )
+    console.print(extra)
 
 
 @app.command(name="lowvol-census")
