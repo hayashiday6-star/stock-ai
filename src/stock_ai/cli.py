@@ -2956,6 +2956,9 @@ def lowvol_census(
         help="Comma-separated volatility windows in sessions.",
     ),
     min_turnover: float = typer.Option(MIN_TURNOVER, "--min-turnover", help="Liquidity floor."),
+    min_symbols: int = typer.Option(
+        100, "--min-symbols", help="Months below this many names are counted as thin."
+    ),
     benchmark: str = typer.Option(BENCHMARK, "--benchmark", help="Sets the calendar."),
 ) -> None:
     """Count what a low-volatility test would have to work with.
@@ -3037,6 +3040,28 @@ def lowvol_census(
     console.print(
         "[dim]窓が長いほど履歴を要求するので観測が減る。**この減り方を見て窓を"
         "決める。** リターンを見ていないので、事後的な選択にはならない。[/dim]"
+    )
+
+    # **この説を選んだ理由そのものを測る。** 月次リバランスでも構成が変わらない
+    # なら、実効費用は残存率で割られる。当て推量で登録すると判定の意味が変わる。
+    cost = Table(title="費用の前提を決める材料")
+    for column in ("窓", "分位1に残る割合", "毎月の入れ替え", f"薄い月(<{min_symbols})", "全月数"):
+        cost.add_column(column, justify="right" if column != "窓" else "left")
+    for census in results:
+        kept, compared = census.quantile_persistence()
+        thin, total = census.thin_months(min_symbols)
+        cost.add_row(
+            f"{census.window}日",
+            "—" if compared == 0 else f"[bold]{kept * 100:.1f}%[/]",
+            "—" if compared == 0 else f"{(1 - kept) * 100:.1f}%",
+            f"{thin:,}",
+            f"{total:,}",
+        )
+    console.print(cost)
+    console.print(
+        "[dim]残存率が高いほど、月次でも実際の売買は少ない。**#6 は20営業日ごとに"
+        "全入れ替えで 0.40%／回だった。** ここで8割残るなら実効費用はその2割になる。"
+        "薄い月は分位が数銘柄になるので、最低銘柄数を封印前に決める。[/dim]"
     )
 
     for census in results:

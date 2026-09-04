@@ -149,3 +149,42 @@ def test_the_census_needs_a_benchmark_for_the_calendar() -> None:
 
     with pytest.raises(ValueError, match="ベンチマーク"):
         run_census(_database(frames), Period.ALL, windows=(60,))
+
+
+def test_persistence_is_measured_not_assumed() -> None:
+    """**この説を選んだ理由そのものを測る。**
+
+    月次リバランスでも構成が変わらないなら、実効費用は残存率で割られる。
+    当て推量で登録すると、判定の意味が変わってしまう。
+    """
+    database = _database(_universe())
+    (census,) = run_census(database, Period.ALL, windows=(60,))
+
+    kept, compared = census.quantile_persistence()
+
+    assert compared > 0
+    assert 0.0 <= kept <= 1.0
+
+
+def test_persistence_is_one_when_the_ordering_never_changes() -> None:
+    """ボラティリティの順序が動かない系列なら、分位1は入れ替わらない。"""
+    frames = {"1306": _frame(seed=99)}
+    for index in range(10):
+        # 各銘柄のボラティリティを大きく離すと、順序は月をまたいでも安定する。
+        frames[f"{7200 + index:04d}"] = _frame(seed=index, volatility=0.004 * (index + 1))
+
+    (census,) = run_census(_database(frames), Period.ALL, windows=(60,))
+    kept, compared = census.quantile_persistence()
+
+    assert compared > 0
+    assert kept > 0.9
+
+
+def test_thin_months_are_counted_against_a_threshold() -> None:
+    """1ヶ月10銘柄では5分位が2銘柄ずつになる。最低銘柄数は封印前に決める。"""
+    database = _database(_universe())
+    (census,) = run_census(database, Period.ALL, windows=(60,))
+
+    thin, total = census.thin_months(minimum=1_000)
+    assert thin == total  # 12銘柄しかないので全部が「薄い」
+    assert census.thin_months(minimum=1)[0] == 0

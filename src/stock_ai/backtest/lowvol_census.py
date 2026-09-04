@@ -73,6 +73,7 @@ class WindowCensus:
     turnovers: list[float] = field(default_factory=list)
     sectors: list[str] = field(default_factory=list)
     months_key: list[str] = field(default_factory=list)
+    symbols_key: list[str] = field(default_factory=list)
 
     @property
     def observations(self) -> int:
@@ -115,6 +116,7 @@ class WindowCensus:
         frame = pd.DataFrame(
             {
                 "month": self.months_key,
+                "symbol": self.symbols_key,
                 "vol": self.volatilities,
                 "turnover": self.turnovers,
                 "sector": self.sectors,
@@ -162,6 +164,50 @@ class WindowCensus:
                 )
             )
         return result
+
+    def thin_months(self, minimum: int) -> tuple[int, int]:
+        """通過銘柄が ``minimum`` に満たない月の数と、全体の月数。
+
+        **1ヶ月10銘柄では、5分位が2銘柄ずつになる。** その月の分位平均は
+        個別銘柄のリターンそのもので、分散だけが大きくなる。最低銘柄数は
+        封印前に決める必要があり、その材料がこれである。
+        """
+        return sum(1 for count in self.per_month.values() if count < minimum), len(self.per_month)
+
+    def quantile_persistence(self, bucket: int = 0) -> tuple[float, int]:
+        """月をまたいで分位 ``bucket`` に残る割合と、比べられた月の数。
+
+        **この説の売りは回転率の低さである。** 月次リバランスでも、構成が
+        ほとんど変わらないなら費用は保有期間で割られる。#6 は20営業日ごとに
+        全入れ替えで 0.40%／回だったが、ここで8割が残るなら実効費用は
+        その2割になる。
+
+        **費用の前提は仮定せずに測る。** この説を選んだ理由そのものなので、
+        当て推量で登録すると、判定の意味が変わってしまう。
+
+        Args:
+            bucket: 0 が分位1（低ボラ側＝買う側）。
+
+        Returns:
+            ``(残存率, 比べた月数)``。比べられなければ ``(nan, 0)``。
+        """
+        frame = self._buckets()
+        if frame is None or frame.empty:
+            return float("nan"), 0
+        members = {
+            str(month): set(group.loc[group["bucket"] == bucket, "symbol"])
+            for month, group in frame.groupby("month")
+        }
+        months = sorted(members)
+        kept: list[float] = []
+        for earlier, later in zip(months, months[1:], strict=False):
+            before = members[earlier]
+            if not before:
+                continue
+            kept.append(len(before & members[later]) / len(before))
+        if not kept:
+            return float("nan"), 0
+        return sum(kept) / len(kept), len(kept)
 
 
 def formation_dates(calendar: pd.DatetimeIndex) -> list[int]:
@@ -275,7 +321,7 @@ def _census_one(window: int, formations: list[int]) -> WindowCensus:
 
 def _scan_symbol(  # noqa: PLR0913 - 数え口を1箇所に集めるための引数
     census: WindowCensus,
-    symbol: str,  # noqa: ARG001 - 記録はしないが、追跡のため受け取る
+    symbol: str,
     sector: str,
     formations: list[int],
     calendar: pd.DatetimeIndex,
@@ -329,3 +375,4 @@ def _scan_symbol(  # noqa: PLR0913 - 数え口を1箇所に集めるための引
         census.turnovers.append(float(level))
         census.sectors.append(sector)
         census.months_key.append(key)
+        census.symbols_key.append(symbol)
