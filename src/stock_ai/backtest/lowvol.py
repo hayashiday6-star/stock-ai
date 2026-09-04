@@ -36,6 +36,7 @@
 from __future__ import annotations
 
 import datetime as dt
+from collections.abc import Sequence
 from dataclasses import dataclass
 
 import numpy as np
@@ -80,6 +81,92 @@ COST_PER_MONTH = ROUND_TRIP_COST * MONTHLY_TURNOVER
 
 #: Newey-West のラグ（月）。窓が重ならないので短くてよいが、0 にはしない。
 DEFAULT_LAGS = 3
+
+#: 推定期間（2002-07〜2013-12）で測った分位1のβ。**封印済みの値である。**
+#:
+#: 判定期間からは取らない。共分散の比なので平均は返らないが、判定期間から
+#: 推定すれば「その期間に合う調整」を選んだことになる。
+SEALED_BETA = 0.542
+
+#: §8 で事前に計算した「t≥2.0 に必要な差」（α、月あたり）。**封印済み。**
+#:
+#: 2002–2013 の分散から、判定150ヶ月・Newey-West(3) で求めた。判定期間は
+#: 1ヶ月あたりの銘柄数が推定期間の2倍あるので実際の標準誤差はこれより小さく
+#: なる方向だが、**見てから下げるのは事後的な緩和**なのでこの値を使う。
+DETECTABLE = 0.0033
+
+#: 合格に要する t。
+TARGET_T = 2.0
+
+PASS = "合格"
+FAIL = "不合格"
+
+
+def verdict(
+    alpha: float,
+    t_statistic: float,
+    cost: float = COST_PER_MONTH,
+    detectable: float = DETECTABLE,
+    target_t: float = TARGET_T,
+) -> tuple[str, str]:
+    """封印済みの表に当てはめる（`PREREG_LOWVOL_JP.md` §16）。
+
+    **判定を人が読んで解釈しない。** #3 では結果を見てから基準が動きかけた。
+    #6 で当てはめをコードにして、それは正しかった。
+
+    Args:
+        alpha: 分位1 − β×ベンチマークの平均（月あたり）。
+        t_statistic: Newey-West(3) の t。
+        cost: 費用のしきい値。既定は実測から作った 0.046%／月。
+        detectable: 事前に計算した必要な差。
+        target_t: 合格に要する t。
+
+    Returns:
+        ``(合否, 読み方)``。
+    """
+    if alpha <= 0:
+        return FAIL, "効果なし。説を閉じる。"
+    if alpha < cost:
+        return FAIL, (
+            f"α はあるが費用（{cost * 100:.3f}%／月）を賄えない。実行できないので閉じる。"
+        )
+    if t_statistic >= target_t:
+        return PASS, f"α が費用を超え、t≥{target_t} を満たした。"
+    if alpha < detectable:
+        return FAIL, (
+            f"**構造的な帯（{cost * 100:.3f}%〜{detectable * 100:.2f}%／月）に入った。**"
+            "儲かる水準だが、この検出力では有意にならない。「効果が無い」ではない。"
+            "基準は緩めず、前向きに貯める。"
+        )
+    return FAIL, (
+        f"α は必要な差（{detectable * 100:.2f}%）を超えたが、t が届かなかった。前向き検証へ。"
+    )
+
+
+def break_even_alpha(beta: float, benchmark_mean: float) -> float:
+    """指数を上回るのに必要な α。
+
+    分位1のリターン − 指数 ＝ ``α − (1 − β) × 市場``。**α が正でも、上げ相場
+    では指数に負ける。** 低ボラの見返りはリターンではなく下落の浅さで来るので、
+    これは欠陥ではなく性質である。判定のたびに併記する。
+    """
+    return (1.0 - beta) * benchmark_mean
+
+
+def max_drawdown(returns: Sequence[float]) -> float:
+    """月次リターンから最大下落率を返す（負の値）。
+
+    **低ボラの見返りは、リターンではなく下落の浅さで来る。** α が帯に入って
+    不合格でも、ここが指数より浅ければ、それは記録に値する事実である。
+    """
+    peak = 1.0
+    level = 1.0
+    worst = 0.0
+    for value in returns:
+        level *= 1.0 + value
+        peak = max(peak, level)
+        worst = min(worst, level / peak - 1.0)
+    return worst
 
 
 @dataclass(frozen=True)

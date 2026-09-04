@@ -192,3 +192,47 @@ def test_beta_needs_a_moving_benchmark() -> None:
     )
     with pytest.raises(ValueError, match="動いていない"):
         flat.beta_to_benchmark()
+
+
+def test_the_sealed_table_is_applied_rather_than_interpreted() -> None:
+    """**判定を人が読んで解釈しない。** #3 では基準が動きかけた。"""
+    from stock_ai.backtest.lowvol import FAIL, PASS, verdict
+
+    assert verdict(-0.001, 5.0)[0] == FAIL
+    assert "効果なし" in verdict(-0.001, 5.0)[1]
+
+    # 費用を賄えない（t がいくら大きくても合格にしない）
+    assert verdict(0.0002, 9.0)[0] == FAIL
+    assert "費用" in verdict(0.0002, 9.0)[1]
+
+    # 構造的な帯 — ここがいちばん重要
+    outcome, reading = verdict(0.002, 1.5)
+    assert outcome == FAIL
+    assert "構造的な帯" in reading
+    assert "「効果が無い」ではない" in reading
+
+    # 帯の中でも t が届けば合格
+    assert verdict(0.002, 2.1)[0] == PASS
+    # 点推定は十分だが t が届かない
+    assert verdict(0.005, 1.2)[0] == FAIL
+    assert verdict(0.005, 2.5)[0] == PASS
+
+
+def test_the_break_even_alpha_grows_with_the_market() -> None:
+    """**α が正でも上げ相場では指数に負ける。** 判定のたびに併記する材料。"""
+    from stock_ai.backtest.lowvol import break_even_alpha
+
+    assert break_even_alpha(0.542, 0.0) == pytest.approx(0.0)
+    assert break_even_alpha(0.542, 0.01) == pytest.approx(0.00458)
+    # β が 1 なら、市場がいくら動いても指数超えに α は要らない。
+    assert break_even_alpha(1.0, 0.05) == pytest.approx(0.0)
+
+
+def test_max_drawdown_is_measured_on_compounded_returns() -> None:
+    """低ボラの見返りは下落の浅さで来る。そこを記録できること。"""
+    from stock_ai.backtest.lowvol import max_drawdown
+
+    assert max_drawdown([0.1, 0.1, 0.1]) == pytest.approx(0.0)
+    assert max_drawdown([-0.5]) == pytest.approx(-0.5)
+    # 上げてから半分になれば、下落は高値から測る。
+    assert max_drawdown([1.0, -0.5]) == pytest.approx(-0.5)
