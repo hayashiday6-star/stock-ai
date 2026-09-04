@@ -2879,6 +2879,7 @@ def jquants_bulk_fetch(
 
     rows_read = 0
     rows_without_code = 0
+    disclosures = 0
     statements = 0
     symbols: set[str] = set()
     failed: list[tuple[str, str]] = []
@@ -2919,6 +2920,7 @@ def jquants_bulk_fetch(
                     reports = normalize_statements(symbol, rows)
                     if not reports:
                         continue
+                    disclosures += len(reports)
                     statements += repository.upsert_reports(symbol, reports, market="JP")
                     symbols.add(symbol)
 
@@ -2926,13 +2928,36 @@ def jquants_bulk_fetch(
             if throttle and index + 1 < len(files):
                 time.sleep(throttle)
 
+    # **減る所を全部見せる。** 「読んだ行」と「書いた行」だけ出すと、差が
+    # 出たときに人が理由を考えることになる。考えて当たることもあるが、
+    # 当たったかどうかは分からない。段ごとに数える。
     table = Table(title="一括で入れたもの")
-    table.add_column("項目", justify="left")
+    table.add_column("段", justify="left")
     table.add_column("数", justify="right")
-    table.add_row("読んだ行", f"{rows_read:,}")
-    table.add_row("書いた財務諸表", f"{statements:,}")
-    table.add_row("触れた銘柄", f"{len(symbols):,}")
+    table.add_column("前の段から", justify="right")
+    kept = rows_read - rows_without_code
+    table.add_row("読んだ行", f"{rows_read:,}", "")
+    table.add_row(
+        "銘柄コードが読めた行",
+        f"{kept:,}",
+        f"[yellow]−{rows_without_code:,}[/]" if rows_without_code else "0",
+    )
+    table.add_row(
+        "会計期にまとめた後",
+        f"{disclosures:,}",
+        f"−{kept - disclosures:,}" if kept >= disclosures else f"+{disclosures - kept:,}",
+    )
+    table.add_row(
+        "書いた財務諸表",
+        f"{statements:,}",
+        f"−{disclosures - statements:,}" if disclosures >= statements else "",
+    )
+    table.add_row("触れた銘柄", f"{len(symbols):,}", "")
     console.print(table)
+    console.print(
+        "[dim]同じ銘柄が同じ会計期を2回開示していれば（訂正など）、"
+        "そこで1本にまとまる。**段の差はそれで説明が付く。**[/dim]"
+    )
 
     if rows_without_code:
         # **黙って捨てない。** 銘柄コードの無い行があるなら、列名か区切りの
