@@ -25,6 +25,12 @@
 - ``long_only()`` … 分位1 − ベンチマーク（**主要。実行できる形**）
 - ``vs_average()`` … 分位1 − 全分位平均（**加重方式の差が入らない**）
 - ``long_short()`` … 分位1 − 分位5（空売り前提。実行可能性は確かめていない）
+- ``beta_adjusted()`` … 分位1 − β×ベンチマーク（**仮説に合う指標**）
+
+最後のものが必要な理由は、封印前の検出力計算で分かった。仮説は「**リスク調整後
+で**高い」と言っているのに、生のリターン差を主要指標にしていた。低ボラの分位1は
+β が 1 より小さいので、市場が動いた月は生の差が必ず一方向に出る。その上下動が
+分散のほとんどを作り、必要な差が 年7.0% にまで上がっていた。
 """
 
 from __future__ import annotations
@@ -112,6 +118,44 @@ class LowVolSeries:
     def long_short(self) -> list[float]:
         """分位1 − 分位5。**空売り前提。実行可能性は確かめていない。**"""
         return [row[0] - row[-1] for row in self.quantiles]
+
+    def beta_to_benchmark(self) -> float:
+        """分位1のベンチマークに対するβ（最小二乗）。
+
+        **仮説は「リスク調整後で高い」と言っている。** 生のリターン差を測ると、
+        効果と「市場に対する感応度が低いこと」が混ざる。低ボラの分位1は β が
+        1 より小さいはずなので、市場が上げた月は生の差が必ずマイナスに出る。
+        その上下動が分散のほとんどを作り、検出力を食う。
+
+        β を推定する期間は、**判定に使わない期間に限る。** 共分散の比なので
+        平均は返らないが、判定期間から取れば期間を選んだことになる。
+
+        Raises:
+            ValueError: 月が2つ未満、またはベンチマークが動かない。
+        """
+        if len(self.benchmark) < 2:
+            raise ValueError("β を推定するには2ヶ月以上が要る。")
+        first = [row[0] for row in self.quantiles]
+        mean_x = sum(self.benchmark) / len(self.benchmark)
+        mean_y = sum(first) / len(first)
+        variance = sum((x - mean_x) ** 2 for x in self.benchmark)
+        if variance <= 0:
+            raise ValueError("ベンチマークが動いていないので β を推定できない。")
+        covariance = sum(
+            (x - mean_x) * (y - mean_y) for x, y in zip(self.benchmark, first, strict=True)
+        )
+        return covariance / variance
+
+    def beta_adjusted(self, beta: float) -> list[float]:
+        """分位1 − β×ベンチマーク。**仮説に合う指標。**
+
+        β は外から渡す。**この系列自身から推定した β を当てると、判定期間の
+        情報でその期間を調整することになる。** 推定は判定に使わない期間で行い、
+        固定した値を渡す。
+        """
+        return [
+            row[0] - beta * bench for row, bench in zip(self.quantiles, self.benchmark, strict=True)
+        ]
 
     def summary(self) -> str:
         """1行の要約。**平均リターンは出さない。**"""
