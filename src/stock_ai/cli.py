@@ -133,6 +133,7 @@ from stock_ai.data.delisted import (
     DEFAULT_SNAPSHOT_DIR,
     DEFAULT_STEP_DAYS,
     ROLLING_WINDOW_START,
+    all_profiles,
     covered_from,
     delistings,
     harvest_snapshots,
@@ -2475,10 +2476,14 @@ def delisted_harvest(
     database.create_all()
     with database.session() as session:
         covered = {symbol for symbol, market, *_ in price_history_spans(session) if market == "JP"}
-    missing = sorted(report.union - covered)
+    # **ディスクにある名簿すべてを見る。** report.union は「今回要求した日付」
+    # しか集めないので、要求しなかった日付の名簿にしか出ない銘柄が漏れる。
+    # 実際に漏れた（4,097 と報告して、実際は 4,124）。
+    profiles = all_profiles(target)
+    missing = sorted(set(profiles) - covered)
     console.print(
         f"名簿にあって DB に株価が無い銘柄: [bold]{len(missing):,}[/] 件"
-        f"（名簿 {len(report.union):,} 件中）。"
+        f"（名簿 {len(profiles):,} 件中）。"
     )
     if not missing:
         console.print("[green]取り込むものは無い。[/]")
@@ -2487,7 +2492,7 @@ def delisted_harvest(
         missing = missing[:limit]
         console.print(f"[yellow]--limit により {len(missing)} 件だけ取る。[/]")
 
-    store_universe(database, [report.profiles[symbol] for symbol in missing])
+    store_universe(database, [profiles[symbol] for symbol in missing])
     lookback = max(1, (dt.date.today() - first).days + 365)
     ingester = BulkIngester(
         database,

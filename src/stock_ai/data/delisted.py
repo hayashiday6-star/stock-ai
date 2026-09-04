@@ -189,6 +189,26 @@ def membership(directory: Path) -> dict[dt.date, set[str]]:
     return result
 
 
+def all_profiles(directory: Path) -> dict[str, SecurityProfile]:
+    """保存済みの**すべての**名簿に一度でも出た銘柄。名前は最後に出たもの。
+
+    **``HarvestReport.union`` と混同しない。** あちらは「今回要求した日付」の
+    範囲でしか集めない。要求しなかった日付の名簿がディスクにあると、その分
+    だけ少なく数える。
+
+    実際に食い違った。境界の名簿（2021-09-04）と、前日に取った名簿は、翌日の
+    実行では要求されない。取り込みは 4,097 と報告し、ディスク上の実際は
+    4,124 だった。**差の27銘柄は、株価を取りに行く対象から漏れていた。**
+
+    株価を取る側はこちらを使う。名簿はディスクにあるものがすべてである。
+    """
+    found: dict[str, SecurityProfile] = {}
+    for on in stored_dates(directory):
+        for profile in read_snapshot(snapshot_path(directory, on)):
+            found[profile.symbol] = profile
+    return found
+
+
 def universe_as_of(snapshots: dict[dt.date, set[str]], on: dt.date) -> set[str]:
     """``on`` の時点で上場していた銘柄。名簿が無ければ空集合。
 
