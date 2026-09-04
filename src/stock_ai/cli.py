@@ -141,6 +141,7 @@ from stock_ai.core.exceptions import (
     DataError,
     NotificationError,
     OpsError,
+    RateLimitError,
 )
 from stock_ai.core.logging import configure_logging
 from stock_ai.core.scheduler import DailyScheduler, JobResult
@@ -163,6 +164,14 @@ from stock_ai.data.delisted import (
     snapshot_dates,
 )
 from stock_ai.data.fx import FxConverter
+from stock_ai.data.jquants_bulk import (
+    BULK_ENDPOINTS,
+    DEADLINE_ENDPOINTS,
+    PRESIGNED_URL_TTL,
+    BulkFile,
+)
+from stock_ai.data.jquants_bulk import coverage as bulk_coverage
+from stock_ai.data.jquants_bulk import list_files as bulk_list_files
 from stock_ai.data.jquants_exit import CANCELLATION, audit
 from stock_ai.data.jquants_fundamentals import JQuantsFundamentalsProvider
 from stock_ai.data.jquants_profile import JQuantsProfileProvider
@@ -2626,6 +2635,121 @@ def universe_snapshot(
             f"{len(added):,}",
         )
     console.print(table)
+
+
+@app.command(name="jquants-bulk-list")
+def jquants_bulk_list(
+    endpoint: str | None = typer.Option(
+        None, "--endpoint", help="e.g. /fins/summary. Omit to survey the deadline set."
+    ),
+    every: bool = typer.Option(False, "--all", help="Survey every bulk endpoint, not just two."),
+    show: int = typer.Option(5, "--show", help="How many file names to print per endpoint."),
+) -> None:
+    """Survey what the bulk download offers, without fetching a single byte.
+
+    The statements path spends one request per symbol and stopped on 429 at
+    3,700 of them. ``/fins/summary`` and ``/equities/bars/daily`` are both bulk
+    endpoints, where one gzipped CSV a month carries every symbol. With the
+    cancellation close, whether to move is worth measuring first.
+
+    Three numbers decide it.
+
+    1. **How many files.** That is what says monthly or daily.
+    2. **What range they cover.** If bulk covers less than the per-symbol API,
+       moving loses rows - and loses them *silently*, which is why this is
+       measured before anything is written.
+    3. **Total size.** Whether it can be pulled at all before the deadline.
+
+    Presigned URLs live five minutes, so the ingest has to fetch one URL and
+    use it immediately. Collecting them all first would let the later ones die.
+    """
+    settings = get_settings()
+    configure_logging(settings.log_level)
+
+    api_key = settings.jquants_api_key
+    if api_key is None:
+        console.print("[red].env に JQUANTS_API_KEY がない。[/] APIキー設定.bat で設定する。")
+        raise typer.Exit(code=1)
+
+    left = (CANCELLATION - dt.date.today()).days
+    console.print(
+        f"解約日 [bold]{CANCELLATION}[/] まで "
+        + (f"[bold]{left}[/] 日。" if left >= 0 else "[red]過ぎている。[/]")
+    )
+    console.print(
+        "[dim]ここでは1バイトも落とさない。一覧を見るだけである。[/dim]",
+    )
+    console.print()
+
+    if endpoint:
+        targets: tuple[str, ...] = (endpoint,)
+    elif every:
+        targets = BULK_ENDPOINTS
+    else:
+        targets = DEADLINE_ENDPOINTS
+
+    table = Table(title="一括ダウンロードで取れるもの")
+    for column, justify in (
+        ("エンドポイント", "left"),
+        ("本数", "right"),
+        ("覆っている範囲", "left"),
+        ("合計", "right"),
+    ):
+        table.add_column(column, justify=justify)
+
+    found: dict[str, list[BulkFile]] = {}
+    for target in targets:
+        try:
+            files = bulk_list_files(api_key, endpoint=target)
+        except RateLimitError:
+            # **レート制限はここで飲まない。** ``RateLimitError`` は
+            # ``DataError`` の一種なので、下の except より先に置く。飲むと
+            # 「このエンドポイントは取れない」に化けて、残りを閉じた扉に
+            # 叩きつけたうえで、表には嘘の理由が並ぶ。
+            raise
+        except DataError as exc:
+            # プランで開いていないエンドポイントは断られる。それは答えであって、
+            # ほかのエンドポイントを見に行けなくなる理由ではない。
+            table.add_row(target, "[yellow]—[/]", f"[yellow]{exc}[/]", "")
+            continue
+        found[target] = files
+        if not files:
+            table.add_row(target, "0", "[yellow]1本も無い[/]", "")
+            continue
+        span = bulk_coverage(files)
+        total = sum(item.size for item in files)
+        table.add_row(
+            target,
+            f"{len(files):,}",
+            f"{span[0]} 〜 {span[1]}" if span else "[dim]ファイル名から読めない[/dim]",
+            f"{total / 1_000_000_000:.2f} GB"
+            if total >= 1_000_000_000
+            else f"{total / 1_000_000:.0f} MB",
+        )
+    console.print(table)
+
+    for target, files in found.items():
+        if not files:
+            continue
+        console.print()
+        console.print(f"[bold]{target}[/] の最初と最後:")
+        for item in files[:show]:
+            console.print(f"  [dim]{item.megabytes:8.1f} MB[/dim]  {item.key}")
+        if len(files) > show * 2:
+            console.print(f"  [dim]… 途中 {len(files) - show * 2:,} 本 …[/dim]")
+        for item in files[-show:] if len(files) > show else []:
+            console.print(f"  [dim]{item.megabytes:8.1f} MB[/dim]  {item.key}")
+
+    console.print()
+    console.print(
+        "[bold]この出力をそのまま貼ってほしい。[/] "
+        "本数と範囲を見てから取り込みを作る。"
+        "[dim]粒度を推測して作ると、行が少ないまま黙って入る。[/dim]"
+    )
+    console.print(
+        f"[dim]署名付きURLの寿命は {int(PRESIGNED_URL_TTL.total_seconds() // 60)} 分。"
+        "取り込みは1本ずつ「取ってすぐ落とす」形にする。[/dim]"
+    )
 
 
 @app.command(name="jquants-inventory")
