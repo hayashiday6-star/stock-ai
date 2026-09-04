@@ -145,3 +145,50 @@ def test_the_series_needs_a_benchmark_for_the_calendar() -> None:
 
     with pytest.raises(ValueError, match="ベンチマーク"):
         _series(_database(frames))
+
+
+def test_beta_is_estimated_by_least_squares() -> None:
+    """β は共分散÷分散。**平均は返さない。**"""
+    series = _series(_database(_universe()))
+    beta = series.beta_to_benchmark()
+
+    bench = np.array(series.benchmark)
+    first = np.array([row[0] for row in series.quantiles])
+    expected = np.cov(first, bench, ddof=1)[0, 1] / np.var(bench, ddof=1)
+    assert beta == pytest.approx(expected)
+
+
+def test_beta_adjustment_removes_the_market_move() -> None:
+    """**仮説は「リスク調整後で高い」と言っている。**
+
+    生の差は、効果と「市場への感応度が低いこと」を混ぜて測る。β を引けば
+    市場が動いた分は入らない。
+    """
+    series = _series(_database(_universe()))
+    beta = series.beta_to_benchmark()
+    adjusted = series.beta_adjusted(beta)
+
+    for row, bench, value in zip(series.quantiles, series.benchmark, adjusted, strict=True):
+        assert value == pytest.approx(row[0] - beta * bench)
+
+
+def test_beta_must_come_from_outside_the_series_being_adjusted() -> None:
+    """β を外から渡す作りであること。
+
+    その系列自身から推定した β を当てると、判定期間の情報でその期間を調整
+    することになる。**渡す側が期間を選ぶ責任を持つ。**
+    """
+    series = _series(_database(_universe()))
+    assert series.beta_adjusted(0.5) != series.beta_adjusted(0.9)
+
+
+def test_beta_needs_a_moving_benchmark() -> None:
+    series = _series(_database(_universe()))
+    flat = type(series)(
+        months=series.months,
+        counts=series.counts,
+        quantiles=series.quantiles,
+        benchmark=[0.0] * len(series.benchmark),
+    )
+    with pytest.raises(ValueError, match="動いていない"):
+        flat.beta_to_benchmark()

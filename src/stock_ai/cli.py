@@ -3049,9 +3049,22 @@ def lowvol_power(
     ):
         table.add_column(column, justify="right" if column != "指標" else "left")
 
+    # β は**判定に使わない期間**から推定して固定する。共分散の比なので平均は
+    # 返らないが、判定期間から取れば期間を選んだことになる。
+    try:
+        beta = series.beta_to_benchmark()
+    except ValueError as exc:
+        console.print(f"[red]{exc}[/]")
+        raise typer.Exit(code=1) from exc
+    console.print(
+        f"分位1のβ（推定期間で固定）: [bold]{beta:.3f}[/]。"
+        "[dim]1 より小さいほど、生のリターン差に「市場が動いた分」が混ざる。[/dim]"
+    )
+
     needed: dict[str, float] = {}
     for label, values in (
-        ("分位1 − ベンチ（主要）", series.long_only()),
+        ("分位1 − ベンチ（生）", series.long_only()),
+        ("分位1 − β×ベンチ", series.beta_adjusted(beta)),
         ("分位1 − 全分位平均", series.vs_average()),
         ("分位1 − 分位5", series.long_short()),
     ):
@@ -3072,7 +3085,20 @@ def lowvol_power(
         "選んだ理由の一つが数字で確かめられたことになる**（#6 は 2.95倍）。[/dim]"
     )
 
-    primary = needed["分位1 − ベンチ（主要）"]
+    primary = needed["分位1 − ベンチ（生）"]
+    adjusted = needed["分位1 − β×ベンチ"]
+    console.print(
+        "[dim]**仮説は「リスク調整後で高い」と言っている。** 生の差は、効果と"
+        "「市場への感応度が低いこと」を混ぜて測る。β を引いた行がどれだけ小さく"
+        "なるかが、指標を変える価値そのものである。[/dim]"
+    )
+    if adjusted < primary:
+        console.print(
+            f"[green]β を引くと必要な差が {primary * 100:.2f}% → "
+            f"{adjusted * 100:.2f}% に下がる[/]（年 {primary * 12 * 100:.1f}% → "
+            f"年 {adjusted * 12 * 100:.1f}%）。"
+        )
+
     console.print()
     console.print(
         f"費用のしきい値は [bold]{COST_PER_MONTH * 100:.3f}%／月[/]"
