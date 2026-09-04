@@ -1,0 +1,3824 @@
+symbol,name,sector,industry
+1301,極洋,Materials,水産・農林業
+1332,日本水産,Materials,水産・農林業
+1333,マルハニチロ,Materials,水産・農林業
+1352,ホウスイ,Industrials,卸売業
+1375,雪国まいたけ,Materials,水産・農林業
+1376,カネコ種苗,Materials,水産・農林業
+1377,サカタのタネ,Materials,水産・農林業
+1379,ホクト,Materials,水産・農林業
+1380,秋川牧園,Materials,水産・農林業
+1381,アクシーズ,Materials,水産・農林業
+1382,ホーブ,Materials,水産・農林業
+1383,ベルグアース,Materials,水産・農林業
+1384,ホクリヨウ,Materials,水産・農林業
+1400,ルーデン・ホールディングス,Industrials,建設業
+1401,エムビーエス,Industrials,建設業
+1407,ウエストホールディングス,Industrials,建設業
+1413,ヒノキヤグループ,Industrials,建設業
+1414,ショーボンドホールディングス,Industrials,建設業
+1417,ミライト・ホールディングス,Industrials,建設業
+1418,インターライフホールディングス,Industrials,建設業
+1419,タマホーム,Industrials,建設業
+1420,サンヨーホームズ,Industrials,建設業
+1429,日本アクア,Industrials,建設業
+1430,ファーストコーポレーション,Industrials,建設業
+1431,Ｌｉｂ　Ｗｏｒｋ,Industrials,建設業
+1432,動力,Industrials,建設業
+1433,ベステラ,Industrials,建設業
+1434,ＪＥＳＣＯホールディングス,Industrials,建設業
+1435,Ｒｏｂｏｔ　Ｈｏｍｅ,Industrials,建設業
+1436,フィット,Industrials,建設業
+1439,安江工務店,Industrials,建設業
+1440,やまぜんホームズ,Industrials,建設業
+1443,技研ホールディングス,Industrials,建設業
+1445,ひかりホールディングス,Industrials,建設業
+1446,キャンディル,Industrials,建設業
+1447,ＩＴｂｏｏｋホールディングス,Industrials,建設業
+1448,スペースバリューホールディングス,Industrials,建設業
+1450,田中建設工業,Industrials,建設業
+1451,ＫＨＣ,Industrials,建設業
+1452,横浜ライト工業,Industrials,建設業
+1491,中外鉱業,Materials,非鉄金属
+1514,住石ホールディングス,Energy,鉱業
+1515,日鉄鉱業,Energy,鉱業
+1518,三井松島ホールディングス,Energy,鉱業
+1605,ＩＮＰＥＸ,Energy,鉱業
+1662,石油資源開発,Energy,鉱業
+1663,Ｋ＆Ｏエナジーグループ,Energy,鉱業
+1711,ＳＤＳホールディングス,Industrials,建設業
+1712,ダイセキ環境ソリューション,Industrials,建設業
+1716,第一カッター興業,Industrials,建設業
+1717,明豊ファシリティワークス,Industrials,サービス業
+1718,美樹工業,Industrials,建設業
+1719,安藤・間,Industrials,建設業
+1720,東急建設,Industrials,建設業
+1721,コムシスホールディングス,Industrials,建設業
+1723,日本電技,Industrials,建設業
+1724,シンクレイヤ,Industrials,建設業
+1726,ビーアールホールディングス,Industrials,建設業
+1730,麻生フオームクリート,Industrials,建設業
+1736,オーテック,Industrials,建設業
+1737,三井金属エンジニアリング,Industrials,建設業
+1739,メルディアＤＣ,Industrials,建設業
+1743,コーアツ工業,Industrials,建設業
+1757,中小企業ホールディングス,Industrials,建設業
+1758,太洋基礎工業,Industrials,建設業
+1762,高松コンストラクショングループ,Industrials,建設業
+1764,工藤建設,Industrials,建設業
+1766,東建コーポレーション,Industrials,建設業
+1768,ソネック,Industrials,建設業
+1770,藤田エンジニアリング,Industrials,建設業
+1773,ワイ・ティー・エル・コーポレーション・バーハッド,Industrials,建設業
+1775,富士古河Ｅ＆Ｃ,Industrials,建設業
+1776,三井住建道路,Industrials,建設業
+1780,ヤマウラ,Industrials,建設業
+1783,アジアゲートホールディングス,Industrials,建設業
+1786,オリエンタル白石,Industrials,建設業
+1787,ナカボーテック,Industrials,建設業
+1788,三東工業社,Industrials,建設業
+1789,ＥＴＳホールディングス,Industrials,建設業
+1793,大本組,Industrials,建設業
+1795,マサル,Industrials,建設業
+1798,守谷商会,Industrials,建設業
+1799,第一建設工業,Industrials,建設業
+1801,大成建設,Industrials,建設業
+1802,大林組,Industrials,建設業
+1803,清水建設,Industrials,建設業
+1805,飛島建設,Industrials,建設業
+1807,佐藤渡辺,Industrials,建設業
+1808,長谷工コーポレーション,Industrials,建設業
+1810,松井建設,Industrials,建設業
+1811,錢高組,Industrials,建設業
+1812,鹿島建設,Industrials,建設業
+1813,不動テトラ,Industrials,建設業
+1814,大末建設,Industrials,建設業
+1815,鉄建建設,Industrials,建設業
+1820,西松建設,Industrials,建設業
+1821,三井住友建設,Industrials,建設業
+1822,大豊建設,Industrials,建設業
+1826,佐田建設,Industrials,建設業
+1827,ナカノフドー建設,Industrials,建設業
+1828,田辺工業,Industrials,建設業
+1833,奥村組,Industrials,建設業
+1835,東鉄工業,Industrials,建設業
+1840,土屋ホールディングス,Industrials,建設業
+1841,サンユー建設,Industrials,建設業
+1844,大盛工業,Industrials,建設業
+1847,イチケン,Industrials,建設業
+1848,富士ピー・エス,Industrials,建設業
+1850,南海辰村建設,Industrials,建設業
+1852,淺沼組,Industrials,建設業
+1853,森組,Industrials,建設業
+1860,戸田建設,Industrials,建設業
+1861,熊谷組,Industrials,建設業
+1866,北野建設,Industrials,建設業
+1867,植木組,Industrials,建設業
+1870,矢作建設工業,Industrials,建設業
+1871,ピーエス三菱,Industrials,建設業
+1873,日本ハウスホールディングス,Industrials,建設業
+1878,大東建託,Industrials,建設業
+1879,新日本建設,Industrials,建設業
+1881,ＮＩＰＰＯ,Industrials,建設業
+1882,東亜道路工業,Industrials,建設業
+1884,日本道路,Industrials,建設業
+1885,東亜建設工業,Industrials,建設業
+1887,日本国土開発,Industrials,建設業
+1888,若築建設,Industrials,建設業
+1890,東洋建設,Industrials,建設業
+1893,五洋建設,Industrials,建設業
+1897,金下建設,Industrials,建設業
+1898,世紀東急工業,Industrials,建設業
+1899,福田組,Industrials,建設業
+1904,大成温調,Industrials,建設業
+1905,テノックス,Industrials,建設業
+1909,日本ドライケミカル,Industrials,機械
+1911,住友林業,Industrials,建設業
+1914,日本基礎技術,Industrials,建設業
+1921,巴コーポレーション,Industrials,建設業
+1925,大和ハウス工業,Industrials,建設業
+1926,ライト工業,Industrials,建設業
+1928,積水ハウス,Industrials,建設業
+1929,日特建設,Industrials,建設業
+1930,北陸電気工事,Industrials,建設業
+1934,ユアテック,Industrials,建設業
+1938,日本リーテック,Industrials,建設業
+1939,四電工,Industrials,建設業
+1941,中電工,Industrials,建設業
+1942,関電工,Industrials,建設業
+1944,きんでん,Industrials,建設業
+1945,東京エネシス,Industrials,建設業
+1946,トーエネック,Industrials,建設業
+1948,弘電社,Industrials,建設業
+1949,住友電設,Industrials,建設業
+1950,日本電設工業,Industrials,建設業
+1951,エクシオグループ,Industrials,建設業
+1952,新日本空調,Industrials,建設業
+1954,日本工営,Industrials,サービス業
+1959,九電工,Industrials,建設業
+1960,サンテック,Industrials,建設業
+1961,三機工業,Industrials,建設業
+1963,日揮ホールディングス,Industrials,建設業
+1964,中外炉工業,Industrials,建設業
+1965,テクノ菱和,Industrials,建設業
+1966,高田工業所,Industrials,建設業
+1967,ヤマト,Industrials,建設業
+1968,太平電業,Industrials,建設業
+1969,高砂熱学工業,Industrials,建設業
+1971,中央ビルト工業,Materials,金属製品
+1972,三晃金属工業,Industrials,建設業
+1973,ＮＥＣネッツエスアイ,Communication Services,情報･通信業
+1975,朝日工業社,Industrials,建設業
+1976,明星工業,Industrials,建設業
+1979,大氣社,Industrials,建設業
+1980,ダイダン,Industrials,建設業
+1981,協和日成,Industrials,建設業
+1982,日比谷総合設備,Industrials,建設業
+1992,神田通信機,Industrials,建設業
+1994,高橋カーテンウォール工業,Industrials,建設業
+1997,暁飯島工業,Industrials,建設業
+2001,ニップン,Consumer Defensive,食料品
+2002,日清製粉グループ本社,Consumer Defensive,食料品
+2003,日東富士製粉,Consumer Defensive,食料品
+2004,昭和産業,Consumer Defensive,食料品
+2009,鳥越製粉,Consumer Defensive,食料品
+2053,中部飼料,Consumer Defensive,食料品
+2055,日和産業,Consumer Defensive,食料品
+2060,フィード・ワン,Consumer Defensive,食料品
+2107,東洋精糖,Consumer Defensive,食料品
+2108,日本甜菜製糖,Consumer Defensive,食料品
+2109,ＤＭ三井製糖ホールディングス,Consumer Defensive,食料品
+2112,塩水港精糖,Consumer Defensive,食料品
+2114,フジ日本精糖,Consumer Defensive,食料品
+2117,日新製糖,Consumer Defensive,食料品
+2120,ＬＩＦＵＬＬ,Industrials,サービス業
+2121,ミクシィ,Industrials,サービス業
+2122,インタースペース,Industrials,サービス業
+2124,ジェイエイシーリクルートメント,Industrials,サービス業
+2127,日本Ｍ＆Ａセンターホールディングス,Industrials,サービス業
+2130,メンバーズ,Industrials,サービス業
+2134,燦キャピタルマネージメント,Industrials,サービス業
+2136,ヒップ,Industrials,サービス業
+2138,クルーズ,Communication Services,情報･通信業
+2139,中広,Industrials,サービス業
+2146,ＵＴグループ,Industrials,サービス業
+2148,アイティメディア,Industrials,サービス業
+2150,ケアネット,Industrials,サービス業
+2152,幼児活動研究会,Industrials,サービス業
+2153,Ｅ・Ｊホールディングス,Industrials,サービス業
+2154,夢真ビーネックスグループ,Industrials,サービス業
+2156,セーラー広告,Industrials,サービス業
+2157,コシダカホールディングス,Industrials,サービス業
+2158,ＦＲＯＮＴＥＯ,Industrials,サービス業
+2159,フルスピード,Industrials,サービス業
+2160,ジーエヌアイグループ,Healthcare,医薬品
+2162,ｎｍｓ　ホールディングス,Industrials,サービス業
+2163,アルトナー,Industrials,サービス業
+2164,地域新聞社,Industrials,サービス業
+2168,パソナグループ,Industrials,サービス業
+2169,ＣＤＳ,Industrials,サービス業
+2170,リンクアンドモチベーション,Industrials,サービス業
+2173,博展,Industrials,サービス業
+2175,エス・エム・エス,Industrials,サービス業
+2176,イナリサーチ,Industrials,サービス業
+2178,トライステージ,Industrials,サービス業
+2179,成学社,Industrials,サービス業
+2180,サニーサイドアップグループ,Industrials,サービス業
+2181,パーソルホールディングス,Industrials,サービス業
+2183,リニカル,Industrials,サービス業
+2185,シイエム・シイ,Industrials,サービス業
+2186,ソーバル,Industrials,サービス業
+2191,テラ,Industrials,サービス業
+2193,クックパッド,Industrials,サービス業
+2195,アミタホールディングス,Industrials,サービス業
+2196,エスクリ,Industrials,サービス業
+2198,アイ・ケイ・ケイホールディングス,Industrials,サービス業
+2201,森永製菓,Consumer Defensive,食料品
+2204,中村屋,Consumer Defensive,食料品
+2206,江崎グリコ,Consumer Defensive,食料品
+2207,名糖産業,Consumer Defensive,食料品
+2208,ブルボン,Consumer Defensive,食料品
+2209,井村屋グループ,Consumer Defensive,食料品
+2211,不二家,Consumer Defensive,食料品
+2212,山崎製パン,Consumer Defensive,食料品
+2215,第一屋製パン,Consumer Defensive,食料品
+2216,カンロ,Consumer Defensive,食料品
+2217,モロゾフ,Consumer Defensive,食料品
+2220,亀田製菓,Consumer Defensive,食料品
+2221,岩塚製菓,Consumer Defensive,食料品
+2222,寿スピリッツ,Consumer Defensive,食料品
+2224,コモ,Consumer Defensive,食料品
+2226,湖池屋,Consumer Defensive,食料品
+2229,カルビー,Consumer Defensive,食料品
+2230,五洋食品産業,Consumer Defensive,食料品
+2264,森永乳業,Consumer Defensive,食料品
+2266,六甲バター,Consumer Defensive,食料品
+2267,ヤクルト本社,Consumer Defensive,食料品
+2268,Ｂ−Ｒ　サーティワン　アイスクリーム,Consumer Defensive,食料品
+2269,明治ホールディングス,Consumer Defensive,食料品
+2270,雪印メグミルク,Consumer Defensive,食料品
+2281,プリマハム,Consumer Defensive,食料品
+2282,日本ハム,Consumer Defensive,食料品
+2286,林兼産業,Consumer Defensive,食料品
+2288,丸大食品,Consumer Defensive,食料品
+2291,福留ハム,Consumer Defensive,食料品
+2292,Ｓ　Ｆｏｏｄｓ,Consumer Defensive,食料品
+2293,滝沢ハム,Consumer Defensive,食料品
+2294,柿安本店,Consumer Defensive,食料品
+2296,伊藤ハム米久ホールディングス,Consumer Defensive,食料品
+2300,きょくとう,Industrials,サービス業
+2301,学情,Industrials,サービス業
+2303,ドーン,Communication Services,情報･通信業
+2304,ＣＳＳホールディングス,Industrials,サービス業
+2305,スタジオアリス,Industrials,サービス業
+2307,クロスキャット,Communication Services,情報･通信業
+2309,シミックホールディングス,Industrials,サービス業
+2311,エプコ,Industrials,サービス業
+2315,ＣＡＩＣＡ　ＤＩＧＩＴＡＬ,Communication Services,情報･通信業
+2317,システナ,Communication Services,情報･通信業
+2321,ソフトフロントホールディングス,Communication Services,情報･通信業
+2323,ｆｏｎｆｕｎ,Communication Services,情報･通信業
+2325,ＮＪＳ,Industrials,サービス業
+2326,デジタルアーツ,Communication Services,情報･通信業
+2327,日鉄ソリューションズ,Communication Services,情報･通信業
+2329,東北新社,Communication Services,情報･通信業
+2330,フォーサイド,Communication Services,情報･通信業
+2331,綜合警備保障,Industrials,サービス業
+2332,クエスト,Communication Services,情報･通信業
+2334,イオレ,Industrials,サービス業
+2335,キューブシステム,Communication Services,情報･通信業
+2337,いちご,Real Estate,不動産業
+2338,クオンタムソリューションズ,Communication Services,情報･通信業
+2340,極楽湯ホールディングス,Industrials,サービス業
+2341,アルバイトタイムス,Industrials,サービス業
+2342,トランスジェニック,Industrials,サービス業
+2344,平安レイサービス,Industrials,サービス業
+2345,クシム,Communication Services,情報･通信業
+2349,エヌアイデイ,Communication Services,情報･通信業
+2351,ＡＳＪ,Communication Services,情報･通信業
+2352,ＷＯＷ　ＷＯＲＬＤ,Communication Services,情報･通信業
+2353,日本駐車場開発,Real Estate,不動産業
+2354,ＹＥ　ＤＩＧＩＴＡＬ,Communication Services,情報･通信業
+2359,コア,Communication Services,情報･通信業
+2370,メディネット,Industrials,サービス業
+2371,カカクコム,Industrials,サービス業
+2372,アイロムグループ,Industrials,サービス業
+2373,ケア２１,Industrials,サービス業
+2374,セントケア・ホールディング,Industrials,サービス業
+2375,ギグワークス,Industrials,サービス業
+2376,サイネックス,Industrials,サービス業
+2378,ルネサンス,Industrials,サービス業
+2379,ディップ,Industrials,サービス業
+2384,ＳＢＳホールディングス,Industrials,陸運業
+2385,総医研ホールディングス,Industrials,サービス業
+2388,ウェッジホールディングス,Financials,その他金融業
+2389,デジタルホールディングス,Industrials,サービス業
+2391,プラネット,Industrials,サービス業
+2393,日本ケアサプライ,Industrials,サービス業
+2395,新日本科学,Industrials,サービス業
+2397,ＤＮＡチップ研究所,Industrials,サービス業
+2402,アマナ,Industrials,サービス業
+2404,鉄人化計画,Industrials,サービス業
+2406,アルテ　サロン　ホールディングス,Industrials,サービス業
+2408,ＫＧ情報,Industrials,サービス業
+2410,キャリアデザインセンター,Industrials,サービス業
+2411,ゲンダイエージェンシー,Communication Services,情報･通信業
+2412,ベネフィット・ワン,Industrials,サービス業
+2413,エムスリー,Industrials,サービス業
+2415,ヒューマンホールディングス,Industrials,サービス業
+2418,ツカダ・グローバルホールディング,Industrials,サービス業
+2424,ブラス,Industrials,サービス業
+2425,ケアサービス,Industrials,サービス業
+2427,アウトソーシング,Industrials,サービス業
+2428,ウェルネット,Industrials,サービス業
+2429,ワールドホールディングス,Industrials,サービス業
+2432,ディー・エヌ・エー,Industrials,サービス業
+2433,博報堂ＤＹホールディングス,Industrials,サービス業
+2435,シダー,Industrials,サービス業
+2436,共同ピーアール,Industrials,サービス業
+2437,Ｓｈｉｎｗａ　Ｗｉｓｅ　Ｈｏｌｄｉｎｇｓ,Industrials,サービス業
+2438,アスカネット,Industrials,サービス業
+2440,ぐるなび,Industrials,サービス業
+2445,タカミヤ,Industrials,サービス業
+2449,プラップジャパン,Industrials,サービス業
+2452,コンピュータマインド,Communication Services,情報･通信業
+2453,ジャパンベストレスキューシステム,Industrials,サービス業
+2454,オールアバウト,Industrials,サービス業
+2459,アウンコンサルティング,Industrials,サービス業
+2461,ファンコミュニケーションズ,Industrials,サービス業
+2462,ライク,Industrials,サービス業
+2464,ビジネス・ブレークスルー,Industrials,サービス業
+2468,フュートレック,Industrials,サービス業
+2469,ヒビノ,Industrials,サービス業
+2471,エスプール,Industrials,サービス業
+2475,ＷＤＢホールディングス,Industrials,サービス業
+2477,手間いらず,Industrials,サービス業
+2479,ジェイテック,Industrials,サービス業
+2480,システム・ロケーション,Communication Services,情報･通信業
+2481,タウンニュース社,Industrials,サービス業
+2483,翻訳センター,Industrials,サービス業
+2484,出前館,Communication Services,情報･通信業
+2485,ティア,Industrials,サービス業
+2487,ＣＤＧ,Industrials,サービス業
+2488,ＪＴＰ,Industrials,サービス業
+2489,アドウェイズ,Industrials,サービス業
+2491,バリューコマース,Industrials,サービス業
+2492,インフォマート,Industrials,サービス業
+2493,イーサポートリンク,Industrials,サービス業
+2497,ユナイテッド,Industrials,サービス業
+2498,オリエンタルコンサルタンツホールディングス,Industrials,サービス業
+2499,日本和装ホールディングス,Industrials,サービス業
+2501,サッポロホールディングス,Consumer Defensive,食料品
+2502,アサヒグループホールディングス,Consumer Defensive,食料品
+2503,キリンホールディングス,Consumer Defensive,食料品
+2531,宝ホールディングス,Consumer Defensive,食料品
+2533,オエノンホールディングス,Consumer Defensive,食料品
+2540,養命酒製造,Consumer Defensive,食料品
+2573,北海道コカ・コーラボトリング,Consumer Defensive,食料品
+2579,コカ・コーラ　ボトラーズジャパンホールディングス,Consumer Defensive,食料品
+2585,ライフドリンク　カンパニー,Consumer Defensive,食料品
+2586,フルッタフルッタ,Consumer Defensive,食料品
+2587,サントリー食品インターナショナル,Consumer Defensive,食料品
+2588,プレミアムウォーターホールディングス,Consumer Defensive,食料品
+2590,ダイドーグループホールディングス,Consumer Defensive,食料品
+2593,伊藤園,Consumer Defensive,食料品
+2594,キーコーヒー,Consumer Defensive,食料品
+2597,ユニカフェ,Consumer Defensive,食料品
+2599,ジャパンフーズ,Consumer Defensive,食料品
+2602,日清オイリオグループ,Consumer Defensive,食料品
+2607,不二製油グループ本社,Consumer Defensive,食料品
+2612,かどや製油,Consumer Defensive,食料品
+2613,Ｊ−オイルミルズ,Consumer Defensive,食料品
+2651,ローソン,Consumer Cyclical,小売業
+2652,まんだらけ,Consumer Cyclical,小売業
+2653,イオン九州,Consumer Cyclical,小売業
+2654,アスモ,Consumer Cyclical,小売業
+2656,ベクター,Consumer Cyclical,小売業
+2659,サンエー,Consumer Cyclical,小売業
+2664,カワチ薬品,Consumer Cyclical,小売業
+2666,オートウェーブ,Consumer Cyclical,小売業
+2667,イメージ　ワン,Industrials,卸売業
+2668,タビオ,Industrials,卸売業
+2669,カネ美食品,Consumer Cyclical,小売業
+2670,エービーシー・マート,Consumer Cyclical,小売業
+2673,夢みつけ隊,Consumer Cyclical,小売業
+2674,ハードオフコーポレーション,Consumer Cyclical,小売業
+2676,高千穂交易,Industrials,卸売業
+2678,アスクル,Consumer Cyclical,小売業
+2681,ゲオホールディングス,Consumer Cyclical,小売業
+2683,魚喜,Consumer Cyclical,小売業
+2685,アダストリア,Consumer Cyclical,小売業
+2686,ジーフット,Consumer Cyclical,小売業
+2687,シー・ヴイ・エス・ベイエリア,Consumer Cyclical,小売業
+2689,オルバヘルスケアホールディングス,Industrials,卸売業
+2692,伊藤忠食品,Industrials,卸売業
+2693,ＹＫＴ,Industrials,卸売業
+2694,焼肉坂井ホールディングス,Consumer Cyclical,小売業
+2695,くら寿司,Consumer Cyclical,小売業
+2698,キャンドゥ,Consumer Cyclical,小売業
+2700,木徳神糧,Industrials,卸売業
+2702,日本マクドナルドホールディングス,Consumer Cyclical,小売業
+2705,大戸屋ホールディングス,Consumer Cyclical,小売業
+2706,ブロッコリー,Industrials,その他製品
+2708,久世,Industrials,卸売業
+2715,エレマテック,Industrials,卸売業
+2721,ジェイホールディングス,Industrials,卸売業
+2722,アイケイ,Consumer Cyclical,小売業
+2726,パルグループホールディングス,Consumer Cyclical,小売業
+2729,ＪＡＬＵＸ,Industrials,卸売業
+2730,エディオン,Consumer Cyclical,小売業
+2733,あらた,Industrials,卸売業
+2734,サーラコーポレーション,Consumer Cyclical,小売業
+2735,ワッツ,Consumer Cyclical,小売業
+2736,フェスタリアホールディングス,Consumer Cyclical,小売業
+2737,トーメンデバイス,Industrials,卸売業
+2742,ハローズ,Consumer Cyclical,小売業
+2743,ピクセルカンパニーズ,Industrials,卸売業
+2747,北雄ラッキー,Consumer Cyclical,小売業
+2749,ＪＰホールディングス,Industrials,サービス業
+2750,石光商事,Industrials,卸売業
+2751,テンポスホールディングス,Industrials,卸売業
+2752,フジオフードグループ本社,Consumer Cyclical,小売業
+2753,あみやき亭,Consumer Cyclical,小売業
+2754,東葛ホールディングス,Consumer Cyclical,小売業
+2760,東京エレクトロン　デバイス,Industrials,卸売業
+2761,トシン・グループ,Industrials,卸売業
+2762,ＳＡＮＫＯ　ＭＡＲＫＥＴＩＮＧ　ＦＯＯＤＳ,Consumer Cyclical,小売業
+2763,エフティグループ,Industrials,卸売業
+2764,ひらまつ,Consumer Cyclical,小売業
+2767,フィールズ,Industrials,卸売業
+2768,双日,Industrials,卸売業
+2769,ヴィレッジヴァンガードコーポレーション,Consumer Cyclical,小売業
+2773,ミューチュアル,Industrials,機械
+2776,新都ホールディングス,Industrials,卸売業
+2777,カッシーナ・イクスシー,Industrials,卸売業
+2778,パレモ・ホールディングス,Consumer Cyclical,小売業
+2780,コメ兵ホールディングス,Consumer Cyclical,小売業
+2782,セリア,Consumer Cyclical,小売業
+2784,アルフレッサ　ホールディングス,Industrials,卸売業
+2788,アップルインターナショナル,Industrials,卸売業
+2789,カルラ,Consumer Cyclical,小売業
+2790,ナフコ,Consumer Cyclical,小売業
+2791,大黒天物産,Consumer Cyclical,小売業
+2792,ハニーズホールディングス,Consumer Cyclical,小売業
+2795,日本プリメックス,Industrials,卸売業
+2796,ファーマライズホールディングス,Consumer Cyclical,小売業
+2798,ワイズテーブルコーポレーション,Consumer Cyclical,小売業
+2801,キッコーマン,Consumer Defensive,食料品
+2802,味の素,Consumer Defensive,食料品
+2804,ブルドックソース,Consumer Defensive,食料品
+2805,ヱスビー食品,Consumer Defensive,食料品
+2806,ユタカフーズ,Consumer Defensive,食料品
+2809,キユーピー,Consumer Defensive,食料品
+2810,ハウス食品グループ本社,Consumer Defensive,食料品
+2811,カゴメ,Consumer Defensive,食料品
+2812,焼津水産化学工業,Consumer Defensive,食料品
+2813,和弘食品,Consumer Defensive,食料品
+2814,佐藤食品工業,Consumer Defensive,食料品
+2815,アリアケジャパン,Consumer Defensive,食料品
+2816,ダイショー,Consumer Defensive,食料品
+2818,ピエトロ,Consumer Defensive,食料品
+2819,エバラ食品工業,Consumer Defensive,食料品
+2820,やまみ,Consumer Defensive,食料品
+2830,アヲハタ,Consumer Defensive,食料品
+2831,はごろもフーズ,Consumer Defensive,食料品
+2871,ニチレイ,Consumer Defensive,食料品
+2872,セイヒョー,Consumer Defensive,食料品
+2874,横浜冷凍,Industrials,卸売業
+2875,東洋水産,Consumer Defensive,食料品
+2876,デルソーレ,Consumer Defensive,食料品
+2877,日東ベスト,Consumer Defensive,食料品
+2882,イートアンドホールディングス,Consumer Defensive,食料品
+2883,大冷,Consumer Defensive,食料品
+2884,ヨシムラ・フード・ホールディングス,Consumer Defensive,食料品
+2892,日本食品化工,Consumer Defensive,食料品
+2894,石井食品,Consumer Defensive,食料品
+2897,日清食品ホールディングス,Consumer Defensive,食料品
+2899,永谷園ホールディングス,Consumer Defensive,食料品
+2901,石垣食品,Consumer Defensive,食料品
+2903,シノブフーズ,Consumer Defensive,食料品
+2904,一正蒲鉾,Consumer Defensive,食料品
+2905,オーケー食品工業,Consumer Defensive,食料品
+2907,あじかん,Consumer Defensive,食料品
+2908,フジッコ,Consumer Defensive,食料品
+2910,ロック・フィールド,Consumer Defensive,食料品
+2911,旭松食品,Consumer Defensive,食料品
+2914,日本たばこ産業,Consumer Defensive,食料品
+2915,ケンコーマヨネーズ,Consumer Defensive,食料品
+2916,仙波糖化工業,Consumer Defensive,食料品
+2917,大森屋,Consumer Defensive,食料品
+2918,わらべや日洋ホールディングス,Consumer Defensive,食料品
+2922,なとり,Consumer Defensive,食料品
+2923,サトウ食品,Consumer Defensive,食料品
+2924,イフジ産業,Consumer Defensive,食料品
+2925,ピックルスコーポレーション,Consumer Defensive,食料品
+2926,篠崎屋,Consumer Defensive,食料品
+2927,ＡＦＣ−ＨＤアムスライフサイエンス,Consumer Defensive,食料品
+2929,ファーマフーズ,Consumer Defensive,食料品
+2930,北の達人コーポレーション,Materials,化学
+2931,ユーグレナ,Consumer Defensive,食料品
+2932,ＳＴＩフードホールディングス,Consumer Defensive,食料品
+2933,紀文食品,Consumer Defensive,食料品
+2934,ジェイフロンティア,Consumer Defensive,食料品
+2961,日本調理機,Materials,金属製品
+2970,グッドライフカンパニー,Real Estate,不動産業
+2975,スター・マイカ・ホールディングス,Real Estate,不動産業
+2977,Ｌｉｖ−ｕｐ,Real Estate,不動産業
+2978,ツクルバ,Real Estate,不動産業
+2980,ＳＲＥホールディングス,Real Estate,不動産業
+2981,ランディックス,Real Estate,不動産業
+2982,ＡＤワークスグループ,Real Estate,不動産業
+2983,アールプランナー,Real Estate,不動産業
+2985,ファーストステージ,Real Estate,不動産業
+2986,ＬＡホールディングス,Real Estate,不動産業
+2987,タスキ,Real Estate,不動産業
+2990,アイダ設計,Real Estate,不動産業
+2991,ランドネット,Real Estate,不動産業
+2992,アーバンライク,Real Estate,不動産業
+2993,長栄,Real Estate,不動産業
+3001,片倉工業,Consumer Cyclical,繊維製品
+3002,グンゼ,Consumer Cyclical,繊維製品
+3003,ヒューリック,Real Estate,不動産業
+3004,神栄,Industrials,卸売業
+3010,ポラリス・ホールディングス,Industrials,サービス業
+3011,バナーズ,Consumer Cyclical,小売業
+3020,アプライド,Consumer Cyclical,小売業
+3021,パシフィックネット,Industrials,サービス業
+3023,ラサ商事,Industrials,卸売業
+3024,クリエイト,Industrials,卸売業
+3028,アルペン,Consumer Cyclical,小売業
+3030,ハブ,Consumer Cyclical,小売業
+3031,ラクーンホールディングス,Communication Services,情報･通信業
+3034,クオールホールディングス,Consumer Cyclical,小売業
+3035,ケイティケイ,Industrials,卸売業
+3036,アルコニックス,Industrials,卸売業
+3038,神戸物産,Industrials,卸売業
+3039,碧,Consumer Cyclical,小売業
+3040,ソリトンシステムズ,Communication Services,情報･通信業
+3041,ビューティ花壇,Industrials,卸売業
+3042,セキュアヴェイル,Communication Services,情報･通信業
+3045,カワサキ,Industrials,卸売業
+3046,ジンズホールディングス,Consumer Cyclical,小売業
+3048,ビックカメラ,Consumer Cyclical,小売業
+3050,ＤＣＭホールディングス,Consumer Cyclical,小売業
+3053,ペッパーフードサービス,Consumer Cyclical,小売業
+3054,ハイパー,Industrials,卸売業
+3058,三洋堂ホールディングス,Consumer Cyclical,小売業
+3059,ヒラキ,Consumer Cyclical,小売業
+3063,ジェイグループホールディングス,Consumer Cyclical,小売業
+3064,ＭｏｎｏｔａＲＯ,Consumer Cyclical,小売業
+3065,ライフフーズ,Consumer Cyclical,小売業
+3067,東京一番フーズ,Consumer Cyclical,小売業
+3068,ＷＤＩ,Consumer Cyclical,小売業
+3069,ＪＦＬＡホールディングス,Consumer Cyclical,小売業
+3070,アマガサ,Industrials,卸売業
+3071,ストリーム,Consumer Cyclical,小売業
+3073,ＤＤホールディングス,Consumer Cyclical,小売業
+3075,銚子丸,Consumer Cyclical,小売業
+3076,あい　ホールディングス,Industrials,卸売業
+3077,ホリイフードサービス,Consumer Cyclical,小売業
+3079,ディーブイエックス,Industrials,卸売業
+3080,ジェーソン,Consumer Cyclical,小売業
+3082,きちりホールディングス,Consumer Cyclical,小売業
+3083,シーズメン,Consumer Cyclical,小売業
+3085,アークランドサービスホールディングス,Consumer Cyclical,小売業
+3086,Ｊ．フロント　リテイリング,Consumer Cyclical,小売業
+3087,ドトール・日レスホールディングス,Consumer Cyclical,小売業
+3088,マツキヨココカラ＆カンパニー,Consumer Cyclical,小売業
+3089,テクノアルファ,Industrials,卸売業
+3091,ブロンコビリー,Consumer Cyclical,小売業
+3092,ＺＯＺＯ,Consumer Cyclical,小売業
+3093,トレジャー・ファクトリー,Consumer Cyclical,小売業
+3094,スーパーバリュー,Consumer Cyclical,小売業
+3096,オーシャンシステム,Consumer Cyclical,小売業
+3097,物語コーポレーション,Consumer Cyclical,小売業
+3099,三越伊勢丹ホールディングス,Consumer Cyclical,小売業
+3101,東洋紡,Consumer Cyclical,繊維製品
+3103,ユニチカ,Consumer Cyclical,繊維製品
+3104,富士紡ホールディングス,Consumer Cyclical,繊維製品
+3105,日清紡ホールディングス,Technology,電気機器
+3106,倉敷紡績,Consumer Cyclical,繊維製品
+3107,ダイワボウホールディングス,Industrials,卸売業
+3109,シキボウ,Consumer Cyclical,繊維製品
+3110,日東紡績,Materials,ガラス･土石製品
+3111,オーミケンシ,Consumer Cyclical,繊維製品
+3113,Ｏａｋキャピタル,Financials,証券･商品先物取引業
+3116,トヨタ紡織,Consumer Cyclical,輸送用機器
+3121,マーチャント・バンカーズ,Industrials,サービス業
+3123,サイボー,Consumer Cyclical,繊維製品
+3131,シンデン・ハイテックス,Industrials,卸売業
+3132,マクニカ・富士エレホールディングス,Industrials,卸売業
+3133,海帆,Consumer Cyclical,小売業
+3134,Ｈａｍｅｅ,Consumer Cyclical,小売業
+3135,マーケットエンタープライズ,Consumer Cyclical,小売業
+3137,ファンデリー,Consumer Cyclical,小売業
+3138,富士山マガジンサービス,Consumer Cyclical,小売業
+3139,ラクト・ジャパン,Industrials,卸売業
+3140,ＢＲＵＮＯ,Industrials,卸売業
+3141,ウエルシアホールディングス,Consumer Cyclical,小売業
+3143,オーウイル,Industrials,卸売業
+3148,クリエイトＳＤホールディングス,Consumer Cyclical,小売業
+3150,グリムス,Industrials,卸売業
+3151,バイタルケーエスケー・ホールディングス,Industrials,卸売業
+3153,八洲電機,Industrials,卸売業
+3154,メディアスホールディングス,Industrials,卸売業
+3156,レスターホールディングス,Industrials,卸売業
+3157,ジューテックホールディングス,Industrials,卸売業
+3159,丸善ＣＨＩホールディングス,Consumer Cyclical,小売業
+3160,大光,Industrials,卸売業
+3161,アゼアス,Industrials,卸売業
+3166,ＯＣＨＩホールディングス,Industrials,卸売業
+3167,ＴＯＫＡＩホールディングス,Industrials,卸売業
+3168,黒谷,Industrials,卸売業
+3169,ミサワ,Consumer Cyclical,小売業
+3172,ティーライフ,Consumer Cyclical,小売業
+3173,Ｃｏｍｉｎｉｘ,Industrials,卸売業
+3174,ハピネス・アンド・ディ,Consumer Cyclical,小売業
+3175,エー・ピーホールディングス,Consumer Cyclical,小売業
+3176,三洋貿易,Industrials,卸売業
+3177,ありがとうサービス,Consumer Cyclical,小売業
+3178,チムニー,Consumer Cyclical,小売業
+3179,シュッピン,Consumer Cyclical,小売業
+3180,ビューティガレージ,Industrials,卸売業
+3181,買取王国,Consumer Cyclical,小売業
+3182,オイシックス・ラ・大地,Consumer Cyclical,小売業
+3183,ウイン・パートナーズ,Industrials,卸売業
+3184,ＩＣＤＡホールディングス,Consumer Cyclical,小売業
+3185,夢展望,Consumer Cyclical,小売業
+3186,ネクステージ,Consumer Cyclical,小売業
+3187,サンワカンパニー,Consumer Cyclical,小売業
+3189,ＡＮＡＰ,Consumer Cyclical,小売業
+3190,ホットマン,Consumer Cyclical,小売業
+3191,ジョイフル本田,Consumer Cyclical,小売業
+3192,白鳩,Consumer Cyclical,小売業
+3193,鳥貴族ホールディングス,Consumer Cyclical,小売業
+3195,ジェネレーションパス,Consumer Cyclical,小売業
+3196,ホットランド,Consumer Cyclical,小売業
+3197,すかいらーくホールディングス,Consumer Cyclical,小売業
+3198,ＳＦＰホールディングス,Consumer Cyclical,小売業
+3199,綿半ホールディングス,Consumer Cyclical,小売業
+3201,日本毛織,Consumer Cyclical,繊維製品
+3202,ダイトウボウ,Consumer Cyclical,繊維製品
+3204,トーア紡コーポレーション,Consumer Cyclical,繊維製品
+3205,ダイドーリミテッド,Consumer Cyclical,繊維製品
+3221,ヨシックスホールディングス,Consumer Cyclical,小売業
+3222,ユナイテッド・スーパーマーケット・ホールディングス,Consumer Cyclical,小売業
+3223,エスエルディー,Consumer Cyclical,小売業
+3224,ゼネラル・オイスター,Consumer Cyclical,小売業
+3228,三栄建築設計,Real Estate,不動産業
+3231,野村不動産ホールディングス,Real Estate,不動産業
+3232,三重交通グループホールディングス,Real Estate,不動産業
+3236,プロパスト,Real Estate,不動産業
+3237,イントランス,Real Estate,不動産業
+3238,セントラル総合開発,Real Estate,不動産業
+3241,ウィル,Real Estate,不動産業
+3242,アーバネットコーポレーション,Real Estate,不動産業
+3244,サムティ,Real Estate,不動産業
+3245,ディア・ライフ,Real Estate,不動産業
+3246,コーセーアールイー,Real Estate,不動産業
+3248,アールエイジ,Real Estate,不動産業
+3252,日本商業開発,Real Estate,不動産業
+3254,プレサンスコーポレーション,Real Estate,不動産業
+3261,グランディーズ,Real Estate,不動産業
+3264,アスコット,Real Estate,不動産業
+3266,ファンドクリエーショングループ,Real Estate,不動産業
+3267,フィル・カンパニー,Industrials,建設業
+3271,ＴＨＥグローバル社,Real Estate,不動産業
+3275,ハウスコム,Real Estate,不動産業
+3276,日本管理センター,Real Estate,不動産業
+3277,サンセイランディック,Real Estate,不動産業
+3280,エストラスト,Real Estate,不動産業
+3284,フージャースホールディングス,Real Estate,不動産業
+3286,トラストホールディングス,Real Estate,不動産業
+3288,オープンハウス,Real Estate,不動産業
+3289,東急不動産ホールディングス,Real Estate,不動産業
+3291,飯田グループホールディングス,Real Estate,不動産業
+3293,アズマハウス,Real Estate,不動産業
+3294,イーグランド,Real Estate,不動産業
+3297,東武住販,Real Estate,不動産業
+3299,ムゲンエステート,Real Estate,不動産業
+3300,アンビション　ＤＸ　ホールディングス,Real Estate,不動産業
+3302,帝国繊維,Consumer Cyclical,繊維製品
+3306,日本製麻,Industrials,卸売業
+3315,日本コークス工業,Energy,石油･石炭製品
+3316,東京日産コンピュータシステム,Industrials,卸売業
+3317,フライングガーデン,Consumer Cyclical,小売業
+3319,ゴルフダイジェスト・オンライン,Consumer Cyclical,小売業
+3320,クロスプラス,Industrials,卸売業
+3321,ミタチ産業,Industrials,卸売業
+3322,アルファグループ,Industrials,卸売業
+3323,レカム,Industrials,卸売業
+3326,ランシステム,Industrials,サービス業
+3328,ＢＥＥＮＯＳ,Consumer Cyclical,小売業
+3329,東和フードサービス,Consumer Cyclical,小売業
+3333,あさひ,Consumer Cyclical,小売業
+3341,日本調剤,Consumer Cyclical,小売業
+3347,トラスト,Consumer Cyclical,小売業
+3349,コスモス薬品,Consumer Cyclical,小売業
+3350,レッド・プラネット・ジャパン,Industrials,卸売業
+3352,バッファロー,Consumer Cyclical,小売業
+3353,メディカル一光グループ,Consumer Cyclical,小売業
+3355,クリヤマホールディングス,Industrials,卸売業
+3356,テリロジー,Industrials,卸売業
+3358,ワイエスフード,Consumer Cyclical,小売業
+3359,ｃｏｔｔａ,Industrials,卸売業
+3360,シップヘルスケアホールディングス,Industrials,卸売業
+3361,トーエル,Consumer Cyclical,小売業
+3370,フジタコーポレーション,Consumer Cyclical,小売業
+3371,ソフトクリエイトホールディングス,Communication Services,情報･通信業
+3372,関門海,Consumer Cyclical,小売業
+3374,内外テック,Industrials,卸売業
+3375,ＺＯＡ,Consumer Cyclical,小売業
+3376,オンリー,Consumer Cyclical,小売業
+3377,バイク王＆カンパニー,Industrials,卸売業
+3382,セブン＆アイ・ホールディングス,Consumer Cyclical,小売業
+3386,コスモ・バイオ,Industrials,卸売業
+3387,クリエイト・レストランツ・ホールディングス,Consumer Cyclical,小売業
+3388,明治電機工業,Industrials,卸売業
+3390,ＩＮＥＳＴ,Industrials,卸売業
+3391,ツルハホールディングス,Consumer Cyclical,小売業
+3392,デリカフーズホールディングス,Industrials,卸売業
+3393,スターティアホールディングス,Industrials,卸売業
+3395,サンマルクホールディングス,Consumer Cyclical,小売業
+3396,フェリシモ,Consumer Cyclical,小売業
+3397,トリドールホールディングス,Consumer Cyclical,小売業
+3399,丸千代山岡家,Consumer Cyclical,小売業
+3401,帝人,Consumer Cyclical,繊維製品
+3402,東レ,Consumer Cyclical,繊維製品
+3405,クラレ,Materials,化学
+3407,旭化成,Materials,化学
+3409,北日本紡績,Consumer Cyclical,繊維製品
+3415,ＴＯＫＹＯ　ＢＡＳＥ,Consumer Cyclical,小売業
+3416,ピクスタ,Consumer Cyclical,小売業
+3417,大木ヘルスケアホールディングス,Industrials,卸売業
+3418,バルニバービ,Consumer Cyclical,小売業
+3420,ケー・エフ・シー,Materials,金属製品
+3421,稲葉製作所,Materials,金属製品
+3422,丸順,Materials,金属製品
+3423,エスイー,Materials,金属製品
+3426,アトムリビンテック,Materials,金属製品
+3431,宮地エンジニアリンググループ,Materials,金属製品
+3433,トーカロ,Materials,金属製品
+3434,アルファ,Materials,金属製品
+3435,サンコーテクノ,Materials,金属製品
+3436,ＳＵＭＣＯ,Materials,金属製品
+3437,特殊電極,Materials,金属製品
+3439,三ツ知,Materials,金属製品
+3440,日創プロニティ,Materials,金属製品
+3441,山王,Materials,金属製品
+3443,川田テクノロジーズ,Materials,金属製品
+3444,菊池製作所,Materials,金属製品
+3445,ＲＳ　Ｔｅｃｈｎｏｌｏｇｉｅｓ,Materials,金属製品
+3446,ジェイテックコーポレーション,Materials,金属製品
+3447,信和,Materials,金属製品
+3448,清鋼材,Materials,金属製品
+3449,テクノフレックス,Materials,金属製品
+3450,サトウ産業,Materials,金属製品
+3452,ビーロット,Real Estate,不動産業
+3454,ファーストブラザーズ,Real Estate,不動産業
+3456,ＴＳＯＮ,Real Estate,不動産業
+3457,ハウスドゥ,Real Estate,不動産業
+3458,シーアールイー,Real Estate,不動産業
+3461,パルマ,Real Estate,不動産業
+3464,プロパティエージェント,Real Estate,不動産業
+3465,ケイアイスター不動産,Real Estate,不動産業
+3467,アグレ都市デザイン,Real Estate,不動産業
+3469,デュアルタップ,Real Estate,不動産業
+3474,Ｇ−ＦＡＣＴＯＲＹ,Real Estate,不動産業
+3475,グッドコムアセット,Real Estate,不動産業
+3477,フォーライフ,Real Estate,不動産業
+3479,ティーケーピー,Real Estate,不動産業
+3480,ジェイ・エス・ビー,Real Estate,不動産業
+3482,ロードスターキャピタル,Real Estate,不動産業
+3483,翔栄,Real Estate,不動産業
+3484,テンポイノベーション,Real Estate,不動産業
+3486,グローバル・リンク・マネジメント,Real Estate,不動産業
+3489,フェイスネットワーク,Real Estate,不動産業
+3490,アズ企画設計,Real Estate,不動産業
+3491,ＧＡ　ｔｅｃｈｎｏｌｏｇｉｅｓ,Real Estate,不動産業
+3494,マリオン,Real Estate,不動産業
+3495,香陵住販,Real Estate,不動産業
+3496,アズーム,Real Estate,不動産業
+3497,ＬｅＴｅｃｈ,Real Estate,不動産業
+3498,霞ヶ関キャピタル,Real Estate,不動産業
+3501,住江織物,Consumer Cyclical,繊維製品
+3512,日本フエルト,Consumer Cyclical,繊維製品
+3513,イチカワ,Consumer Cyclical,繊維製品
+3521,エコナックホールディングス,Industrials,サービス業
+3524,日東製網,Consumer Cyclical,繊維製品
+3526,芦森工業,Consumer Cyclical,輸送用機器
+3528,ミライノベート,Real Estate,不動産業
+3529,アツギ,Consumer Cyclical,繊維製品
+3536,アクサスホールディングス,Consumer Cyclical,小売業
+3537,昭栄薬品,Industrials,卸売業
+3538,ウイルプラスホールディングス,Consumer Cyclical,小売業
+3539,ＪＭホールディングス,Consumer Cyclical,小売業
+3540,歯愛メディカル,Industrials,卸売業
+3541,農業総合研究所,Industrials,卸売業
+3542,ベガコーポレーション,Consumer Cyclical,小売業
+3543,コメダホールディングス,Industrials,卸売業
+3544,サツドラホールディングス,Consumer Cyclical,小売業
+3546,アレンザホールディングス,Consumer Cyclical,小売業
+3547,串カツ田中ホールディングス,Consumer Cyclical,小売業
+3548,バロックジャパンリミテッド,Consumer Cyclical,小売業
+3549,クスリのアオキホールディングス,Consumer Cyclical,小売業
+3550,スタジオアタオ,Consumer Cyclical,小売業
+3551,ダイニック,Consumer Cyclical,繊維製品
+3553,共和レザー,Materials,化学
+3556,リネットジャパングループ,Consumer Cyclical,小売業
+3557,ユナイテッド＆コレクティブ,Consumer Cyclical,小売業
+3558,ロコンド,Consumer Cyclical,小売業
+3559,ピーバンドットコム,Industrials,卸売業
+3560,ほぼ日,Consumer Cyclical,小売業
+3561,力の源ホールディングス,Consumer Cyclical,小売業
+3562,Ｎｏ．１,Industrials,卸売業
+3563,ＦＯＯＤ　＆　ＬＩＦＥ　ＣＯＭＰＡＮＩＥＳ,Consumer Cyclical,小売業
+3565,アセンテック,Industrials,卸売業
+3566,ユニフォームネクスト,Consumer Cyclical,小売業
+3569,セーレン,Consumer Cyclical,繊維製品
+3571,ソトー,Consumer Cyclical,繊維製品
+3577,東海染工,Consumer Cyclical,繊維製品
+3578,倉庫精練,Consumer Cyclical,繊維製品
+3580,小松マテーレ,Consumer Cyclical,繊維製品
+3583,オーベクス,Consumer Cyclical,繊維製品
+3591,ワコールホールディングス,Consumer Cyclical,繊維製品
+3593,ホギメディカル,Consumer Cyclical,繊維製品
+3597,自重堂,Consumer Cyclical,繊維製品
+3598,山喜,Consumer Cyclical,繊維製品
+3600,フジックス,Consumer Cyclical,繊維製品
+3604,川本産業,Consumer Cyclical,繊維製品
+3607,クラウディアホールディングス,Consumer Cyclical,繊維製品
+3608,ＴＳＩホールディングス,Consumer Cyclical,繊維製品
+3611,マツオカコーポレーション,Consumer Cyclical,繊維製品
+3612,ワールド,Consumer Cyclical,繊維製品
+3622,ネットイヤーグループ,Communication Services,情報･通信業
+3623,ビリングシステム,Communication Services,情報･通信業
+3624,アクセルマーク,Communication Services,情報･通信業
+3625,テックファームホールディングス,Communication Services,情報･通信業
+3626,ＴＩＳ,Communication Services,情報･通信業
+3627,ＪＮＳホールディングス,Communication Services,情報･通信業
+3628,データホライゾン,Communication Services,情報･通信業
+3632,グリー,Communication Services,情報･通信業
+3633,ＧＭＯペパボ,Communication Services,情報･通信業
+3634,ソケッツ,Communication Services,情報･通信業
+3635,コーエーテクモホールディングス,Communication Services,情報･通信業
+3636,三菱総合研究所,Communication Services,情報･通信業
+3639,ボルテージ,Communication Services,情報･通信業
+3640,電算,Communication Services,情報･通信業
+3641,パピレス,Communication Services,情報･通信業
+3645,メディカルネット,Communication Services,情報･通信業
+3646,駅探,Communication Services,情報･通信業
+3647,ジー・スリーホールディングス,Communication Services,情報･通信業
+3648,ＡＧＳ,Communication Services,情報･通信業
+3649,ファインデックス,Communication Services,情報･通信業
+3652,ディジタルメディアプロフェッショナル,Communication Services,情報･通信業
+3653,モルフォ,Communication Services,情報･通信業
+3655,ブレインパッド,Communication Services,情報･通信業
+3656,ＫＬａｂ,Communication Services,情報･通信業
+3657,ポールトゥウィン・ピットクルーホールディングス,Communication Services,情報･通信業
+3658,イーブックイニシアティブジャパン,Communication Services,情報･通信業
+3659,ネクソン,Communication Services,情報･通信業
+3660,アイスタイル,Communication Services,情報･通信業
+3661,エムアップホールディングス,Communication Services,情報･通信業
+3662,エイチーム,Communication Services,情報･通信業
+3663,アートスパークホールディングス,Communication Services,情報･通信業
+3664,モブキャストホールディングス,Communication Services,情報･通信業
+3665,エニグモ,Communication Services,情報･通信業
+3666,テクノスジャパン,Communication Services,情報･通信業
+3667,ｅｎｉｓｈ,Communication Services,情報･通信業
+3668,コロプラ,Communication Services,情報･通信業
+3670,協立情報通信,Communication Services,情報･通信業
+3671,ソフトマックス,Communication Services,情報･通信業
+3672,オルトプラス,Communication Services,情報･通信業
+3673,ブロードリーフ,Communication Services,情報･通信業
+3674,オークファン,Communication Services,情報･通信業
+3675,クロス・マーケティンググループ,Communication Services,情報･通信業
+3676,デジタルハーツホールディングス,Communication Services,情報･通信業
+3677,システム情報,Communication Services,情報･通信業
+3678,メディアドゥ,Communication Services,情報･通信業
+3679,じげん,Communication Services,情報･通信業
+3680,ホットリンク,Communication Services,情報･通信業
+3681,ブイキューブ,Communication Services,情報･通信業
+3682,エンカレッジ・テクノロジ,Communication Services,情報･通信業
+3683,サイバーリンクス,Communication Services,情報･通信業
+3686,ディー・エル・イー,Communication Services,情報･通信業
+3687,フィックスターズ,Communication Services,情報･通信業
+3688,ＣＡＲＴＡ　ＨＯＬＤＩＮＧＳ,Communication Services,情報･通信業
+3690,イルグルム,Communication Services,情報･通信業
+3691,リアルワールド,Communication Services,情報･通信業
+3692,ＦＦＲＩセキュリティ,Communication Services,情報･通信業
+3694,オプティム,Communication Services,情報･通信業
+3695,ＧＭＯリサーチ,Communication Services,情報･通信業
+3696,セレス,Communication Services,情報･通信業
+3697,ＳＨＩＦＴ,Communication Services,情報･通信業
+3698,ＣＲＩ・ミドルウェア,Communication Services,情報･通信業
+3708,特種東海製紙,Materials,パルプ・紙
+3710,ジョルダン,Communication Services,情報･通信業
+3712,情報企画,Communication Services,情報･通信業
+3719,ジェクシード,Communication Services,情報･通信業
+3723,日本ファルコム,Communication Services,情報･通信業
+3726,フォーシーズＨＤ,Consumer Cyclical,小売業
+3727,アプリックス,Communication Services,情報･通信業
+3733,ソフトウェア・サービス,Communication Services,情報･通信業
+3738,ティーガイア,Communication Services,情報･通信業
+3741,セック,Communication Services,情報･通信業
+3744,サイオス,Communication Services,情報･通信業
+3747,インタートレード,Communication Services,情報･通信業
+3750,ＦＲＡＣＴＡＬＥ,Communication Services,情報･通信業
+3753,フライトホールディングス,Communication Services,情報･通信業
+3758,アエリア,Communication Services,情報･通信業
+3760,ケイブ,Communication Services,情報･通信業
+3762,テクマトリックス,Communication Services,情報･通信業
+3763,プロシップ,Communication Services,情報･通信業
+3765,ガンホー・オンライン・エンターテイメント,Communication Services,情報･通信業
+3766,システムズ・デザイン,Communication Services,情報･通信業
+3768,リスクモンスター,Communication Services,情報･通信業
+3769,ＧＭＯペイメントゲートウェイ,Communication Services,情報･通信業
+3770,ザッパラス,Communication Services,情報･通信業
+3771,システムリサーチ,Communication Services,情報･通信業
+3772,ウェルス・マネジメント,Real Estate,不動産業
+3773,アドバンスト・メディア,Communication Services,情報･通信業
+3774,インターネットイニシアティブ,Communication Services,情報･通信業
+3776,ブロードバンドタワー,Communication Services,情報･通信業
+3777,ＦＨＴホールディングス,Communication Services,情報･通信業
+3778,さくらインターネット,Communication Services,情報･通信業
+3779,ジェイ・エスコムホールディングス,Communication Services,情報･通信業
+3782,ディー・ディー・エス,Communication Services,情報･通信業
+3784,ヴィンクス,Communication Services,情報･通信業
+3787,テクノマセマティカル,Communication Services,情報･通信業
+3788,ＧＭＯグローバルサイン・ホールディングス,Communication Services,情報･通信業
+3791,ＩＧポート,Communication Services,情報･通信業
+3793,ドリコム,Communication Services,情報･通信業
+3796,いい生活,Communication Services,情報･通信業
+3798,ＵＬＳグループ,Communication Services,情報･通信業
+3799,キーウェアソリューションズ,Communication Services,情報･通信業
+3800,ユニリタ,Communication Services,情報･通信業
+3802,エコミック,Communication Services,情報･通信業
+3803,イメージ情報開発,Communication Services,情報･通信業
+3804,システム　ディ,Communication Services,情報･通信業
+3807,フィスコ,Communication Services,情報･通信業
+3810,サイバーステップ,Communication Services,情報･通信業
+3814,アルファクス・フード・システム,Communication Services,情報･通信業
+3815,メディア工房,Communication Services,情報･通信業
+3816,大和コンピューター,Communication Services,情報･通信業
+3817,ＳＲＡホールディングス,Communication Services,情報･通信業
+3823,アクロディア,Communication Services,情報･通信業
+3825,リミックスポイント,Communication Services,情報･通信業
+3826,システムインテグレータ,Communication Services,情報･通信業
+3834,朝日ネット,Communication Services,情報･通信業
+3835,ｅＢＡＳＥ,Communication Services,情報･通信業
+3836,アバント,Communication Services,情報･通信業
+3837,アドソル日進,Communication Services,情報･通信業
+3839,ＯＤＫソリューションズ,Communication Services,情報･通信業
+3840,パス,Communication Services,情報･通信業
+3841,ジーダット,Communication Services,情報･通信業
+3842,ネクストジェン,Communication Services,情報･通信業
+3843,フリービット,Communication Services,情報･通信業
+3844,コムチュア,Communication Services,情報･通信業
+3845,アイフリークモバイル,Communication Services,情報･通信業
+3847,パシフィックシステム,Communication Services,情報･通信業
+3848,データ・アプリケーション,Communication Services,情報･通信業
+3850,エヌ・ティ・ティ・データ・イントラマート,Communication Services,情報･通信業
+3851,日本一ソフトウェア,Communication Services,情報･通信業
+3852,サイバーコム,Communication Services,情報･通信業
+3853,アステリア,Communication Services,情報･通信業
+3854,アイル,Communication Services,情報･通信業
+3856,Ａｂａｌａｎｃｅ,Technology,電気機器
+3857,ラック,Communication Services,情報･通信業
+3858,ユビキタスＡＩコーポレーション,Communication Services,情報･通信業
+3861,王子ホールディングス,Materials,パルプ・紙
+3863,日本製紙,Materials,パルプ・紙
+3864,三菱製紙,Materials,パルプ・紙
+3865,北越コーポレーション,Materials,パルプ・紙
+3877,中越パルプ工業,Materials,パルプ・紙
+3878,巴川製紙所,Materials,パルプ・紙
+3880,大王製紙,Materials,パルプ・紙
+3891,ニッポン高度紙工業,Materials,パルプ・紙
+3892,岡山製紙,Materials,パルプ・紙
+3895,ハビックス,Materials,パルプ・紙
+3896,阿波製紙,Materials,パルプ・紙
+3900,クラウドワークス,Communication Services,情報･通信業
+3901,マークラインズ,Communication Services,情報･通信業
+3902,メディカル・データ・ビジョン,Communication Services,情報･通信業
+3903,ｇｕｍｉ,Communication Services,情報･通信業
+3904,カヤック,Communication Services,情報･通信業
+3905,データセクション,Communication Services,情報･通信業
+3906,ＡＬＢＥＲＴ,Communication Services,情報･通信業
+3907,シリコンスタジオ,Communication Services,情報･通信業
+3908,コラボス,Communication Services,情報･通信業
+3909,ショーケース,Communication Services,情報･通信業
+3910,エムケイシステム,Communication Services,情報･通信業
+3911,Ａｉｍｉｎｇ,Communication Services,情報･通信業
+3912,モバイルファクトリー,Communication Services,情報･通信業
+3913,ｓＭｅｄｉｏ,Communication Services,情報･通信業
+3914,ＪＩＧ−ＳＡＷ,Communication Services,情報･通信業
+3915,テラスカイ,Communication Services,情報･通信業
+3916,デジタル・インフォメーション・テクノロジー,Communication Services,情報･通信業
+3917,アイリッジ,Communication Services,情報･通信業
+3918,ＰＣＩホールディングス,Communication Services,情報･通信業
+3919,パイプドＨＤ,Communication Services,情報･通信業
+3920,アイビーシー,Communication Services,情報･通信業
+3921,ネオジャパン,Communication Services,情報･通信業
+3922,ＰＲ　ＴＩＭＥＳ,Communication Services,情報･通信業
+3923,ラクス,Communication Services,情報･通信業
+3924,ランドコンピュータ,Communication Services,情報･通信業
+3925,ダブルスタンダード,Communication Services,情報･通信業
+3926,オープンドア,Communication Services,情報･通信業
+3927,フーバーブレイン,Communication Services,情報･通信業
+3928,マイネット,Communication Services,情報･通信業
+3929,ソーシャルワイヤー,Communication Services,情報･通信業
+3930,はてな,Communication Services,情報･通信業
+3931,バリューゴルフ,Communication Services,情報･通信業
+3932,アカツキ,Communication Services,情報･通信業
+3933,チエル,Communication Services,情報･通信業
+3934,ベネフィットジャパン,Communication Services,情報･通信業
+3935,エディア,Communication Services,情報･通信業
+3936,グローバルウェイ,Communication Services,情報･通信業
+3937,Ｕｂｉｃｏｍホールディングス,Communication Services,情報･通信業
+3939,カナミックネットワーク,Communication Services,情報･通信業
+3940,ノムラシステムコーポレーション,Communication Services,情報･通信業
+3941,レンゴー,Materials,パルプ・紙
+3944,古林紙工,Materials,パルプ・紙
+3945,スーパーバッグ,Materials,パルプ・紙
+3946,トーモク,Materials,パルプ・紙
+3947,ダイナパック,Materials,パルプ・紙
+3948,光ビジネスフォーム,Materials,パルプ・紙
+3950,ザ・パック,Materials,パルプ・紙
+3951,朝日印刷,Materials,パルプ・紙
+3953,大村紙業,Materials,パルプ・紙
+3954,昭和パックス,Materials,パルプ・紙
+3955,イムラ封筒,Materials,パルプ・紙
+3956,国際チャート,Materials,パルプ・紙
+3960,バリューデザイン,Communication Services,情報･通信業
+3961,シルバーエッグ・テクノロジー,Communication Services,情報･通信業
+3962,チェンジ,Communication Services,情報･通信業
+3963,シンクロ・フード,Communication Services,情報･通信業
+3964,オークネット,Communication Services,情報･通信業
+3965,キャピタル・アセット・プランニング,Communication Services,情報･通信業
+3966,ユーザベース,Communication Services,情報･通信業
+3967,エルテス,Communication Services,情報･通信業
+3968,セグエグループ,Communication Services,情報･通信業
+3969,エイトレッド,Communication Services,情報･通信業
+3970,イノベーション,Communication Services,情報･通信業
+3974,ティビィシィ・スキヤツト,Communication Services,情報･通信業
+3976,シャノン,Communication Services,情報･通信業
+3978,マクロミル,Communication Services,情報･通信業
+3979,うるる,Communication Services,情報･通信業
+3981,ビーグリー,Communication Services,情報･通信業
+3983,オロ,Communication Services,情報･通信業
+3984,ユーザーローカル,Communication Services,情報･通信業
+3985,テモナ,Communication Services,情報･通信業
+3986,ビーブレイクシステムズ,Communication Services,情報･通信業
+3987,エコモット,Communication Services,情報･通信業
+3988,ＳＹＳホールディングス,Communication Services,情報･通信業
+3989,シェアリングテクノロジー,Communication Services,情報･通信業
+3990,ＵＵＵＭ,Communication Services,情報･通信業
+3991,ウォンテッドリー,Communication Services,情報･通信業
+3992,ニーズウェル,Communication Services,情報･通信業
+3993,ＰＫＳＨＡ　Ｔｅｃｈｎｏｌｏｇｙ,Communication Services,情報･通信業
+3994,マネーフォワード,Communication Services,情報･通信業
+3995,ＳＫＩＹＡＫＩ,Communication Services,情報･通信業
+3996,サインポスト,Communication Services,情報･通信業
+3997,トレードワークス,Communication Services,情報･通信業
+3998,すららネット,Communication Services,情報･通信業
+3999,ナレッジスイート,Communication Services,情報･通信業
+4004,昭和電工,Materials,化学
+4005,住友化学,Materials,化学
+4008,住友精化,Materials,化学
+4011,ヘッドウォータース,Communication Services,情報･通信業
+4012,アクシス,Communication Services,情報･通信業
+4013,勤次郎,Communication Services,情報･通信業
+4014,カラダノート,Communication Services,情報･通信業
+4015,アララ,Communication Services,情報･通信業
+4016,ＭＩＴホールディングス,Communication Services,情報･通信業
+4017,クリーマ,Communication Services,情報･通信業
+4019,スタメン,Communication Services,情報･通信業
+4020,ビートレンド,Communication Services,情報･通信業
+4021,日産化学,Materials,化学
+4022,ラサ工業,Materials,化学
+4023,クレハ,Materials,化学
+4025,多木化学,Materials,化学
+4026,神島化学工業,Materials,ガラス･土石製品
+4027,テイカ,Materials,化学
+4028,石原産業,Materials,化学
+4031,片倉コープアグリ,Materials,化学
+4041,日本曹達,Materials,化学
+4042,東ソー,Materials,化学
+4043,トクヤマ,Materials,化学
+4044,セントラル硝子,Materials,化学
+4045,東亞合成,Materials,化学
+4046,大阪ソーダ,Materials,化学
+4047,関東電化工業,Materials,化学
+4051,ＧＭＯフィナンシャルゲート,Communication Services,情報･通信業
+4052,フィーチャ,Communication Services,情報･通信業
+4053,Ｓｕｎ　Ａｓｔｅｒｉｓｋ,Communication Services,情報･通信業
+4054,日本情報クリエイト,Communication Services,情報･通信業
+4055,ティアンドエス,Communication Services,情報･通信業
+4056,ニューラルポケット,Communication Services,情報･通信業
+4057,インターファクトリー,Communication Services,情報･通信業
+4058,トヨクモ,Communication Services,情報･通信業
+4059,まぐまぐ,Communication Services,情報･通信業
+4060,ｒａｋｕｍｏ,Communication Services,情報･通信業
+4061,デンカ,Materials,化学
+4062,イビデン,Technology,電気機器
+4063,信越化学工業,Materials,化学
+4064,日本カーバイド工業,Materials,化学
+4068,ベイシス,Communication Services,情報･通信業
+4069,ＢｌｕｅＭｅｍｅ,Communication Services,情報･通信業
+4071,プラスアルファ・コンサルティング,Communication Services,情報･通信業
+4072,電算システムホールディングス,Communication Services,情報･通信業
+4073,ジィ・シィ企画,Communication Services,情報･通信業
+4074,ラキール,Communication Services,情報･通信業
+4075,ブレインズテクノロジー,Communication Services,情報･通信業
+4076,シイエヌエス,Communication Services,情報･通信業
+4078,堺化学工業,Materials,化学
+4080,田中化学研究所,Materials,化学
+4082,第一稀元素化学工業,Materials,化学
+4088,エア・ウォーター,Materials,化学
+4091,日本酸素ホールディングス,Materials,化学
+4092,日本化学工業,Materials,化学
+4093,東邦アセチレン,Materials,化学
+4094,日本化学産業,Materials,化学
+4095,日本パーカライジング,Materials,化学
+4097,高圧ガス工業,Materials,化学
+4098,チタン工業,Materials,化学
+4099,四国化成工業,Materials,化学
+4100,戸田工業,Materials,化学
+4102,丸尾カルシウム,Materials,化学
+4107,伊勢化学工業,Materials,化学
+4109,ステラ　ケミファ,Materials,化学
+4112,保土谷化学工業,Materials,化学
+4113,田岡化学工業,Materials,化学
+4114,日本触媒,Materials,化学
+4116,大日精化工業,Materials,化学
+4118,カネカ,Materials,化学
+4119,日本ピグメント,Materials,化学
+4120,スガイ化学工業,Materials,化学
+4124,大阪油化工業,Materials,化学
+4125,三和油化工業,Materials,化学
+4151,協和キリン,Healthcare,医薬品
+4165,プレイド,Communication Services,情報･通信業
+4166,かっこ,Communication Services,情報･通信業
+4167,ココペリ,Communication Services,情報･通信業
+4168,ヤプリ,Communication Services,情報･通信業
+4169,ＥＮＥＣＨＡＮＧＥ,Communication Services,情報･通信業
+4170,Ｋａｉｚｅｎ　Ｐｌａｔｆｏｒｍ,Communication Services,情報･通信業
+4171,グローバルインフォメーション,Communication Services,情報･通信業
+4172,東和ハイシステム,Communication Services,情報･通信業
+4173,ＷＡＣＵＬ,Communication Services,情報･通信業
+4174,アピリッツ,Communication Services,情報･通信業
+4175,ｃｏｌｙ,Communication Services,情報･通信業
+4176,ココナラ,Communication Services,情報･通信業
+4177,ｉ‐ｐｌｕｇ,Communication Services,情報･通信業
+4178,Ｓｈａｒｉｎｇ　Ｉｎｎｏｖａｔｉｏｎｓ,Communication Services,情報･通信業
+4179,ジーネクスト,Communication Services,情報･通信業
+4180,Ａｐｐｉｅｒ　Ｇｒｏｕｐ,Communication Services,情報･通信業
+4182,三菱瓦斯化学,Materials,化学
+4183,三井化学,Materials,化学
+4185,ＪＳＲ,Materials,化学
+4186,東京応化工業,Materials,化学
+4187,大阪有機化学工業,Materials,化学
+4188,三菱ケミカルホールディングス,Materials,化学
+4189,ＫＨネオケム,Materials,化学
+4192,スパイダープラス,Communication Services,情報･通信業
+4193,ファブリカコミュニケーションズ,Communication Services,情報･通信業
+4194,ビジョナル,Communication Services,情報･通信業
+4196,ネオマーケティング,Communication Services,情報･通信業
+4198,テンダ,Communication Services,情報･通信業
+4199,ワンダープラネット,Communication Services,情報･通信業
+4200,ＨＣＳホールディングス,Communication Services,情報･通信業
+4202,ダイセル,Materials,化学
+4203,住友ベークライト,Materials,化学
+4204,積水化学工業,Materials,化学
+4205,日本ゼオン,Materials,化学
+4206,アイカ工業,Materials,化学
+4208,宇部興産,Materials,化学
+4212,積水樹脂,Materials,化学
+4215,タキロンシーアイ,Materials,化学
+4216,旭有機材,Materials,化学
+4218,ニチバン,Materials,化学
+4220,リケンテクノス,Materials,化学
+4221,大倉工業,Materials,化学
+4222,児玉化学工業,Materials,化学
+4224,ロンシール工業,Materials,化学
+4228,積水化成品工業,Materials,化学
+4229,群栄化学工業,Materials,化学
+4231,タイガースポリマー,Materials,化学
+4234,サンエー化研,Materials,化学
+4235,ウルトラファブリックス・ホールディングス,Materials,化学
+4237,フジプレアム,Materials,化学
+4238,ミライアル,Materials,化学
+4240,クラスターテクノロジー,Materials,化学
+4241,アテクト,Materials,化学
+4242,タカギセイコー,Materials,化学
+4243,ニックス,Materials,化学
+4245,ダイキアクシス,Materials,化学
+4246,ダイキョーニシカワ,Materials,化学
+4248,竹本容器,Materials,化学
+4249,森六ホールディングス,Materials,化学
+4251,恵和,Materials,化学
+4255,ＴＨＥＣＯＯ,Communication Services,情報･通信業
+4256,サインド,Communication Services,情報･通信業
+4257,エヴィクサー,Communication Services,情報･通信業
+4258,網屋,Communication Services,情報･通信業
+4259,エクサウィザーズ,Communication Services,情報･通信業
+4260,ハイブリッドテクノロジーズ,Communication Services,情報･通信業
+4261,アジアクエスト,Communication Services,情報･通信業
+4262,ニフティライフスタイル,Communication Services,情報･通信業
+4263,サスメド,Communication Services,情報･通信業
+4264,セキュア,Communication Services,情報･通信業
+4265,Ｉｎｓｔｉｔｕｔｉｏｎ　ｆｏｒ　ａ　Ｇｌｏｂａｌ　Ｓｏｃｉｅｔｙ,Communication Services,情報･通信業
+4272,日本化薬,Materials,化学
+4274,細谷火工,Materials,化学
+4275,カーリットホールディングス,Materials,化学
+4284,ソルクシーズ,Communication Services,情報･通信業
+4286,レッグス,Industrials,サービス業
+4287,ジャストプランニング,Communication Services,情報･通信業
+4288,アズジェント,Communication Services,情報･通信業
+4290,プレステージ・インターナショナル,Industrials,サービス業
+4293,セプテーニ・ホールディングス,Industrials,サービス業
+4295,フェイス,Communication Services,情報･通信業
+4298,プロトコーポレーション,Communication Services,情報･通信業
+4299,ハイマックス,Communication Services,情報･通信業
+4301,アミューズ,Industrials,サービス業
+4304,Ｅストアー,Communication Services,情報･通信業
+4307,野村総合研究所,Communication Services,情報･通信業
+4308,Ｊストリーム,Communication Services,情報･通信業
+4310,ドリームインキュベータ,Industrials,サービス業
+4312,サイバネットシステム,Communication Services,情報･通信業
+4316,ビーマップ,Communication Services,情報･通信業
+4317,レイ,Industrials,サービス業
+4318,クイック,Industrials,サービス業
+4319,ＴＡＣ,Industrials,サービス業
+4320,ＣＥホールディングス,Communication Services,情報･通信業
+4323,日本システム技術,Communication Services,情報･通信業
+4324,電通グループ,Industrials,サービス業
+4326,インテージホールディングス,Communication Services,情報･通信業
+4327,日本エス・エイチ・エル,Industrials,サービス業
+4331,テイクアンドギヴ・ニーズ,Industrials,サービス業
+4333,東邦システムサイエンス,Communication Services,情報･通信業
+4334,ユークス,Communication Services,情報･通信業
+4335,アイ・ピー・エス,Communication Services,情報･通信業
+4336,クリエアナブキ,Industrials,サービス業
+4337,ぴあ,Industrials,サービス業
+4341,西菱電機,Industrials,サービス業
+4343,イオンファンタジー,Industrials,サービス業
+4344,ソースネクスト,Communication Services,情報･通信業
+4345,シーティーエス,Industrials,サービス業
+4346,ネクシィーズグループ,Industrials,サービス業
+4347,ブロードメディア,Industrials,サービス業
+4348,インフォコム,Communication Services,情報･通信業
+4350,メディカルシステムネットワーク,Consumer Cyclical,小売業
+4351,山田債権回収管理総合事務所,Financials,その他金融業
+4355,ロングライフホールディング,Industrials,サービス業
+4356,応用技術,Communication Services,情報･通信業
+4360,マナック・ケミカル・パートナーズ,Materials,化学
+4361,川口化学工業,Materials,化学
+4362,日本精化,Materials,化学
+4365,松本油脂製薬,Materials,化学
+4366,ダイトーケミックス,Materials,化学
+4367,広栄化学,Materials,化学
+4368,扶桑化学工業,Materials,化学
+4369,トリケミカル研究所,Materials,化学
+4370,モビルス,Communication Services,情報･通信業
+4371,コアコンセプト・テクノロジー,Communication Services,情報･通信業
+4372,ユミルリンク,Communication Services,情報･通信業
+4373,シンプレクス・ホールディングス,Communication Services,情報･通信業
+4374,ＲＯＢＯＴ　ＰＡＹＭＥＮＴ,Communication Services,情報･通信業
+4375,セーフィー,Communication Services,情報･通信業
+4376,くふうカンパニー,Communication Services,情報･通信業
+4377,ワンキャリア,Communication Services,情報･通信業
+4378,ＣＩＮＣ,Communication Services,情報･通信業
+4379,Ｐｈｏｔｏｓｙｎｔｈ,Communication Services,情報･通信業
+4380,Ｍマート,Communication Services,情報･通信業
+4381,ビープラッツ,Communication Services,情報･通信業
+4382,ＨＥＲＯＺ,Communication Services,情報･通信業
+4384,ラクスル,Communication Services,情報･通信業
+4385,メルカリ,Communication Services,情報･通信業
+4386,ＳＩＧグループ,Communication Services,情報･通信業
+4387,ＺＵＵ,Communication Services,情報･通信業
+4388,エーアイ,Communication Services,情報･通信業
+4389,プロパティデータバンク,Communication Services,情報･通信業
+4390,アイ・ピー・エス,Communication Services,情報･通信業
+4391,ロジザード,Communication Services,情報･通信業
+4392,ＦＩＧ,Communication Services,情報･通信業
+4393,バンク・オブ・イノベーション,Communication Services,情報･通信業
+4394,エクスモーション,Communication Services,情報･通信業
+4395,アクリート,Communication Services,情報･通信業
+4396,システムサポート,Communication Services,情報･通信業
+4397,チームスピリット,Communication Services,情報･通信業
+4398,ブロードバンドセキュリティ,Communication Services,情報･通信業
+4401,ＡＤＥＫＡ,Materials,化学
+4403,日油,Materials,化学
+4404,ミヨシ油脂,Consumer Defensive,食料品
+4406,新日本理化,Materials,化学
+4409,東邦化学工業,Materials,化学
+4410,ハリマ化成グループ,Materials,化学
+4412,サイエンスアーツ,Communication Services,情報･通信業
+4413,ボードルア,Communication Services,情報･通信業
+4414,フレクト,Communication Services,情報･通信業
+4415,ブロードエンタープライズ,Communication Services,情報･通信業
+4416,Ｔｒｕｅ　Ｄａｔａ,Communication Services,情報･通信業
+4417,グローバルセキュリティエキスパート,Communication Services,情報･通信業
+4418,ＪＤＳＣ,Communication Services,情報･通信業
+4419,Ｆｉｎａｔｅｘｔホールディングス,Communication Services,情報･通信業
+4420,イーソル,Communication Services,情報･通信業
+4421,ディ・アイ・システム,Communication Services,情報･通信業
+4422,ＶＡＬＵＥＮＥＸ,Communication Services,情報･通信業
+4423,アルテリア・ネットワークス,Communication Services,情報･通信業
+4424,Ａｍａｚｉａ,Communication Services,情報･通信業
+4425,Ｋｕｄａｎ,Communication Services,情報･通信業
+4426,パスロジ,Communication Services,情報･通信業
+4427,ＥｄｕＬａｂ,Communication Services,情報･通信業
+4428,シノプス,Communication Services,情報･通信業
+4429,リックソフト,Communication Services,情報･通信業
+4430,東海ソフト,Communication Services,情報･通信業
+4431,スマレジ,Communication Services,情報･通信業
+4432,ウイングアーク１ｓｔ,Communication Services,情報･通信業
+4433,ヒト・コミュニケーションズ・ホールディングス,Communication Services,情報･通信業
+4434,サーバーワークス,Communication Services,情報･通信業
+4435,カオナビ,Communication Services,情報･通信業
+4436,ミンカブ・ジ・インフォノイド,Communication Services,情報･通信業
+4437,ｇｏｏｄｄａｙｓホールディングス,Communication Services,情報･通信業
+4438,Ｗｅｌｂｙ,Communication Services,情報･通信業
+4439,東名,Communication Services,情報･通信業
+4440,ヴィッツ,Communication Services,情報･通信業
+4441,トビラシステムズ,Communication Services,情報･通信業
+4442,バルテス,Communication Services,情報･通信業
+4443,Ｓａｎｓａｎ,Communication Services,情報･通信業
+4444,インフォネット,Communication Services,情報･通信業
+4445,リビン・テクノロジーズ,Communication Services,情報･通信業
+4446,Ｌｉｎｋ−Ｕ,Communication Services,情報･通信業
+4448,Ｃｈａｔｗｏｒｋ,Communication Services,情報･通信業
+4449,ギフティ,Communication Services,情報･通信業
+4450,パワーソリューションズ,Communication Services,情報･通信業
+4452,花王,Materials,化学
+4461,第一工業製薬,Materials,化学
+4462,石原ケミカル,Materials,化学
+4463,日華化学,Materials,化学
+4464,ソフト９９コーポレーション,Materials,化学
+4465,ニイタカ,Materials,化学
+4471,三洋化成工業,Materials,化学
+4475,ＨＥＮＮＧＥ,Communication Services,情報･通信業
+4476,ＡＩ　ＣＲＯＳＳ,Communication Services,情報･通信業
+4477,ＢＡＳＥ,Communication Services,情報･通信業
+4478,フリー,Communication Services,情報･通信業
+4479,マクアケ,Communication Services,情報･通信業
+4480,メドレー,Communication Services,情報･通信業
+4481,ベース,Communication Services,情報･通信業
+4482,ウィルズ,Communication Services,情報･通信業
+4483,ＪＭＤＣ,Communication Services,情報･通信業
+4484,ランサーズ,Communication Services,情報･通信業
+4485,ＪＴＯＷＥＲ,Communication Services,情報･通信業
+4486,ユナイトアンドグロウ,Communication Services,情報･通信業
+4487,スペースマーケット,Communication Services,情報･通信業
+4488,ＡＩ　ｉｎｓｉｄｅ,Communication Services,情報･通信業
+4489,ペイロール,Communication Services,情報･通信業
+4490,ビザスク,Communication Services,情報･通信業
+4491,コンピューターマネージメント,Communication Services,情報･通信業
+4492,ゼネテック,Communication Services,情報･通信業
+4493,サイバーセキュリティクラウド,Communication Services,情報･通信業
+4494,バリオセキュア,Communication Services,情報･通信業
+4495,アイキューブドシステムズ,Communication Services,情報･通信業
+4496,コマースＯｎｅホールディングス,Communication Services,情報･通信業
+4498,サイバートラスト,Communication Services,情報･通信業
+4499,Ｓｐｅｅｅ,Communication Services,情報･通信業
+4502,武田薬品工業,Healthcare,医薬品
+4503,アステラス製薬,Healthcare,医薬品
+4506,大日本住友製薬,Healthcare,医薬品
+4507,塩野義製薬,Healthcare,医薬品
+4512,わかもと製薬,Healthcare,医薬品
+4516,日本新薬,Healthcare,医薬品
+4519,中外製薬,Healthcare,医薬品
+4521,科研製薬,Healthcare,医薬品
+4523,エーザイ,Healthcare,医薬品
+4524,森下仁丹,Healthcare,医薬品
+4526,理研ビタミン,Consumer Defensive,食料品
+4527,ロート製薬,Healthcare,医薬品
+4528,小野薬品工業,Healthcare,医薬品
+4530,久光製薬,Healthcare,医薬品
+4531,有機合成薬品工業,Materials,化学
+4534,持田製薬,Healthcare,医薬品
+4536,参天製薬,Healthcare,医薬品
+4538,扶桑薬品工業,Healthcare,医薬品
+4539,日本ケミファ,Healthcare,医薬品
+4540,ツムラ,Healthcare,医薬品
+4541,日医工,Healthcare,医薬品
+4543,テルモ,Technology,精密機器
+4544,Ｈ．Ｕ．グループホールディングス,Industrials,サービス業
+4547,キッセイ薬品工業,Healthcare,医薬品
+4548,生化学工業,Healthcare,医薬品
+4549,栄研化学,Healthcare,医薬品
+4550,日水製薬,Healthcare,医薬品
+4551,鳥居薬品,Healthcare,医薬品
+4552,ＪＣＲファーマ,Healthcare,医薬品
+4553,東和薬品,Healthcare,医薬品
+4554,富士製薬工業,Healthcare,医薬品
+4556,カイノス,Healthcare,医薬品
+4558,中京医薬品,Healthcare,医薬品
+4559,ゼリア新薬工業,Healthcare,医薬品
+4563,アンジェス,Healthcare,医薬品
+4564,オンコセラピー・サイエンス,Healthcare,医薬品
+4565,そーせいグループ,Healthcare,医薬品
+4568,第一三共,Healthcare,医薬品
+4569,キョーリン製薬ホールディングス,Healthcare,医薬品
+4570,免疫生物研究所,Healthcare,医薬品
+4571,ナノキャリア,Healthcare,医薬品
+4572,カルナバイオサイエンス,Healthcare,医薬品
+4574,大幸薬品,Healthcare,医薬品
+4575,キャンバス,Healthcare,医薬品
+4576,デ・ウエスタン・セラピテクス研究所,Healthcare,医薬品
+4577,ダイト,Healthcare,医薬品
+4578,大塚ホールディングス,Healthcare,医薬品
+4579,ラクオリア創薬,Healthcare,医薬品
+4581,大正製薬ホールディングス,Healthcare,医薬品
+4582,シンバイオ製薬,Healthcare,医薬品
+4583,カイオム・バイオサイエンス,Healthcare,医薬品
+4584,キッズウェル・バイオ,Healthcare,医薬品
+4586,メドレックス,Healthcare,医薬品
+4587,ペプチドリーム,Healthcare,医薬品
+4588,オンコリスバイオファーマ,Healthcare,医薬品
+4591,リボミック,Healthcare,医薬品
+4592,サンバイオ,Healthcare,医薬品
+4593,ヘリオス,Healthcare,医薬品
+4594,ブライトパス・バイオ,Healthcare,医薬品
+4595,ミズホメディー,Healthcare,医薬品
+4596,窪田製薬ホールディングス,Healthcare,医薬品
+4597,ソレイジア・ファーマ,Healthcare,医薬品
+4598,Ｄｅｌｔａ−Ｆｌｙ　Ｐｈａｒｍａ,Healthcare,医薬品
+4599,ステムリム,Healthcare,医薬品
+4611,大日本塗料,Materials,化学
+4612,日本ペイントホールディングス,Materials,化学
+4613,関西ペイント,Materials,化学
+4615,神東塗料,Materials,化学
+4616,川上塗料,Materials,化学
+4617,中国塗料,Materials,化学
+4619,日本特殊塗料,Materials,化学
+4620,藤倉化成,Materials,化学
+4621,ロックペイント,Materials,化学
+4623,アサヒペン,Materials,化学
+4624,イサム塗料,Materials,化学
+4625,アトミクス,Materials,化学
+4626,太陽ホールディングス,Materials,化学
+4627,ナトコ,Materials,化学
+4628,エスケー化研,Materials,化学
+4629,大伸化学,Materials,化学
+4631,ＤＩＣ,Materials,化学
+4633,サカタインクス,Materials,化学
+4634,東洋インキＳＣホールディングス,Materials,化学
+4635,東京インキ,Materials,化学
+4636,Ｔ＆Ｋ　ＴＯＫＡ,Materials,化学
+4641,アルプス技研,Industrials,サービス業
+4642,オリジナル設計,Industrials,サービス業
+4644,イマジニア,Communication Services,情報･通信業
+4645,市進ホールディングス,Industrials,サービス業
+4650,ＳＤエンターテイメント,Industrials,サービス業
+4651,サニックス,Industrials,サービス業
+4653,ダイオーズ,Industrials,サービス業
+4657,環境管理センター,Industrials,サービス業
+4658,日本空調サービス,Industrials,サービス業
+4659,エイジス,Industrials,サービス業
+4661,オリエンタルランド,Industrials,サービス業
+4662,フォーカスシステムズ,Communication Services,情報･通信業
+4664,アール・エス・シー,Industrials,サービス業
+4665,ダスキン,Industrials,サービス業
+4666,パーク２４,Real Estate,不動産業
+4667,アイサンテクノロジー,Communication Services,情報･通信業
+4668,明光ネットワークジャパン,Industrials,サービス業
+4671,ファルコホールディングス,Industrials,サービス業
+4673,川崎地質,Industrials,サービス業
+4674,クレスコ,Communication Services,情報･通信業
+4676,フジ・メディア・ホールディングス,Communication Services,情報･通信業
+4678,秀英予備校,Industrials,サービス業
+4679,田谷,Industrials,サービス業
+4680,ラウンドワン,Industrials,サービス業
+4681,リゾートトラスト,Industrials,サービス業
+4684,オービック,Communication Services,情報･通信業
+4685,菱友システムズ,Communication Services,情報･通信業
+4686,ジャストシステム,Communication Services,情報･通信業
+4687,ＴＤＣソフト,Communication Services,情報･通信業
+4689,Ｚホールディングス,Communication Services,情報･通信業
+4690,日本パレットプール,Industrials,サービス業
+4691,ワシントンホテル,Industrials,サービス業
+4694,ビー・エム・エル,Industrials,サービス業
+4699,ウチダエスコ,Industrials,サービス業
+4704,トレンドマイクロ,Communication Services,情報･通信業
+4705,クリップコーポレーション,Industrials,サービス業
+4707,キタック,Industrials,サービス業
+4708,りらいあコミュニケーションズ,Industrials,サービス業
+4709,ＩＤホールディングス,Communication Services,情報･通信業
+4712,ＫｅｙＨｏｌｄｅｒ,Industrials,サービス業
+4714,リソー教育,Industrials,サービス業
+4716,日本オラクル,Communication Services,情報･通信業
+4718,早稲田アカデミー,Industrials,サービス業
+4719,アルファシステムズ,Communication Services,情報･通信業
+4720,城南進学研究社,Industrials,サービス業
+4722,フューチャー,Communication Services,情報･通信業
+4725,ＣＡＣ　Ｈｏｌｄｉｎｇｓ,Communication Services,情報･通信業
+4726,ＳＢテクノロジー,Communication Services,情報･通信業
+4728,トーセ,Communication Services,情報･通信業
+4732,ユー・エス・エス,Industrials,サービス業
+4733,オービックビジネスコンサルタント,Communication Services,情報･通信業
+4735,京進,Industrials,サービス業
+4736,日本ラッド,Communication Services,情報･通信業
+4739,伊藤忠テクノソリューションズ,Communication Services,情報･通信業
+4743,アイティフォー,Communication Services,情報･通信業
+4745,東京個別指導学院,Industrials,サービス業
+4746,東計電算,Communication Services,情報･通信業
+4748,構造計画研究所,Communication Services,情報･通信業
+4750,ダイサン,Industrials,サービス業
+4751,サイバーエージェント,Industrials,サービス業
+4752,昭和システムエンジニアリング,Communication Services,情報･通信業
+4754,トスネット,Industrials,サービス業
+4755,楽天グループ,Industrials,サービス業
+4760,アルファ,Industrials,サービス業
+4761,さくらケーシーエス,Communication Services,情報･通信業
+4762,エックスネット,Communication Services,情報･通信業
+4763,クリーク・アンド・リバー社,Industrials,サービス業
+4764,Ｎｅｘｕｓ　Ｂａｎｋ,Communication Services,情報･通信業
+4765,モーニングスター,Industrials,サービス業
+4766,ピーエイ,Industrials,サービス業
+4767,テー・オー・ダブリュー,Industrials,サービス業
+4768,大塚商会,Communication Services,情報･通信業
+4769,インフォメーションクリエーティブ,Communication Services,情報･通信業
+4770,図研エルミック,Communication Services,情報･通信業
+4771,エフアンドエム,Industrials,サービス業
+4772,ストリームメディアコーポレーション,Communication Services,情報･通信業
+4776,サイボウズ,Communication Services,情報･通信業
+4777,ガーラ,Communication Services,情報･通信業
+4781,日本ハウズイング,Industrials,サービス業
+4783,日本コンピュータ・ダイナミクス,Communication Services,情報･通信業
+4784,ＧＭＯアドパートナーズ,Industrials,サービス業
+4792,山田コンサルティンググループ,Industrials,サービス業
+4800,オリコン,Communication Services,情報･通信業
+4801,セントラルスポーツ,Industrials,サービス業
+4809,パラカ,Real Estate,不動産業
+4812,電通国際情報サービス,Communication Services,情報･通信業
+4813,ＡＣＣＥＳＳ,Communication Services,情報･通信業
+4814,ネクストウェア,Communication Services,情報･通信業
+4816,東映アニメーション,Communication Services,情報･通信業
+4819,デジタルガレージ,Communication Services,情報･通信業
+4820,イーエムシステムズ,Communication Services,情報･通信業
+4824,メディアシーク,Communication Services,情報･通信業
+4825,ウェザーニューズ,Communication Services,情報･通信業
+4826,ＣＩＪ,Communication Services,情報･通信業
+4828,ビジネスエンジニアリング,Communication Services,情報･通信業
+4829,日本エンタープライズ,Communication Services,情報･通信業
+4832,ＪＦＥシステムズ,Communication Services,情報･通信業
+4833,Ｓｕｃｃｅｓｓ　Ｈｏｌｄｅｒｓ,Industrials,サービス業
+4837,シダックス,Industrials,サービス業
+4838,スペースシャワーネットワーク,Communication Services,情報･通信業
+4839,ＷＯＷＯＷ,Communication Services,情報･通信業
+4840,トライアイズ,Industrials,サービス業
+4845,スカラ,Communication Services,情報･通信業
+4847,インテリジェント　ウェイブ,Communication Services,情報･通信業
+4848,フルキャストホールディングス,Industrials,サービス業
+4849,エン・ジャパン,Industrials,サービス業
+4875,メディシノバ・インク,Healthcare,医薬品
+4880,セルソース,Healthcare,医薬品
+4881,ファンペップ,Healthcare,医薬品
+4882,ペルセウスプロテオミクス,Healthcare,医薬品
+4883,モダリス,Healthcare,医薬品
+4884,クリングルファーマ,Healthcare,医薬品
+4885,室町ケミカル,Healthcare,医薬品
+4886,あすか製薬ホールディングス,Healthcare,医薬品
+4887,サワイグループホールディングス,Healthcare,医薬品
+4888,ステラファーマ,Healthcare,医薬品
+4889,レナサイエンス,Healthcare,医薬品
+4901,富士フイルムホールディングス,Materials,化学
+4902,コニカミノルタ,Technology,電気機器
+4911,資生堂,Materials,化学
+4912,ライオン,Materials,化学
+4914,高砂香料工業,Materials,化学
+4917,マンダム,Materials,化学
+4918,アイビー化粧品,Materials,化学
+4919,ミルボン,Materials,化学
+4920,日本色材工業研究所,Materials,化学
+4921,ファンケル,Materials,化学
+4922,コーセー,Materials,化学
+4923,コタ,Materials,化学
+4925,ハーバー研究所,Materials,化学
+4926,シーボン,Materials,化学
+4927,ポーラ・オルビスホールディングス,Materials,化学
+4928,ノエビアホールディングス,Materials,化学
+4929,アジュバンホールディングス,Materials,化学
+4930,グラフィコ,Materials,化学
+4931,新日本製薬,Materials,化学
+4932,アルマード,Materials,化学
+4933,Ｉ−ｎｅ,Materials,化学
+4934,プレミアアンチエイジング,Materials,化学
+4935,リベルタ,Materials,化学
+4936,アクシージア,Materials,化学
+4937,Ｗａｑｏｏ,Materials,化学
+4951,エステー,Materials,化学
+4955,アグロ　カネショウ,Materials,化学
+4956,コニシ,Materials,化学
+4957,ヤスハラケミカル,Materials,化学
+4958,長谷川香料,Materials,化学
+4960,ケミプロ化成,Materials,化学
+4962,互応化学工業,Materials,化学
+4963,星光ＰＭＣ,Materials,化学
+4966,上村工業,Materials,化学
+4967,小林製薬,Materials,化学
+4968,荒川化学工業,Materials,化学
+4970,東洋合成工業,Materials,化学
+4971,メック,Materials,化学
+4972,綜研化学,Materials,化学
+4973,日本高純度化学,Materials,化学
+4974,タカラバイオ,Materials,化学
+4975,ＪＣＵ,Materials,化学
+4976,東洋ドライルーブ,Materials,化学
+4977,新田ゼラチン,Materials,化学
+4978,リプロセル,Materials,化学
+4979,ＯＡＴアグリオ,Materials,化学
+4980,デクセリアルズ,Materials,化学
+4985,アース製薬,Materials,化学
+4987,寺岡製作所,Materials,化学
+4990,昭和化学工業,Materials,化学
+4992,北興化学工業,Materials,化学
+4994,大成ラミック,Materials,化学
+4996,クミアイ化学工業,Materials,化学
+4997,日本農薬,Materials,化学
+4998,フマキラー,Materials,化学
+4999,セメダイン,Materials,化学
+5008,東亜石油,Energy,石油･石炭製品
+5009,富士興産,Industrials,卸売業
+5010,日本精蝋,Energy,石油･石炭製品
+5011,ニチレキ,Energy,石油･石炭製品
+5013,ユシロ化学工業,Energy,石油･石炭製品
+5015,ビーピー・カストロール,Energy,石油･石炭製品
+5017,富士石油,Energy,石油･石炭製品
+5018,ＭＯＲＥＳＣＯ,Energy,石油･石炭製品
+5019,出光興産,Energy,石油･石炭製品
+5020,ＥＮＥＯＳホールディングス,Energy,石油･石炭製品
+5021,コスモエネルギーホールディングス,Energy,石油･石炭製品
+5070,ドラフト,Industrials,建設業
+5071,ヴィス,Industrials,建設業
+5072,アートフォースジャパン,Industrials,建設業
+5073,ジェイベース,Industrials,建設業
+5074,テスホールディングス,Industrials,建設業
+5075,アップコン,Industrials,建設業
+5076,インフロニア・ホールディングス,Industrials,建設業
+5101,横浜ゴム,Materials,ゴム製品
+5103,昭和ホールディングス,Materials,ゴム製品
+5104,日東化工,Materials,ゴム製品
+5105,ＴＯＹＯ　ＴＩＲＥ,Materials,ゴム製品
+5108,ブリヂストン,Materials,ゴム製品
+5110,住友ゴム工業,Materials,ゴム製品
+5121,藤倉コンポジット,Materials,ゴム製品
+5122,オカモト,Materials,ゴム製品
+5142,アキレス,Materials,化学
+5161,西川ゴム工業,Materials,ゴム製品
+5162,朝日ラバー,Materials,ゴム製品
+5184,ニチリン,Materials,ゴム製品
+5185,フコク,Materials,ゴム製品
+5186,ニッタ,Materials,ゴム製品
+5187,クリエートメディック,Technology,精密機器
+5189,櫻護謨,Materials,ゴム製品
+5191,住友理工,Materials,ゴム製品
+5192,三ツ星ベルト,Materials,ゴム製品
+5194,相模ゴム工業,Materials,ゴム製品
+5195,バンドー化学,Materials,ゴム製品
+5199,不二ラテックス,Materials,ゴム製品
+5201,ＡＧＣ,Materials,ガラス･土石製品
+5202,日本板硝子,Materials,ガラス･土石製品
+5204,石塚硝子,Materials,ガラス･土石製品
+5208,有沢製作所,Materials,化学
+5210,日本山村硝子,Materials,ガラス･土石製品
+5212,不二硝子,Materials,ガラス･土石製品
+5214,日本電気硝子,Materials,ガラス･土石製品
+5216,倉元製作所,Materials,ガラス･土石製品
+5217,テクノクオーツ,Materials,ガラス･土石製品
+5218,オハラ,Materials,ガラス･土石製品
+5232,住友大阪セメント,Materials,ガラス･土石製品
+5233,太平洋セメント,Materials,ガラス･土石製品
+5237,ノザワ,Materials,ガラス･土石製品
+5261,リソルホールディングス,Industrials,サービス業
+5262,日本ヒューム,Materials,ガラス･土石製品
+5268,旭コンクリート工業,Materials,ガラス･土石製品
+5269,日本コンクリート工業,Materials,ガラス･土石製品
+5271,トーヨーアサノ,Materials,ガラス･土石製品
+5273,三谷セキサン,Materials,ガラス･土石製品
+5277,スパンクリートコーポレーション,Materials,ガラス･土石製品
+5279,日本興業,Materials,ガラス･土石製品
+5280,ヨシコン,Real Estate,不動産業
+5282,ジオスター,Materials,ガラス･土石製品
+5283,高見澤,Industrials,卸売業
+5284,ヤマウホールディングス,Materials,ガラス･土石製品
+5285,ヤマックス,Materials,ガラス･土石製品
+5287,イトーヨーギョー,Materials,ガラス･土石製品
+5288,アジアパイルホールディングス,Materials,ガラス･土石製品
+5290,ベルテクスコーポレーション,Materials,ガラス･土石製品
+5301,東海カーボン,Materials,ガラス･土石製品
+5302,日本カーボン,Materials,ガラス･土石製品
+5304,ＳＥＣカーボン,Materials,ガラス･土石製品
+5310,東洋炭素,Materials,ガラス･土石製品
+5331,ノリタケカンパニーリミテド,Materials,ガラス･土石製品
+5332,ＴＯＴＯ,Materials,ガラス･土石製品
+5333,日本碍子,Materials,ガラス･土石製品
+5334,日本特殊陶業,Materials,ガラス･土石製品
+5337,ダントーホールディングス,Materials,ガラス･土石製品
+5341,アサヒ衛陶,Materials,ガラス･土石製品
+5344,ＭＡＲＵＷＡ,Materials,ガラス･土石製品
+5351,品川リフラクトリーズ,Materials,ガラス･土石製品
+5352,黒崎播磨,Materials,ガラス･土石製品
+5355,日本坩堝,Materials,ガラス･土石製品
+5357,ヨータイ,Materials,ガラス･土石製品
+5358,イソライト工業,Materials,ガラス･土石製品
+5363,東京窯業,Materials,ガラス･土石製品
+5367,ニッカトー,Materials,ガラス･土石製品
+5368,日本インシュレーション,Materials,ガラス･土石製品
+5380,新東,Materials,ガラス･土石製品
+5381,Ｍｉｐｏｘ,Materials,ガラス･土石製品
+5384,フジミインコーポレーテッド,Materials,ガラス･土石製品
+5386,鶴弥,Materials,ガラス･土石製品
+5387,チヨダウーテ,Materials,ガラス･土石製品
+5388,クニミネ工業,Materials,ガラス･土石製品
+5391,エーアンドエーマテリアル,Materials,ガラス･土石製品
+5393,ニチアス,Materials,ガラス･土石製品
+5395,理研コランダム,Materials,ガラス･土石製品
+5401,日本製鉄,Materials,鉄鋼
+5406,神戸製鋼所,Materials,鉄鋼
+5408,中山製鋼所,Materials,鉄鋼
+5410,合同製鐵,Materials,鉄鋼
+5411,ジェイ　エフ　イー　ホールディングス,Materials,鉄鋼
+5423,東京製鐵,Materials,鉄鋼
+5440,共英製鋼,Materials,鉄鋼
+5444,大和工業,Materials,鉄鋼
+5445,東京鐵鋼,Materials,鉄鋼
+5446,北越メタル,Materials,鉄鋼
+5449,大阪製鐵,Materials,鉄鋼
+5451,淀川製鋼所,Materials,鉄鋼
+5458,高砂鐵工,Materials,鉄鋼
+5463,丸一鋼管,Materials,鉄鋼
+5464,モリ工業,Materials,鉄鋼
+5471,大同特殊鋼,Materials,鉄鋼
+5476,日本高周波鋼業,Materials,鉄鋼
+5480,日本冶金工業,Materials,鉄鋼
+5481,山陽特殊製鋼,Materials,鉄鋼
+5482,愛知製鋼,Materials,鉄鋼
+5484,東北特殊鋼,Materials,鉄鋼
+5486,日立金属,Materials,鉄鋼
+5491,日本金属,Materials,鉄鋼
+5541,大平洋金属,Materials,鉄鋼
+5542,新報国マテリアル,Materials,鉄鋼
+5563,新日本電工,Materials,鉄鋼
+5602,栗本鐵工所,Materials,鉄鋼
+5603,虹技,Materials,鉄鋼
+5609,日本鋳造,Materials,鉄鋼
+5610,大和重工,Materials,鉄鋼
+5612,日本鋳鉄管,Materials,鉄鋼
+5631,日本製鋼所,Industrials,機械
+5632,三菱製鋼,Materials,鉄鋼
+5644,メタルアート,Materials,鉄鋼
+5658,日亜鋼業,Materials,鉄鋼
+5659,日本精線,Materials,鉄鋼
+5660,神鋼鋼線工業,Materials,鉄鋼
+5695,パウダーテック,Materials,鉄鋼
+5697,サンユウ,Materials,鉄鋼
+5698,エンビプロ・ホールディングス,Materials,鉄鋼
+5699,イボキン,Materials,鉄鋼
+5702,大紀アルミニウム工業所,Materials,非鉄金属
+5703,日本軽金属ホールディングス,Materials,非鉄金属
+5704,ＪＭＣ,Materials,非鉄金属
+5706,三井金属鉱業,Materials,非鉄金属
+5707,東邦亜鉛,Materials,非鉄金属
+5711,三菱マテリアル,Materials,非鉄金属
+5713,住友金属鉱山,Materials,非鉄金属
+5714,ＤＯＷＡホールディングス,Materials,非鉄金属
+5715,古河機械金属,Materials,非鉄金属
+5721,エス・サイエンス,Materials,非鉄金属
+5724,アサカ理研,Materials,非鉄金属
+5726,大阪チタニウムテクノロジーズ,Materials,非鉄金属
+5727,東邦チタニウム,Materials,非鉄金属
+5729,日本精鉱,Materials,非鉄金属
+5741,ＵＡＣＪ,Materials,非鉄金属
+5742,エヌアイシ・オートテック,Materials,非鉄金属
+5753,日本伸銅,Materials,非鉄金属
+5757,ＣＫサンエツ,Materials,非鉄金属
+5759,日本電解,Materials,非鉄金属
+5781,東邦金属,Materials,非鉄金属
+5801,古河電気工業,Materials,非鉄金属
+5802,住友電気工業,Materials,非鉄金属
+5803,フジクラ,Materials,非鉄金属
+5805,昭和電線ホールディングス,Materials,非鉄金属
+5807,東京特殊電線,Materials,非鉄金属
+5809,タツタ電線,Materials,非鉄金属
+5816,オーナンバ,Materials,非鉄金属
+5817,ＪＭＡＣＳ,Materials,非鉄金属
+5819,カナレ電気,Materials,非鉄金属
+5820,三ッ星,Materials,非鉄金属
+5821,平河ヒューテック,Materials,非鉄金属
+5851,リョービ,Materials,非鉄金属
+5852,アーレスティ,Materials,非鉄金属
+5856,エルアイイーエイチ,Consumer Cyclical,小売業
+5857,アサヒホールディングス,Materials,非鉄金属
+5858,ＳＴＧ,Materials,非鉄金属
+5900,ダイケン,Materials,金属製品
+5901,東洋製罐グループホールディングス,Materials,金属製品
+5902,ホッカンホールディングス,Materials,金属製品
+5903,シンポ,Materials,金属製品
+5905,日本製罐,Materials,金属製品
+5906,エムケー精工,Materials,金属製品
+5907,ＪＦＥコンテイナー,Materials,金属製品
+5909,コロナ,Materials,金属製品
+5911,横河ブリッジホールディングス,Materials,金属製品
+5915,駒井ハルテック,Materials,金属製品
+5918,瀧上工業,Materials,金属製品
+5921,川岸工業,Materials,金属製品
+5922,那須電機鉄工,Materials,金属製品
+5923,高田機工,Materials,金属製品
+5928,アルメタックス,Materials,金属製品
+5929,三和ホールディングス,Materials,金属製品
+5930,文化シヤッター,Materials,金属製品
+5932,三協立山,Materials,金属製品
+5933,アルインコ,Materials,金属製品
+5935,元旦ビューティ工業,Materials,金属製品
+5936,東洋シヤッター,Materials,金属製品
+5938,ＬＩＸＩＬ,Materials,金属製品
+5939,大谷工業,Materials,金属製品
+5940,不二サッシ,Materials,金属製品
+5941,中西製作所,Materials,金属製品
+5942,日本フイルコン,Materials,金属製品
+5943,ノーリツ,Materials,金属製品
+5945,天龍製鋸,Materials,金属製品
+5946,長府製作所,Materials,金属製品
+5947,リンナイ,Materials,金属製品
+5949,ユニプレス,Consumer Cyclical,輸送用機器
+5950,日本パワーファスニング,Materials,金属製品
+5951,ダイニチ工業,Materials,金属製品
+5952,アマテイ,Materials,金属製品
+5955,ヤマシナ,Materials,金属製品
+5956,トーソー,Materials,金属製品
+5957,日東精工,Materials,金属製品
+5958,三洋工業,Materials,金属製品
+5959,岡部,Materials,金属製品
+5962,浅香工業,Industrials,その他製品
+5964,東洋刃物,Materials,金属製品
+5965,フジマック,Materials,金属製品
+5966,京都機械工具,Materials,金属製品
+5967,ＴＯＮＥ,Materials,金属製品
+5969,ロブテックス,Materials,金属製品
+5970,ジーテクト,Materials,金属製品
+5971,共和工業所,Materials,金属製品
+5973,トーアミ,Materials,金属製品
+5974,中国工業,Materials,金属製品
+5975,東プレ,Materials,金属製品
+5976,高周波熱錬,Materials,金属製品
+5981,東京製綱,Materials,金属製品
+5982,マルゼン,Materials,金属製品
+5983,イワブチ,Materials,金属製品
+5984,兼房,Materials,金属製品
+5985,サンコール,Materials,金属製品
+5986,モリテック　スチール,Materials,金属製品
+5987,オーネックス,Materials,金属製品
+5988,パイオラックス,Materials,金属製品
+5989,エイチワン,Materials,金属製品
+5990,スーパーツール,Materials,金属製品
+5991,日本発條,Materials,金属製品
+5992,中央発條,Materials,金属製品
+5994,ファインシンター,Materials,金属製品
+5997,協立エアテック,Materials,金属製品
+5998,アドバネクス,Materials,金属製品
+5999,イハラサイエンス,Materials,金属製品
+6005,三浦工業,Industrials,機械
+6013,タクマ,Industrials,機械
+6016,ジャパンエンジンコーポレーション,Consumer Cyclical,輸送用機器
+6018,阪神内燃機工業,Consumer Cyclical,輸送用機器
+6022,赤阪鐵工所,Industrials,機械
+6023,ダイハツディーゼル,Consumer Cyclical,輸送用機器
+6026,ＧＭＯ　ＴＥＣＨ,Industrials,サービス業
+6027,弁護士ドットコム,Industrials,サービス業
+6028,テクノプロ・ホールディングス,Industrials,サービス業
+6029,アトラグループ,Industrials,サービス業
+6030,アドベンチャー,Industrials,サービス業
+6031,サイジニア,Industrials,サービス業
+6032,インターワークス,Industrials,サービス業
+6033,エクストリーム,Industrials,サービス業
+6034,ＭＲＴ,Industrials,サービス業
+6035,アイ・アールジャパンホールディングス,Industrials,サービス業
+6036,ＫｅｅＰｅｒ技研,Industrials,サービス業
+6037,ファーストロジック,Industrials,サービス業
+6038,イード,Industrials,サービス業
+6039,日本動物高度医療センター,Industrials,サービス業
+6040,日本スキー場開発,Industrials,サービス業
+6042,ニッキ,Consumer Cyclical,輸送用機器
+6044,三機サービス,Industrials,サービス業
+6045,レントラックス,Industrials,サービス業
+6046,リンクバル,Industrials,サービス業
+6047,Ｇｕｎｏｓｙ,Industrials,サービス業
+6048,デザインワン・ジャパン,Industrials,サービス業
+6049,イトクロ,Industrials,サービス業
+6050,イー・ガーディアン,Industrials,サービス業
+6054,リブセンス,Industrials,サービス業
+6055,ジャパンマテリアル,Industrials,サービス業
+6058,ベクトル,Industrials,サービス業
+6059,ウチヤマホールディングス,Industrials,サービス業
+6060,こころネット,Industrials,サービス業
+6061,ユニバーサル園芸社,Industrials,サービス業
+6062,チャーム・ケア・コーポレーション,Industrials,サービス業
+6063,日本エマージェンシーアシスタンス,Industrials,サービス業
+6067,インパクトホールディングス,Industrials,サービス業
+6069,トレンダーズ,Industrials,サービス業
+6070,キャリアリンク,Industrials,サービス業
+6071,ＩＢＪ,Industrials,サービス業
+6072,地盤ネットホールディングス,Industrials,サービス業
+6073,アサンテ,Industrials,サービス業
+6074,ジェイエスエス,Industrials,サービス業
+6078,バリューＨＲ,Industrials,サービス業
+6080,Ｍ＆Ａキャピタルパートナーズ,Industrials,サービス業
+6081,アライドアーキテクツ,Industrials,サービス業
+6082,ライドオンエクスプレスホールディングス,Industrials,サービス業
+6083,ＥＲＩホールディングス,Industrials,サービス業
+6085,アーキテクツ・スタジオ・ジャパン,Industrials,サービス業
+6086,シンメンテホールディングス,Industrials,サービス業
+6087,アビスト,Industrials,サービス業
+6088,シグマクシス・ホールディングス,Industrials,サービス業
+6089,ウィルグループ,Industrials,サービス業
+6090,ヒューマン・メタボローム・テクノロジーズ,Industrials,サービス業
+6091,ウエスコホールディングス,Industrials,サービス業
+6092,エンバイオ・ホールディングス,Industrials,サービス業
+6093,エスクロー・エージェント・ジャパン,Industrials,サービス業
+6094,フリークアウト・ホールディングス,Industrials,サービス業
+6095,メドピア,Industrials,サービス業
+6096,レアジョブ,Industrials,サービス業
+6098,リクルートホールディングス,Industrials,サービス業
+6099,エラン,Industrials,サービス業
+6101,ツガミ,Industrials,機械
+6103,オークマ,Industrials,機械
+6104,芝浦機械,Industrials,機械
+6113,アマダ,Industrials,機械
+6118,アイダエンジニアリング,Industrials,機械
+6121,滝澤鉄工所,Industrials,機械
+6125,岡本工作機械製作所,Industrials,機械
+6131,浜井産業,Industrials,機械
+6134,ＦＵＪＩ,Industrials,機械
+6135,牧野フライス製作所,Industrials,機械
+6136,オーエスジー,Industrials,機械
+6137,小池酸素工業,Industrials,機械
+6138,ダイジェット工業,Industrials,機械
+6140,旭ダイヤモンド工業,Industrials,機械
+6141,ＤＭＧ森精機,Industrials,機械
+6143,ソディック,Industrials,機械
+6144,西部電機,Industrials,機械
+6145,ＮＩＴＴＯＫＵ,Industrials,機械
+6146,ディスコ,Industrials,機械
+6147,ヤマザキ,Industrials,機械
+6149,小田原エンジニアリング,Industrials,機械
+6150,タケダ機械,Industrials,機械
+6151,日東工器,Industrials,機械
+6155,高松機械工業,Industrials,機械
+6156,エーワン精密,Industrials,機械
+6157,日進工具,Industrials,機械
+6158,和井田製作所,Industrials,機械
+6159,ミクロン精密,Industrials,機械
+6161,エスティック,Industrials,機械
+6164,太陽工機,Industrials,機械
+6165,パンチ工業,Industrials,機械
+6166,中村超硬,Industrials,機械
+6167,冨士ダイス,Industrials,機械
+6168,オージックグループ,Industrials,機械
+6171,土木管理総合試験所,Industrials,サービス業
+6172,メタップス,Industrials,サービス業
+6173,アクアライン,Industrials,サービス業
+6174,デンタス,Industrials,サービス業
+6175,ネットマーケティング,Industrials,サービス業
+6176,ブランジスタ,Industrials,サービス業
+6177,ＡｐｐＢａｎｋ,Industrials,サービス業
+6178,日本郵政,Industrials,サービス業
+6180,ＧＭＯメディア,Industrials,サービス業
+6181,タメニー,Industrials,サービス業
+6182,メタリアル,Industrials,サービス業
+6183,ベルシステム２４ホールディングス,Industrials,サービス業
+6184,鎌倉新書,Industrials,サービス業
+6185,ＳＭＮ,Industrials,サービス業
+6186,一蔵,Industrials,サービス業
+6188,富士ソフトサービスビューロ,Industrials,サービス業
+6189,グローバルキッズＣＯＭＰＡＮＹ,Industrials,サービス業
+6190,フェニックスバイオ,Industrials,サービス業
+6191,エアトリ,Industrials,サービス業
+6192,ハイアス・アンド・カンパニー,Industrials,サービス業
+6193,バーチャレクス・ホールディングス,Industrials,サービス業
+6194,アトラエ,Industrials,サービス業
+6195,ホープ,Industrials,サービス業
+6196,ストライク,Industrials,サービス業
+6197,ソラスト,Industrials,サービス業
+6198,キャリア,Industrials,サービス業
+6199,セラク,Industrials,サービス業
+6200,インソース,Industrials,サービス業
+6201,豊田自動織機,Consumer Cyclical,輸送用機器
+6203,豊和工業,Industrials,機械
+6205,ＯＫＫ,Industrials,機械
+6208,石川製作所,Industrials,機械
+6210,東洋機械金属,Industrials,機械
+6217,津田駒工業,Industrials,機械
+6218,エンシュウ,Industrials,機械
+6222,島精機製作所,Industrials,機械
+6227,ＡＩメカテック,Industrials,機械
+6228,ジェイ・イー・ティ,Industrials,機械
+6229,オーケーエム,Industrials,機械
+6230,ＳＡＮＥＩ,Industrials,機械
+6231,木村工機,Industrials,機械
+6232,ＡＣＳＬ,Industrials,機械
+6233,極東産機,Industrials,機械
+6235,オプトラン,Industrials,機械
+6236,ＮＣホールディングス,Industrials,機械
+6237,イワキ,Industrials,機械
+6238,フリュー,Industrials,機械
+6239,ナガオカ,Industrials,機械
+6240,ヤマシンフィルタ,Industrials,機械
+6245,ヒラノテクシード,Industrials,機械
+6246,テクノスマート,Industrials,機械
+6247,日阪製作所,Industrials,機械
+6248,横田製作所,Industrials,機械
+6249,ゲームカード・ジョイコホールディングス,Industrials,機械
+6250,やまびこ,Industrials,機械
+6254,野村マイクロ・サイエンス,Industrials,機械
+6255,エヌ・ピー・シー,Industrials,機械
+6257,藤商事,Industrials,機械
+6258,平田機工,Industrials,機械
+6262,ペガサスミシン製造,Industrials,機械
+6264,マルマエ,Industrials,機械
+6265,妙徳,Industrials,機械
+6266,タツモ,Industrials,機械
+6267,ゼネラルパッカー,Industrials,機械
+6268,ナブテスコ,Industrials,機械
+6269,三井海洋開発,Industrials,機械
+6271,ニッセイ,Industrials,機械
+6272,レオン自動機,Industrials,機械
+6273,ＳＭＣ,Industrials,機械
+6276,シリウスビジョン,Industrials,機械
+6277,ホソカワミクロン,Industrials,機械
+6278,ユニオンツール,Industrials,機械
+6279,瑞光,Industrials,機械
+6282,オイレス工業,Industrials,機械
+6284,日精エー・エス・ビー機械,Industrials,機械
+6286,靜甲,Industrials,機械
+6287,サトーホールディングス,Industrials,機械
+6289,技研製作所,Industrials,機械
+6291,日本エアーテック,Industrials,機械
+6292,カワタ,Industrials,機械
+6293,日精樹脂工業,Industrials,機械
+6294,オカダアイヨン,Industrials,機械
+6297,鉱研工業,Industrials,機械
+6298,ワイエイシイホールディングス,Industrials,機械
+6301,小松製作所,Industrials,機械
+6302,住友重機械工業,Industrials,機械
+6303,ササクラ,Industrials,機械
+6305,日立建機,Industrials,機械
+6306,日工,Industrials,機械
+6307,サンセイ,Industrials,機械
+6309,巴工業,Industrials,機械
+6310,井関農機,Industrials,機械
+6312,フロイント産業,Industrials,機械
+6315,ＴＯＷＡ,Industrials,機械
+6316,丸山製作所,Industrials,機械
+6317,北川鉄工所,Industrials,機械
+6319,シンニッタン,Materials,鉄鋼
+6322,タクミナ,Industrials,機械
+6323,ローツェ,Industrials,機械
+6324,ハーモニック・ドライブ・システムズ,Industrials,機械
+6325,タカキタ,Industrials,機械
+6326,クボタ,Industrials,機械
+6327,北川精機,Industrials,機械
+6328,荏原実業,Industrials,機械
+6330,東洋エンジニアリング,Industrials,建設業
+6331,三菱化工機,Industrials,機械
+6332,月島機械,Industrials,機械
+6333,帝国電機製作所,Industrials,機械
+6334,明治機械,Industrials,機械
+6335,東京機械製作所,Industrials,機械
+6336,石井表記,Industrials,機械
+6337,テセック,Industrials,機械
+6338,タカトリ,Industrials,機械
+6339,新東工業,Industrials,機械
+6340,澁谷工業,Industrials,機械
+6342,太平製作所,Industrials,機械
+6343,フリージア・マクロス,Industrials,機械
+6345,アイチ　コーポレーション,Industrials,機械
+6346,キクカワエンタープライズ,Industrials,機械
+6347,プラコー,Industrials,機械
+6349,小森コーポレーション,Industrials,機械
+6351,鶴見製作所,Industrials,機械
+6355,住友精密工業,Industrials,機械
+6356,日本ギア工業,Industrials,機械
+6357,三精テクノロジーズ,Industrials,機械
+6358,酒井重工業,Industrials,機械
+6360,東京自働機械製作所,Industrials,機械
+6361,荏原製作所,Industrials,機械
+6362,石井鐵工所,Industrials,機械
+6363,酉島製作所,Industrials,機械
+6364,北越工業,Industrials,機械
+6365,電業社機械製作所,Industrials,機械
+6366,千代田化工建設,Industrials,建設業
+6367,ダイキン工業,Industrials,機械
+6368,オルガノ,Industrials,機械
+6369,トーヨーカネツ,Industrials,機械
+6370,栗田工業,Industrials,機械
+6371,椿本チエイン,Industrials,機械
+6373,大同工業,Industrials,機械
+6376,日機装,Technology,精密機器
+6378,木村化工機,Industrials,機械
+6379,レイズネクスト,Industrials,建設業
+6380,オリエンタルチエン工業,Industrials,機械
+6381,アネスト岩田,Industrials,機械
+6382,トリニティ工業,Industrials,機械
+6383,ダイフク,Industrials,機械
+6384,昭和真空,Industrials,機械
+6387,サムコ,Industrials,機械
+6390,加藤製作所,Industrials,機械
+6391,加地テック,Industrials,機械
+6392,ヤマダコーポレーション,Industrials,機械
+6393,油研工業,Industrials,機械
+6395,タダノ,Industrials,機械
+6396,宇野澤組鐵工所,Industrials,機械
+6400,不二精機,Industrials,機械
+6402,兼松エンジニアリング,Industrials,機械
+6403,水道機工,Industrials,機械
+6405,鈴茂器工,Industrials,機械
+6406,フジテック,Industrials,機械
+6407,ＣＫＤ,Industrials,機械
+6408,小倉クラッチ,Industrials,機械
+6409,キトー,Industrials,機械
+6411,中野冷機,Industrials,機械
+6412,平和,Industrials,機械
+6413,理想科学工業,Industrials,機械
+6416,桂川電機,Industrials,機械
+6417,ＳＡＮＫＹＯ,Industrials,機械
+6418,日本金銭機械,Industrials,機械
+6419,マースグループホールディングス,Industrials,機械
+6420,フクシマガリレイ,Industrials,機械
+6424,高見沢サイバネティックス,Industrials,機械
+6425,ユニバーサルエンターテインメント,Industrials,機械
+6428,オーイズミ,Industrials,機械
+6430,ダイコク電機,Industrials,機械
+6432,竹内製作所,Industrials,機械
+6433,ヒーハイスト,Industrials,機械
+6436,アマノ,Industrials,機械
+6440,ＪＵＫＩ,Industrials,機械
+6444,サンデンホールディングス,Industrials,機械
+6445,ジャノメ,Industrials,機械
+6448,ブラザー工業,Technology,電気機器
+6454,マックス,Industrials,機械
+6455,モリタホールディングス,Consumer Cyclical,輸送用機器
+6457,グローリー,Industrials,機械
+6458,新晃工業,Industrials,機械
+6459,大和冷機工業,Industrials,機械
+6460,セガサミーホールディングス,Industrials,機械
+6461,日本ピストンリング,Industrials,機械
+6462,リケン,Industrials,機械
+6463,ＴＰＲ,Industrials,機械
+6464,ツバキ・ナカシマ,Industrials,機械
+6465,ホシザキ,Industrials,機械
+6466,ＴＶＥ,Industrials,機械
+6467,ニチダイ,Industrials,機械
+6469,放電精密加工研究所,Industrials,機械
+6470,大豊工業,Industrials,機械
+6471,日本精工,Industrials,機械
+6472,ＮＴＮ,Industrials,機械
+6473,ジェイテクト,Industrials,機械
+6474,不二越,Industrials,機械
+6479,ミネベアミツミ,Technology,電気機器
+6480,日本トムソン,Industrials,機械
+6481,ＴＨＫ,Industrials,機械
+6482,ユーシン精機,Industrials,機械
+6484,ＫＶＫ,Industrials,機械
+6485,前澤給装工業,Industrials,機械
+6486,イーグル工業,Industrials,機械
+6488,ヨシタケ,Industrials,機械
+6489,前澤工業,Industrials,機械
+6490,日本ピラー工業,Industrials,機械
+6492,岡野バルブ製造,Industrials,機械
+6493,日鍛バルブ,Consumer Cyclical,輸送用機器
+6494,ＮＦＫホールディングス,Industrials,機械
+6495,宮入バルブ製作所,Industrials,機械
+6496,中北製作所,Industrials,機械
+6497,ハマイ,Industrials,機械
+6498,キッツ,Industrials,機械
+6501,日立製作所,Technology,電気機器
+6502,東芝,Technology,電気機器
+6503,三菱電機,Technology,電気機器
+6504,富士電機,Technology,電気機器
+6505,東洋電機製造,Technology,電気機器
+6506,安川電機,Technology,電気機器
+6507,シンフォニアテクノロジー,Technology,電気機器
+6508,明電舎,Technology,電気機器
+6513,オリジン,Technology,電気機器
+6516,山洋電気,Technology,電気機器
+6517,デンヨー,Technology,電気機器
+6518,三相電機,Technology,電気機器
+6521,オキサイド,Technology,電気機器
+6522,アスタリスク,Technology,電気機器
+6523,ＰＨＣホールディングス,Technology,電気機器
+6524,湖北工業,Technology,電気機器
+6532,ベイカレント・コンサルティング,Industrials,サービス業
+6533,Ｏｒｃｈｅｓｔｒａ　Ｈｏｌｄｉｎｇｓ,Industrials,サービス業
+6535,アイモバイル,Industrials,サービス業
+6537,ＷＡＳＨハウス,Industrials,サービス業
+6538,キャリアインデックス,Industrials,サービス業
+6539,ＭＳ−Ｊａｐａｎ,Industrials,サービス業
+6540,船場,Industrials,サービス業
+6541,グレイステクノロジー,Industrials,サービス業
+6542,ＦＣホールディングス,Industrials,サービス業
+6543,日宣,Industrials,サービス業
+6544,ジャパンエレベーターサービスホールディングス,Industrials,サービス業
+6545,インターネットインフィニティー,Industrials,サービス業
+6546,フルテック,Industrials,サービス業
+6547,グリーンズ,Industrials,サービス業
+6548,旅工房,Industrials,サービス業
+6549,ディーエムソリューションズ,Industrials,サービス業
+6550,Ｕｎｉｐｏｓ,Industrials,サービス業
+6551,ツナググループ・ホールディングス,Industrials,サービス業
+6552,ＧａｍｅＷｉｔｈ,Industrials,サービス業
+6553,ソウルドアウト,Industrials,サービス業
+6554,エスユーエス,Industrials,サービス業
+6555,ＭＳ＆Ｃｏｎｓｕｌｔｉｎｇ,Industrials,サービス業
+6556,ウェルビー,Industrials,サービス業
+6557,ｇｌｏｂａｌ　ｂｒｉｄｇｅ　ＨＯＬＤＩＮＧＳ,Industrials,サービス業
+6558,クックビズ,Industrials,サービス業
+6560,エル・ティー・エス,Industrials,サービス業
+6561,ＨＡＮＡＴＯＵＲ　ＪＡＰＡＮ,Industrials,サービス業
+6562,ジーニー,Industrials,サービス業
+6563,みらいワークス,Industrials,サービス業
+6564,ミダックホールディングス,Industrials,サービス業
+6565,ＡＢホテル,Industrials,サービス業
+6566,要興業,Industrials,サービス業
+6567,ＳＥＲＩＯホールディングス,Industrials,サービス業
+6568,神戸天然物化学,Industrials,サービス業
+6569,日総工産,Industrials,サービス業
+6570,共和コーポレーション,Industrials,サービス業
+6571,キュービーネットホールディングス,Industrials,サービス業
+6572,ＲＰＡホールディングス,Industrials,サービス業
+6573,アジャイルメディア・ネットワーク,Industrials,サービス業
+6574,コンヴァノ,Industrials,サービス業
+6575,ヒューマン・アソシエイツ・ホールディングス,Industrials,サービス業
+6576,揚工舎,Industrials,サービス業
+6577,ベストワンドットコム,Industrials,サービス業
+6578,エヌリンクス,Industrials,サービス業
+6579,ログリー,Industrials,サービス業
+6580,ライトアップ,Industrials,サービス業
+6584,三櫻工業,Consumer Cyclical,輸送用機器
+6586,マキタ,Industrials,機械
+6588,東芝テック,Technology,電気機器
+6590,芝浦メカトロニクス,Technology,電気機器
+6592,マブチモーター,Technology,電気機器
+6594,日本電産,Technology,電気機器
+6596,筑波精工,Technology,電気機器
+6597,ＨＰＣシステムズ,Technology,電気機器
+6599,エブレン,Technology,電気機器
+6612,バルミューダ,Technology,電気機器
+6613,ＱＤレーザ,Technology,電気機器
+6614,シキノハイテック,Technology,電気機器
+6615,ユー・エム・シー・エレクトロニクス,Technology,電気機器
+6616,トレックス・セミコンダクター,Technology,電気機器
+6617,東光高岳,Technology,電気機器
+6618,大泉製作所,Technology,電気機器
+6619,ダブル・スコープ,Technology,電気機器
+6620,宮越ホールディングス,Real Estate,不動産業
+6622,ダイヘン,Technology,電気機器
+6625,ＪＡＬＣＯホールディングス,Real Estate,不動産業
+6626,ＳＥＭＩＴＥＣ,Technology,電気機器
+6627,テラプローブ,Technology,電気機器
+6629,テクノホライゾン,Technology,電気機器
+6630,ヤーマン,Technology,電気機器
+6632,ＪＶＣケンウッド,Technology,電気機器
+6633,Ｃ＆Ｇシステムズ,Technology,電気機器
+6634,ネクスグループ,Technology,電気機器
+6635,大日光・エンジニアリング,Technology,電気機器
+6637,寺崎電気産業,Technology,電気機器
+6638,ミマキエンジニアリング,Technology,電気機器
+6639,コンテック,Technology,電気機器
+6640,Ｉ−ＰＥＸ,Technology,電気機器
+6641,日新電機,Technology,電気機器
+6643,戸上電機製作所,Technology,電気機器
+6644,大崎電気工業,Technology,電気機器
+6645,オムロン,Technology,電気機器
+6647,森尾電機,Technology,電気機器
+6648,かわでん,Technology,電気機器
+6651,日東工業,Technology,電気機器
+6652,ＩＤＥＣ,Technology,電気機器
+6653,正興電機製作所,Technology,電気機器
+6654,不二電機工業,Technology,電気機器
+6656,インスペック,Technology,電気機器
+6658,シライ電子工業,Technology,電気機器
+6659,メディアリンクス,Technology,電気機器
+6662,ユビテック,Technology,電気機器
+6663,太洋工業,Technology,電気機器
+6664,オプトエレクトロニクス,Technology,電気機器
+6666,リバーエレテック,Technology,電気機器
+6668,アドテック　プラズマ　テクノロジー,Technology,電気機器
+6670,ＭＣＪ,Technology,電気機器
+6674,ジーエス・ユアサ　コーポレーション,Technology,電気機器
+6675,サクサホールディングス,Technology,電気機器
+6676,メルコホールディングス,Technology,電気機器
+6677,エスケーエレクトロニクス,Technology,電気機器
+6678,テクノメディカ,Technology,電気機器
+6694,ズーム,Technology,電気機器
+6695,トリプルワン,Technology,電気機器
+6696,ピースリー,Technology,電気機器
+6697,テックポイント・インク,Technology,電気機器
+6698,ヴィスコ・テクノロジーズ,Technology,電気機器
+6699,ダイヤモンドエレクトリックホールディングス,Technology,電気機器
+6701,日本電気,Technology,電気機器
+6702,富士通,Technology,電気機器
+6703,沖電気工業,Technology,電気機器
+6704,岩崎通信機,Technology,電気機器
+6706,電気興業,Technology,電気機器
+6707,サンケン電気,Technology,電気機器
+6715,ナカヨ,Technology,電気機器
+6718,アイホン,Technology,電気機器
+6721,ウインテスト,Technology,電気機器
+6723,ルネサスエレクトロニクス,Technology,電気機器
+6724,セイコーエプソン,Technology,電気機器
+6727,ワコム,Technology,電気機器
+6728,アルバック,Technology,電気機器
+6730,アクセル,Technology,電気機器
+6731,ピクセラ,Technology,電気機器
+6734,ニューテック,Technology,電気機器
+6736,サン電子,Technology,電気機器
+6737,ＥＩＺＯ,Technology,電気機器
+6740,ジャパンディスプレイ,Technology,電気機器
+6741,日本信号,Technology,電気機器
+6742,京三製作所,Technology,電気機器
+6743,大同信号,Technology,電気機器
+6744,能美防災,Technology,電気機器
+6745,ホーチキ,Technology,電気機器
+6748,星和電機,Technology,電気機器
+6750,エレコム,Technology,電気機器
+6752,パナソニック,Technology,電気機器
+6753,シャープ,Technology,電気機器
+6754,アンリツ,Technology,電気機器
+6755,富士通ゼネラル,Technology,電気機器
+6757,ＯＳＧコーポレーション,Technology,電気機器
+6758,ソニーグループ,Technology,電気機器
+6762,ＴＤＫ,Technology,電気機器
+6763,帝国通信工業,Technology,電気機器
+6768,タムラ製作所,Technology,電気機器
+6769,ザインエレクトロニクス,Technology,電気機器
+6770,アルプスアルパイン,Technology,電気機器
+6771,池上通信機,Technology,電気機器
+6772,東京コスモス電機,Technology,電気機器
+6775,ＴＢグループ,Technology,電気機器
+6776,天昇電気工業,Materials,化学
+6777,ｓａｎｔｅｃ,Technology,電気機器
+6778,アルチザネットワークス,Technology,電気機器
+6779,日本電波工業,Technology,電気機器
+6785,鈴木,Technology,電気機器
+6786,ＲＶＨ,Industrials,サービス業
+6787,メイコー,Technology,電気機器
+6788,日本トリム,Technology,電気機器
+6789,ローランド　ディー．ジー．,Technology,電気機器
+6794,フォスター電機,Technology,電気機器
+6798,ＳＭＫ,Technology,電気機器
+6800,ヨコオ,Technology,電気機器
+6803,ティアック,Technology,電気機器
+6804,ホシデン,Technology,電気機器
+6806,ヒロセ電機,Technology,電気機器
+6807,日本航空電子工業,Technology,電気機器
+6809,ＴＯＡ,Technology,電気機器
+6810,マクセル,Technology,電気機器
+6814,古野電気,Technology,電気機器
+6815,ユニデンホールディングス,Technology,電気機器
+6817,スミダコーポレーション,Technology,電気機器
+6819,伊豆シャボテンリゾート,Industrials,サービス業
+6820,アイコム,Technology,電気機器
+6822,大井電気,Technology,電気機器
+6823,リオン,Technology,電気機器
+6824,新コスモス電機,Technology,電気機器
+6826,本多通信工業,Technology,電気機器
+6832,アオイ電子,Technology,電気機器
+6834,精工技研,Technology,電気機器
+6835,アライドテレシスホールディングス,Technology,電気機器
+6836,ぷらっとホーム,Technology,電気機器
+6837,京写,Technology,電気機器
+6838,多摩川ホールディングス,Technology,電気機器
+6840,ＡＫＩＢＡホールディングス,Technology,電気機器
+6841,横河電機,Technology,電気機器
+6844,新電元工業,Technology,電気機器
+6845,アズビル,Technology,電気機器
+6848,東亜ディーケーケー,Technology,電気機器
+6849,日本光電工業,Technology,電気機器
+6850,チノー,Technology,電気機器
+6853,共和電業,Technology,電気機器
+6855,日本電子材料,Technology,電気機器
+6856,堀場製作所,Technology,電気機器
+6857,アドバンテスト,Technology,電気機器
+6858,小野測器,Technology,電気機器
+6859,エスペック,Technology,電気機器
+6861,キーエンス,Technology,電気機器
+6862,ミナトホールディングス,Technology,電気機器
+6863,ニレコ,Technology,電気機器
+6864,エヌエフホールディングス,Technology,電気機器
+6866,日置電機,Technology,電気機器
+6867,リーダー電子,Technology,電気機器
+6869,シスメックス,Technology,電気機器
+6870,日本フェンオール,Technology,電気機器
+6871,日本マイクロニクス,Technology,電気機器
+6874,協立電機,Technology,電気機器
+6875,メガチップス,Technology,電気機器
+6877,ＯＢＡＲＡ　ＧＲＯＵＰ,Technology,電気機器
+6879,ＩＭＡＧＩＣＡ　ＧＲＯＵＰ,Communication Services,情報･通信業
+6881,キョウデン,Technology,電気機器
+6882,三社電機製作所,Technology,電気機器
+6888,アクモス,Communication Services,情報･通信業
+6890,フェローテックホールディングス,Technology,電気機器
+6894,パルステック工業,Technology,電気機器
+6897,ツインバード工業,Technology,電気機器
+6898,トミタ電機,Technology,電気機器
+6899,ＡＳＴＩ,Technology,電気機器
+6901,澤藤電機,Technology,電気機器
+6902,デンソー,Consumer Cyclical,輸送用機器
+6904,原田工業,Technology,電気機器
+6905,コーセル,Technology,電気機器
+6907,ジオマテック,Technology,電気機器
+6908,イリソ電子工業,Technology,電気機器
+6912,菊水電子工業,Technology,電気機器
+6914,オプテックスグループ,Technology,電気機器
+6915,千代田インテグレ,Technology,電気機器
+6916,アイ・オー・データ機器,Technology,電気機器
+6918,アバールデータ,Technology,電気機器
+6919,ケル,Technology,電気機器
+6920,レーザーテック,Technology,電気機器
+6923,スタンレー電気,Technology,電気機器
+6924,岩崎電気,Technology,電気機器
+6925,ウシオ電機,Technology,電気機器
+6926,岡谷電機産業,Technology,電気機器
+6927,ヘリオス　テクノ　ホールディング,Technology,電気機器
+6928,エノモト,Technology,電気機器
+6929,日本セラミック,Technology,電気機器
+6930,日本アンテナ,Technology,電気機器
+6932,遠藤照明,Technology,電気機器
+6937,古河電池,Technology,電気機器
+6938,双信電機,Technology,電気機器
+6941,山一電機,Technology,電気機器
+6942,ソフィアホールディングス,Communication Services,情報･通信業
+6943,ＮＫＫスイッチズ,Technology,電気機器
+6946,日本アビオニクス,Technology,電気機器
+6947,図研,Technology,電気機器
+6951,日本電子,Technology,電気機器
+6952,カシオ計算機,Technology,電気機器
+6954,ファナック,Technology,電気機器
+6955,ＦＤＫ,Technology,電気機器
+6957,芝浦電子,Technology,電気機器
+6958,日本シイエムケイ,Technology,電気機器
+6960,フクダ電子,Technology,電気機器
+6961,エンプラス,Technology,電気機器
+6962,大真空,Technology,電気機器
+6963,ローム,Technology,電気機器
+6964,サンコー,Technology,電気機器
+6965,浜松ホトニクス,Technology,電気機器
+6966,三井ハイテック,Technology,電気機器
+6967,新光電気工業,Technology,電気機器
+6969,松尾電機,Technology,電気機器
+6971,京セラ,Technology,電気機器
+6973,協栄産業,Industrials,卸売業
+6976,太陽誘電,Technology,電気機器
+6977,日本抵抗器製作所,Technology,電気機器
+6981,村田製作所,Technology,電気機器
+6982,リード,Consumer Cyclical,輸送用機器
+6986,双葉電子工業,Technology,電気機器
+6988,日東電工,Materials,化学
+6989,北陸電気工業,Technology,電気機器
+6993,大黒屋ホールディングス,Consumer Cyclical,小売業
+6994,指月電機製作所,Technology,電気機器
+6995,東海理化電機製作所,Consumer Cyclical,輸送用機器
+6996,ニチコン,Technology,電気機器
+6997,日本ケミコン,Technology,電気機器
+6998,日本タングステン,Technology,電気機器
+6999,ＫＯＡ,Technology,電気機器
+7003,三井Ｅ＆Ｓホールディングス,Industrials,機械
+7004,日立造船,Industrials,機械
+7011,三菱重工業,Industrials,機械
+7012,川崎重工業,Consumer Cyclical,輸送用機器
+7013,ＩＨＩ,Industrials,機械
+7014,名村造船所,Consumer Cyclical,輸送用機器
+7018,内海造船,Consumer Cyclical,輸送用機器
+7021,ニッチツ,Industrials,機械
+7022,サノヤスホールディングス,Industrials,機械
+7030,スプリックス,Industrials,サービス業
+7031,インバウンドテック,Industrials,サービス業
+7033,マネジメントソリューションズ,Industrials,サービス業
+7034,プロレド・パートナーズ,Industrials,サービス業
+7035,ａｎｄ　ｆａｃｔｏｒｙ,Industrials,サービス業
+7036,イーエムネットジャパン,Industrials,サービス業
+7037,テノ．ホールディングス,Industrials,サービス業
+7038,フロンティア・マネジメント,Industrials,サービス業
+7039,ブリッジインターナショナル,Industrials,サービス業
+7040,サン・ライフホールディング,Industrials,サービス業
+7041,ＣＲＧホールディングス,Industrials,サービス業
+7042,アクセスグループ・ホールディングス,Industrials,サービス業
+7043,アルー,Industrials,サービス業
+7044,ピアラ,Industrials,サービス業
+7045,ツクイスタッフ,Industrials,サービス業
+7046,ＴＤＳＥ,Industrials,サービス業
+7047,ポート,Industrials,サービス業
+7048,ベルトラ,Industrials,サービス業
+7049,識学,Industrials,サービス業
+7050,フロンティアインターナショナル,Industrials,サービス業
+7056,マルク,Industrials,サービス業
+7057,エヌ・シー・エヌ,Industrials,サービス業
+7058,共栄セキュリティーサービス,Industrials,サービス業
+7059,コプロ・ホールディングス,Industrials,サービス業
+7060,ギークス,Industrials,サービス業
+7061,日本ホスピスホールディングス,Industrials,サービス業
+7062,フレアス,Industrials,サービス業
+7063,Ｂｉｒｄｍａｎ,Industrials,サービス業
+7064,ハウテレビジョン,Industrials,サービス業
+7065,ユーピーアール,Industrials,サービス業
+7066,ピアズ,Industrials,サービス業
+7067,ブランディングテクノロジー,Industrials,サービス業
+7068,フィードフォースグループ,Industrials,サービス業
+7069,サイバー・バズ,Industrials,サービス業
+7070,ＳＩホールディングス,Industrials,サービス業
+7071,アンビスホールディングス,Industrials,サービス業
+7072,インティメート・マージャー,Industrials,サービス業
+7073,ジェイック,Industrials,サービス業
+7074,トゥエンティーフォーセブン,Industrials,サービス業
+7075,ＱＬＳホールディングス,Industrials,サービス業
+7077,ＡＬｉＮＫインターネット,Industrials,サービス業
+7078,ＩＮＣＬＵＳＩＶＥ,Industrials,サービス業
+7079,ＷＤＢココ,Industrials,サービス業
+7080,スポーツフィールド,Industrials,サービス業
+7081,コーユーレンティア,Industrials,サービス業
+7082,ジモティー,Industrials,サービス業
+7083,ＡＨＣグループ,Industrials,サービス業
+7084,Ｋｉｄｓ　Ｓｍｉｌｅ　Ｈｏｌｄｉｎｇｓ,Industrials,サービス業
+7085,カーブスホールディングス,Industrials,サービス業
+7086,きずなホールディングス,Industrials,サービス業
+7087,ウイルテック,Industrials,サービス業
+7088,フォーラムエンジニアリング,Industrials,サービス業
+7089,フォースタートアップス,Industrials,サービス業
+7090,リグア,Industrials,サービス業
+7091,リビングプラットフォーム,Industrials,サービス業
+7092,Ｆａｓｔ　Ｆｉｔｎｅｓｓ　Ｊａｐａｎ,Industrials,サービス業
+7093,アディッシュ,Industrials,サービス業
+7094,ＮｅｘＴｏｎｅ,Industrials,サービス業
+7095,Ｍａｃｂｅｅ　Ｐｌａｎｅｔ,Industrials,サービス業
+7096,ステムセル研究所,Industrials,サービス業
+7097,さくらさくプラス,Industrials,サービス業
+7098,エージェント,Industrials,サービス業
+7102,日本車輌製造,Consumer Cyclical,輸送用機器
+7105,三菱ロジスネクスト,Consumer Cyclical,輸送用機器
+7122,近畿車輛,Consumer Cyclical,輸送用機器
+7125,イヴレス,Industrials,卸売業
+7126,タンゴヤ,Consumer Cyclical,小売業
+7127,一家ホールディングス,Consumer Cyclical,小売業
+7128,フルサト・マルカホールディングス,Industrials,卸売業
+7129,ミアヘルサホールディングス,Consumer Cyclical,小売業
+7130,ヤマエグループホールディングス,Industrials,卸売業
+7131,のむら産業,Industrials,卸売業
+7132,フローバル,Industrials,卸売業
+7133,ＨＹＵＧＡ　ＰＲＩＭＡＲＹ　ＣＡＲＥ,Consumer Cyclical,小売業
+7134,クルーバー,Consumer Cyclical,小売業
+7148,ＦＰＧ,Financials,証券･商品先物取引業
+7150,島根銀行,Financials,銀行業
+7157,ライフネット生命保険,Financials,保険業
+7161,じもとホールディングス,Financials,銀行業
+7162,アストマックス,Financials,証券･商品先物取引業
+7164,全国保証,Financials,その他金融業
+7167,めぶきフィナンシャルグループ,Financials,銀行業
+7169,ＮＦＣホールディングス,Financials,保険業
+7170,中央インターナショナルグループ,Financials,保険業
+7172,ジャパンインベストメントアドバイザー,Financials,証券･商品先物取引業
+7173,東京きらぼしフィナンシャルグループ,Financials,銀行業
+7175,今村証券,Financials,証券･商品先物取引業
+7176,シンプレクス・ファイナンシャル・ホールディングス,Financials,証券･商品先物取引業
+7177,ＧＭＯフィナンシャルホールディングス,Financials,証券･商品先物取引業
+7180,九州フィナンシャルグループ,Financials,銀行業
+7181,かんぽ生命保険,Financials,保険業
+7182,ゆうちょ銀行,Financials,銀行業
+7183,あんしん保証,Financials,その他金融業
+7184,富山第一銀行,Financials,銀行業
+7185,ヒロセ通商,Financials,証券･商品先物取引業
+7186,コンコルディア・フィナンシャルグループ,Financials,銀行業
+7187,ジェイリース,Financials,その他金融業
+7189,西日本フィナンシャルホールディングス,Financials,銀行業
+7191,イントラスト,Financials,その他金融業
+7192,日本モーゲージサービス,Financials,その他金融業
+7196,Ｃａｓａ,Financials,その他金融業
+7198,アルヒ,Financials,その他金融業
+7199,プレミアグループ,Financials,その他金融業
+7201,日産自動車,Consumer Cyclical,輸送用機器
+7202,いすゞ自動車,Consumer Cyclical,輸送用機器
+7203,トヨタ自動車,Consumer Cyclical,輸送用機器
+7205,日野自動車,Consumer Cyclical,輸送用機器
+7208,カネミツ,Consumer Cyclical,輸送用機器
+7211,三菱自動車工業,Consumer Cyclical,輸送用機器
+7212,エフテック,Consumer Cyclical,輸送用機器
+7213,レシップホールディングス,Consumer Cyclical,輸送用機器
+7214,ＧＭＢ,Consumer Cyclical,輸送用機器
+7215,ファルテック,Consumer Cyclical,輸送用機器
+7217,テイン,Consumer Cyclical,輸送用機器
+7218,田中精密工業,Consumer Cyclical,輸送用機器
+7219,エッチ・ケー・エス,Consumer Cyclical,輸送用機器
+7220,武蔵精密工業,Consumer Cyclical,輸送用機器
+7222,日産車体,Consumer Cyclical,輸送用機器
+7224,新明和工業,Consumer Cyclical,輸送用機器
+7226,極東開発工業,Consumer Cyclical,輸送用機器
+7228,デイトナ,Consumer Cyclical,輸送用機器
+7229,ユタカ技研,Consumer Cyclical,輸送用機器
+7231,トピー工業,Consumer Cyclical,輸送用機器
+7235,東京ラヂエーター製造,Consumer Cyclical,輸送用機器
+7236,ティラド,Consumer Cyclical,輸送用機器
+7238,曙ブレーキ工業,Consumer Cyclical,輸送用機器
+7239,タチエス,Consumer Cyclical,輸送用機器
+7240,ＮＯＫ,Consumer Cyclical,輸送用機器
+7241,フタバ産業,Consumer Cyclical,輸送用機器
+7242,ＫＹＢ,Consumer Cyclical,輸送用機器
+7244,市光工業,Technology,電気機器
+7245,大同メタル工業,Consumer Cyclical,輸送用機器
+7246,プレス工業,Consumer Cyclical,輸送用機器
+7247,ミクニ,Consumer Cyclical,輸送用機器
+7250,太平洋工業,Consumer Cyclical,輸送用機器
+7254,ユニバンス,Consumer Cyclical,輸送用機器
+7255,桜井製作所,Consumer Cyclical,輸送用機器
+7256,河西工業,Consumer Cyclical,輸送用機器
+7259,アイシン,Consumer Cyclical,輸送用機器
+7261,マツダ,Consumer Cyclical,輸送用機器
+7264,ムロコーポレーション,Consumer Cyclical,輸送用機器
+7265,エイケン工業,Consumer Cyclical,輸送用機器
+7266,今仙電機製作所,Consumer Cyclical,輸送用機器
+7267,本田技研工業,Consumer Cyclical,輸送用機器
+7268,タツミ,Consumer Cyclical,輸送用機器
+7269,スズキ,Consumer Cyclical,輸送用機器
+7270,ＳＵＢＡＲＵ,Consumer Cyclical,輸送用機器
+7271,安永,Consumer Cyclical,輸送用機器
+7272,ヤマハ発動機,Consumer Cyclical,輸送用機器
+7273,イクヨ,Consumer Cyclical,輸送用機器
+7276,小糸製作所,Technology,電気機器
+7277,ＴＢＫ,Consumer Cyclical,輸送用機器
+7278,エクセディ,Consumer Cyclical,輸送用機器
+7279,ハイレックスコーポレーション,Consumer Cyclical,輸送用機器
+7280,ミツバ,Technology,電気機器
+7282,豊田合成,Consumer Cyclical,輸送用機器
+7283,愛三工業,Consumer Cyclical,輸送用機器
+7284,盟和産業,Consumer Cyclical,輸送用機器
+7287,日本精機,Consumer Cyclical,輸送用機器
+7291,日本プラスト,Consumer Cyclical,輸送用機器
+7292,村上開明堂,Consumer Cyclical,輸送用機器
+7294,ヨロズ,Consumer Cyclical,輸送用機器
+7296,エフ・シー・シー,Consumer Cyclical,輸送用機器
+7297,カーメイト,Consumer Cyclical,輸送用機器
+7298,八千代工業,Consumer Cyclical,輸送用機器
+7299,フジオーゼックス,Consumer Cyclical,輸送用機器
+7305,新家工業,Materials,鉄鋼
+7309,シマノ,Consumer Cyclical,輸送用機器
+7313,テイ・エス　テック,Consumer Cyclical,輸送用機器
+7314,小田原機器,Consumer Cyclical,輸送用機器
+7315,ＩＪＴＴ,Consumer Cyclical,輸送用機器
+7317,松屋アールアンドディ,Consumer Cyclical,輸送用機器
+7318,セレンディップ・ホールディングス,Consumer Cyclical,輸送用機器
+7320,日本リビング保証,Financials,その他金融業
+7322,三十三フィナンシャルグループ,Financials,銀行業
+7325,アイリックコーポレーション,Financials,保険業
+7326,ＳＢＩインシュアランスグループ,Financials,保険業
+7327,第四北越フィナンシャルグループ,Financials,銀行業
+7337,ひろぎんホールディングス,Financials,銀行業
+7338,インヴァスト,Financials,証券･商品先物取引業
+7339,アイペットホールディングス,Financials,保険業
+7342,ウェルスナビ,Financials,証券･商品先物取引業
+7343,ブロードマインド,Financials,保険業
+7345,アイ・パートナーズフィナンシャル,Financials,その他金融業
+7347,マーキュリアホールディングス,Financials,証券･商品先物取引業
+7350,おきなわフィナンシャルグループ,Financials,銀行業
+7351,グッドパッチ,Industrials,サービス業
+7352,Ｂｒａｎｄｉｎｇ　Ｅｎｇｉｎｅｅｒ,Industrials,サービス業
+7353,ＫＩＹＯラーニング,Industrials,サービス業
+7354,ダイレクトマーケティングミックス,Industrials,サービス業
+7355,一寸房,Industrials,サービス業
+7356,Ｒｅｔｔｙ,Industrials,サービス業
+7357,ジオコード,Industrials,サービス業
+7358,ポピンズホールディングス,Industrials,サービス業
+7359,東京通信,Industrials,サービス業
+7360,オンデック,Industrials,サービス業
+7361,ヒューマンクリエイションホールディングス,Industrials,サービス業
+7362,Ｔ．Ｓ．Ｉ,Industrials,サービス業
+7363,ベビーカレンダー,Industrials,サービス業
+7364,琉球アスティーダスポーツクラブ,Industrials,サービス業
+7365,シック・ホールディングス,Industrials,サービス業
+7366,ＬＩＴＡＬＩＣＯ,Industrials,サービス業
+7367,セルム,Industrials,サービス業
+7368,表示灯,Industrials,サービス業
+7369,メイホーホールディングス,Industrials,サービス業
+7370,Ｅｎｊｉｎ,Industrials,サービス業
+7371,全研本社,Industrials,サービス業
+7372,デコルテ・ホールディングス,Industrials,サービス業
+7373,アイドマ・ホールディングス,Industrials,サービス業
+7374,コンフィデンス,Industrials,サービス業
+7375,リファインバースグループ,Industrials,サービス業
+7376,ＢＣＣ,Industrials,サービス業
+7377,ＤＮホールディングス,Industrials,サービス業
+7378,アシロ,Industrials,サービス業
+7379,サーキュレーション,Industrials,サービス業
+7380,十六フィナンシャルグループ,Financials,銀行業
+7381,北國フィナンシャルホールディングス,Financials,銀行業
+7383,ネットプロテクションズホールディングス,Financials,その他金融業
+7399,ナンシン,Consumer Cyclical,輸送用機器
+7408,ジャムコ,Consumer Cyclical,輸送用機器
+7412,アトム,Consumer Cyclical,小売業
+7413,創健社,Industrials,卸売業
+7414,小野建,Industrials,卸売業
+7416,はるやまホールディングス,Consumer Cyclical,小売業
+7417,南陽,Industrials,卸売業
+7419,ノジマ,Consumer Cyclical,小売業
+7420,佐鳥電機,Industrials,卸売業
+7421,カッパ・クリエイト,Consumer Cyclical,小売業
+7422,東邦レマック,Industrials,卸売業
+7425,初穂商事,Industrials,卸売業
+7426,山大,Industrials,卸売業
+7427,エコートレーディング,Industrials,卸売業
+7433,伯東,Industrials,卸売業
+7434,オータケ,Industrials,卸売業
+7435,ナ・デックス,Industrials,卸売業
+7438,コンドーテック,Industrials,卸売業
+7442,中山福,Industrials,卸売業
+7443,横浜魚類,Industrials,卸売業
+7444,ハリマ共和物産,Industrials,卸売業
+7445,ライトオン,Consumer Cyclical,小売業
+7446,東北化学薬品,Industrials,卸売業
+7447,ナガイレーベン,Industrials,卸売業
+7450,サンデー,Consumer Cyclical,小売業
+7451,三菱食品,Industrials,卸売業
+7453,良品計画,Consumer Cyclical,小売業
+7455,三城ホールディングス,Consumer Cyclical,小売業
+7456,松田産業,Industrials,卸売業
+7458,第一興商,Industrials,卸売業
+7459,メディパルホールディングス,Industrials,卸売業
+7460,ヤギ,Industrials,卸売業
+7461,キムラ,Industrials,卸売業
+7462,ＣＡＰＩＴＡ,Consumer Cyclical,小売業
+7463,アドヴァングループ,Consumer Cyclical,小売業
+7464,セフテック,Industrials,卸売業
+7466,ＳＰＫ,Industrials,卸売業
+7467,萩原電気ホールディングス,Industrials,卸売業
+7472,鳥羽洋行,Industrials,卸売業
+7475,アルビス,Consumer Cyclical,小売業
+7476,アズワン,Industrials,卸売業
+7477,ムラキ,Industrials,卸売業
+7480,スズデン,Industrials,卸売業
+7481,尾家産業,Industrials,卸売業
+7482,シモジマ,Industrials,卸売業
+7483,ドウシシャ,Industrials,卸売業
+7486,サンリン,Industrials,卸売業
+7487,小津産業,Industrials,卸売業
+7490,日新商事,Industrials,卸売業
+7494,コナカ,Consumer Cyclical,小売業
+7500,西川計測,Industrials,卸売業
+7501,ティムコ,Industrials,卸売業
+7502,プラザクリエイト本社,Industrials,サービス業
+7504,高速,Industrials,卸売業
+7505,扶桑電通,Industrials,卸売業
+7506,ハウス　オブ　ローゼ,Consumer Cyclical,小売業
+7508,Ｇ‐７ホールディングス,Consumer Cyclical,小売業
+7509,アイエーグループ,Consumer Cyclical,小売業
+7510,たけびし,Industrials,卸売業
+7512,イオン北海道,Consumer Cyclical,小売業
+7513,コジマ,Consumer Cyclical,小売業
+7514,ヒマラヤ,Consumer Cyclical,小売業
+7515,マルヨシセンター,Consumer Cyclical,小売業
+7516,コーナン商事,Consumer Cyclical,小売業
+7518,ネットワンシステムズ,Communication Services,情報･通信業
+7520,エコス,Consumer Cyclical,小売業
+7521,ムサシ,Industrials,卸売業
+7522,ワタミ,Consumer Cyclical,小売業
+7523,アールビバン,Consumer Cyclical,小売業
+7524,マルシェ,Consumer Cyclical,小売業
+7525,リックス,Industrials,卸売業
+7527,システムソフト,Communication Services,情報･通信業
+7531,清和中央ホールディングス,Industrials,卸売業
+7532,パン・パシフィック・インターナショナルホールディングス,Consumer Cyclical,小売業
+7537,丸文,Industrials,卸売業
+7538,大水,Industrials,卸売業
+7539,アイナボホールディングス,Industrials,卸売業
+7544,スリーエフ,Consumer Cyclical,小売業
+7545,西松屋チェーン,Consumer Cyclical,小売業
+7550,ゼンショーホールディングス,Consumer Cyclical,小売業
+7551,ウェッズ,Consumer Cyclical,輸送用機器
+7552,ハピネット,Industrials,卸売業
+7554,幸楽苑ホールディングス,Consumer Cyclical,小売業
+7555,大田花き,Industrials,卸売業
+7559,ジーエフシー,Industrials,卸売業
+7561,ハークスレイ,Consumer Cyclical,小売業
+7562,安楽亭,Consumer Cyclical,小売業
+7564,ワークマン,Consumer Cyclical,小売業
+7565,萬世電機,Industrials,卸売業
+7567,栄電子,Industrials,卸売業
+7570,橋本総業ホールディングス,Industrials,卸売業
+7571,ヤマノホールディングス,Consumer Cyclical,小売業
+7575,日本ライフライン,Industrials,卸売業
+7578,ニチリョク,Consumer Cyclical,小売業
+7581,サイゼリヤ,Consumer Cyclical,小売業
+7585,かんなん丸,Consumer Cyclical,小売業
+7590,タカショー,Industrials,卸売業
+7593,ＶＴホールディングス,Consumer Cyclical,小売業
+7595,アルゴグラフィックス,Communication Services,情報･通信業
+7596,魚力,Consumer Cyclical,小売業
+7597,東京貴宝,Industrials,卸売業
+7599,ＩＤＯＭ,Industrials,卸売業
+7600,日本エム・ディ・エム,Technology,精密機器
+7601,ポプラ,Consumer Cyclical,小売業
+7602,カーチスホールディングス,Industrials,卸売業
+7603,マックハウス,Consumer Cyclical,小売業
+7604,梅の花,Consumer Cyclical,小売業
+7605,フジ・コーポレーション,Consumer Cyclical,小売業
+7606,ユナイテッドアローズ,Consumer Cyclical,小売業
+7607,進和,Industrials,卸売業
+7608,エスケイジャパン,Industrials,卸売業
+7609,ダイトロン,Industrials,卸売業
+7610,テイツー,Consumer Cyclical,小売業
+7611,ハイデイ日高,Consumer Cyclical,小売業
+7613,シークス,Industrials,卸売業
+7614,オーエムツーネットワーク,Consumer Cyclical,小売業
+7615,ＹＵ−ＷＡ　Ｃｒｅａｔｉｏｎ　Ｈｏｌｄｉｎｇｓ,Consumer Cyclical,小売業
+7616,コロワイド,Consumer Cyclical,小売業
+7618,ピーシーデポコーポレーション,Consumer Cyclical,小売業
+7619,田中商事,Industrials,卸売業
+7621,うかい,Consumer Cyclical,小売業
+7623,サンオータス,Consumer Cyclical,小売業
+7624,ＮａＩＴＯ,Industrials,卸売業
+7625,グローバルダイニング,Consumer Cyclical,小売業
+7628,オーハシテクニカ,Industrials,卸売業
+7630,壱番屋,Consumer Cyclical,小売業
+7634,星医療酸器,Industrials,卸売業
+7635,杉田エース,Industrials,卸売業
+7636,ハンズマン,Consumer Cyclical,小売業
+7637,白銅,Industrials,卸売業
+7638,ＮＥＷ　ＡＲＴ　ＨＯＬＤＩＮＧＳ,Consumer Cyclical,小売業
+7640,トップカルチャー,Consumer Cyclical,小売業
+7643,ダイイチ,Consumer Cyclical,小売業
+7646,ＰＬＡＮＴ,Consumer Cyclical,小売業
+7647,音通,Consumer Cyclical,小売業
+7649,スギホールディングス,Consumer Cyclical,小売業
+7670,オーウエル,Industrials,卸売業
+7671,ＡｍｉｄＡホールディングス,Consumer Cyclical,小売業
+7673,ダイコー通産,Industrials,卸売業
+7674,ＮＡＴＴＹ　ＳＷＡＮＫＹ,Consumer Cyclical,小売業
+7676,グッドスピード,Consumer Cyclical,小売業
+7677,ヤシマキザイ,Industrials,卸売業
+7678,あさくま,Consumer Cyclical,小売業
+7679,薬王堂ホールディングス,Consumer Cyclical,小売業
+7680,軽自動車館,Consumer Cyclical,小売業
+7681,レオクラン,Industrials,卸売業
+7682,浜木綿,Consumer Cyclical,小売業
+7683,ダブルエー,Consumer Cyclical,小売業
+7685,ＢｕｙＳｅｌｌ　Ｔｅｃｈｎｏｌｏｇｉｅｓ,Industrials,卸売業
+7686,カクヤスグループ,Industrials,卸売業
+7687,ミクリード,Industrials,卸売業
+7689,コパ・コーポレーション,Industrials,卸売業
+7690,カレント自動車,Industrials,卸売業
+7691,Ｃ　Ｃｈａｎｎｅｌ,Consumer Cyclical,小売業
+7692,アースインフィニティ,Consumer Cyclical,小売業
+7693,北海道歯科産業,Industrials,卸売業
+7694,いつも,Consumer Cyclical,小売業
+7695,交換できるくん,Consumer Cyclical,小売業
+7697,ＲＥＸＴ,Consumer Cyclical,小売業
+7698,アイスコ,Industrials,卸売業
+7699,オムニ・プラス・システム・リミテッド,Industrials,卸売業
+7701,島津製作所,Technology,精密機器
+7702,ＪＭＳ,Technology,精密機器
+7705,ジーエルサイエンス,Technology,精密機器
+7707,プレシジョン・システム・サイエンス,Technology,精密機器
+7709,クボテック,Technology,精密機器
+7711,助川電気工業,Technology,精密機器
+7713,シグマ光機,Technology,精密機器
+7715,長野計器,Technology,精密機器
+7716,ナカニシ,Technology,精密機器
+7717,ブイ・テクノロジー,Technology,精密機器
+7718,スター精密,Industrials,機械
+7719,東京衡機,Technology,精密機器
+7721,東京計器,Technology,精密機器
+7722,国際計測器,Technology,精密機器
+7723,愛知時計電機,Technology,精密機器
+7725,インターアクション,Technology,精密機器
+7726,黒田精工,Industrials,機械
+7727,オーバル,Technology,精密機器
+7729,東京精密,Technology,精密機器
+7730,マニー,Technology,精密機器
+7731,ニコン,Technology,精密機器
+7732,トプコン,Technology,精密機器
+7733,オリンパス,Technology,精密機器
+7734,理研計器,Technology,精密機器
+7735,ＳＣＲＥＥＮホールディングス,Technology,電気機器
+7739,キヤノン電子,Technology,電気機器
+7740,タムロン,Technology,精密機器
+7741,ＨＯＹＡ,Technology,精密機器
+7743,シード,Technology,精密機器
+7744,ノーリツ鋼機,Technology,精密機器
+7745,エー・アンド・デイ,Technology,精密機器
+7746,岡本硝子,Technology,精密機器
+7747,朝日インテック,Technology,精密機器
+7748,ホロン,Technology,精密機器
+7749,メディキット,Technology,精密機器
+7751,キヤノン,Technology,電気機器
+7752,リコー,Technology,電気機器
+7758,セコニック,Industrials,機械
+7760,ＩＭＶ,Technology,精密機器
+7762,シチズン時計,Technology,精密機器
+7769,リズム,Technology,精密機器
+7771,日本精密,Technology,精密機器
+7774,ジャパン・ティッシュ・エンジニアリング,Technology,精密機器
+7775,大研医器,Technology,精密機器
+7776,セルシード,Technology,精密機器
+7777,スリー・ディー・マトリックス,Technology,精密機器
+7779,ＣＹＢＥＲＤＹＮＥ,Technology,精密機器
+7780,メニコン,Technology,精密機器
+7781,平山ホールディングス,Technology,精密機器
+7782,シンシア,Technology,精密機器
+7790,バルコス,Industrials,その他製品
+7791,ドリームベッド,Industrials,その他製品
+7792,コラントッテ,Industrials,その他製品
+7800,アミファ,Industrials,その他製品
+7803,ブシロード,Industrials,その他製品
+7804,ビーアンドピー,Industrials,その他製品
+7805,プリントネット,Industrials,その他製品
+7806,ＭＴＧ,Industrials,その他製品
+7807,幸和製作所,Industrials,その他製品
+7808,シー・エス・ランバー,Industrials,その他製品
+7809,壽屋,Industrials,その他製品
+7810,クロスフォー,Industrials,その他製品
+7811,中本パックス,Industrials,その他製品
+7812,クレステック,Industrials,その他製品
+7813,プラッツ,Industrials,その他製品
+7814,日本創発グループ,Industrials,その他製品
+7815,東京ボード工業,Industrials,その他製品
+7816,スノーピーク,Industrials,その他製品
+7817,パラマウントベッドホールディングス,Industrials,その他製品
+7818,トランザクション,Industrials,その他製品
+7819,粧美堂,Industrials,その他製品
+7820,ニホンフラッシュ,Industrials,その他製品
+7821,前田工繊,Industrials,その他製品
+7822,永大産業,Industrials,その他製品
+7823,アートネイチャー,Industrials,その他製品
+7826,フルヤ金属,Industrials,その他製品
+7827,オービス,Industrials,その他製品
+7829,サマンサタバサジャパンリミテッド,Industrials,その他製品
+7831,ウイルコホールディングス,Industrials,その他製品
+7832,バンダイナムコホールディングス,Industrials,その他製品
+7833,アイフィスジャパン,Industrials,その他製品
+7836,アビックス,Industrials,その他製品
+7837,アールシーコア,Industrials,その他製品
+7838,共立印刷,Industrials,その他製品
+7839,ＳＨＯＥＩ,Industrials,その他製品
+7840,フランスベッドホールディングス,Industrials,その他製品
+7841,遠藤製作所,Industrials,その他製品
+7844,マーベラス,Communication Services,情報･通信業
+7846,パイロットコーポレーション,Industrials,その他製品
+7847,グラファイトデザイン,Industrials,その他製品
+7849,スターツ出版,Communication Services,情報･通信業
+7850,総合商研,Industrials,その他製品
+7851,カワセコンピュータサプライ,Industrials,その他製品
+7855,カーディナル,Industrials,その他製品
+7856,萩原工業,Industrials,その他製品
+7857,セキ,Industrials,その他製品
+7859,アルメディオ,Industrials,その他製品
+7860,エイベックス,Communication Services,情報･通信業
+7862,トッパン・フォームズ,Industrials,その他製品
+7863,平賀,Industrials,その他製品
+7864,フジシールインターナショナル,Industrials,その他製品
+7865,ピープル,Industrials,その他製品
+7867,タカラトミー,Industrials,その他製品
+7868,広済堂ホールディングス,Industrials,その他製品
+7871,フクビ化学工業,Materials,化学
+7872,エステールホールディングス,Industrials,その他製品
+7874,レック,Materials,化学
+7875,竹田印刷,Industrials,その他製品
+7877,永大化工,Materials,化学
+7878,光・彩,Industrials,その他製品
+7879,ノダ,Industrials,その他製品
+7883,サンメッセ,Industrials,その他製品
+7885,タカノ,Industrials,その他製品
+7886,ヤマト・インダストリー,Materials,化学
+7887,南海プライウッド,Industrials,その他製品
+7888,三光合成,Materials,化学
+7893,プロネクサス,Industrials,その他製品
+7895,中央化学,Materials,化学
+7896,セブン工業,Industrials,その他製品
+7897,ホクシン,Industrials,その他製品
+7898,ウッドワン,Industrials,その他製品
+7899,ＭＩＣＳ化学,Materials,化学
+7901,マツモト,Industrials,その他製品
+7902,ソノコム,Industrials,その他製品
+7905,大建工業,Industrials,その他製品
+7906,ヨネックス,Industrials,その他製品
+7908,きもと,Materials,化学
+7911,凸版印刷,Industrials,その他製品
+7912,大日本印刷,Industrials,その他製品
+7914,共同印刷,Industrials,その他製品
+7915,ＮＩＳＳＨＡ,Industrials,その他製品
+7916,光村印刷,Industrials,その他製品
+7917,藤森工業,Materials,化学
+7918,ヴィア・ホールディングス,Consumer Cyclical,小売業
+7919,野崎印刷紙業,Industrials,その他製品
+7921,ＴＡＫＡＲＡ　＆　ＣＯＭＰＡＮＹ,Industrials,その他製品
+7922,三光産業,Industrials,その他製品
+7923,トーイン,Industrials,その他製品
+7925,前澤化成工業,Materials,化学
+7927,ムトー精工,Materials,化学
+7928,旭化学工業,Materials,化学
+7931,未来工業,Materials,化学
+7932,ニッピ,Industrials,その他製品
+7936,アシックス,Industrials,その他製品
+7937,ツツミ,Industrials,その他製品
+7938,リーガルコーポレーション,Industrials,その他製品
+7939,研創,Industrials,その他製品
+7940,ウェーブロックホールディングス,Materials,化学
+7942,ＪＳＰ,Materials,化学
+7943,ニチハ,Materials,ガラス･土石製品
+7944,ローランド,Industrials,その他製品
+7945,コマニー,Industrials,その他製品
+7946,光陽社,Industrials,その他製品
+7947,エフピコ,Materials,化学
+7949,小松ウオール工業,Industrials,その他製品
+7951,ヤマハ,Industrials,その他製品
+7952,河合楽器製作所,Industrials,その他製品
+7953,菊水化学工業,Industrials,その他製品
+7955,クリナップ,Industrials,その他製品
+7956,ピジョン,Industrials,その他製品
+7957,フジコピアン,Industrials,その他製品
+7958,天馬,Materials,化学
+7961,兼松サステック,Industrials,その他製品
+7962,キングジム,Industrials,その他製品
+7963,興研,Industrials,その他製品
+7965,象印マホービン,Technology,電気機器
+7966,リンテック,Industrials,その他製品
+7970,信越ポリマー,Materials,化学
+7971,東リ,Materials,化学
+7972,イトーキ,Industrials,その他製品
+7974,任天堂,Industrials,その他製品
+7975,リヒトラブ,Industrials,その他製品
+7976,三菱鉛筆,Industrials,その他製品
+7979,松風,Technology,精密機器
+7980,重松製作所,Industrials,その他製品
+7981,タカラスタンダード,Industrials,その他製品
+7983,ミロク,Industrials,その他製品
+7984,コクヨ,Industrials,その他製品
+7985,ネポン,Materials,金属製品
+7986,日本アイ・エス・ケイ,Industrials,その他製品
+7987,ナカバヤシ,Industrials,その他製品
+7988,ニフコ,Materials,化学
+7989,立川ブラインド工業,Materials,金属製品
+7990,グローブライド,Industrials,その他製品
+7991,マミヤ・オーピー,Industrials,機械
+7992,セーラー万年筆,Industrials,その他製品
+7994,オカムラ,Industrials,その他製品
+7995,バルカー,Materials,化学
+7997,くろがね工作所,Industrials,その他製品
+7999,ＭＵＴＯＨホールディングス,Technology,電気機器
+8001,伊藤忠商事,Industrials,卸売業
+8002,丸紅,Industrials,卸売業
+8005,スクロール,Consumer Cyclical,小売業
+8006,ユアサ・フナショク,Industrials,卸売業
+8007,高島,Industrials,卸売業
+8008,ヨンドシーホールディングス,Consumer Cyclical,小売業
+8011,三陽商会,Consumer Cyclical,繊維製品
+8012,長瀬産業,Industrials,卸売業
+8013,ナイガイ,Consumer Cyclical,繊維製品
+8014,蝶理,Industrials,卸売業
+8015,豊田通商,Industrials,卸売業
+8016,オンワードホールディングス,Consumer Cyclical,繊維製品
+8018,三共生興,Industrials,卸売業
+8020,兼松,Industrials,卸売業
+8022,美津濃,Industrials,その他製品
+8023,大興電子通信,Industrials,卸売業
+8025,ツカモトコーポレーション,Industrials,卸売業
+8029,ルックホールディングス,Consumer Cyclical,繊維製品
+8030,中央魚類,Industrials,卸売業
+8031,三井物産,Industrials,卸売業
+8032,日本紙パルプ商事,Industrials,卸売業
+8035,東京エレクトロン,Technology,電気機器
+8037,カメイ,Industrials,卸売業
+8038,東都水産,Industrials,卸売業
+8039,築地魚市場,Industrials,卸売業
+8040,東京ソワール,Consumer Cyclical,繊維製品
+8041,ＯＵＧホールディングス,Industrials,卸売業
+8043,スターゼン,Industrials,卸売業
+8045,横浜丸魚,Industrials,卸売業
+8046,丸藤シートパイル,Industrials,卸売業
+8050,セイコーホールディングス,Technology,精密機器
+8051,山善,Industrials,卸売業
+8052,椿本興業,Industrials,卸売業
+8053,住友商事,Industrials,卸売業
+8056,日本ユニシス,Communication Services,情報･通信業
+8057,内田洋行,Industrials,卸売業
+8058,三菱商事,Industrials,卸売業
+8059,第一実業,Industrials,卸売業
+8060,キヤノンマーケティングジャパン,Industrials,卸売業
+8061,西華産業,Industrials,卸売業
+8065,佐藤商事,Industrials,卸売業
+8066,三谷商事,Industrials,卸売業
+8068,菱洋エレクトロ,Industrials,卸売業
+8070,東京産業,Industrials,卸売業
+8072,日本出版貿易,Industrials,卸売業
+8074,ユアサ商事,Industrials,卸売業
+8075,神鋼商事,Industrials,卸売業
+8077,トルク,Industrials,卸売業
+8078,阪和興業,Industrials,卸売業
+8079,正栄食品工業,Industrials,卸売業
+8081,カナデン,Industrials,卸売業
+8084,菱電商事,Industrials,卸売業
+8085,ナラサキ産業,Industrials,卸売業
+8086,ニプロ,Technology,精密機器
+8088,岩谷産業,Industrials,卸売業
+8089,ナイス,Industrials,卸売業
+8091,ニチモウ,Industrials,卸売業
+8093,極東貿易,Industrials,卸売業
+8095,アステナホールディングス,Industrials,卸売業
+8096,兼松エレクトロニクス,Communication Services,情報･通信業
+8097,三愛石油,Industrials,卸売業
+8098,稲畑産業,Industrials,卸売業
+8101,ＧＳＩクレオス,Industrials,卸売業
+8103,明和産業,Industrials,卸売業
+8104,クワザワホールディングス,Industrials,卸売業
+8105,堀田丸正,Industrials,卸売業
+8107,キムラタン,Consumer Cyclical,繊維製品
+8111,ゴールドウイン,Consumer Cyclical,繊維製品
+8113,ユニ・チャーム,Materials,化学
+8114,デサント,Consumer Cyclical,繊維製品
+8115,ムーンバット,Industrials,卸売業
+8117,中央自動車工業,Industrials,卸売業
+8118,キング,Consumer Cyclical,繊維製品
+8119,三栄コーポレーション,Industrials,卸売業
+8123,川辺,Industrials,卸売業
+8125,ワキタ,Industrials,卸売業
+8127,ヤマトインターナショナル,Consumer Cyclical,繊維製品
+8129,東邦ホールディングス,Industrials,卸売業
+8130,サンゲツ,Industrials,卸売業
+8131,ミツウロコグループホールディングス,Industrials,卸売業
+8132,シナネンホールディングス,Industrials,卸売業
+8133,伊藤忠エネクス,Industrials,卸売業
+8135,ゼット,Industrials,卸売業
+8136,サンリオ,Industrials,卸売業
+8137,サンワテクノス,Industrials,卸売業
+8138,三京化成,Industrials,卸売業
+8139,ナガホリ,Industrials,卸売業
+8140,リョーサン,Industrials,卸売業
+8141,新光商事,Industrials,卸売業
+8142,トーホー,Industrials,卸売業
+8143,ラピーヌ,Consumer Cyclical,繊維製品
+8144,電響社,Industrials,卸売業
+8147,トミタ,Industrials,卸売業
+8150,三信電気,Industrials,卸売業
+8151,東陽テクニカ,Industrials,卸売業
+8152,ソマール,Industrials,卸売業
+8153,モスフードサービス,Industrials,卸売業
+8154,加賀電子,Industrials,卸売業
+8155,三益半導体工業,Materials,金属製品
+8157,都築電気,Communication Services,情報･通信業
+8158,ソーダニッカ,Industrials,卸売業
+8159,立花エレテック,Industrials,卸売業
+8160,木曽路,Consumer Cyclical,小売業
+8163,ＳＲＳホールディングス,Consumer Cyclical,小売業
+8165,千趣会,Consumer Cyclical,小売業
+8166,タカキュー,Consumer Cyclical,小売業
+8167,リテールパートナーズ,Consumer Cyclical,小売業
+8168,ケーヨー,Consumer Cyclical,小売業
+8173,上新電機,Consumer Cyclical,小売業
+8174,日本瓦斯,Consumer Cyclical,小売業
+8179,ロイヤルホールディングス,Consumer Cyclical,小売業
+8181,東天紅,Consumer Cyclical,小売業
+8182,いなげや,Consumer Cyclical,小売業
+8185,チヨダ,Consumer Cyclical,小売業
+8194,ライフコーポレーション,Consumer Cyclical,小売業
+8198,マックスバリュ東海,Consumer Cyclical,小売業
+8200,リンガーハット,Consumer Cyclical,小売業
+8202,ラオックス,Consumer Cyclical,小売業
+8203,ＭｒＭａｘＨＤ,Consumer Cyclical,小売業
+8207,テンアライド,Consumer Cyclical,小売業
+8208,エンチョー,Consumer Cyclical,小売業
+8209,フレンドリー,Consumer Cyclical,小売業
+8214,ＡＯＫＩホールディングス,Consumer Cyclical,小売業
+8215,銀座山形屋,Consumer Cyclical,小売業
+8217,オークワ,Consumer Cyclical,小売業
+8218,コメリ,Consumer Cyclical,小売業
+8219,青山商事,Consumer Cyclical,小売業
+8225,タカチホ,Industrials,卸売業
+8226,理経,Industrials,卸売業
+8227,しまむら,Consumer Cyclical,小売業
+8230,はせがわ,Consumer Cyclical,小売業
+8233,高島屋,Consumer Cyclical,小売業
+8237,松屋,Consumer Cyclical,小売業
+8242,エイチ・ツー・オー　リテイリング,Consumer Cyclical,小売業
+8244,近鉄百貨店,Consumer Cyclical,小売業
+8247,大和,Consumer Cyclical,小売業
+8249,テクノアソシエ,Industrials,卸売業
+8252,丸井グループ,Consumer Cyclical,小売業
+8253,クレディセゾン,Financials,その他金融業
+8254,さいか屋,Consumer Cyclical,小売業
+8255,アクシアル　リテイリング,Consumer Cyclical,小売業
+8256,プロルート丸光,Industrials,卸売業
+8260,井筒屋,Consumer Cyclical,小売業
+8267,イオン,Consumer Cyclical,小売業
+8273,イズミ,Consumer Cyclical,小売業
+8275,フォーバル,Industrials,卸売業
+8276,平和堂,Consumer Cyclical,小売業
+8278,フジ,Consumer Cyclical,小売業
+8279,ヤオコー,Consumer Cyclical,小売業
+8281,ゼビオホールディングス,Consumer Cyclical,小売業
+8282,ケーズホールディングス,Consumer Cyclical,小売業
+8283,ＰＡＬＴＡＣ,Industrials,卸売業
+8285,三谷産業,Industrials,卸売業
+8287,マックスバリュ西日本,Consumer Cyclical,小売業
+8289,Ｏｌｙｍｐｉｃグループ,Consumer Cyclical,小売業
+8291,日産東京販売ホールディングス,Consumer Cyclical,小売業
+8301,日本銀行,Financials,銀行業
+8303,新生銀行,Financials,銀行業
+8304,あおぞら銀行,Financials,銀行業
+8306,三菱ＵＦＪフィナンシャル・グループ,Financials,銀行業
+8308,りそなホールディングス,Financials,銀行業
+8309,三井住友トラスト・ホールディングス,Financials,銀行業
+8316,三井住友フィナンシャルグループ,Financials,銀行業
+8331,千葉銀行,Financials,銀行業
+8334,群馬銀行,Financials,銀行業
+8336,武蔵野銀行,Financials,銀行業
+8337,千葉興業銀行,Financials,銀行業
+8338,筑波銀行,Financials,銀行業
+8341,七十七銀行,Financials,銀行業
+8342,青森銀行,Financials,銀行業
+8343,秋田銀行,Financials,銀行業
+8344,山形銀行,Financials,銀行業
+8345,岩手銀行,Financials,銀行業
+8346,東邦銀行,Financials,銀行業
+8349,東北銀行,Financials,銀行業
+8350,みちのく銀行,Financials,銀行業
+8354,ふくおかフィナンシャルグループ,Financials,銀行業
+8355,静岡銀行,Financials,銀行業
+8358,スルガ銀行,Financials,銀行業
+8359,八十二銀行,Financials,銀行業
+8360,山梨中央銀行,Financials,銀行業
+8361,大垣共立銀行,Financials,銀行業
+8362,福井銀行,Financials,銀行業
+8364,清水銀行,Financials,銀行業
+8365,富山銀行,Financials,銀行業
+8366,滋賀銀行,Financials,銀行業
+8367,南都銀行,Financials,銀行業
+8368,百五銀行,Financials,銀行業
+8369,京都銀行,Financials,銀行業
+8370,紀陽銀行,Financials,銀行業
+8377,ほくほくフィナンシャルグループ,Financials,銀行業
+8381,山陰合同銀行,Financials,銀行業
+8382,中国銀行,Financials,銀行業
+8383,鳥取銀行,Financials,銀行業
+8385,伊予銀行,Financials,銀行業
+8386,百十四銀行,Financials,銀行業
+8387,四国銀行,Financials,銀行業
+8388,阿波銀行,Financials,銀行業
+8392,大分銀行,Financials,銀行業
+8393,宮崎銀行,Financials,銀行業
+8395,佐賀銀行,Financials,銀行業
+8399,琉球銀行,Financials,銀行業
+8410,セブン銀行,Financials,銀行業
+8411,みずほフィナンシャルグループ,Financials,銀行業
+8416,高知銀行,Financials,銀行業
+8418,山口フィナンシャルグループ,Financials,銀行業
+8424,芙蓉総合リース,Financials,その他金融業
+8425,みずほリース,Financials,その他金融業
+8439,東京センチュリー,Financials,その他金融業
+8462,フューチャーベンチャーキャピタル,Financials,証券･商品先物取引業
+8473,ＳＢＩホールディングス,Financials,証券･商品先物取引業
+8508,Ｊトラスト,Financials,その他金融業
+8511,日本証券金融,Financials,その他金融業
+8515,アイフル,Financials,その他金融業
+8518,日本アジア投資,Financials,証券･商品先物取引業
+8521,長野銀行,Financials,銀行業
+8522,名古屋銀行,Financials,銀行業
+8524,北洋銀行,Financials,銀行業
+8527,愛知銀行,Financials,銀行業
+8530,中京銀行,Financials,銀行業
+8537,大光銀行,Financials,銀行業
+8541,愛媛銀行,Financials,銀行業
+8542,トマト銀行,Financials,銀行業
+8544,京葉銀行,Financials,銀行業
+8550,栃木銀行,Financials,銀行業
+8551,北日本銀行,Financials,銀行業
+8558,東和銀行,Financials,銀行業
+8562,福島銀行,Financials,銀行業
+8563,大東銀行,Financials,銀行業
+8566,リコーリース,Financials,その他金融業
+8570,イオンフィナンシャルサービス,Financials,その他金融業
+8572,アコム,Financials,その他金融業
+8584,ジャックス,Financials,その他金融業
+8585,オリエントコーポレーション,Financials,その他金融業
+8591,オリックス,Financials,その他金融業
+8593,三菱ＨＣキャピタル,Financials,その他金融業
+8595,ジャフコ　グループ,Financials,証券･商品先物取引業
+8596,九州リースサービス,Financials,その他金融業
+8600,トモニホールディングス,Financials,銀行業
+8601,大和証券グループ本社,Financials,証券･商品先物取引業
+8604,野村ホールディングス,Financials,証券･商品先物取引業
+8609,岡三証券グループ,Financials,証券･商品先物取引業
+8613,丸三証券,Financials,証券･商品先物取引業
+8614,東洋証券,Financials,証券･商品先物取引業
+8616,東海東京フィナンシャル・ホールディングス,Financials,証券･商品先物取引業
+8617,光世証券,Financials,証券･商品先物取引業
+8622,水戸証券,Financials,証券･商品先物取引業
+8624,いちよし証券,Financials,証券･商品先物取引業
+8628,松井証券,Financials,証券･商品先物取引業
+8630,ＳＯＭＰＯホールディングス,Financials,保険業
+8697,日本取引所グループ,Financials,その他金融業
+8698,マネックスグループ,Financials,証券･商品先物取引業
+8699,澤田ホールディングス,Financials,証券･商品先物取引業
+8700,丸八証券,Financials,証券･商品先物取引業
+8704,トレイダーズホールディングス,Financials,証券･商品先物取引業
+8705,岡藤日産証券ホールディングス,Financials,証券･商品先物取引業
+8706,極東証券,Financials,証券･商品先物取引業
+8707,岩井コスモホールディングス,Financials,証券･商品先物取引業
+8708,アイザワ証券グループ,Financials,証券･商品先物取引業
+8713,フィデアホールディングス,Financials,銀行業
+8714,池田泉州ホールディングス,Financials,銀行業
+8715,アニコム　ホールディングス,Financials,保険業
+8725,ＭＳ＆ＡＤインシュアランスグループホールディングス,Financials,保険業
+8732,マネーパートナーズグループ,Financials,証券･商品先物取引業
+8737,あかつき本社,Financials,証券･商品先物取引業
+8739,スパークス・グループ,Financials,証券･商品先物取引業
+8740,フジトミ証券,Financials,証券･商品先物取引業
+8742,小林洋行,Financials,証券･商品先物取引業
+8746,第一商品,Financials,証券･商品先物取引業
+8747,豊トラスティ証券,Financials,証券･商品先物取引業
+8750,第一生命ホールディングス,Financials,保険業
+8766,東京海上ホールディングス,Financials,保険業
+8769,アドバンテッジリスクマネジメント,Industrials,サービス業
+8771,イー・ギャランティ,Financials,その他金融業
+8772,アサックス,Financials,その他金融業
+8783,ＧＦＡ,Financials,その他金融業
+8789,フィンテック　グローバル,Financials,その他金融業
+8793,ＮＥＣキャピタルソリューション,Financials,その他金融業
+8795,Ｔ＆Ｄホールディングス,Financials,保険業
+8798,アドバンスクリエイト,Financials,保険業
+8801,三井不動産,Real Estate,不動産業
+8802,三菱地所,Real Estate,不動産業
+8803,平和不動産,Real Estate,不動産業
+8804,東京建物,Real Estate,不動産業
+8806,ダイビル,Real Estate,不動産業
+8818,京阪神ビルディング,Real Estate,不動産業
+8830,住友不動産,Real Estate,不動産業
+8835,太平洋興発,Industrials,卸売業
+8836,ＲＩＳＥ,Real Estate,不動産業
+8841,テーオーシー,Real Estate,不動産業
+8842,東京楽天地,Real Estate,不動産業
+8844,コスモスイニシア,Real Estate,不動産業
+8848,レオパレス２１,Real Estate,不動産業
+8850,スターツコーポレーション,Real Estate,不動産業
+8854,日住サービス,Real Estate,不動産業
+8860,フジ住宅,Real Estate,不動産業
+8864,空港施設,Real Estate,不動産業
+8869,明和地所,Real Estate,不動産業
+8871,ゴールドクレスト,Real Estate,不動産業
+8876,リログループ,Industrials,サービス業
+8877,エスリード,Real Estate,不動産業
+8881,日神グループホールディングス,Real Estate,不動産業
+8886,ウッドフレンズ,Real Estate,不動産業
+8887,リベレステ,Real Estate,不動産業
+8889,ＡＰＡＭＡＮ,Real Estate,不動産業
+8890,レーサム,Real Estate,不動産業
+8891,ＡＭＧホールディングス,Real Estate,不動産業
+8892,日本エスコン,Real Estate,不動産業
+8893,新日本建物,Real Estate,不動産業
+8894,ＲＥＶＯＬＵＴＩＯＮ,Real Estate,不動産業
+8897,タカラレーベン,Real Estate,不動産業
+8898,センチュリー２１・ジャパン,Real Estate,不動産業
+8903,サンウッド,Real Estate,不動産業
+8904,ＡＶＡＮＴＩＡ,Real Estate,不動産業
+8905,イオンモール,Real Estate,不動産業
+8908,毎日コムネット,Real Estate,不動産業
+8909,シノケングループ,Real Estate,不動産業
+8912,エリアクエスト,Real Estate,不動産業
+8914,エリアリンク,Real Estate,不動産業
+8917,ファースト住建,Real Estate,不動産業
+8918,ランド,Real Estate,不動産業
+8919,カチタス,Real Estate,不動産業
+8920,東祥,Industrials,サービス業
+8921,シーズクリエイト,Real Estate,不動産業
+8922,日本アセットマーケティング,Real Estate,不動産業
+8923,トーセイ,Real Estate,不動産業
+8925,アルデプロ,Real Estate,不動産業
+8927,明豊エンタープライズ,Real Estate,不動産業
+8928,穴吹興産,Real Estate,不動産業
+8929,青山財産ネットワークス,Real Estate,不動産業
+8931,和田興産,Real Estate,不動産業
+8934,サンフロンティア不動産,Real Estate,不動産業
+8935,ＦＪネクストホールディングス,Real Estate,不動産業
+8938,グローム・ホールディングス,Real Estate,不動産業
+8940,インテリックス,Real Estate,不動産業
+8944,ランドビジネス,Real Estate,不動産業
+8945,サンネクスタグループ,Real Estate,不動産業
+8946,ＡＳＩＡＮ　ＳＴＡＲ,Real Estate,不動産業
+8995,誠建設工業,Real Estate,不動産業
+8999,グランディハウス,Real Estate,不動産業
+9001,東武鉄道,Industrials,陸運業
+9003,相鉄ホールディングス,Industrials,陸運業
+9005,東急,Industrials,陸運業
+9006,京浜急行電鉄,Industrials,陸運業
+9007,小田急電鉄,Industrials,陸運業
+9008,京王電鉄,Industrials,陸運業
+9009,京成電鉄,Industrials,陸運業
+9010,富士急行,Industrials,陸運業
+9012,秩父鉄道,Industrials,陸運業
+9014,新京成電鉄,Industrials,陸運業
+9017,新潟交通,Industrials,陸運業
+9020,東日本旅客鉄道,Industrials,陸運業
+9021,西日本旅客鉄道,Industrials,陸運業
+9022,東海旅客鉄道,Industrials,陸運業
+9024,西武ホールディングス,Industrials,陸運業
+9025,鴻池運輸,Industrials,陸運業
+9028,ゼロ,Industrials,陸運業
+9029,ヒガシトゥエンティワン,Industrials,陸運業
+9031,西日本鉄道,Industrials,陸運業
+9033,広島電鉄,Industrials,陸運業
+9034,南総通運,Industrials,陸運業
+9036,東部ネットワーク,Industrials,陸運業
+9037,ハマキョウレックス,Industrials,陸運業
+9039,サカイ引越センター,Industrials,陸運業
+9041,近鉄グループホールディングス,Industrials,陸運業
+9042,阪急阪神ホールディングス,Industrials,陸運業
+9044,南海電気鉄道,Industrials,陸運業
+9045,京阪ホールディングス,Industrials,陸運業
+9046,神戸電鉄,Industrials,陸運業
+9048,名古屋鉄道,Industrials,陸運業
+9049,京福電気鉄道,Industrials,陸運業
+9051,センコン物流,Industrials,陸運業
+9052,山陽電気鉄道,Industrials,陸運業
+9055,アルプス物流,Industrials,陸運業
+9057,遠州トラック,Industrials,陸運業
+9058,トランコム,Industrials,倉庫･運輸関連業
+9059,カンダホールディングス,Industrials,陸運業
+9060,日本ロジテム,Industrials,陸運業
+9063,岡山県貨物運送,Industrials,陸運業
+9064,ヤマトホールディングス,Industrials,陸運業
+9065,山九,Industrials,陸運業
+9066,日新,Industrials,倉庫･運輸関連業
+9067,丸運,Industrials,陸運業
+9068,丸全昭和運輸,Industrials,陸運業
+9069,センコーグループホールディングス,Industrials,陸運業
+9070,トナミホールディングス,Industrials,陸運業
+9072,ニッコンホールディングス,Industrials,陸運業
+9073,京極運輸商事,Industrials,陸運業
+9074,日本石油輸送,Industrials,陸運業
+9075,福山通運,Industrials,陸運業
+9076,セイノーホールディングス,Industrials,陸運業
+9078,エスライン,Industrials,陸運業
+9081,神奈川中央交通,Industrials,陸運業
+9082,大和自動車交通,Industrials,陸運業
+9083,神姫バス,Industrials,陸運業
+9086,日立物流,Industrials,陸運業
+9087,タカセ,Industrials,陸運業
+9090,丸和運輸機関,Industrials,陸運業
+9099,Ｃ＆Ｆロジホールディングス,Industrials,陸運業
+9101,日本郵船,Industrials,海運業
+9104,商船三井,Industrials,海運業
+9107,川崎汽船,Industrials,海運業
+9110,ＮＳユナイテッド海運,Industrials,海運業
+9115,明治海運,Industrials,海運業
+9119,飯野海運,Industrials,海運業
+9127,玉井商船,Industrials,海運業
+9130,共栄タンカー,Industrials,海運業
+9142,九州旅客鉄道,Industrials,陸運業
+9143,ＳＧホールディングス,Industrials,陸運業
+9145,ビーイングホールディングス,Industrials,陸運業
+9146,五健堂,Industrials,陸運業
+9171,栗林商船,Industrials,海運業
+9173,東海汽船,Industrials,海運業
+9176,佐渡汽船,Industrials,海運業
+9179,川崎近海汽船,Industrials,海運業
+9193,東京汽船,Industrials,倉庫･運輸関連業
+9201,日本航空,Industrials,空運業
+9202,ＡＮＡホールディングス,Industrials,空運業
+9206,スターフライヤー,Industrials,空運業
+9211,エフ・コード,Industrials,サービス業
+9212,Ｇｒｅｅｎ　Ｅａｒｔｈ　Ｉｎｓｔｉｔｕｔｅ,Industrials,サービス業
+9232,パスコ,Industrials,空運業
+9233,アジア航測,Industrials,空運業
+9240,デリバリーコンサルティング,Industrials,サービス業
+9241,フューチャーリンクネットワーク,Industrials,サービス業
+9242,メディア総研,Industrials,サービス業
+9243,富士テクノホールディングス,Industrials,サービス業
+9244,デジタリフト,Industrials,サービス業
+9245,リベロ,Industrials,サービス業
+9246,プロジェクトカンパニー,Industrials,サービス業
+9247,ＴＲＥホールディングス,Industrials,サービス業
+9248,人・夢・技術グループ,Industrials,サービス業
+9249,日本エコシステム,Industrials,サービス業
+9250,ＧＲＣＳ,Industrials,サービス業
+9251,ＡＢ＆Ｃｏｍｐａｎｙ,Industrials,サービス業
+9252,ラストワンマイル,Industrials,サービス業
+9253,スローガン,Industrials,サービス業
+9254,ラバブルマーケティンググループ,Industrials,サービス業
+9256,サクシード,Industrials,サービス業
+9257,ＹＣＰホールディングス（グローバル）リミテッド,Industrials,サービス業
+9258,ＣＳ−Ｃ,Industrials,サービス業
+9259,タカヨシ,Industrials,サービス業
+9260,西本Ｗｉｓｍｅｔｔａｃホールディングス,Industrials,卸売業
+9262,シルバーライフ,Consumer Cyclical,小売業
+9263,ビジョナリーホールディングス,Consumer Cyclical,小売業
+9264,ポエック,Industrials,卸売業
+9265,ヤマシタヘルスケアホールディングス,Industrials,卸売業
+9267,Ｇｅｎｋｙ　ＤｒｕｇＳｔｏｒｅｓ,Consumer Cyclical,小売業
+9268,オプティマスグループ,Industrials,卸売業
+9270,バリュエンスホールディングス,Industrials,卸売業
+9271,和心,Consumer Cyclical,小売業
+9272,ブティックス,Industrials,サービス業
+9273,コーア商事ホールディングス,Industrials,卸売業
+9274,国際紙パルプ商事,Industrials,卸売業
+9275,ナルミヤ・インターナショナル,Consumer Cyclical,小売業
+9276,アザース,Consumer Cyclical,小売業
+9278,ブックオフグループホールディングス,Consumer Cyclical,小売業
+9279,ギフト,Consumer Cyclical,小売業
+9301,三菱倉庫,Industrials,倉庫･運輸関連業
+9302,三井倉庫ホールディングス,Industrials,倉庫･運輸関連業
+9303,住友倉庫,Industrials,倉庫･運輸関連業
+9304,澁澤倉庫,Industrials,倉庫･運輸関連業
+9305,ヤマタネ,Industrials,卸売業
+9306,東陽倉庫,Industrials,倉庫･運輸関連業
+9307,杉村倉庫,Industrials,倉庫･運輸関連業
+9308,乾汽船,Industrials,海運業
+9310,日本トランスシティ,Industrials,倉庫･運輸関連業
+9311,アサガミ,Industrials,倉庫･運輸関連業
+9312,ケイヒン,Industrials,倉庫･運輸関連業
+9313,丸八倉庫,Industrials,倉庫･運輸関連業
+9318,アジア開発キャピタル,Financials,証券･商品先物取引業
+9319,中央倉庫,Industrials,倉庫･運輸関連業
+9322,川西倉庫,Industrials,倉庫･運輸関連業
+9324,安田倉庫,Industrials,倉庫･運輸関連業
+9325,ファイズホールディングス,Industrials,倉庫･運輸関連業
+9326,関通,Industrials,倉庫･運輸関連業
+9327,イー・ロジット,Industrials,倉庫･運輸関連業
+9351,東洋埠頭,Industrials,倉庫･運輸関連業
+9353,櫻島埠頭,Industrials,倉庫･運輸関連業
+9355,リンコーコーポレーション,Industrials,倉庫･運輸関連業
+9358,宇徳,Industrials,倉庫･運輸関連業
+9360,鈴与シンワート,Communication Services,情報･通信業
+9361,伏木海陸運送,Industrials,倉庫･運輸関連業
+9362,兵機海運,Industrials,倉庫･運輸関連業
+9363,大運,Industrials,倉庫･運輸関連業
+9364,上組,Industrials,倉庫･運輸関連業
+9365,トレーディア,Industrials,倉庫･運輸関連業
+9366,サンリツ,Industrials,倉庫･運輸関連業
+9367,大東港運,Industrials,倉庫･運輸関連業
+9368,キムラユニティー,Industrials,倉庫･運輸関連業
+9369,キユーソー流通システム,Industrials,倉庫･運輸関連業
+9375,近鉄エクスプレス,Industrials,倉庫･運輸関連業
+9376,ユーラシア旅行社,Industrials,サービス業
+9377,エージーピー,Industrials,倉庫･運輸関連業
+9380,東海運,Industrials,倉庫･運輸関連業
+9381,エーアイテイー,Industrials,倉庫･運輸関連業
+9384,内外トランスライン,Industrials,倉庫･運輸関連業
+9385,ショーエイコーポレーション,Materials,化学
+9386,日本コンセプト,Industrials,倉庫･運輸関連業
+9388,パパネッツ,Industrials,倉庫･運輸関連業
+9399,ビート・ホールディングス・リミテッド（貝徳控股有限公司）,Communication Services,情報･通信業
+9401,ＴＢＳホールディングス,Communication Services,情報･通信業
+9404,日本テレビホールディングス,Communication Services,情報･通信業
+9405,朝日放送グループホールディングス,Communication Services,情報･通信業
+9408,新潟放送,Communication Services,情報･通信業
+9409,テレビ朝日ホールディングス,Communication Services,情報･通信業
+9412,スカパーＪＳＡＴホールディングス,Communication Services,情報･通信業
+9413,テレビ東京ホールディングス,Communication Services,情報･通信業
+9414,日本ＢＳ放送,Communication Services,情報･通信業
+9416,ビジョン,Communication Services,情報･通信業
+9417,スマートバリュー,Communication Services,情報･通信業
+9418,ＵＳＥＮ−ＮＥＸＴ　ＨＯＬＤＩＮＧＳ,Communication Services,情報･通信業
+9419,ワイヤレスゲート,Communication Services,情報･通信業
+9421,エヌジェイホールディングス,Communication Services,情報･通信業
+9422,コネクシオ,Communication Services,情報･通信業
+9423,フォーバル・リアルストレート,Communication Services,情報･通信業
+9424,日本通信,Communication Services,情報･通信業
+9425,日本テレホン,Communication Services,情報･通信業
+9428,クロップス,Communication Services,情報･通信業
+9432,日本電信電話,Communication Services,情報･通信業
+9433,ＫＤＤＩ,Communication Services,情報･通信業
+9434,ソフトバンク,Communication Services,情報･通信業
+9435,光通信,Communication Services,情報･通信業
+9436,沖縄セルラー電話,Communication Services,情報･通信業
+9438,エムティーアイ,Communication Services,情報･通信業
+9439,エム・エイチ・グループ,Industrials,サービス業
+9441,ベルパーク,Communication Services,情報･通信業
+9444,トーシンホールディングス,Communication Services,情報･通信業
+9445,フォーバルテレコム,Communication Services,情報･通信業
+9446,サカイホールディングス,Communication Services,情報･通信業
+9449,ＧＭＯインターネット,Communication Services,情報･通信業
+9450,ファイバーゲート,Communication Services,情報･通信業
+9465,Ｋｉｐｓ,Communication Services,情報･通信業
+9466,アイドママーケティングコミュニケーション,Communication Services,情報･通信業
+9467,アルファポリス,Communication Services,情報･通信業
+9468,ＫＡＤＯＫＡＷＡ,Communication Services,情報･通信業
+9470,学研ホールディングス,Communication Services,情報･通信業
+9474,ゼンリン,Communication Services,情報･通信業
+9475,昭文社ホールディングス,Communication Services,情報･通信業
+9476,中央経済社ホールディングス,Communication Services,情報･通信業
+9478,ＳＥホールディングス・アンド・インキュベーションズ,Communication Services,情報･通信業
+9479,インプレスホールディングス,Communication Services,情報･通信業
+9501,東京電力ホールディングス,Utilities,電気･ガス業
+9502,中部電力,Utilities,電気･ガス業
+9503,関西電力,Utilities,電気･ガス業
+9504,中国電力,Utilities,電気･ガス業
+9505,北陸電力,Utilities,電気･ガス業
+9506,東北電力,Utilities,電気･ガス業
+9507,四国電力,Utilities,電気･ガス業
+9508,九州電力,Utilities,電気･ガス業
+9509,北海道電力,Utilities,電気･ガス業
+9511,沖縄電力,Utilities,電気･ガス業
+9513,電源開発,Utilities,電気･ガス業
+9514,エフオン,Utilities,電気･ガス業
+9517,イーレックス,Utilities,電気･ガス業
+9519,レノバ,Utilities,電気･ガス業
+9522,リニューアブル・ジャパン,Utilities,電気･ガス業
+9531,東京瓦斯,Utilities,電気･ガス業
+9532,大阪瓦斯,Utilities,電気･ガス業
+9533,東邦瓦斯,Utilities,電気･ガス業
+9534,北海道瓦斯,Utilities,電気･ガス業
+9535,広島ガス,Utilities,電気･ガス業
+9536,西部ガスホールディングス,Utilities,電気･ガス業
+9537,北陸瓦斯,Utilities,電気･ガス業
+9539,京葉瓦斯,Utilities,電気･ガス業
+9543,静岡ガス,Utilities,電気･ガス業
+9551,メタウォーター,Utilities,電気･ガス業
+9600,アイネット,Communication Services,情報･通信業
+9601,松竹,Communication Services,情報･通信業
+9602,東宝,Communication Services,情報･通信業
+9603,エイチ・アイ・エス,Industrials,サービス業
+9605,東映,Communication Services,情報･通信業
+9610,ウィルソン・ラーニング　ワールドワイド,Industrials,サービス業
+9612,ラックランド,Industrials,サービス業
+9613,エヌ・ティ・ティ・データ,Communication Services,情報･通信業
+9616,共立メンテナンス,Industrials,サービス業
+9619,イチネンホールディングス,Industrials,サービス業
+9621,建設技術研究所,Industrials,サービス業
+9622,スペース,Industrials,サービス業
+9625,セレスポ,Industrials,サービス業
+9627,アインホールディングス,Consumer Cyclical,小売業
+9628,燦ホールディングス,Industrials,サービス業
+9629,ピー・シー・エー,Communication Services,情報･通信業
+9631,東急レクリエーション,Industrials,サービス業
+9632,スバル興業,Industrials,サービス業
+9633,東京テアトル,Industrials,サービス業
+9635,武蔵野興業,Industrials,サービス業
+9636,きんえい,Industrials,サービス業
+9637,オーエス,Industrials,サービス業
+9639,三協フロンテア,Industrials,サービス業
+9640,セゾン情報システムズ,Communication Services,情報･通信業
+9641,サコス,Industrials,サービス業
+9644,タナベ経営,Industrials,サービス業
+9647,協和コンサルタンツ,Industrials,サービス業
+9651,日本プロセス,Communication Services,情報･通信業
+9656,グリーンランドリゾート,Industrials,サービス業
+9658,ビジネスブレイン太田昭和,Communication Services,情報･通信業
+9661,歌舞伎座,Industrials,サービス業
+9663,ナガワ,Industrials,サービス業
+9672,東京都競馬,Industrials,サービス業
+9675,常磐興産,Industrials,サービス業
+9678,カナモト,Industrials,サービス業
+9679,ホウライ,Industrials,サービス業
+9682,ＤＴＳ,Communication Services,情報･通信業
+9684,スクウェア・エニックス・ホールディングス,Communication Services,情報･通信業
+9685,ＫＹＣＯＭホールディングス,Communication Services,情報･通信業
+9686,東洋テック,Industrials,サービス業
+9687,ＫＳＫ,Communication Services,情報･通信業
+9691,両毛システムズ,Communication Services,情報･通信業
+9692,シーイーシー,Communication Services,情報･通信業
+9695,鴨川グランドホテル,Industrials,サービス業
+9696,ウィザス,Industrials,サービス業
+9697,カプコン,Communication Services,情報･通信業
+9698,クレオ,Communication Services,情報･通信業
+9699,西尾レントオール,Industrials,サービス業
+9701,東京會舘,Industrials,サービス業
+9702,アイ・エス・ビー,Communication Services,情報･通信業
+9704,アゴーラ　ホスピタリティー　グループ,Industrials,サービス業
+9706,日本空港ビルデング,Real Estate,不動産業
+9708,帝国ホテル,Industrials,サービス業
+9709,ＮＣＳ＆Ａ,Communication Services,情報･通信業
+9713,ロイヤルホテル,Industrials,サービス業
+9715,トランス・コスモス,Industrials,サービス業
+9716,乃村工藝社,Industrials,サービス業
+9717,ジャステック,Communication Services,情報･通信業
+9719,ＳＣＳＫ,Communication Services,情報･通信業
+9720,ホテル、ニューグランド,Industrials,サービス業
+9722,藤田観光,Industrials,サービス業
+9723,京都ホテル,Industrials,サービス業
+9726,ＫＮＴ−ＣＴホールディングス,Industrials,サービス業
+9728,日本管財,Industrials,サービス業
+9729,トーカイ,Industrials,サービス業
+9731,白洋舎,Industrials,サービス業
+9733,ナガセ,Industrials,サービス業
+9734,精養軒,Industrials,サービス業
+9735,セコム,Industrials,サービス業
+9739,日本システムウエア,Communication Services,情報･通信業
+9740,セントラル警備保障,Industrials,サービス業
+9742,アイネス,Communication Services,情報･通信業
+9743,丹青社,Industrials,サービス業
+9744,メイテック,Industrials,サービス業
+9746,ＴＫＣ,Communication Services,情報･通信業
+9749,富士ソフト,Communication Services,情報･通信業
+9753,アイエックス・ナレッジ,Communication Services,情報･通信業
+9755,応用地質,Industrials,サービス業
+9757,船井総研ホールディングス,Industrials,サービス業
+9759,ＮＳＤ,Communication Services,情報･通信業
+9760,進学会ホールディングス,Industrials,サービス業
+9761,東海リース,Industrials,サービス業
+9763,丸紅建材リース,Industrials,卸売業
+9765,オオバ,Industrials,サービス業
+9766,コナミホールディングス,Communication Services,情報･通信業
+9767,日建工学,Industrials,サービス業
+9768,いであ,Industrials,サービス業
+9769,学究社,Industrials,サービス業
+9776,札幌臨床検査センター,Industrials,サービス業
+9778,昴,Industrials,サービス業
+9780,ハリマビステム,Industrials,サービス業
+9782,ディーエムエス,Industrials,サービス業
+9783,ベネッセホールディングス,Industrials,サービス業
+9787,イオンディライト,Industrials,サービス業
+9788,ナック,Industrials,サービス業
+9790,福井コンピュータホールディングス,Communication Services,情報･通信業
+9791,ビケンテクノ,Industrials,サービス業
+9793,ダイセキ,Industrials,サービス業
+9795,ステップ,Industrials,サービス業
+9799,旭情報サービス,Communication Services,情報･通信業
+9810,日鉄物産,Industrials,卸売業
+9812,テーオーホールディングス,Industrials,卸売業
+9816,ストライダーズ,Real Estate,不動産業
+9818,大丸エナウィン,Industrials,卸売業
+9820,エムティジェネックス,Real Estate,不動産業
+9823,マミーマート,Consumer Cyclical,小売業
+9824,泉州電業,Industrials,卸売業
+9827,リリカラ,Industrials,卸売業
+9828,元気寿司,Consumer Cyclical,小売業
+9830,トラスコ中山,Industrials,卸売業
+9831,ヤマダホールディングス,Consumer Cyclical,小売業
+9832,オートバックスセブン,Industrials,卸売業
+9835,ジュンテンドー,Consumer Cyclical,小売業
+9837,モリト,Industrials,卸売業
+9842,アークランドサカモト,Consumer Cyclical,小売業
+9843,ニトリホールディングス,Consumer Cyclical,小売業
+9845,パーカーコーポレーション,Materials,化学
+9846,天満屋ストア,Consumer Cyclical,小売業
+9849,共同紙販ホールディングス,Industrials,卸売業
+9850,グルメ杵屋,Consumer Cyclical,小売業
+9852,ＣＢグループマネジメント,Industrials,卸売業
+9853,銀座ルノアール,Consumer Cyclical,小売業
+9854,愛眼,Consumer Cyclical,小売業
+9856,ケーユーホールディングス,Consumer Cyclical,小売業
+9857,英和,Industrials,卸売業
+9861,吉野家ホールディングス,Consumer Cyclical,小売業
+9867,ソレキア,Industrials,卸売業
+9869,加藤産業,Industrials,卸売業
+9872,北恵,Industrials,卸売業
+9873,日本ＫＦＣホールディングス,Consumer Cyclical,小売業
+9876,コックス,Consumer Cyclical,小売業
+9878,セキド,Consumer Cyclical,小売業
+9880,イノテック,Industrials,卸売業
+9882,イエローハット,Industrials,卸売業
+9885,シャルレ,Industrials,卸売業
+9887,松屋フーズホールディングス,Consumer Cyclical,小売業
+9888,ＵＥＸ,Industrials,卸売業
+9889,ＪＢＣＣホールディングス,Communication Services,情報･通信業
+9890,マキヤ,Consumer Cyclical,小売業
+9895,コンセック,Industrials,卸売業
+9896,ＪＫホールディングス,Industrials,卸売業
+9900,サガミホールディングス,Consumer Cyclical,小売業
+9902,日伝,Industrials,卸売業
+9903,カンセキ,Consumer Cyclical,小売業
+9904,ベリテ,Consumer Cyclical,小売業
+9906,藤井産業,Industrials,卸売業
+9908,日本電計,Industrials,卸売業
+9913,日邦産業,Industrials,卸売業
+9914,植松商会,Industrials,卸売業
+9919,関西スーパーマーケット,Consumer Cyclical,小売業
+9927,ワットマン,Consumer Cyclical,小売業
+9928,ミロク情報サービス,Communication Services,情報･通信業
+9929,平和紙業,Industrials,卸売業
+9930,北沢産業,Industrials,卸売業
+9932,杉本商事,Industrials,卸売業
+9934,因幡電機産業,Industrials,卸売業
+9936,王将フードサービス,Consumer Cyclical,小売業
+9941,太洋物産,Industrials,卸売業
+9945,プレナス,Consumer Cyclical,小売業
+9946,ミニストップ,Consumer Cyclical,小売業
+9948,アークス,Consumer Cyclical,小売業
+9950,ハチバン,Consumer Cyclical,小売業
+9955,ヨンキュウ,Industrials,卸売業
+9956,バローホールディングス,Consumer Cyclical,小売業
+9959,アシードホールディングス,Consumer Cyclical,小売業
+9960,東テク,Industrials,卸売業
+9962,ミスミグループ本社,Industrials,卸売業
+9964,アイ・テック,Industrials,卸売業
+9967,堺商事,Industrials,卸売業
+9969,ショクブン,Consumer Cyclical,小売業
+9972,アルテック,Industrials,卸売業
+9973,小僧寿し,Consumer Cyclical,小売業
+9974,ベルク,Consumer Cyclical,小売業
+9976,セキチュー,Consumer Cyclical,小売業
+9977,アオキスーパー,Consumer Cyclical,小売業
+9978,文教堂グループホールディングス,Consumer Cyclical,小売業
+9979,大庄,Consumer Cyclical,小売業
+9980,ＭＲＫホールディングス,Consumer Cyclical,小売業
+9982,タキヒヨー,Industrials,卸売業
+9983,ファーストリテイリング,Consumer Cyclical,小売業
+9984,ソフトバンクグループ,Communication Services,情報･通信業
+9986,蔵王産業,Industrials,卸売業
+9987,スズケン,Industrials,卸売業
+9989,サンドラッグ,Consumer Cyclical,小売業
+9990,サックスバー　ホールディングス,Consumer Cyclical,小売業
+9991,ジェコス,Industrials,卸売業
+9993,ヤマザワ,Consumer Cyclical,小売業
+9994,やまや,Consumer Cyclical,小売業
+9995,グローセル,Industrials,卸売業
+9996,サトー商会,Industrials,卸売業
+9997,ベルーナ,Consumer Cyclical,小売業
