@@ -66,6 +66,8 @@ from stock_ai.backtest.forecast_revision import (
     census_revisions,
     census_sue,
 )
+from stock_ai.backtest.lowvol_census import VOLATILITY_WINDOWS
+from stock_ai.backtest.lowvol_census import run_census as run_lowvol_census
 from stock_ai.backtest.pead import (
     MIN_TURNOVER,
     OOS_FROM,
@@ -2942,6 +2944,141 @@ def reversal_run(
     console.print(
         "[dim]「費用 0.60%」は主要指標から追加の 0.20% を引いただけの感度である"
         "（費用は分散に効かないので t は変わらない）。[/]"
+    )
+
+
+@app.command(name="lowvol-census")
+def lowvol_census(
+    period: str = typer.Option("all", "--period", help="is | oos | all."),
+    windows: str = typer.Option(
+        ",".join(str(w) for w in VOLATILITY_WINDOWS),
+        "--windows",
+        help="Comma-separated volatility windows in sessions.",
+    ),
+    min_turnover: float = typer.Option(MIN_TURNOVER, "--min-turnover", help="Liquidity floor."),
+    benchmark: str = typer.Option(BENCHMARK, "--benchmark", help="Sets the calendar."),
+) -> None:
+    """Count what a low-volatility test would have to work with.
+
+    **No returns are computed.** This runs before the registration is written -
+    the order the two earnings-drift registrations did not follow, and the one
+    that worked for reversal.
+
+    Three things this has to settle before anything is sealed.
+
+    1. **Which measurement window.** 60, 120 or 250 sessions are all counted.
+       A longer window demands more history, so fewer names qualify. Choosing
+       on counts is not an after-the-fact choice - no return has been seen.
+    2. **Whether the quantiles tilt by size.** On reversal the expected
+       small-cap tilt turned out flat. Measure, then say.
+    3. **Whether the quantiles tilt by sector.** Low volatility is reported to
+       concentrate in domestic defensives. If it does, part of what gets
+       measured is a sector return, and a sector-neutral variant belongs in the
+       registration as a secondary.
+
+    Monthly rebalancing, so observations are symbol-months rather than
+    symbol-days. That is what removes the overlap inflation (2.95x) that
+    reversal carried.
+    """
+    settings = get_settings()
+    configure_logging(settings.log_level)
+
+    try:
+        chosen = Period(period.strip().lower())
+    except ValueError as exc:
+        raise typer.BadParameter(f"--period must be is, oos or all; got {period!r}.") from exc
+    try:
+        wanted = tuple(int(part) for part in windows.split(",") if part.strip())
+    except ValueError as exc:
+        raise typer.BadParameter(f"--windows must be integers; got {windows!r}.") from exc
+    if not wanted:
+        raise typer.BadParameter("--windows must name at least one window.")
+
+    database = Database()
+    database.create_all()
+    console.print("[bold]リターンは1つも計算しない。[/] 数えるのは件数と分布だけ。")
+
+    try:
+        results = run_lowvol_census(
+            database,
+            chosen,
+            benchmark=benchmark,
+            min_turnover=min_turnover,
+            windows=wanted,
+        )
+    except ValueError as exc:
+        console.print(f"[red]{exc}[/]")
+        raise typer.Exit(code=1) from exc
+
+    counts = Table(title="測定窓ごとの母集団（銘柄×月）")
+    for column in (
+        "窓",
+        "組み替え日",
+        "観測",
+        "1分位あたり",
+        "履歴不足",
+        "薄い",
+        "窓が無い",
+        "不連続",
+    ):
+        counts.add_column(column, justify="right")
+    for census in results:
+        counts.add_row(
+            f"{census.window}日",
+            f"{census.months:,}",
+            f"[bold]{census.observations:,}[/]",
+            f"[bold]{census.per_quantile:,}[/]",
+            f"{census.excluded_no_history:,}",
+            f"{census.excluded_thin:,}",
+            f"{census.excluded_no_window:,}",
+            f"{census.excluded_discontinuity:,}",
+        )
+    console.print(counts)
+    console.print(
+        "[dim]窓が長いほど履歴を要求するので観測が減る。**この減り方を見て窓を"
+        "決める。** リターンを見ていないので、事後的な選択にはならない。[/dim]"
+    )
+
+    for census in results:
+        console.print()
+        console.print(f"[bold]{census.window}日窓[/]")
+
+        breadth = Table(title="1ヶ月あたりの通過銘柄数")
+        for label, _value in census.breadth():
+            breadth.add_column(label, justify="right")
+        breadth.add_row(*[f"{value:,}" for _label, value in census.breadth()])
+        console.print(breadth)
+
+        spread = Table(title="ボラティリティ（日次リターンの標準偏差）")
+        for label, _value in census.volatility_quantiles():
+            spread.add_column(label, justify="right")
+        spread.add_row(*[f"{value * 100:.2f}%" for _label, value in census.volatility_quantiles()])
+        console.print(spread)
+
+        profile = census.turnover_profile()
+        if profile:
+            size = Table(title="分位ごとの売買代金の中央値（億円）")
+            for label, _value in profile:
+                size.add_column(label, justify="right")
+            size.add_row(*[f"{value:.1f}" for _label, value in profile])
+            console.print(size)
+
+        sectors = census.sector_profile()
+        if sectors:
+            tilt = Table(title="分位ごとの業種構成（上位3つ）")
+            tilt.add_column("分位")
+            tilt.add_column("構成", overflow="fold")
+            for bucket, share in sectors:
+                tilt.add_row(
+                    bucket, "  ".join(f"{name} {value * 100:.0f}%" for name, value in share)
+                )
+            console.print(tilt)
+
+    console.print()
+    console.print(
+        "[dim]**分位1は低ボラ側（買う側）である。** 業種が偏っていれば、測って"
+        "いるものの一部は業種のリターン差になる。業種中立版を副次に置くかどうかを"
+        "この数字で決める。[/dim]"
     )
 
 
