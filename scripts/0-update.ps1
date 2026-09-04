@@ -45,6 +45,25 @@ if ($LASTEXITCODE -ne 0 -or -not $branch -or $branch -eq 'HEAD') {
 $before = (git rev-parse --short HEAD 2>$null)
 Write-Host "枝      : $branch"
 Write-Host "現在    : $before"
+
+# 開発用の枝から降りていないかを、毎回いちばん最初に見る。
+#
+# **3回起きている。** main に乗ったままコミットして、push が
+# 「non-fast-forward」で弾かれる。作業そのものは消えないが、なぜ弾かれたのか
+# が分かりにくく、毎回同じところで止まる。CLAUDE.md にも書いてあるが、
+# 書いてあるだけでは防げなかったので、ここで見る。
+$expected = 'claude/recent-activity-z1t0is'
+if ($branch -ne $expected) {
+    Write-Host ''
+    Write-Warn "開発用の枝は $expected です。いまは $branch にいます。"
+    Write-Host '  このままコミットすると、push が non-fast-forward で弾かれます。' -ForegroundColor Yellow
+    Write-Host '  作業が消えるわけではありませんが、毎回ここで止まります。' -ForegroundColor DarkGray
+    Write-Host ''
+    Write-Host '  移るには（いまの変更やコミットはそのまま持っていけます）:' -ForegroundColor DarkGray
+    Write-Host "    git checkout -B $expected" -ForegroundColor Cyan
+    Write-Host ''
+}
+
 Write-Host ''
 
 # 取り込む前の .bat 一覧。増えた分と減った分を後で差分で出す。
