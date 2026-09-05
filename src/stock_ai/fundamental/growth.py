@@ -73,6 +73,38 @@ def split_factor(previous_shares: float | None, current_shares: float | None) ->
     return candidate
 
 
+def dividends_crossing_a_split(
+    reports: Sequence[FinancialReport],
+) -> list[tuple[FinancialReport, float]]:
+    """分割が起きた期のうち、年間配当を持つものと、その倍率を返す。
+
+    **``restated`` はこの期の配当を直せない。** 直せるのは1期まるごとが1つの
+    尺度に乗っているときだけで、分割をまたぐ期の年間配当は「分割前の中間配当
+    ＋ 分割後の期末配当」になっている可能性がある。そのままでも倍率で割っても
+    正しくならない。**どの倍率を掛けても正しくない値は、直すのではなく言う。**
+
+    実例（`docs/JQUANTS_EXIT.md`）: トヨタ 7203 の FY2022 は 1株配当 148.00 に
+    対して EPS 205.23 で、配当性向が 72%。前後の年は 20〜33% で、分割は
+    2021-09-30、FY2022 はそれをまたぐ。**同じ行の EPS・BPS・株式数は分割後の
+    尺度で公表値と一致している**ので、その行の中で配当だけ尺度が違う。
+
+    疑いであって断定ではない。期末配当しか出さない会社なら、またいでいても
+    混ざらない。返すのは「確かめる価値のある期」である。
+
+    Args:
+        reports: 古い順の年次の並び。
+
+    Returns:
+        ``(その期の報告, 分割の倍率)`` の並び。分割が無ければ空。
+    """
+    suspect = []
+    for previous, current in zip(reports, reports[1:], strict=False):
+        factor = split_factor(previous.shares_outstanding, current.shares_outstanding)
+        if factor is not None and current.dividend_per_share is not None:
+            suspect.append((current, factor))
+    return suspect
+
+
 def restated(reports: Sequence[FinancialReport]) -> list[FinancialReport]:
     """1株当たりの値を、**最新期の株数の尺度**に揃えた並びを返す。
 
@@ -81,6 +113,12 @@ def restated(reports: Sequence[FinancialReport]) -> list[FinancialReport]:
 
     日立で検算できる: 2024年度の EPS 634.57 を5で割ると 126.91 で、EDINET が
     同じ期を「前々期」として報告している restated EPS と一致する。
+
+    **1期まるごとの尺度しか直せない。** 1つの値の中で尺度が混ざっているものは、
+    どの倍率を掛けても正しくならない。分割をまたぐ期の年間配当がそれで、中間
+    配当が分割前、期末配当が分割後の尺度で報告され、その和が1つの列に入りうる。
+    その期は ``dividends_crossing_a_split`` が名指しする。取り込みのときに1度だけ
+    警告を出す——``restated`` は何度も呼ばれるので、ここで出すと同じ行が並ぶ。
     """
     if len(reports) < 2:
         return list(reports)

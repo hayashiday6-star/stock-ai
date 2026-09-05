@@ -25,6 +25,7 @@ from stock_ai.core.logging import get_logger
 from stock_ai.data.http import raise_for_status
 from stock_ai.data.sanity import plausible_dividend_yield
 from stock_ai.data.types import FinancialReport, FiscalPeriod, Fundamentals
+from stock_ai.fundamental.growth import dividends_crossing_a_split
 
 logger = get_logger(__name__)
 
@@ -591,7 +592,25 @@ def normalize_statements(symbol: str, records: list[dict[str, Any]]) -> list[Fin
         )
 
     ordered = sorted(by_period.items(), key=lambda kv: (kv[0][0], _PERIOD_ORDER[kv[0][1]]))
-    return [report for _key, (_disclosed, report) in ordered]
+    reports = [report for _key, (_disclosed, report) in ordered]
+
+    # **restated が直せない期をここで名指しする。** 1つの値の中で尺度が混ざって
+    # いるので、どの倍率を掛けても正しくならない。取り込みで1度だけ出す——
+    # `restated` は増配率・CAGR・連続増配のそれぞれから呼ばれるため、あちらで
+    # 出すと同じ行が並ぶ。
+    annual = [report for report in reports if report.period is FiscalPeriod.FY]
+    for report, factor in dividends_crossing_a_split(annual):
+        logger.warning(
+            "%s FY%s: 株式数が %.2f 倍になった期の1株配当が %.2f です。"
+            "分割前の中間配当と分割後の期末配当の和になっている可能性があり、"
+            "restated では直せません（配当性向と増配率が狂います）。",
+            symbol,
+            report.fiscal_year,
+            factor,
+            report.dividend_per_share,
+        )
+
+    return reports
 
 
 def _default_fetcher(api_key: SecretStr | None) -> StatementFetcher:
