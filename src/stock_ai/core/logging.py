@@ -68,6 +68,33 @@ def redact(text: str) -> str:
     return cleaned
 
 
+#: コンソールに出す価値の無いロガー。**ファイルには残す。**
+#:
+#: `httpx` はリクエストごとに URL を1行出す。一括ダウンロードでは署名付き
+#: URL が丸ごと出て、1本で400字を超える。人が読む役には立たないうえ、
+#: **その出力は「そのまま貼ってください」と言われて貼られる。**
+#:
+#: 落とすのはコンソールだけで、ファイルには残る。何が起きたかを後から
+#: 追う手段は減らさない。
+_QUIET_ON_CONSOLE = ("httpx", "httpcore", "urllib3")
+
+
+class ConsoleNoiseFilter(logging.Filter):
+    """Keep per-request chatter out of the console, not out of the log file.
+
+    The console is what a person reads and what they paste when asking for
+    help. One line per HTTP request is never the answer to a question, and a
+    presigned URL is 400 characters of signature. The rotating file handler
+    still receives everything, so nothing is lost for diagnosis.
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        """Drop sub-warning records from the noisy libraries."""
+        if record.levelno >= logging.WARNING:
+            return True
+        return not record.name.startswith(_QUIET_ON_CONSOLE)
+
+
 class SecretRedactingFilter(logging.Filter):
     """Strip credentials out of a record before any handler formats it.
 
@@ -95,16 +122,26 @@ def configure_logging(level: str = "INFO") -> None:
     Console output is rendered by Rich; a rotating file handler mirrors logs to
     ``logs/stock_ai.log`` for later inspection. Both are filtered for secrets.
 
+    **The console additionally drops per-request chatter** from ``httpx`` and
+    friends, because that output gets pasted into conversations and one line per
+    HTTP request is never what the question was about. Pass ``DEBUG`` to see it.
+    The log file keeps it either way.
+
     Args:
         level: Minimum level name, e.g. ``"DEBUG"`` or ``"INFO"``.
     """
     LOG_DIR.mkdir(parents=True, exist_ok=True)
     handler: dict[str, Any] = {"filters": ["redact"]}
+    # コンソールだけ、さらに絞る。ファイルは絞らない。
+    console_filters = ["redact"] if level.upper() == "DEBUG" else ["redact", "quiet"]
     dictConfig(
         {
             "version": 1,
             "disable_existing_loggers": False,
-            "filters": {"redact": {"()": SecretRedactingFilter}},
+            "filters": {
+                "redact": {"()": SecretRedactingFilter},
+                "quiet": {"()": ConsoleNoiseFilter},
+            },
             "formatters": {
                 "console": {"format": "%(message)s", "datefmt": "[%X]"},
                 "file": {
@@ -118,6 +155,7 @@ def configure_logging(level: str = "INFO") -> None:
                     "rich_tracebacks": True,
                     "show_path": False,
                     **handler,
+                    "filters": console_filters,
                 },
                 "file": {
                     "class": "logging.handlers.RotatingFileHandler",

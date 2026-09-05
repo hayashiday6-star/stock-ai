@@ -4065,6 +4065,151 @@ def _oos_session_count(database: Database, benchmark: str, holding: int) -> int:
     return max(0, len(days) - (holding + 1))
 
 
+@app.command(name="lowvol-bias")
+def lowvol_bias(
+    directory: str = typer.Option(
+        str(DEFAULT_SNAPSHOT_DIR), "--dir", help="Where the dated rosters live."
+    ),
+    beta: float = typer.Option(SEALED_BETA, "--beta", help="Sealed beta. Do not refit it here."),
+    window: int = typer.Option(DEFAULT_WINDOW, "--window", help="Volatility window in sessions."),
+    min_symbols: int = typer.Option(MIN_SYMBOLS_PER_MONTH, "--min-symbols", help="Per month."),
+    min_turnover: float = typer.Option(MIN_TURNOVER, "--min-turnover", help="Liquidity floor."),
+    benchmark: str = typer.Option(BENCHMARK, "--benchmark", help="Sets the calendar."),
+) -> None:
+    """Measure the survivorship bias in the low-vol test - after the verdict.
+
+    Runs the same months twice, changing exactly one thing: the universe. Once
+    with the dated rosters, which hold the companies later delisted, and once
+    with only the names still listed today. The difference is the bias.
+
+    **This deliberately runs inside the judged period, and has no out-of-sample
+    guard.** ``reversal-bias`` refuses to reach OOS because looking there would
+    spend the one judgment. Here the judgment is already spent (§18, 2026-09-05)
+    and the rosters only start in 2021-09, which is inside it. Copying that
+    guard across would block the measurement the registration asks for.
+
+    **It cannot change the verdict.** §11 pre-registered it as a diagnostic to
+    read alongside the result, and the result is already recorded. Nothing here
+    is compared against a threshold.
+
+    The registration expects a smaller number than reversal's -0.040% per 20
+    sessions: a company heading for delisting gets *more* volatile, so it lands
+    in quintile 5 rather than the quintile this hypothesis buys. That is a
+    prediction, which is why it is worth measuring rather than asserting.
+    """
+    settings = get_settings()
+    configure_logging(settings.log_level)
+
+    snapshots = membership(Path(directory))
+    if len(snapshots) < 2:
+        console.print(
+            f"[yellow]名簿が {len(snapshots)} 件しかない。[/] "
+            "先に [cyan]checks\\廃止銘柄の取り込み.bat[/] を実行する。"
+        )
+        raise typer.Exit(code=1)
+
+    # **名簿の実際の先頭から測る。** 定数を信じて名簿の無い月を含めると、その
+    # 期間だけ universe が空になり、静かに落ちる。
+    begin = min(snapshots)
+    console.print(
+        f"名簿 {len(snapshots)} 件（{begin} 〜 {max(snapshots)}）。"
+        f"測る期間は [bold]{begin} 以降[/]。"
+    )
+    console.print(
+        "[dim]**判定期間の内側である。** これは §11 で事前登録した診断であって、"
+        "判定の入力ではない。判定は §18 に記録済み。[/dim]"
+    )
+
+    database = Database()
+    database.create_all()
+    runs: dict[str, object] = {}
+    for label, survivors_only in (("名簿あり", False), ("生存者のみ", True)):
+        try:
+            runs[label] = build_lowvol_series(
+                database,
+                Period.ALL,
+                benchmark=benchmark,
+                start=begin,
+                window=window,
+                min_turnover=min_turnover,
+                min_symbols=min_symbols,
+                snapshots=snapshots,
+                survivors_only=survivors_only,
+            )
+        except ValueError as exc:
+            console.print(f"[red]{label}: {exc}[/]")
+            raise typer.Exit(code=1) from exc
+
+    clean = runs["名簿あり"]
+    survivors = runs["生存者のみ"]
+
+    counts = Table(title="universe を差し替えると何が変わるか")
+    for column in ("universe", "月数", "1ヶ月あたり中央値"):
+        counts.add_column(column, justify="left" if column == "universe" else "right")
+    for label, run in (("名簿あり", clean), ("生存者のみ", survivors)):
+        counts.add_row(
+            label,
+            f"{len(run.months):,}",
+            f"{int(median(run.counts)) if run.counts else 0:,}",
+        )
+    console.print(counts)
+
+    # **同じ月で揃える。** 片方にしか無い月を混ぜると、バイアスではなく期間の
+    # 違いを測ることになる。
+    table = Table(title=f"名簿あり − 生存者のみ（月あたり、β={beta:.3f} 固定）")
+    for column in ("指標", "名簿あり", "生存者のみ", "差", "月数"):
+        table.add_column(column, justify="left" if column == "指標" else "right")
+
+    gaps: dict[str, float] = {}
+    for label, values in (
+        ("α（分位1 − β×ベンチ）", lambda run: run.beta_adjusted(beta)),
+        ("生の差（分位1 − ベンチ）", lambda run: run.long_only()),
+    ):
+        left = dict(zip(clean.months, values(clean), strict=True))
+        right = dict(zip(survivors.months, values(survivors), strict=True))
+        shared = sorted(set(left) & set(right))
+        if not shared:
+            console.print("[red]両方に共通する月が無い。[/]")
+            raise typer.Exit(code=1)
+        gap = survivorship_gap([left[m] for m in shared], [right[m] for m in shared])
+        average = sum(gap) / len(gap)
+        gaps[label] = average
+        table.add_row(
+            label,
+            f"{sum(left[m] for m in shared) / len(shared) * 100:+.3f}%",
+            f"{sum(right[m] for m in shared) / len(shared) * 100:+.3f}%",
+            f"[bold]{average * 100:+.3f}%[/]",
+            f"{len(shared):,}",
+        )
+    console.print(table)
+
+    primary = gaps["α（分位1 − β×ベンチ）"]
+    console.print()
+    if primary < 0:
+        console.print(
+            f"[bold]α のバイアスは {primary * 100:+.3f}%／月[/]（負）＝"
+            "**生存者だけで測ると効果を大きく見せる。**"
+        )
+    elif primary > 0:
+        console.print(
+            f"[bold]α のバイアスは {primary * 100:+.3f}%／月[/]（正）＝"
+            "**生存者だけで測ると効果を小さく見せる。** "
+            "TOB・完全子会社化がプレミアム付きで消えるぶんが効いている可能性がある。"
+        )
+    else:
+        console.print("[bold]α のバイアスは 0 だった。[/]")
+
+    console.print(
+        f"[dim]#6（リバーサル）は −0.040%／20営業日だった。あちらは下落率上位を"
+        f"買う形で、**バイアスが最も濃く乗る。** 低ボラは破綻に向かう銘柄が"
+        f"分位5に落ちるので小さいはず、と §11 に書いた。{abs(primary) * 100:.3f}% が"
+        "その答えである。[/dim]"
+    )
+    console.print(
+        "[yellow]判定は変わらない。[/] §18 に記録済みで、これは結果に添える数字である（§11）。"
+    )
+
+
 @app.command(name="reversal-bias")
 def reversal_bias(
     directory: str = typer.Option(
