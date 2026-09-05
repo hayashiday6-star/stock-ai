@@ -31,7 +31,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from stock_ai.core.logging import get_logger
 
@@ -121,12 +121,61 @@ class EstimatorSeries:
     """上側だけを傾きで重み付けて買ったもの。**β を引いていない。**"""
     quantile_long_only: list[float]
     """分位1を等金額で買ったもの。**β を引いていない。** 上と比べる相手。"""
+    benchmark: list[float] = field(default_factory=list)
+    """落とした月を除いたベンチマーク。**β を引くのに要る。**
+
+    ここで一緒に持つのは、``build_estimators`` が月を落とすからである。
+    落ちた月を知らずに外で並べると、**ずれた月どうしを引き算する。**
+    例外は出ない。
+    """
     skipped_flat: int = 0
     """断面がばらつかず落とした月。"""
+
+    def alpha(self, values: Sequence[float], beta: float) -> list[float]:
+        """``values − β×ベンチ``。**市場リスクを除いた側で比べるために要る。**
+
+        ロングオンリーの生リターンどうしを比べると、**両方とも標準誤差が市場
+        リスクに支配される**ので、推定量の差が埋もれる。実測（2026-09-05）では
+        生の比が 0.99 で「改善なし」に見えたが、それは市場の分だけを見ていた。
+
+        Raises:
+            ValueError: ベンチマークを持っていない、または長さが違う。
+        """
+        if not self.benchmark:
+            raise ValueError("ベンチマークを持っていない。build_estimators に渡す。")
+        if len(values) != len(self.benchmark):
+            raise ValueError(f"長さが違う（{len(values)} 対 {len(self.benchmark)}）。")
+        return [value - beta * bench for value, bench in zip(values, self.benchmark, strict=True)]
+
+
+def beta_to_benchmark(values: Sequence[float], benchmark: Sequence[float]) -> float:
+    """``cov(values, benchmark) / var(benchmark)``。
+
+    **共分散の比なので平均は返らない。** 推定期間で計算しても、判定期間の
+    平均を先に見たことにはならない（`PREREG_LOWVOL_JP.md` §7-2 と同じ理屈）。
+
+    Raises:
+        ValueError: 長さが違う、点が2つ未満、またはベンチマークが動かない。
+    """
+    if len(values) != len(benchmark):
+        raise ValueError(f"長さが違う（{len(values)} 対 {len(benchmark)}）。")
+    count = len(values)
+    if count < 2:
+        raise ValueError("点が2つ未満では β を推定できない。")
+    mean_bench = sum(benchmark) / count
+    variance = sum((b - mean_bench) ** 2 for b in benchmark) / (count - 1)
+    if variance <= MIN_DISPERSION:
+        raise ValueError("ベンチマークが動いていない。")
+    mean_value = sum(values) / count
+    covariance = sum(
+        (v - mean_value) * (b - mean_bench) for v, b in zip(values, benchmark, strict=True)
+    ) / (count - 1)
+    return covariance / variance
 
 
 def build_estimators(
     cross_sections: Sequence[Sequence[tuple[float, float]]],
+    benchmark: Sequence[float] | None = None,
     quantiles: int = 5,
 ) -> EstimatorSeries:
     """月ごとの断面から、推定量ごとの系列をまとめて作る。
@@ -136,18 +185,27 @@ def build_estimators(
 
     Args:
         cross_sections: 月ごとの ``(ボラティリティ, 翌月リターン)``。
+        benchmark: 同じ並びのベンチマーク月次リターン。**落とした月を除いて
+            持ち帰る**ので、β を引くときに月がずれない。
         quantiles: 分位数。
 
     Returns:
         推定量ごとの月次系列。月の並びは揃っている。
     """
+    if benchmark is not None and len(benchmark) != len(cross_sections):
+        raise ValueError(
+            f"ベンチマークの月数が断面と違う（{len(benchmark)} 対 {len(cross_sections)}）。"
+            "ずれた月どうしを引き算することになる。"
+        )
+
     spread: list[float] = []
     tilt: list[float] = []
     long_tilt: list[float] = []
     quantile_long: list[float] = []
+    kept_bench: list[float] = []
     skipped = 0
 
-    for members in cross_sections:
+    for month, members in enumerate(cross_sections):
         if len(members) < quantiles:
             skipped += 1
             continue
@@ -179,6 +237,8 @@ def build_estimators(
             skipped += 1
             continue
         long_tilt.append(upper)
+        if benchmark is not None:
+            kept_bench.append(benchmark[month])
 
     if skipped:
         logger.info("断面がばらつかず落とした月: %d", skipped)
@@ -188,6 +248,7 @@ def build_estimators(
         tilt=tilt,
         long_only_tilt=long_tilt,
         quantile_long_only=quantile_long,
+        benchmark=kept_bench,
         skipped_flat=skipped,
     )
 

@@ -55,7 +55,7 @@ from stock_ai.backtest.accumulation_signal import (
     explain_date,
     market_volume_context,
 )
-from stock_ai.backtest.cross_section import build_estimators, t_ratio
+from stock_ai.backtest.cross_section import beta_to_benchmark, build_estimators, t_ratio
 from stock_ai.backtest.engine import BacktestEngine
 from stock_ai.backtest.factor_test import (
     FactorTestResult,
@@ -4393,7 +4393,7 @@ def lowvol_estimator(
         console.print(f"[red]{exc}[/]")
         raise typer.Exit(code=1) from exc
 
-    estimators = build_estimators(series.cross_sections)
+    estimators = build_estimators(series.cross_sections, series.benchmark)
     if estimators.months < 2:
         console.print("[red]比べられる月が足りない。[/]")
         raise typer.Exit(code=1)
@@ -4448,13 +4448,81 @@ def lowvol_estimator(
         console.print()
 
     console.print(
-        "[dim]ロングオンリーの2つは β を引いていないので、#7 の判定（α, t +1.70）"
-        "とは**直接比べられない**。比べられないものを比べないために表を分けて"
-        "いる。[/dim]"
+        "[dim]上の2つ目は β を引いていない。**標準誤差が市場リスクに支配される**"
+        "ので、推定量の差はそこに埋もれる。#7 の α（t +1.70）とも直接比べられ"
+        "ない。[/dim]"
+    )
+    console.print()
+
+    # **α で比べる。** ゲートに掛けたい合成はロングオンリーで、その指標は α
+    # である。生のロングオンリーは市場リスクに埋もれて推定量の差が見えない。
+    console.print(
+        "[bold]β を引いてもう一度比べる。[/] "
+        "[dim]β は**推定期間から取って固定する**（#7 と同じ規律）。"
+        "判定期間から取ると、その期間に合う調整を選んだことになる。[/dim]"
+    )
+    try:
+        estimation = build_lowvol_series(
+            database,
+            Period.ALL,
+            benchmark=benchmark,
+            end=begin - dt.timedelta(days=1),
+            window=window,
+            min_turnover=min_turnover,
+            min_symbols=min_symbols,
+        )
+    except ValueError as exc:
+        console.print(f"[yellow]推定期間の系列を作れなかった: {exc}[/]")
+        raise typer.Exit(code=1) from exc
+
+    prior = build_estimators(estimation.cross_sections, estimation.benchmark)
+    if prior.months < 2:
+        console.print("[yellow]推定期間の月が足りない。β を固定できない。[/]")
+        raise typer.Exit(code=1)
+
+    console.print(
+        f"[dim]推定期間 {estimation.months[0]} 〜 {estimation.months[-1]}、"
+        f"{prior.months:,} ヶ月から β を取る。[/dim]"
+    )
+
+    alpha_table = Table(title="ロングオンリー（β を引いた＝#7 の主要指標と同じ形）")
+    for column in ("推定量", "β（推定期間で固定）", "α の平均", "標準誤差(NW)", "t"):
+        alpha_table.add_column(column, justify="left" if column == "推定量" else "right")
+
+    alphas: dict[str, object] = {}
+    for name, attribute in (
+        ("分位1（等金額）", "quantile_long_only"),
+        ("上側チルト（傾きで加重）", "long_only_tilt"),
+    ):
+        fixed = beta_to_benchmark(getattr(prior, attribute), prior.benchmark)
+        result = judge(estimators.alpha(getattr(estimators, attribute), fixed), lags=lags)
+        alphas[name] = result
+        alpha_table.add_row(
+            name,
+            f"{fixed:.3f}",
+            f"{result.mean * 100:+.3f}%",
+            f"{result.standard_error * 100:.3f}%",
+            f"[bold]{result.t_statistic:+.2f}[/]",
+        )
+    console.print(alpha_table)
+
+    ratio = t_ratio(
+        alphas["上側チルト（傾きで加重）"].t_statistic,
+        alphas["分位1（等金額）"].t_statistic,
+    )
+    if ratio is None:
+        console.print("  [yellow]符号が違うので比を出さない。[/]")
+    else:
+        console.print(f"  **t 比 = [bold]{ratio:.2f}[/] 倍**")
+
+    console.print()
+    console.print(
+        "[bold]§0 ゲートに掛けるのは、この α の t 比である。[/] "
+        "ゲートに掛けたい合成はロングオンリーで、その指標は α だからである。"
     )
     console.print(
-        "[bold]§0 ゲートに掛けるのはロングショートの t 比である。[/] "
-        "そちらが β の扱いを揃えた比較になる。"
+        "[dim]ロングショートの比も併記しているが、そちらは建てられる形が違う"
+        "（空売りの実行可能性は確かめていない）。[/dim]"
     )
 
 
