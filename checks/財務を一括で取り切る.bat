@@ -22,6 +22,11 @@ echo.
 echo Safe to re-run. Rows are keyed by fiscal period and a stored
 echo value is never overwritten with a blank.
 echo.
+echo 2026-09-05: DECIDED NOT TO RUN THIS. The per-symbol route
+echo already fetched these same rows, so the bulk path would only
+echo re-fetch them. Its point was saving 3,700 requests, and those
+echo were already spent. See docs/JQUANTS_EXIT.md.
+echo.
 
 powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0..\scripts\jquants-bulk-fetch.ps1" %*
 set CODE=%ERRORLEVEL%
