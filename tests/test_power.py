@@ -154,3 +154,107 @@ def test_the_judgement_uses_the_same_variance_as_the_power_estimate() -> None:
 
 def test_a_zero_standard_error_reports_nan_rather_than_dividing() -> None:
     assert math.isnan(judge([0.05] * 40, lags=2).t_statistic)
+
+
+# --- §0 検出可能性ゲート -----------------------------------------------------
+#
+# 封印する前に「そもそも検出できるのか」を通す関門。#2 と #3 は封印後に
+# 検出力不足が分かった。#7 は封印前に「五分五分」と気付いていたのに回して、
+# 負けた側に落ちた。**気付いていたのに止めなかった。** 止める場所を作る。
+
+
+def test_the_gate_refuses_the_case_that_actually_happened() -> None:
+    """#7 を封印前のゲートに当てると通らない。**これが作った理由である。**
+
+    実測（`PREREG_LOWVOL_JP.md` §8）: 検出できる差 0.33%／月、見込みは
+    年 2.3〜4.3%。中央値なら通るが、下限は届かない。
+    """
+    from stock_ai.backtest.power import GATE_FAIL, gate
+
+    result = gate(0.0033, 0.023 / 12, 0.043 / 12)
+
+    assert result.verdict == GATE_FAIL
+    assert not result.passed
+    assert "運になる" in result.reading
+
+
+def test_the_gate_passes_only_when_the_floor_clears_the_bar() -> None:
+    """**下限で見る。** 中央値で通すと、#7 のような検定を封印できてしまう。"""
+    from stock_ai.backtest.power import GATE_PASS, gate
+
+    # 下限 0.40% が検出できる差 0.33% を上回る。
+    assert gate(0.0033, 0.0040, 0.0060).verdict == GATE_PASS
+    # 下限がちょうど同じなら通さない（上回ること、が条件）。
+    assert not gate(0.0033, 0.0033, 0.0060).passed
+
+
+def test_the_gate_separates_hopeless_from_a_coin_flip() -> None:
+    """上限すら届かないのと、またいでいるのは、次の一手が違う。"""
+    from stock_ai.backtest.power import gate
+
+    hopeless = gate(0.0033, 0.0005, 0.0020)
+    coin_flip = gate(0.0033, 0.0020, 0.0060)
+
+    assert not hopeless.passed and not coin_flip.passed
+    assert "上限すら" in hopeless.reading
+    assert "運になる" in coin_flip.reading
+    assert hopeless.reading != coin_flip.reading
+
+
+def test_the_gate_refuses_a_range_given_backwards() -> None:
+    """下限と上限を逆に置くと、上限すら届かない扱いで静かに落ちる。"""
+    import pytest as _pytest
+
+    from stock_ai.backtest.power import gate
+
+    with _pytest.raises(ValueError):
+        gate(0.0033, 0.0060, 0.0020)
+
+
+def test_the_gate_carries_no_mean() -> None:
+    """`PowerEstimate` と同じ。**実測の平均を入れられる形にしない。**
+
+    入れられると「効果がありそうだから通す」が書けてしまう。通すかどうかは
+    見込みと検出できる差だけで決まる。
+    """
+    import dataclasses
+
+    from stock_ai.backtest.power import Gate
+
+    fields = {f.name for f in dataclasses.fields(Gate)}
+    assert "mean" not in fields
+    assert "observed" not in fields
+
+
+def test_periods_needed_inverts_the_detectable_difference() -> None:
+    """必要な期数と検出できる差は、同じ式の裏表であること。"""
+    from stock_ai.backtest.power import periods_needed
+
+    sd, inflation = 0.0184, 1.09
+    months = periods_needed(sd, inflation, 0.04 / 12)
+
+    # その期数で検出できる差が、狙った効果とほぼ一致する。
+    detectable = 2.0 * sd * inflation / months**0.5
+    assert detectable == pytest.approx(0.04 / 12, rel=0.01)
+
+
+def test_periods_needed_reproduces_the_low_vol_registration() -> None:
+    """#7 は 150ヶ月で年4.0%だった。式が実績と合うこと。"""
+    from stock_ai.backtest.power import periods_needed
+
+    # §8 の実測 SD 1.84%、膨張 1.09。
+    assert periods_needed(0.0184, 1.09, 0.04 / 12) == 145
+    # 年3% を見るには倍近く要る。**「検出力不足」より、この形のほうが動ける。**
+    assert periods_needed(0.0184, 1.09, 0.03 / 12) == 258
+
+
+def test_periods_needed_refuses_a_zero_effect() -> None:
+    """0 を検出するのに要る期数は無限。黙って巨大な数を返さない。"""
+    import pytest as _pytest
+
+    from stock_ai.backtest.power import periods_needed
+
+    with _pytest.raises(ValueError):
+        periods_needed(0.0184, 1.09, 0.0)
+    with _pytest.raises(ValueError):
+        periods_needed(0.0, 1.09, 0.003)

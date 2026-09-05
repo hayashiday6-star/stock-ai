@@ -216,3 +216,125 @@ def estimate_power(values: Sequence[float], lags: int = DEFAULT_LAGS) -> PowerEs
         estimate.inflation,
     )
     return estimate
+
+
+# --- §0 検出可能性ゲート -----------------------------------------------------
+#
+# **封印する前に「そもそも検出できるのか」を通す関門である。**
+#
+# #2 と #3 は封印した後で検出力不足に気付いた。#7 は封印前に気付いたが、
+# 「五分五分」と書いたうえで回して、五分五分の負けた側に落ちた。**気付いて
+# いたのに止めなかった。** 止める場所が無かったからである。ここがその場所。
+#
+# 判定の当てはめを `verdict()` にしたのと同じ理由で、これも関数にする。
+# 人が読んで当てはめると、封印前でも基準が動く。
+
+GATE_PASS = "通す"
+GATE_FAIL = "通さない"
+
+
+def periods_needed(
+    sd: float,
+    inflation: float,
+    effect: float,
+    target_t: float = TARGET_T,
+) -> int:
+    """``effect`` を ``target_t`` で検出するのに要る期数。
+
+    ``n = (target_t × sd × inflation ÷ effect)²`` を解いただけである。
+
+    **これを先に出すと、話が「何年ぶん要るか」になる。** 「検出力が足りない」
+    と言われても打ち手が浮かばないが、「年3%を見るには21年ぶん要る」なら、
+    手元の年数と引き算ができる。
+
+    Args:
+        sd: 1期あたりの標準偏差。
+        inflation: 重なりによる標準誤差の膨張（重ならないなら 1.0）。
+        effect: 検出したい差（1期あたり、``sd`` と同じ単位）。
+        target_t: 合格に要する t。
+
+    Returns:
+        必要な期数（切り上げ）。
+
+    Raises:
+        ValueError: ``effect`` が 0 以下。
+    """
+    if effect <= 0:
+        raise ValueError(f"effect must be positive; got {effect}.")
+    if sd <= 0 or inflation <= 0:
+        raise ValueError(f"sd and inflation must be positive; got {sd}, {inflation}.")
+    return math.ceil((target_t * sd * inflation / effect) ** 2)
+
+
+@dataclass(frozen=True)
+class Gate:
+    """検出可能性ゲートの結果。**平均は持たない。**
+
+    `PowerEstimate` と同じで、ここに実測の平均は入らない。入れられる形にすると、
+    「効果がありそうだから通す」が書けてしまう。**通すかどうかは、見込みと
+    検出できる差だけで決まる。**
+    """
+
+    detectable: float
+    plausible_low: float
+    plausible_high: float
+    verdict: str
+    reading: str
+
+    @property
+    def passed(self) -> bool:
+        """通ったか。"""
+        return self.verdict == GATE_PASS
+
+
+def gate(detectable: float, plausible_low: float, plausible_high: float) -> Gate:
+    """封印してよいかを決める。**見込みの下限が検出できる差を超えること。**
+
+    中央値ではなく**下限**で見る。中央値で通すと、「アノマリーが文献どおりに
+    実在していても五分五分」という検定を封印できてしまう。#7 がそれだった。
+
+    **偽陰性と偽陽性は等価ではない。** 通らない検定を回して不合格を得ると、
+    「効果が無い」と「小さすぎて見えない」の区別が付かないまま説を1本失う。
+    回さなければ、設計を直してから出直せる。
+
+    Args:
+        detectable: その設計で検出できる差（1期あたり）。
+        plausible_low: 見込みの下限。文献・機構・先行検証から**封印前に**置く。
+        plausible_high: 見込みの上限。読み方に使うだけで、合否には使わない。
+
+    Returns:
+        通すか通さないかと、その読み方。
+
+    Raises:
+        ValueError: 下限が上限を超えている。
+    """
+    if plausible_low > plausible_high:
+        raise ValueError(
+            f"見込みの下限 {plausible_low} が上限 {plausible_high} を超えている。"
+            "範囲を逆に置いていないか。"
+        )
+    if plausible_low > detectable:
+        return Gate(
+            detectable,
+            plausible_low,
+            plausible_high,
+            GATE_PASS,
+            "見込みの下限が検出できる差を上回る。**封印してよい。**",
+        )
+    if plausible_high <= detectable:
+        return Gate(
+            detectable,
+            plausible_low,
+            plausible_high,
+            GATE_FAIL,
+            "見込みの上限すら検出できる差に届かない。"
+            "**回しても不合格にしかならない。** 設計を変えるか、説を閉じる。",
+        )
+    return Gate(
+        detectable,
+        plausible_low,
+        plausible_high,
+        GATE_FAIL,
+        "見込みが検出できる差をまたいでいる。**通るかどうかが運になる。** "
+        "#7 がこれで、負けた側に落ちた。期数を増やすか、分散を下げる設計にする。",
+    )

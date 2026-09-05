@@ -9,6 +9,7 @@ from __future__ import annotations
 import contextlib
 import datetime as dt
 import hashlib
+import math
 import sys
 import time
 from collections import Counter
@@ -103,7 +104,9 @@ from stock_ai.backtest.power import (
     DEFAULT_LAGS,
     TARGET_T,
     estimate_power,
+    gate,
     judge,
+    periods_needed,
     trimmed_variance,
 )
 from stock_ai.backtest.report import metrics_frame
@@ -4065,6 +4068,102 @@ def _oos_session_count(database: Database, benchmark: str, holding: int) -> int:
     return max(0, len(days) - (holding + 1))
 
 
+@app.command(name="power-gate")
+def power_gate(
+    sd: float = typer.Option(..., "--sd", help="Per-period SD, in percent (e.g. 1.84)."),
+    periods: int = typer.Option(..., "--periods", help="Periods the judgment would have."),
+    low: float = typer.Option(..., "--low", help="Plausible effect, annual percent, floor."),
+    high: float = typer.Option(..., "--high", help="Plausible effect, annual percent, ceiling."),
+    inflation: float = typer.Option(1.0, "--inflation", help="Overlap inflation. 1.0 if none."),
+    per_year: int = typer.Option(12, "--per-year", help="Periods a year. 12 monthly, 250 daily."),
+    target_t: float = typer.Option(TARGET_T, "--target-t", help="t required to pass."),
+) -> None:
+    """Decide whether a test is worth sealing at all - before it is sealed.
+
+    Two registrations found out they were underpowered only after sealing. The
+    third knew before sealing, wrote "a coin flip" into the document, ran it
+    anyway, and landed on the losing side. **Knowing was not enough; there was
+    nowhere to stop.** This is that place.
+
+    The rule is one line: **the floor of the plausible effect must clear the
+    detectable difference.** Not the midpoint - a test that only passes when
+    the anomaly comes in at the top of its range is a test decided by luck.
+
+    Nothing here touches returns. The SD comes from periods the judgment will
+    not use, exactly as the power estimate does, so running this spends no part
+    of the one judgment.
+
+    When it refuses, the output says how many periods the design would need.
+    "Underpowered" leaves nobody with a move; "21 years for a 3% effect" can be
+    subtracted from the years actually in hand.
+    """
+    settings = get_settings()
+    configure_logging(settings.log_level)
+
+    if periods < 1:
+        raise typer.BadParameter(f"--periods must be at least 1; got {periods}.")
+
+    per_period_sd = sd / 100.0
+    floor = low / 100.0 / per_year
+    ceiling = high / 100.0 / per_year
+
+    try:
+        detectable = target_t * (per_period_sd * inflation) / math.sqrt(periods)
+        result = gate(detectable, floor, ceiling)
+    except ValueError as exc:
+        console.print(f"[red]{exc}[/]")
+        raise typer.Exit(code=1) from exc
+
+    table = Table(title="§0 検出可能性ゲート（平均は見ない）")
+    for column in ("項目", "1期あたり", "年あたり"):
+        table.add_column(column, justify="left" if column == "項目" else "right")
+    table.add_row("1期あたりのSD", f"{per_period_sd * 100:.2f}%", "")
+    table.add_row("重なりの膨張", f"{inflation:.2f}x", "")
+    table.add_row("判定に使える期数", f"{periods:,}", f"{periods / per_year:.1f}年")
+    table.add_row(
+        "[bold]検出できる差[/]",
+        f"[bold]{detectable * 100:.3f}%[/]",
+        f"[bold]年 {detectable * per_year * 100:.1f}%[/]",
+    )
+    table.add_row("見込みの下限", f"{floor * 100:.3f}%", f"年 {low:.1f}%")
+    table.add_row("見込みの上限", f"{ceiling * 100:.3f}%", f"年 {high:.1f}%")
+    console.print(table)
+
+    console.print()
+    if result.passed:
+        console.print(f"[green][bold]{result.verdict}[/][/] {result.reading}")
+    else:
+        console.print(f"[red][bold]{result.verdict}[/][/] {result.reading}")
+
+    # **足りないときは「何期あれば足りるか」を出す。** 「検出力不足」だけでは
+    # 打ち手が浮かばない。年数にすれば、手元の年数と引き算ができる。
+    if not result.passed:
+        console.print()
+        needed = Table(title="この設計で検出するのに要る期数")
+        for column in ("検出したい効果", "要る期数", "年数", "いまとの差"):
+            needed.add_column(column, justify="left" if column == "検出したい効果" else "right")
+        for annual in sorted({low, (low + high) / 2, high}):
+            if annual <= 0:
+                continue
+            count = periods_needed(per_period_sd, inflation, annual / 100.0 / per_year, target_t)
+            needed.add_row(
+                f"年 {annual:.1f}%",
+                f"{count:,}",
+                f"{count / per_year:.0f}年",
+                f"{count - periods:+,}" if count > periods else "足りている",
+            )
+        console.print(needed)
+        console.print(
+            "[dim]期数を増やせないなら、**分散を下げる設計**に変えるしかない。"
+            "分位ソートは上下の2割しか使わず、真ん中を捨てている。[/dim]"
+        )
+
+    console.print(
+        "[dim]このゲートは平均を見ない。**「効果がありそうだから通す」は書けない。**[/dim]"
+    )
+    raise typer.Exit(code=0 if result.passed else 2)
+
+
 @app.command(name="lowvol-bias")
 def lowvol_bias(
     directory: str = typer.Option(
@@ -4157,10 +4256,10 @@ def lowvol_bias(
     # **同じ月で揃える。** 片方にしか無い月を混ぜると、バイアスではなく期間の
     # 違いを測ることになる。
     table = Table(title=f"名簿あり − 生存者のみ（月あたり、β={beta:.3f} 固定）")
-    for column in ("指標", "名簿あり", "生存者のみ", "差", "月数"):
+    for column in ("指標", "名簿あり", "生存者のみ", "差", "標準誤差(NW)", "t", "月数"):
         table.add_column(column, justify="left" if column == "指標" else "right")
 
-    gaps: dict[str, float] = {}
+    gaps: dict[str, object] = {}
     for label, values in (
         ("α（分位1 − β×ベンチ）", lambda run: run.beta_adjusted(beta)),
         ("生の差（分位1 − ベンチ）", lambda run: run.long_only()),
@@ -4172,18 +4271,24 @@ def lowvol_bias(
             console.print("[red]両方に共通する月が無い。[/]")
             raise typer.Exit(code=1)
         gap = survivorship_gap([left[m] for m in shared], [right[m] for m in shared])
-        average = sum(gap) / len(gap)
-        gaps[label] = average
+        # **差にも誤差を付ける。** 平均だけ出すと、0 と区別できるのかが
+        # 分からないまま「バイアスは +0.059% だった」と引用されていく。#6 の
+        # −0.040% も誤差なしで登録に載った。同じことを繰り返さない。
+        measured = judge(gap, lags=LOWVOL_LAGS)
+        gaps[label] = measured
         table.add_row(
             label,
             f"{sum(left[m] for m in shared) / len(shared) * 100:+.3f}%",
             f"{sum(right[m] for m in shared) / len(shared) * 100:+.3f}%",
-            f"[bold]{average * 100:+.3f}%[/]",
+            f"[bold]{measured.mean * 100:+.3f}%[/]",
+            f"{measured.standard_error * 100:.3f}%",
+            f"{measured.t_statistic:+.2f}",
             f"{len(shared):,}",
         )
     console.print(table)
 
-    primary = gaps["α（分位1 − β×ベンチ）"]
+    measured = gaps["α（分位1 − β×ベンチ）"]
+    primary = measured.mean
     console.print()
     if primary < 0:
         console.print(
@@ -4199,11 +4304,24 @@ def lowvol_bias(
     else:
         console.print("[bold]α のバイアスは 0 だった。[/]")
 
+    # **符号を読む前に、0 と区別が付くかを見る。** 付かないなら「符号はこちら
+    # だった」も言えない。#6 の −0.040% は誤差なしで登録に載っている。
+    if abs(measured.t_statistic) < TARGET_T:
+        console.print(
+            f"  [yellow]ただし t = {measured.t_statistic:+.2f} で、0 と区別が付かない。[/] "
+            "**符号の向きも含めて、この期間では確かめられていない。** "
+            f"月数は {measured.days} しかない。"
+        )
+    else:
+        console.print(
+            f"  t = {measured.t_statistic:+.2f}。**0 とは区別が付く。** "
+            "符号の向きは、この期間については確かめられた。"
+        )
+
     console.print(
-        f"[dim]#6（リバーサル）は −0.040%／20営業日だった。あちらは下落率上位を"
-        f"買う形で、**バイアスが最も濃く乗る。** 低ボラは破綻に向かう銘柄が"
-        f"分位5に落ちるので小さいはず、と §11 に書いた。{abs(primary) * 100:.3f}% が"
-        "その答えである。[/dim]"
+        f"[dim]#6（リバーサル）は −0.040%／20営業日だった（**あちらも誤差は"
+        f"測っていない**）。低ボラは破綻に向かう銘柄が分位5に落ちるので小さい"
+        f"はず、と §11 に書いた。{abs(primary) * 100:.3f}% がその答えである。[/dim]"
     )
     console.print(
         "[yellow]判定は変わらない。[/] §18 に記録済みで、これは結果に添える数字である（§11）。"
@@ -4308,13 +4426,23 @@ def reversal_bias(
         console.print("[red]両方に共通する営業日が無い。[/]")
         raise typer.Exit(code=1)
     gap = survivorship_gap([left[day] for day in shared], [right[day] for day in shared])
-    average = sum(gap) / len(gap)
+    # **差にも誤差を付ける。** この数字は「プロジェクト全体で使い回せる」ものと
+    # して他の登録に引用される。平均だけ渡すと、0 と区別が付くのか分からない
+    # まま次の設計の前提になる。重なりは判定と同じラグで織り込む。
+    measured = judge(gap, lags=holding)
+    average = measured.mean
 
     console.print()
     console.print(
         f"共通の {len(shared):,} 営業日で、[bold]名簿あり − 生存者のみ = "
         f"{average * 100:+.3f}%[/]（保有{holding}営業日あたり）"
+        f"　標準誤差(NW) {measured.standard_error * 100:.3f}%、t {measured.t_statistic:+.2f}"
     )
+    if abs(measured.t_statistic) < TARGET_T:
+        console.print(
+            f"  [yellow]t = {measured.t_statistic:+.2f} で 0 と区別が付かない。[/] "
+            "**符号の向きも含めて、この期間では確かめられていない。**"
+        )
     if average < 0:
         console.print(
             "  負である＝**生存者だけで測ると効果を大きく見せる。** "
