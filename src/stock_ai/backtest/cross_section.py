@@ -177,6 +177,7 @@ def build_estimators(
     cross_sections: Sequence[Sequence[tuple[float, float]]],
     benchmark: Sequence[float] | None = None,
     quantiles: int = 5,
+    higher_is_better: bool = False,
 ) -> EstimatorSeries:
     """月ごとの断面から、推定量ごとの系列をまとめて作る。
 
@@ -184,10 +185,19 @@ def build_estimators(
     「フィルタの差」を含む。
 
     Args:
-        cross_sections: 月ごとの ``(ボラティリティ, 翌月リターン)``。
+        cross_sections: 月ごとの ``(signal, 翌月リターン)``。
         benchmark: 同じ並びのベンチマーク月次リターン。**落とした月を除いて
             持ち帰る**ので、β を引くときに月がずれない。
         quantiles: 分位数。
+        higher_is_better: signal の向き。既定の ``False`` は「**小さいほど
+            買う側**」（生のボラティリティ）。``True`` は「大きいほど買う側」
+            （符号を反転済みの signal）。
+
+            **ここを取り違えても例外は出ない。** 分位5を買った系列が、
+            もっともらしい数字を返す。実際に起きた（2026-09-05）——
+            `factor_panel` は「大きいほど買う側」でそろえていたのに、
+            既定のまま渡して β 1.442、α −0.944%、t −2.18 が出た。#7 の
+            再現を検算していたので気付けた。
 
     Returns:
         推定量ごとの月次系列。月の並びは揃っている。
@@ -209,14 +219,16 @@ def build_estimators(
         if len(members) < quantiles:
             skipped += 1
             continue
-        ordered = sorted(members, key=lambda pair: pair[0])
+        # **買う側が先頭に来るように並べる。** 「小さいほど買う側」なら昇順、
+        # 「大きいほど買う側」なら降順。ここを間違えると分位5を買うことになる。
+        ordered = sorted(members, key=lambda pair: pair[0], reverse=higher_is_better)
         size = len(ordered)
-        forwards = [forward for _vol, forward in ordered]
+        forwards = [forward for _signal, forward in ordered]
 
-        # **signal は「ボラティリティの符号を反転したもの」。** 低ボラが買う側
-        # なので、こうすると傾きが正＝低ボラが勝つ、と読める。分位1が添字0で
-        # あることと向きが揃う。
-        signals = zscores([-vol for vol, _forward in ordered])
+        # **傾きが正＝買う側が勝つ、と読める向きにそろえる。** 元が「小さい
+        # ほど買う側」なら符号を反転する。分位1が添字0であることと揃う。
+        oriented = [value if higher_is_better else -value for value, _forward in ordered]
+        signals = zscores(oriented)
         if signals is None:
             skipped += 1
             continue

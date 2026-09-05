@@ -280,3 +280,46 @@ def test_the_composite_of_a_real_panel_lines_up_with_its_months() -> None:
     assert len(composite) == len(panel.months)
     for built, raw in zip(composite, panel.sections, strict=True):
         assert not built or len(built) == len(raw)
+
+
+# --- 盤面と推定量の、signal の向きの約束 ----------------------------------------
+#
+# **2つのモジュールで約束が逆だった。** `factor_panel` は「大きいほど買う側」に
+# そろえていたのに、`build_estimators` の既定は「小さいほど買う側」である。
+# 既定のまま渡すと分位5を買い、例外は出ない。実際に β 1.442、α −0.944%、
+# t −2.18 が本番まで出て行った（2026-09-05）。
+#
+# 部品のテストは両側とも通っていた。**約束どうしを突き合わせるテストが無かった。**
+
+
+def test_the_panel_column_feeds_build_estimators_as_larger_is_better() -> None:
+    """盤面の 低ボラ列は、生ボラの符号を反転したものと同じ買う側を指す。
+
+    どちらかの約束を変えると、ここが落ちる。
+    """
+    from stock_ai.backtest.cross_section import build_estimators
+
+    panel = build_panel(_database(), factors=("低ボラ",), window=60, min_symbols=10)
+    column = panel.column("低ボラ")
+    raw = [[(-signal, forward) for signal, forward in month] for month in column]
+
+    from_panel = build_estimators(column, panel.benchmark, higher_is_better=True)
+    from_raw = build_estimators(raw, panel.benchmark)
+
+    assert from_panel.months == from_raw.months > 0
+    for got, want in zip(from_panel.quantile_long_only, from_raw.quantile_long_only, strict=True):
+        assert got == pytest.approx(want)
+
+
+def test_passing_the_panel_column_with_the_default_orientation_buys_the_other_end() -> None:
+    """**既定のまま渡した場合。** 例外は出ず、逆側を買った系列が返る。"""
+    from stock_ai.backtest.cross_section import build_estimators
+
+    panel = build_panel(_database(), factors=("低ボラ",), window=60, min_symbols=10)
+    column = panel.column("低ボラ")
+
+    right = build_estimators(column, panel.benchmark, higher_is_better=True)
+    wrong = build_estimators(column, panel.benchmark)
+
+    for correct, flipped in zip(right.quantile_spread, wrong.quantile_spread, strict=True):
+        assert flipped == pytest.approx(-correct)

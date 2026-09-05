@@ -4518,12 +4518,17 @@ def _alpha_of(panel, prior, factor: str | None, lags: int):
 
     ``factor`` が ``None`` なら等加重の合成。**β は必ず推定期間から取る。**
     判定期間から取れば、その期間に合う調整を選んだことになる。
+
+    ``factor_panel`` の signal は**大きいほど買う側**にそろえてある（低ボラは
+    符号を反転済み）。``build_estimators`` の既定は「小さいほど買う側」なので、
+    **``higher_is_better=True`` を渡さないと分位5を買う。** 例外は出ない——
+    2026-09-05 に既定のまま渡して β 1.442、α −0.944%、t −2.18 が出た。
     """
     sections = panel.column(factor) if factor else panel.composite()
     prior_sections = prior.column(factor) if factor else prior.composite()
 
-    now = build_estimators(sections, panel.benchmark)
-    before = build_estimators(prior_sections, prior.benchmark)
+    now = build_estimators(sections, panel.benchmark, higher_is_better=True)
+    before = build_estimators(prior_sections, prior.benchmark, higher_is_better=True)
     beta = beta_to_benchmark(before.quantile_long_only, before.benchmark)
     return beta, judge(now.alpha(now.quantile_long_only, beta), lags=lags)
 

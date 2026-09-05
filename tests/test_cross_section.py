@@ -232,3 +232,51 @@ def test_beta_refuses_a_benchmark_that_does_not_move() -> None:
         beta_to_benchmark([0.01, 0.02], [0.03, 0.03])
     with pytest.raises(ValueError):
         beta_to_benchmark([0.01], [0.03])
+
+
+# --- signal の向き --------------------------------------------------------------
+#
+# **取り違えても例外は出ない。** 分位5を買った系列が、もっともらしい数字を返す。
+# 実際に起きた（2026-09-05）——`factor_panel` は「大きいほど買う側」でそろえて
+# いたのに、既定（「小さいほど買う側」）のまま渡して β 1.442、α −0.944%、
+# t −2.18 が出た。#7 の再現を検算していたので気付けた。
+
+
+def _negated(sections):
+    """符号を反転して「大きいほど買う側」にした断面。"""
+    return [[(-signal, forward) for signal, forward in month] for month in sections]
+
+
+def test_the_two_orientations_agree_when_the_signal_is_negated() -> None:
+    """同じ買う側を指しているなら、系列は一致する。**これが揃っていること。**"""
+    sections = [_section(seed) for seed in range(24)]
+
+    small_is_buy = build_estimators(sections)
+    large_is_buy = build_estimators(_negated(sections), higher_is_better=True)
+
+    assert large_is_buy.months == small_is_buy.months
+    for got, want in zip(large_is_buy.quantile_spread, small_is_buy.quantile_spread, strict=True):
+        assert got == pytest.approx(want)
+    for got, want in zip(
+        large_is_buy.quantile_long_only, small_is_buy.quantile_long_only, strict=True
+    ):
+        assert got == pytest.approx(want)
+    for got, want in zip(large_is_buy.tilt, small_is_buy.tilt, strict=True):
+        assert got == pytest.approx(want)
+
+
+def test_getting_the_orientation_wrong_buys_the_other_end_without_an_error() -> None:
+    """**間違えた側も例外を出さない。** 上のテストが空振りでないこと。
+
+    ``-vol`` を「小さいほど買う側」として渡すと、最もボラの高い側を買う。
+    低ボラが効く断面では、分位スプレッドの符号が反転する。
+    """
+    sections = [_section(seed) for seed in range(24)]
+
+    right = build_estimators(_negated(sections), higher_is_better=True)
+    wrong = build_estimators(_negated(sections))
+
+    correct = sum(right.quantile_spread) / right.months
+    flipped = sum(wrong.quantile_spread) / wrong.months
+    assert correct > 0 > flipped
+    assert flipped == pytest.approx(-correct)
