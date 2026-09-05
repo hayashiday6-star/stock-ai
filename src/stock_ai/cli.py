@@ -61,6 +61,7 @@ from stock_ai.backtest.event_census import (
     count_52w_highs,
     count_halt_resumptions,
     count_limit_moves,
+    high_event_returns,
 )
 from stock_ai.backtest.factor_panel import build_panel
 from stock_ai.backtest.factor_test import (
@@ -5029,6 +5030,104 @@ def reversal_bias(
     console.print(
         "[dim]これは IS の数字である。判定には使わない。"
         "**プロジェクト全体で使い回せる数字**として登録に書く。[/]"
+    )
+
+
+@app.command(name="high-power")
+def high_power(
+    holdings: list[int] = typer.Option(  # noqa: B008 - typer builds the default list
+        [1, 5, 20], "--holding", help="Sessions held. Repeat to compare windows."
+    ),
+    min_turnover: float = typer.Option(
+        MIN_TURNOVER, "--min-turnover", help="Liquidity floor in yen."
+    ),
+) -> None:
+    """Measure the spread of the 52-week-high basket, printing no mean.
+
+    §0 に入れる「検出できる差」は実測から取る、と `docs/NEXT_CANDIDATES.md` に
+    書いてある。その実測がこれである。
+
+    **分散を測ることは判定を消費しない。** 効果の大きさではなく散らばりを測って
+    いるからで、#6・#7 と同じ手順・同じ理由による。**平均は表示しない。**
+    表示すれば、封印の前に答えを見たことになる。
+
+    保有日数を複数出すのは、**窓を選ぶのは分散を見てからでよい**ためである。
+    分散は効果ではないので、ここで比べても多重検定にはならない。**封印する
+    のは1本だけ**で、それを選ぶ根拠がこの表になる。
+    """
+    settings = get_settings()
+    configure_logging(settings.log_level)
+
+    windows = sorted({holding for holding in holdings if holding >= 1})
+    if not windows:
+        raise typer.BadParameter("--holding must be at least 1.")
+
+    database = Database()
+    database.create_all()
+    floor = min_turnover or MIN_TURNOVER
+
+    console.print(
+        f"52週高値更新の等加重バスケット。更新日の翌日の寄付きで買い、"
+        f"保有日数ぶん後の終値で降りる。ベンチマーク控除。売買代金 {floor / 1e8:.0f}億円以上。"
+    )
+    console.print("[dim]**平均は出さない。** 分散と重なりの膨張だけを測る。[/]")
+
+    table = Table(title="重なりを織り込んだ検出力（平均は含まない）")
+    table.add_column("保有", justify="right")
+    for column in ("イベント日", "日次SD", "上位1%を除いたSD", "重なりの膨張", "標準誤差"):
+        table.add_column(column, justify="right")
+    table.add_column(f"t≥{TARGET_T} に必要な差", justify="right")
+    table.add_column("費用", justify="right")
+
+    rows: list[tuple[int, float, float]] = []
+    for holding in windows:
+        values = high_event_returns(database, holding=holding, min_turnover=floor)
+        if len(values) < 2:
+            console.print(f"[yellow]保有{holding}日: イベント日が足りない（{len(values)}）。[/]")
+            continue
+        estimate = estimate_power(values, lags=holding)
+        needed = estimate.detectable(len(values))
+        trimmed, _dropped = trimmed_variance(values, fraction=0.01)
+        # 毎日入って holding 日持つので、1日あたり 1/holding だけ入れ替わる。
+        # 1イベントあたりの費用はロングオンリーの往復。
+        cost = COST_ROUND_TRIP
+        rows.append((holding, needed, cost))
+        table.add_row(
+            f"{holding}日",
+            f"{len(values):,}",
+            f"{estimate.daily_sd * 100:.2f}%",
+            f"{trimmed**0.5 * 100:.2f}%",
+            f"{estimate.inflation:.2f}x",
+            f"{estimate.standard_error(len(values)) * 100:.3f}%",
+            f"[bold]{needed * 100:.2f}%[/]",
+            f"{cost * 100:.2f}%",
+        )
+    console.print(table)
+
+    if not rows:
+        return
+
+    console.print(
+        "[dim]「必要な差」は**1イベントあたり**である。費用を引いた残りが、"
+        "文献の報告する効果量に届くかを見る。[/]"
+    )
+    for holding, needed, cost in rows:
+        if needed + cost > 0.02:
+            console.print(
+                f"[yellow]保有{holding}日: 必要な差 {needed * 100:.2f}% ＋ 費用 "
+                f"{cost * 100:.2f}% ＝ [bold]{(needed + cost) * 100:.2f}%[/]。[/] "
+                "イベント型の報告値としては大きい。"
+            )
+        else:
+            console.print(
+                f"保有{holding}日: 必要な差 {needed * 100:.2f}% ＋ 費用 "
+                f"{cost * 100:.2f}% ＝ [bold]{(needed + cost) * 100:.2f}%[/]。"
+            )
+
+    console.print()
+    console.print(
+        "[dim]この表は §0 の入力である。**封印するのは1本だけ。** どの窓にするかを"
+        "決めてから、`stock-ai power-gate` に見込みの下限と一緒に掛ける。[/]"
     )
 
 

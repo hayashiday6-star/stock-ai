@@ -78,7 +78,8 @@ import pandas as pd
 from sqlalchemy.orm import Session
 
 from stock_ai.backtest.pead import MIN_TURNOVER, TURNOVER_WINDOW
-from stock_ai.backtest.reversal import MAX_SESSION_MOVE
+from stock_ai.backtest.reversal import BENCHMARK, MAX_SESSION_MOVE
+from stock_ai.core.exceptions import DataError
 from stock_ai.core.logging import get_logger
 from stock_ai.data.schema import CLOSE, HIGH, LOW, OPEN, VOLUME, split_adjusted
 from stock_ai.database.engine import Database
@@ -283,13 +284,25 @@ def _quantiles(values: list[float] | list[int], fractions: tuple[float, ...]) ->
     ]
 
 
-def _jp_symbols(session: Session) -> list[str]:
-    """JP の銘柄コード。
+def _jp_symbols(session: Session, exclude: frozenset[str] = frozenset({BENCHMARK})) -> list[str]:
+    """JP の銘柄コード。**ベンチマークは除く。**
 
     ``list_securities`` は市場の絞り込み引数を**取らない。** 渡すと
     ``TypeError`` になる（本番で一度出した）。返ってきた組を絞る。
+
+    ベンチマーク（1306、TOPIX連動ETF）も JP の銘柄として保存されているので、
+    除かないと**指数そのものがイベントの母集団に入る。** 例外は出ない——
+    ETF は毎日のように52週高値を更新し、しかも売買代金は十分にある。
+
+    **2026-09-05 のセンサス（値幅制限 2,014件・売買停止明け 37件・52週高値
+    248,217件）は、この除外を入れる前の値である。** 4,303 銘柄のうち1銘柄なので
+    結論は動かないが、数字はそのまま引き写さずに、再測定したら書き換えること。
     """
-    return [symbol for symbol, market in list_securities(session) if market == "JP"]
+    return [
+        symbol
+        for symbol, market in list_securities(session)
+        if market == "JP" and symbol not in exclude
+    ]
 
 
 def _turnover_floor(raw: pd.DataFrame) -> pd.Series:
@@ -531,6 +544,99 @@ def count_52w_highs(
         gaps=gaps,
         open_positions=positions,
     )
+
+
+def high_event_returns(
+    database: Database,
+    holding: int,
+    symbols: list[str] | None = None,
+    min_turnover: float = MIN_TURNOVER,
+    lookback: int = HIGH_LOOKBACK,
+    benchmark: str = BENCHMARK,
+) -> list[float]:
+    """52週高値更新の等加重バスケットの、**イベント日ごとの超過リターン**。
+
+    **平均は返さない側の道具である。** ここが返すのは並びだけで、呼び出し側は
+    `estimate_power` に渡して分散と重なりの膨張だけを取る。§0 に入れる「検出
+    できる差」は、そこから出る。
+
+    **分散を測ることは判定を消費しない。** 効果の大きさではなく、散らばりを
+    測っているからである。#6・#7 と同じ手順で、同じ理由による。
+
+    入り方は他のイベント型と同じ。更新日 D の**翌日の寄付き**で等加重に買い、
+    ``holding`` 営業日後の終値で降りる。同じ期間のベンチマークを引く。**D の
+    終値では買えない**——更新は引けにしか分からない。
+
+    重なりは残す。毎日入るので ``holding`` 日ぶん重なるが、それは設計の一部で
+    あって欠陥ではない。`estimate_power(values, lags=holding)` が織り込む。
+
+    Args:
+        database: 価格の保存先。
+        holding: 保有営業日数。
+        symbols: 対象銘柄。省略時は JP の全銘柄。
+        min_turnover: 流動性の下限（円）。
+        lookback: 高値を測る営業日数。
+        benchmark: 控除するベンチマークの銘柄コード。
+
+    Returns:
+        イベント日ごとの超過リターン。**古い順。**
+    """
+    if holding < 1:
+        raise ValueError(f"holding must be at least 1; got {holding}.")
+
+    by_day: dict[dt.date, list[float]] = {}
+
+    with database.session() as session:
+        prices = PriceRepository(session)
+        bench = split_adjusted(prices.get_raw_prices(benchmark))
+        if bench.empty:
+            raise DataError(f"ベンチマーク {benchmark!r} の価格がありません。")
+        bench_open = bench[OPEN].to_numpy(dtype=float)
+        bench_close = bench[CLOSE].to_numpy(dtype=float)
+        bench_at = {stamp.date(): index for index, stamp in enumerate(bench.index)}
+
+        if symbols is None:
+            symbols = _jp_symbols(session)
+
+        for symbol in symbols:
+            raw = prices.get_raw_prices(symbol)
+            if raw.empty:
+                continue
+            adjusted = split_adjusted(raw)
+            close = adjusted[CLOSE].to_numpy(dtype=float)
+            if len(close) <= lookback + holding:
+                continue
+            opens = adjusted[OPEN].to_numpy(dtype=float)
+            floor = _turnover_floor(raw).to_numpy(dtype=float)
+            index = adjusted.index
+            trailing = adjusted[CLOSE].rolling(lookback).max().shift(1).to_numpy(dtype=float)
+
+            for position in range(lookback, len(index) - holding):
+                previous_high = trailing[position]
+                if pd.isna(previous_high) or not close[position] > previous_high:
+                    continue
+                level = floor[position]
+                if pd.isna(level) or level < min_turnover:
+                    continue
+
+                entry, exit_at = opens[position + 1], close[position + holding]
+                if not (entry > 0 and exit_at > 0):
+                    continue
+
+                # ベンチマークは**同じ日付**で取る。位置で取ると、その銘柄に
+                # 足の無い日があったぶんだけずれる。
+                when = index[position].date()
+                mark = bench_at.get(index[position + 1].date())
+                leave = bench_at.get(index[position + holding].date())
+                if mark is None or leave is None:
+                    continue
+                if not (bench_open[mark] > 0 and bench_close[leave] > 0):
+                    continue
+
+                excess = (exit_at / entry) - (bench_close[leave] / bench_open[mark])
+                by_day.setdefault(when, []).append(excess)
+
+    return [sum(values) / len(values) for _day, values in sorted(by_day.items())]
 
 
 @dataclass(frozen=True)

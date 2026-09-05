@@ -18,6 +18,7 @@ from stock_ai.backtest.event_census import (
     count_52w_highs,
     count_halt_resumptions,
     count_limit_moves,
+    high_event_returns,
 )
 from stock_ai.database.engine import Database
 from stock_ai.database.repository import PriceRepository, get_or_create_security
@@ -51,14 +52,21 @@ def _store(
     *,
     flat: set[int] | None = None,
     volume: int = LIQUID_VOLUME,
+    opens: list[float] | None = None,
 ) -> None:
     """1銘柄ぶんの足を入れる。``flat`` の位置は高値＝安値にする。"""
     flat = flat or set()
     frame = pd.DataFrame(
         {
-            "open": closes,
-            "high": [c if index in flat else c * 1.02 for index, c in enumerate(closes)],
-            "low": [c if index in flat else c * 0.98 for index, c in enumerate(closes)],
+            "open": opens if opens is not None else closes,
+            "high": [
+                c if index in flat else max(c, (opens or closes)[index]) * 1.02
+                for index, c in enumerate(closes)
+            ],
+            "low": [
+                c if index in flat else min(c, (opens or closes)[index]) * 0.98
+                for index, c in enumerate(closes)
+            ],
             "close": closes,
             "adj_close": closes,
             "volume": [volume] * len(closes),
@@ -456,3 +464,127 @@ def test_concentration_is_near_the_share_when_events_are_spread() -> None:
 
     assert census.effective_days() == 20.0
     assert census.concentration() == pytest.approx(0.1, abs=0.01)
+
+
+# --- §0 に入れる分散の材料 ------------------------------------------------
+
+
+def _benchmark(
+    database: Database,
+    days: list[dt.date],
+    closes: list[float] | None = None,
+    opens: list[float] | None = None,
+) -> None:
+    """ベンチマーク 1306 を入れる。控除の相手。"""
+    _store(database, "1306", days, closes or [1000.0] * len(days), opens=opens)
+
+
+def test_the_series_is_one_value_per_event_day() -> None:
+    """同じ日の銘柄は等加重で1つにまとめる。**銘柄ごとに並べない。**
+
+    銘柄日をそのまま並べると、同じ日の値が独立な観測に見える。
+    """
+    days = _sessions(60)
+    database = _database()
+    _benchmark(database, days)
+    for index in range(3):
+        _store(database, f"1{index:03d}", days, [200.0] * 55 + [210.0] * 5)
+
+    values = high_event_returns(database, holding=1, lookback=50)
+
+    assert len(values) == 1  # 3銘柄が同じ日に更新 → 1つの観測
+
+
+def test_the_entry_is_the_next_open_not_the_event_close() -> None:
+    """**更新は引けにしか分からない。** その日の終値では買えない。
+
+    更新日の終値 210 で買えるなら +10% 取れるが、翌日の寄付き 231 で買えば 0。
+    """
+    days = _sessions(60)
+    database = _database()
+    _benchmark(database, days)
+    closes = [200.0] * 55 + [210.0] + [205.0] * 4
+    _store(database, "1234", days, closes)
+
+    values = high_event_returns(database, holding=1, lookback=50)
+
+    # 翌日の寄付き 205 で買って同日の終値 205 で降りる → 0。
+    # 更新日の終値 210 で買っていれば 205/210 − 1 = −2.4% になる。
+    assert values == [pytest.approx(0.0)]
+
+
+def test_the_benchmark_is_matched_by_date_not_by_position() -> None:
+    """**位置で取ると、足の無い日があったぶんずれる。** 例外は出ない。"""
+    days = _sessions(61)
+    database = _database()
+    # ベンチマークは毎日 +1% ずつ上がる。ずれれば超過リターンに 1% 乗る。
+    _benchmark(database, days, [1000.0 * (1.01**index) for index in range(len(days))])
+    # 銘柄側の足を1日抜く。位置で取ればベンチマークが1日ずれる。
+    kept = days[:10] + days[11:]
+    closes = [200.0] * 55 + [210.0] * (len(kept) - 55)
+    _store(database, "1234", kept, closes)
+
+    values = high_event_returns(database, holding=1, lookback=50)
+
+    # 銘柄は寄付き＝終値なので 0。ベンチも同じ日の寄付き→終値なので 0。
+    # 日付で合っていれば 0、位置でずれていれば ±1% になる。
+    assert values == [pytest.approx(0.0)]
+
+
+def test_the_benchmark_is_actually_subtracted() -> None:
+    """ベンチマークが動けば、超過リターンはその分だけ減る。
+
+    **控除し忘れると、市場が上げた日の観測がすべて水増しされる。**
+    """
+    days = _sessions(60)
+    database = _database()
+    # ベンチマークは買う日（更新の翌日 = 56日目）に寄付き 1000 → 終値 1100。
+    bench_closes = [1000.0] * 56 + [1100.0] * 4
+    bench_opens = [1000.0] * 60
+    _benchmark(database, days, bench_closes, opens=bench_opens)
+    _store(database, "1234", days, [200.0] * 55 + [210.0] * 5)
+
+    values = high_event_returns(database, holding=1, lookback=50)
+
+    # 銘柄は 0、ベンチは 1100/1000 − 1 = +10%。超過は −10%。
+    assert values == [pytest.approx(-0.10)]
+
+
+def test_a_holding_of_zero_is_refused() -> None:
+    """0日保有は意味を持たない。黙って空を返さない。"""
+    days = _sessions(60)
+    database = _database()
+    _benchmark(database, days)
+    _store(database, "1234", days, [200.0] * 59 + [210.0])
+
+    with pytest.raises(ValueError, match="holding"):
+        high_event_returns(database, holding=0, lookback=50)
+
+
+def test_a_missing_benchmark_is_an_error_not_an_empty_series() -> None:
+    """**ベンチマークが無いのに空で返すと、控除し忘れに気付けない。**"""
+    from stock_ai.core.exceptions import DataError
+
+    days = _sessions(60)
+    database = _database()
+    _store(database, "1234", days, [200.0] * 59 + [210.0])
+
+    with pytest.raises(DataError, match="1306"):
+        high_event_returns(database, holding=1, lookback=50)
+
+
+def test_the_benchmark_is_not_itself_an_event() -> None:
+    """**指数そのものを母集団に入れない。** 1306 は JP の銘柄として保存される。
+
+    ETF は毎日のように52週高値を更新し、売買代金も十分にある。除かないと、
+    「市場が上げた」ことをイベントとして数える。例外は出ない。
+    """
+    days = _sessions(60)
+    database = _database()
+    # ベンチマークが毎日 +1% で上がり続ける。除外していなければ更新の山になる。
+    _benchmark(database, days, [1000.0 * (1.01**index) for index in range(len(days))])
+
+    census = count_52w_highs(database, lookback=50)
+
+    assert census.events == 0
+    assert high_event_returns(database, holding=1, lookback=50) == []
