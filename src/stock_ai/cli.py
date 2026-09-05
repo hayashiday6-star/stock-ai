@@ -4426,13 +4426,23 @@ def reversal_bias(
         console.print("[red]両方に共通する営業日が無い。[/]")
         raise typer.Exit(code=1)
     gap = survivorship_gap([left[day] for day in shared], [right[day] for day in shared])
-    average = sum(gap) / len(gap)
+    # **差にも誤差を付ける。** この数字は「プロジェクト全体で使い回せる」ものと
+    # して他の登録に引用される。平均だけ渡すと、0 と区別が付くのか分からない
+    # まま次の設計の前提になる。重なりは判定と同じラグで織り込む。
+    measured = judge(gap, lags=holding)
+    average = measured.mean
 
     console.print()
     console.print(
         f"共通の {len(shared):,} 営業日で、[bold]名簿あり − 生存者のみ = "
         f"{average * 100:+.3f}%[/]（保有{holding}営業日あたり）"
+        f"　標準誤差(NW) {measured.standard_error * 100:.3f}%、t {measured.t_statistic:+.2f}"
     )
+    if abs(measured.t_statistic) < TARGET_T:
+        console.print(
+            f"  [yellow]t = {measured.t_statistic:+.2f} で 0 と区別が付かない。[/] "
+            "**符号の向きも含めて、この期間では確かめられていない。**"
+        )
     if average < 0:
         console.print(
             "  負である＝**生存者だけで測ると効果を大きく見せる。** "
