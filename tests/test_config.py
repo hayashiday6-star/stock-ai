@@ -206,3 +206,72 @@ def test_the_runtime_packages_survive_a_bare_sync() -> None:
     assert required <= declared
     spec = groups["runtime"][0]
     assert all(extra in spec for extra in required), spec
+
+
+# --- コンソールに出す量 -------------------------------------------------------
+#
+# コンソールは人が読み、**そのまま会話に貼られる**。1リクエスト1行の記録が
+# 答えだったことは一度も無いのに、一括ダウンロードでは署名付きURLが丸ごと
+# 出て1本400字を超えていた。落とすのはコンソールだけで、ファイルには残す。
+
+
+def test_console_noise_filter_drops_per_request_chatter() -> None:
+    import logging
+
+    from stock_ai.core.logging import ConsoleNoiseFilter
+
+    noise = logging.LogRecord("httpx", logging.INFO, "", 0, "HTTP Request: GET ...", None, None)
+    assert ConsoleNoiseFilter().filter(noise) is False
+
+
+def test_console_noise_filter_keeps_warnings_from_the_same_libraries() -> None:
+    """**遮断や失敗は落とさない。** 静かにするのと、黙るのは別である。"""
+    import logging
+
+    from stock_ai.core.logging import ConsoleNoiseFilter
+
+    warning = logging.LogRecord("httpx", logging.WARNING, "", 0, "429", None, None)
+    assert ConsoleNoiseFilter().filter(warning) is True
+
+
+def test_console_noise_filter_keeps_this_projects_own_logs() -> None:
+    import logging
+
+    from stock_ai.core.logging import ConsoleNoiseFilter
+
+    ours = logging.LogRecord(
+        "stock_ai.data.jquants_bulk", logging.INFO, "", 0, "83 file(s)", None, None
+    )
+    assert ConsoleNoiseFilter().filter(ours) is True
+
+
+def test_debug_level_puts_the_chatter_back_on_the_console() -> None:
+    """診断したいときに手が無くなるのは困る。DEBUG なら全部出す。"""
+    import logging
+
+    from stock_ai.core.logging import configure_logging
+
+    def console_filters() -> list[str]:
+        handler = next(
+            h for h in logging.getLogger().handlers if h.__class__.__name__ != "RotatingFileHandler"
+        )
+        return [f.__class__.__name__ for f in handler.filters]
+
+    configure_logging("DEBUG")
+    assert "ConsoleNoiseFilter" not in console_filters()
+
+    configure_logging("INFO")
+    assert "ConsoleNoiseFilter" in console_filters()
+
+
+def test_the_log_file_still_receives_everything() -> None:
+    """コンソールを絞っても、後から追う手段は減らさない。"""
+    import logging
+
+    from stock_ai.core.logging import configure_logging
+
+    configure_logging("INFO")
+    file_handler = next(
+        h for h in logging.getLogger().handlers if h.__class__.__name__ == "RotatingFileHandler"
+    )
+    assert not any(f.__class__.__name__ == "ConsoleNoiseFilter" for f in file_handler.filters)

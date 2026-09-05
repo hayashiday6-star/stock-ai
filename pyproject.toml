@@ -151,7 +151,12 @@ target-version = ["py313"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]
-addopts = "-ra --cov=stock_ai --cov-report=term-missing"
+# **既定では網羅率の表を出さない。** 測りはする。
+#
+# `term-missing` は実行ごとに約100行を出す。CI では誰も読まず、会話に貼れば
+# それだけで数千トークンになる。見たいときは
+# `uv run pytest --cov-report=term-missing` と明示する。
+addopts = "-ra --cov=stock_ai --cov-report="
 
 [tool.coverage.run]
 branch = true
