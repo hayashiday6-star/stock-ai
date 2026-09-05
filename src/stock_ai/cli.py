@@ -4256,10 +4256,10 @@ def lowvol_bias(
     # **同じ月で揃える。** 片方にしか無い月を混ぜると、バイアスではなく期間の
     # 違いを測ることになる。
     table = Table(title=f"名簿あり − 生存者のみ（月あたり、β={beta:.3f} 固定）")
-    for column in ("指標", "名簿あり", "生存者のみ", "差", "月数"):
+    for column in ("指標", "名簿あり", "生存者のみ", "差", "標準誤差(NW)", "t", "月数"):
         table.add_column(column, justify="left" if column == "指標" else "right")
 
-    gaps: dict[str, float] = {}
+    gaps: dict[str, object] = {}
     for label, values in (
         ("α（分位1 − β×ベンチ）", lambda run: run.beta_adjusted(beta)),
         ("生の差（分位1 − ベンチ）", lambda run: run.long_only()),
@@ -4271,18 +4271,24 @@ def lowvol_bias(
             console.print("[red]両方に共通する月が無い。[/]")
             raise typer.Exit(code=1)
         gap = survivorship_gap([left[m] for m in shared], [right[m] for m in shared])
-        average = sum(gap) / len(gap)
-        gaps[label] = average
+        # **差にも誤差を付ける。** 平均だけ出すと、0 と区別できるのかが
+        # 分からないまま「バイアスは +0.059% だった」と引用されていく。#6 の
+        # −0.040% も誤差なしで登録に載った。同じことを繰り返さない。
+        measured = judge(gap, lags=LOWVOL_LAGS)
+        gaps[label] = measured
         table.add_row(
             label,
             f"{sum(left[m] for m in shared) / len(shared) * 100:+.3f}%",
             f"{sum(right[m] for m in shared) / len(shared) * 100:+.3f}%",
-            f"[bold]{average * 100:+.3f}%[/]",
+            f"[bold]{measured.mean * 100:+.3f}%[/]",
+            f"{measured.standard_error * 100:.3f}%",
+            f"{measured.t_statistic:+.2f}",
             f"{len(shared):,}",
         )
     console.print(table)
 
-    primary = gaps["α（分位1 − β×ベンチ）"]
+    measured = gaps["α（分位1 − β×ベンチ）"]
+    primary = measured.mean
     console.print()
     if primary < 0:
         console.print(
@@ -4298,11 +4304,24 @@ def lowvol_bias(
     else:
         console.print("[bold]α のバイアスは 0 だった。[/]")
 
+    # **符号を読む前に、0 と区別が付くかを見る。** 付かないなら「符号はこちら
+    # だった」も言えない。#6 の −0.040% は誤差なしで登録に載っている。
+    if abs(measured.t_statistic) < TARGET_T:
+        console.print(
+            f"  [yellow]ただし t = {measured.t_statistic:+.2f} で、0 と区別が付かない。[/] "
+            "**符号の向きも含めて、この期間では確かめられていない。** "
+            f"月数は {measured.days} しかない。"
+        )
+    else:
+        console.print(
+            f"  t = {measured.t_statistic:+.2f}。**0 とは区別が付く。** "
+            "符号の向きは、この期間については確かめられた。"
+        )
+
     console.print(
-        f"[dim]#6（リバーサル）は −0.040%／20営業日だった。あちらは下落率上位を"
-        f"買う形で、**バイアスが最も濃く乗る。** 低ボラは破綻に向かう銘柄が"
-        f"分位5に落ちるので小さいはず、と §11 に書いた。{abs(primary) * 100:.3f}% が"
-        "その答えである。[/dim]"
+        f"[dim]#6（リバーサル）は −0.040%／20営業日だった（**あちらも誤差は"
+        f"測っていない**）。低ボラは破綻に向かう銘柄が分位5に落ちるので小さい"
+        f"はず、と §11 に書いた。{abs(primary) * 100:.3f}% がその答えである。[/dim]"
     )
     console.print(
         "[yellow]判定は変わらない。[/] §18 に記録済みで、これは結果に添える数字である（§11）。"
