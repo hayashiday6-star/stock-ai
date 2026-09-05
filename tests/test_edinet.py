@@ -16,7 +16,7 @@ from pydantic import SecretStr
 
 from stock_ai.ir.edinet import (
     EdinetDisclosureSource,
-    _default_day_fetcher,
+    day_fetcher,
     normalize_sec_code,
     to_disclosure,
 )
@@ -269,7 +269,7 @@ def test_no_api_key_sends_neither_carrier(monkeypatch: pytest.MonkeyPatch) -> No
 
     monkeypatch.setattr(httpx, "Client", _FakeClient)
 
-    _default_day_fetcher(None)(dt.date(2026, 8, 1))
+    day_fetcher(None)(dt.date(2026, 8, 1))
 
     assert "Subscription-Key" not in _FakeClient.last["params"]
     assert _FakeClient.last["headers"] == {}
@@ -288,7 +288,7 @@ def test_a_keyless_empty_day_names_the_missing_key(
     monkeypatch.setattr(httpx, "Client", _EmptyClient)
 
     with caplog.at_level("WARNING"):
-        assert _default_day_fetcher(None)(dt.date(2026, 8, 1)) == []
+        assert day_fetcher(None)(dt.date(2026, 8, 1)) == []
 
     assert "EDINET_API_KEY" in caplog.text
 
@@ -308,7 +308,7 @@ def test_the_api_key_is_sent_every_way_the_service_might_read_it(
 
     monkeypatch.setattr(httpx, "Client", _FakeClient)
 
-    _default_day_fetcher(SecretStr("edb_secret"))(dt.date(2026, 8, 1))
+    day_fetcher(SecretStr("edb_secret"))(dt.date(2026, 8, 1))
 
     assert _FakeClient.last["params"]["Subscription-Key"] == "edb_secret"
     assert _FakeClient.last["headers"]["Ocp-Apim-Subscription-Key"] == "edb_secret"
@@ -347,7 +347,7 @@ def test_a_401_says_the_value_is_wrong_not_the_placement(
     monkeypatch.setattr(httpx, "Client", _Denied)
 
     with caplog.at_level(logging.ERROR):
-        assert _default_day_fetcher(SecretStr("k"))(dt.date(2026, 8, 7)) == []
+        assert day_fetcher(SecretStr("k"))(dt.date(2026, 8, 7)) == []
 
     assert "not where it was put" in caplog.text
     assert "EDINET_API_KEY" in caplog.text
@@ -366,7 +366,7 @@ def test_an_empty_day_without_metadata_names_the_keys_it_did_get(
     monkeypatch.setattr(httpx, "Client", _NoMetadata)
 
     with caplog.at_level("WARNING"):
-        assert _default_day_fetcher(SecretStr("k"))(dt.date(2026, 8, 1)) == []
+        assert day_fetcher(SecretStr("k"))(dt.date(2026, 8, 1)) == []
 
     assert "no 'metadata' block" in caplog.text
     assert "unexpectedKey" in caplog.text
@@ -385,7 +385,7 @@ def test_a_day_with_a_zero_count_is_not_an_alarm(
     monkeypatch.setattr(httpx, "Client", _Holiday)
 
     with caplog.at_level("WARNING"):
-        assert _default_day_fetcher(SecretStr("k"))(dt.date(2026, 8, 1)) == []
+        assert day_fetcher(SecretStr("k"))(dt.date(2026, 8, 1)) == []
 
     assert caplog.text == ""
 
@@ -427,7 +427,7 @@ def test_a_rejected_day_is_logged_at_error_with_the_reason(
     monkeypatch.setattr(httpx, "Client", _Rejected)
 
     with caplog.at_level(logging.WARNING):
-        assert _default_day_fetcher(SecretStr("k"))(dt.date(2026, 8, 7)) == []
+        assert day_fetcher(SecretStr("k"))(dt.date(2026, 8, 7)) == []
 
     assert any(record.levelno >= logging.ERROR for record in caplog.records)
     assert "Access denied" in caplog.text
@@ -542,7 +542,7 @@ def test_the_client_sends_the_placement_it_claims_to() -> None:
 
     with pytest.MonkeyPatch.context() as patch:
         patch.setattr(httpx, "Client", _Recording)
-        _default_day_fetcher(SecretStr("k"))(dt.date(2026, 8, 7))
+        day_fetcher(SecretStr("k"))(dt.date(2026, 8, 7))
 
     from stock_ai.ir.edinet import CURRENT_PLACEMENT, key_placements
 
@@ -590,7 +590,7 @@ def test_the_key_is_not_sent_in_the_header_the_gateway_ignores() -> None:
 
     with pytest.MonkeyPatch.context() as patch:
         patch.setattr(httpx, "Client", _Recording)
-        _default_day_fetcher(SecretStr("k"))(dt.date(2026, 8, 7))
+        day_fetcher(SecretStr("k"))(dt.date(2026, 8, 7))
 
     assert "Ocp-Apim-Subscription-Key" in seen["headers"]
     assert "Subscription-Key" not in seen["headers"]

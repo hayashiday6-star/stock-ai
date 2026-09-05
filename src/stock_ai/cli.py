@@ -218,6 +218,7 @@ from stock_ai.ir.edinet import (
     CURRENT_PLACEMENT,
     EdinetDisclosureSource,
     ProbeResult,
+    day_fetcher,
     doc_type_label,
     normalize_sec_code,
     probe_key_placements,
@@ -4066,6 +4067,147 @@ def _oos_session_count(database: Database, benchmark: str, holding: int) -> int:
         return 0
     days = [stamp.date() for stamp in frame.index if stamp.date() >= OOS_FROM]
     return max(0, len(days) - (holding + 1))
+
+
+@app.command(name="edinet-reach")
+def edinet_reach(
+    years: int = typer.Option(16, "--years", help="How many years back to probe."),
+    month: int = typer.Option(6, "--month", help="Month to probe each year (1-12)."),
+    day: int = typer.Option(15, "--day", help="Day of month to probe."),
+    pause: float = typer.Option(1.0, "--pause", help="Seconds between requests."),
+) -> None:
+    """Find out how far back EDINET actually serves documents.
+
+    **The financial history stops at 58 months, and 58 months is five years.**
+    That is the same number as the J-Quants rolling window, which makes it worth
+    asking whether it is EDINET's limit or our own harvest setting. The two look
+    identical from the database.
+
+    One request per year, on a fixed day, counting what comes back. Nothing is
+    stored and nothing is parsed beyond the count - this only answers "does the
+    service still have documents from that date".
+
+    A weekend or a holiday returns zero legitimately, so a zero is reported as
+    "0 件" rather than "reached the limit". The boundary is where zeros start
+    and never stop, not the first zero.
+
+    Costs about a dozen requests. It settles whether the composite test has 58
+    months to work with or twice that, and the standard error scales with the
+    square root of that number.
+    """
+    settings = get_settings()
+    configure_logging(settings.log_level)
+
+    api_key = settings.edinet_api_key
+    if api_key is None:
+        console.print("[red].env に EDINET_API_KEY がない。[/] APIキー設定.bat で設定する。")
+        raise typer.Exit(code=1)
+
+    if not 1 <= month <= 12:
+        raise typer.BadParameter(f"--month must be 1-12; got {month}.")
+
+    fetch = day_fetcher(api_key)
+    today = dt.date.today()
+
+    console.print(
+        f"[bold]{years} 年ぶん、毎年 {month:02d}-{day:02d} を1日ずつ叩く。[/] "
+        "件数を数えるだけで、中身は読まないし保存もしない。"
+    )
+    console.print(
+        "[dim]土日祝は 0 件が正しい。**境目は「0 が始まってそのまま続く所」**で、"
+        "最初の 0 ではない。[/dim]"
+    )
+    console.print()
+
+    table = Table(title="EDINET はどこまで遡れるか")
+    for column in ("日付", "曜日", "件数", "結果"):
+        table.add_column(column, justify="left" if column in ("日付", "結果") else "right")
+
+    reached: list[dt.date] = []
+    empty: list[dt.date] = []
+    failed = 0
+    weekday_names = "月火水木金土日"
+
+    for offset in range(years):
+        year = today.year - offset
+        try:
+            probe = dt.date(year, month, day)
+        except ValueError:
+            continue
+        if probe >= today:
+            continue
+        try:
+            records = fetch(probe)
+        except RateLimitError:
+            # 走行そのものの問題である。残りを同じ調子で叩いても同じ断りが返る。
+            console.print(
+                f"\n[yellow]レート制限に当たった（{year} 年まで確認）。[/] "
+                "時間を置いて再実行すれば続きから見られる。"
+            )
+            break
+        except DataError as exc:
+            failed += 1
+            table.add_row(probe.isoformat(), "", "[yellow]—[/]", f"[yellow]{exc}[/]")
+            continue
+
+        count = len(records)
+        marker = weekday_names[probe.weekday()]
+        if count:
+            reached.append(probe)
+            table.add_row(probe.isoformat(), marker, f"{count:,}", "[green]取れる[/]")
+        else:
+            empty.append(probe)
+            table.add_row(probe.isoformat(), marker, "0", "[dim]0 件[/dim]")
+        if pause:
+            time.sleep(pause)
+
+    console.print(table)
+    console.print()
+
+    if not reached:
+        console.print("[red]1日ぶんも取れなかった。[/] 鍵か接続を先に確かめる。")
+        raise typer.Exit(code=1)
+
+    oldest = min(reached)
+    months = (today.year - oldest.year) * 12 + (today.month - oldest.month)
+    console.print(
+        f"書類が返った最も古い日は [bold]{oldest}[/]。"
+        f"いまから [bold]{months:,}[/] ヶ月（{months / 12:.1f}年）遡れる。"
+    )
+
+    # **58ヶ月と比べる。** ここが今回の問い。
+    current = 58
+    console.print()
+    if months > current * 1.2:
+        console.print(
+            f"[green]手元の財務データ（{current}ヶ月）より長い。[/] "
+            f"**58ヶ月は EDINET の制約ではない。** harvest の窓を広げる余地がある。"
+        )
+        console.print(
+            f"[dim]標準誤差は √({months}/{current}) = "
+            f"{(months / current) ** 0.5:.2f} 倍**小さく**なる方向。[/dim]"
+        )
+    elif months < current * 0.8:
+        console.print(
+            f"[yellow]手元の財務データ（{current}ヶ月）より短い。[/] "
+            "有報の「主要な経営指標等」は1本で5期ぶん持つので、**書類が取れる"
+            "範囲より古い年まで埋められる。** そちらを数える必要がある。"
+        )
+    else:
+        console.print(
+            f"[yellow]手元の財務データ（{current}ヶ月）とほぼ同じ。[/] "
+            "**58ヶ月は EDINET の制約である公算が高い。** ただし有報1本に5期ぶん"
+            "入るので、書類の範囲＋4年までは埋められる。"
+        )
+
+    if empty:
+        console.print(
+            f"[dim]0 件だった日が {len(empty)} 日ある"
+            f"（{', '.join(d.isoformat() for d in empty[:4])}…）。"
+            "**土日祝なら正しい 0 である。** 別の日で確かめ直せる（--day）。[/dim]"
+        )
+    if failed:
+        console.print(f"[yellow]{failed} 日は断られた。[/] 上の理由を読む。")
 
 
 @app.command(name="power-gate")

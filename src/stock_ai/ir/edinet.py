@@ -560,8 +560,14 @@ def _http_requester(day: dt.date) -> Callable[[dict[str, str], dict[str, str]], 
     return send
 
 
-def _default_day_fetcher(api_key: SecretStr | None) -> DayFetcher:
-    """Build a fetcher for one day's document list."""
+def day_fetcher(api_key: SecretStr | None) -> DayFetcher:
+    """Build a fetcher for one day's document list.
+
+    Public because the reach probe needs the same call the source makes. A
+    second copy of the key-placement logic is a second place to get it wrong,
+    and getting it wrong here produced "401 with a perfectly valid key" once
+    already.
+    """
 
     def fetch(day: dt.date) -> list[dict[str, Any]]:
         import httpx
@@ -647,7 +653,7 @@ class EdinetDisclosureSource:
             clock: Callable returning today's date.
         """
         self.lookback_days = max(1, lookback_days)
-        self._fetch_day = fetcher or _default_day_fetcher(api_key)
+        self._fetch_day = fetcher or day_fetcher(api_key)
         self._today = clock or dt.date.today
         self._cache: dict[dt.date, list[dict[str, Any]]] = {}
         self._failed_days: set[dt.date] = set()
