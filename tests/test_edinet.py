@@ -915,3 +915,84 @@ def test_the_subject_name_is_learnt_from_days_fetched_for_the_watchlist() -> Non
 
     assert len(found) == 1
     assert "エア・ウォーター" in found[0].title
+
+
+# --- 0 件には2種類ある ---------------------------------------------------------
+#
+# 休日で提出が無かった 0 と、EDINET がその日付をそもそも持っていない 0。
+# 前者は 200 に resultset.count = 0、後者は 200 に metadata.status = 404。
+#
+# **同じ「0 件」として表に出して、実際に遡れる境目を読み違えた。** 本番で
+# 2016-06-15（水・営業日）の 404 と 2019-06-15（土）の 0 が同じ行に見えていた。
+
+
+def _reach_payload(status: str, count: int | None) -> dict:
+    resultset = {} if count is None else {"count": count}
+    return {"metadata": {"status": status, "resultset": resultset}, "results": []}
+
+
+def test_a_holiday_zero_and_an_out_of_range_zero_are_different(monkeypatch) -> None:
+    from stock_ai.ir.edinet import (
+        REACH_NO_FILINGS,
+        REACH_OUT_OF_RANGE,
+        day_reach,
+    )
+
+    def payloads(sequence):
+        it = iter(sequence)
+
+        def request(day, params, headers):
+            return next(it)
+
+        return request
+
+    monkeypatch.setattr(
+        "stock_ai.ir.edinet._request_day",
+        payloads([_reach_payload("200", 0), _reach_payload("404", None)]),
+    )
+
+    holiday = day_reach(SecretStr("k"), dt.date(2019, 6, 15))
+    outside = day_reach(SecretStr("k"), dt.date(2016, 6, 15))
+
+    assert holiday.reason == REACH_NO_FILINGS
+    assert outside.reason == REACH_OUT_OF_RANGE
+    assert holiday.reason != outside.reason
+
+
+def test_a_holiday_counts_as_held_but_out_of_range_does_not(monkeypatch) -> None:
+    """**境目は「持っている最も古い日」である。** 休日も持っている側に数える。"""
+    from stock_ai.ir.edinet import day_reach
+
+    monkeypatch.setattr(
+        "stock_ai.ir.edinet._request_day", lambda day, params, headers: _reach_payload("200", 0)
+    )
+    assert day_reach(SecretStr("k"), dt.date(2019, 6, 15)).held is True
+
+    monkeypatch.setattr(
+        "stock_ai.ir.edinet._request_day", lambda day, params, headers: _reach_payload("404", None)
+    )
+    assert day_reach(SecretStr("k"), dt.date(2016, 6, 15)).held is False
+
+
+def test_a_day_with_filings_reports_the_count(monkeypatch) -> None:
+    from stock_ai.ir.edinet import REACH_OK, day_reach
+
+    monkeypatch.setattr(
+        "stock_ai.ir.edinet._request_day",
+        lambda day, params, headers: {"results": [{"docID": "x"}, {"docID": "y"}]},
+    )
+
+    reach = day_reach(SecretStr("k"), dt.date(2017, 6, 15))
+
+    assert reach.reason == REACH_OK
+    assert reach.count == 2
+    assert reach.held is True
+
+
+def test_an_unreadable_payload_is_not_read_as_out_of_range(monkeypatch) -> None:
+    """**分からないときは「範囲外」と言わない。** 境目を早めに引いてしまう。"""
+    from stock_ai.ir.edinet import REACH_UNKNOWN, day_reach
+
+    monkeypatch.setattr("stock_ai.ir.edinet._request_day", lambda day, params, headers: [])
+
+    assert day_reach(SecretStr("k"), dt.date(2017, 6, 15)).reason == REACH_UNKNOWN

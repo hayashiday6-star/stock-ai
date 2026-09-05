@@ -560,6 +560,88 @@ def _http_requester(day: dt.date) -> Callable[[dict[str, str], dict[str, str]], 
     return send
 
 
+def _request_day(day: dt.date, params: dict[str, str], headers: dict[str, str]) -> Any:
+    """Fetch one day of ``documents.json``. One request path, not two.
+
+    鍵の置き場所を2か所で組み立てると、2か所で間違えられる。ここは以前
+    「正しい鍵で 401」を出した所である。
+    """
+    import httpx
+
+    with httpx.Client(timeout=30.0) as client:
+        response = client.get(_DOCUMENTS_URL, params=params, headers=headers)
+        if response.status_code == 429:
+            # 仕様書の定める「大量リクエスト」。一日ぶんの失敗ではなく走行
+            # そのものの問題で、残りの日付を同じ調子で叩いても同じ断りが返る。
+            raise RateLimitError(
+                f"EDINET returned HTTP 429 (too many requests) for {day}; "
+                "space the calls out and retry."
+            )
+        if response.status_code >= 400:
+            raise DataError(f"EDINET returned HTTP {response.status_code} for {day}.")
+        return response.json()
+
+
+#: `day_reach` が返す区分。**0 が2種類あることを型で分ける。**
+REACH_OK = "取れる"
+REACH_NO_FILINGS = "0件（休日）"
+REACH_OUT_OF_RANGE = "範囲外"
+REACH_UNKNOWN = "不明"
+
+
+@dataclass(frozen=True)
+class DayReach:
+    """Whether EDINET holds that date at all - not whether anyone filed.
+
+    **0 件には2種類ある。** 休日で提出が無かった 0 と、EDINET がその日付を
+    そもそも持っていない 0 である。前者は 200 に ``resultset.count = 0``、
+    後者は 200 に ``metadata.status = 404`` で返る。
+
+    **同じ「0 件」として表に出すと、遡れる境目を読み違える。** 実際、
+    2016-06-15（水・営業日）の 404 と、2019-06-15（土）の 0 が同じ行に
+    見えていた。
+    """
+
+    day: dt.date
+    count: int
+    status: str
+    reason: str
+
+    @property
+    def held(self) -> bool:
+        """Whether the date is inside EDINET's window."""
+        return self.reason in (REACH_OK, REACH_NO_FILINGS)
+
+
+def day_reach(api_key: SecretStr | None, day: dt.date) -> DayReach:
+    """Ask EDINET, in one request, whether it holds that date.
+
+    件数を数えるだけで、中身は読まないし保存もしない。
+    """
+    params: dict[str, str] = {"date": day.isoformat(), "type": "2"}
+    headers: dict[str, str] = {}
+    if api_key is not None:
+        extra_params, extra_headers = key_placements(api_key.get_secret_value())[CURRENT_PLACEMENT]
+        params.update(extra_params)
+        headers.update(extra_headers)
+
+    payload = _request_day(day, params, headers)
+    results = payload.get("results") if isinstance(payload, dict) else None
+    if isinstance(results, list) and results:
+        return DayReach(day, len(results), "200", REACH_OK)
+
+    metadata = payload.get("metadata") if isinstance(payload, dict) else None
+    if not isinstance(metadata, dict):
+        return DayReach(day, 0, "?", REACH_UNKNOWN)
+
+    status = str(metadata.get("status") or "?")
+    resultset = metadata.get("resultset")
+    count = resultset.get("count") if isinstance(resultset, dict) else None
+    if count == 0:
+        return DayReach(day, 0, status, REACH_NO_FILINGS)
+    return DayReach(day, 0, status, REACH_OUT_OF_RANGE)
+
+
 def day_fetcher(api_key: SecretStr | None) -> DayFetcher:
     """Build a fetcher for one day's document list.
 
@@ -570,7 +652,6 @@ def day_fetcher(api_key: SecretStr | None) -> DayFetcher:
     """
 
     def fetch(day: dt.date) -> list[dict[str, Any]]:
-        import httpx
 
         params: dict[str, str] = {"date": day.isoformat(), "type": "2"}
         headers: dict[str, str] = {}
@@ -599,18 +680,7 @@ def day_fetcher(api_key: SecretStr | None) -> DayFetcher:
             params.update(extra_params)
             headers.update(extra_headers)
 
-        with httpx.Client(timeout=30.0) as client:
-            response = client.get(_DOCUMENTS_URL, params=params, headers=headers)
-            if response.status_code == 429:
-                # 仕様書の定める「大量リクエスト」。一日ぶんの失敗ではなく走行
-                # そのものの問題で、残りの日付を同じ調子で叩いても同じ断りが返る。
-                raise RateLimitError(
-                    f"EDINET returned HTTP 429 (too many requests) for {day}; "
-                    "space the calls out and retry."
-                )
-            if response.status_code >= 400:
-                raise DataError(f"EDINET returned HTTP {response.status_code} for {day}.")
-            payload = response.json()
+        payload = _request_day(day, params, headers)
 
         results = payload.get("results")
         if not isinstance(results, list) or not results:

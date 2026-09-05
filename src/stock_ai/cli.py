@@ -217,9 +217,12 @@ from stock_ai.database.repository import (
 )
 from stock_ai.ir.edinet import (
     CURRENT_PLACEMENT,
+    REACH_NO_FILINGS,
+    REACH_OK,
+    REACH_OUT_OF_RANGE,
     EdinetDisclosureSource,
     ProbeResult,
-    day_fetcher,
+    day_reach,
     doc_type_label,
     normalize_sec_code,
     probe_key_placements,
@@ -4107,7 +4110,6 @@ def edinet_reach(
     if not 1 <= month <= 12:
         raise typer.BadParameter(f"--month must be 1-12; got {month}.")
 
-    fetch = day_fetcher(api_key)
     today = dt.date.today()
 
     console.print(
@@ -4124,8 +4126,8 @@ def edinet_reach(
     for column in ("日付", "曜日", "件数", "結果"):
         table.add_column(column, justify="left" if column in ("日付", "結果") else "right")
 
-    reached: list[dt.date] = []
-    empty: list[dt.date] = []
+    held: list[dt.date] = []
+    out_of_range: list[dt.date] = []
     failed = 0
     weekday_names = "月火水木金土日"
 
@@ -4138,7 +4140,7 @@ def edinet_reach(
         if probe >= today:
             continue
         try:
-            records = fetch(probe)
+            reach = day_reach(api_key, probe)
         except RateLimitError:
             # 走行そのものの問題である。残りを同じ調子で叩いても同じ断りが返る。
             console.print(
@@ -4151,25 +4153,35 @@ def edinet_reach(
             table.add_row(probe.isoformat(), "", "[yellow]—[/]", f"[yellow]{exc}[/]")
             continue
 
-        count = len(records)
         marker = weekday_names[probe.weekday()]
-        if count:
-            reached.append(probe)
-            table.add_row(probe.isoformat(), marker, f"{count:,}", "[green]取れる[/]")
+        # **0 を2種類に分ける。** 休日の 0 と「その日付を持っていない」0 は
+        # 別の事実で、同じ行に見せると遡れる境目を読み違える。
+        if reach.reason == REACH_OK:
+            held.append(probe)
+            table.add_row(probe.isoformat(), marker, f"{reach.count:,}", "[green]取れる[/]")
+        elif reach.reason == REACH_NO_FILINGS:
+            held.append(probe)
+            table.add_row(probe.isoformat(), marker, "0", "[dim]0件（休日）[/dim]")
+        elif reach.reason == REACH_OUT_OF_RANGE:
+            out_of_range.append(probe)
+            table.add_row(
+                probe.isoformat(), marker, "—", f"[yellow]範囲外（status {reach.status}）[/]"
+            )
         else:
-            empty.append(probe)
-            table.add_row(probe.isoformat(), marker, "0", "[dim]0 件[/dim]")
+            table.add_row(probe.isoformat(), marker, "—", "[yellow]不明[/]")
         if pause:
             time.sleep(pause)
 
     console.print(table)
     console.print()
 
-    if not reached:
+    if not held:
         console.print("[red]1日ぶんも取れなかった。[/] 鍵か接続を先に確かめる。")
         raise typer.Exit(code=1)
 
-    oldest = min(reached)
+    # **境目は「持っている最も古い日」である。** 休日の 0 も「持っている」に
+    # 数える——提出が無かっただけで、その日付は範囲内にある。
+    oldest = min(held)
     months = (today.year - oldest.year) * 12 + (today.month - oldest.month)
     console.print(
         f"書類が返った最も古い日は [bold]{oldest}[/]。"
@@ -4201,11 +4213,12 @@ def edinet_reach(
             "入るので、書類の範囲＋4年までは埋められる。"
         )
 
-    if empty:
+    if out_of_range:
+        newest_refused = max(out_of_range)
         console.print(
-            f"[dim]0 件だった日が {len(empty)} 日ある"
-            f"（{', '.join(d.isoformat() for d in empty[:4])}…）。"
-            "**土日祝なら正しい 0 である。** 別の日で確かめ直せる（--day）。[/dim]"
+            f"[dim]範囲外と返ったうち最も新しい日は {newest_refused}。"
+            f"**境目は {newest_refused} と {oldest} のあいだにある。** "
+            "窓は毎日後ろへ動くので、古い側は待つほど失われる。[/dim]"
         )
     if failed:
         console.print(f"[yellow]{failed} 日は断られた。[/] 上の理由を読む。")
