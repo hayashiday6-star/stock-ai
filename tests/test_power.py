@@ -258,3 +258,23 @@ def test_periods_needed_refuses_a_zero_effect() -> None:
         periods_needed(0.0184, 1.09, 0.0)
     with _pytest.raises(ValueError):
         periods_needed(0.0, 1.09, 0.003)
+
+
+def test_required_improvement_is_the_ratio_that_closes_the_gap() -> None:
+    """期数を増やせないときに要る、推定量の改善倍率。"""
+    from stock_ai.backtest.power import required_improvement
+
+    # 検出できる差 0.33%、見込みの下限 0.25% なら 1.32 倍要る。
+    assert required_improvement(0.0033, 0.0025) == pytest.approx(1.32, rel=1e-3)
+    # 既に足りているなら 1 未満。
+    assert required_improvement(0.0033, 0.0050) < 1.0
+
+
+def test_required_improvement_refuses_a_zero_floor() -> None:
+    """0 を検出するのに要る改善は無限。黙って巨大な数を返さない。"""
+    import pytest as _pytest
+
+    from stock_ai.backtest.power import required_improvement
+
+    with _pytest.raises(ValueError):
+        required_improvement(0.0033, 0.0)

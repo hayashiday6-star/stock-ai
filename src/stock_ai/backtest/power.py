@@ -266,6 +266,34 @@ def periods_needed(
     return math.ceil((target_t * sd * inflation / effect) ** 2)
 
 
+def required_improvement(detectable: float, plausible_low: float) -> float:
+    """通すのに要る「推定量の改善倍率」。
+
+    期数を増やせないとき、残る手は**分散を下げる設計に変える**ことである。
+    分位ソートは上下2割しか使わず、真ん中を捨てている。横断回帰なら断面全体を
+    使える。
+
+    **その改善は t の比で測る。SD の比ではない。** 分位スプレッドは、断面が
+    正規なら上位20%が約 +1.40σ、下位が −1.40σ なので、``2.8 × 1σチルト``に
+    あたる。**推定量を変えると SD も効果も一緒に縮む。** SD 比だけを掛けた
+    ところに文献の分位スプレッドの効果量を当てると、2.8倍の改善が無料で出た
+    ように見える。t は無次元なのでこの取り違えが起きない。
+
+    Args:
+        detectable: いまの設計で検出できる差。
+        plausible_low: 見込みの下限。
+
+    Returns:
+        必要な倍率。1.0 以下なら、いまの設計で既に足りている。
+
+    Raises:
+        ValueError: ``plausible_low`` が 0 以下。
+    """
+    if plausible_low <= 0:
+        raise ValueError(f"plausible_low must be positive; got {plausible_low}.")
+    return detectable / plausible_low
+
+
 @dataclass(frozen=True)
 class Gate:
     """検出可能性ゲートの結果。**平均は持たない。**

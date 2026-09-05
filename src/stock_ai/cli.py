@@ -107,6 +107,7 @@ from stock_ai.backtest.power import (
     gate,
     judge,
     periods_needed,
+    required_improvement,
     trimmed_variance,
 )
 from stock_ai.backtest.report import metrics_frame
@@ -4295,9 +4296,17 @@ def power_gate(
                 f"{count - periods:+,}" if count > periods else "足りている",
             )
         console.print(needed)
+        factor = required_improvement(detectable, floor)
+        console.print()
         console.print(
-            "[dim]期数を増やせないなら、**分散を下げる設計**に変えるしかない。"
-            "分位ソートは上下の2割しか使わず、真ん中を捨てている。[/dim]"
+            f"期数を増やせないなら、**推定量を [bold]{factor:.2f} 倍[/]"
+            "改善するしかない**（見込みの下限で通すために）。"
+        )
+        console.print(
+            "[dim]その改善は **t の比**で測る。SD の比ではない。分位スプレッドは"
+            "断面が正規なら ``2.8 × 1σチルト`` にあたり、**推定量を変えると SD も"
+            "効果も一緒に縮む。** SD 比を掛けたところに文献の分位スプレッドの"
+            "効果量を当てると、2.8倍の改善が無料で出たように見える。[/dim]"
         )
 
     console.print(
