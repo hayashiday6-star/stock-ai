@@ -268,3 +268,104 @@ def test_a_halt_that_crossed_a_discontinuity_is_counted_separately() -> None:
 
     assert census.events == 1
     assert census.crossed_discontinuity == 1
+
+
+# --- 執行できるか ---------------------------------------------------------
+
+
+def test_a_second_flat_day_is_counted_as_unfillable() -> None:
+    """**連続ストップ高では買えない。** 費用の問題ではなく、取れないという問題。
+
+    約定を仮定した検証は、この件をそのまま「買えた」ことにする。例外は出ない。
+    """
+    days = _sessions(30)
+    closes = [200.0] * 30
+    closes[20] = 220.0
+    closes[21:] = [242.0] * (30 - 21)
+    database = _database()
+    _store(database, "1234", days, closes, flat={20, 21})
+
+    census = count_limit_moves(database, symbols=["1234"])
+
+    assert census.events == 2  # 20日目と21日目の両方が制限に達している
+    assert census.unfillable == 1  # 20日目のぶんは翌日も張り付いていて買えない
+    assert census.fillable == 1
+
+
+def test_the_gap_is_measured_against_the_previous_close() -> None:
+    """払う分は「翌日始値 ÷ 当日終値 − 1」。"""
+    days = _sessions(30)
+    closes = [200.0] * 30
+    closes[20] = 220.0
+    closes[21:] = [230.0] * (30 - 21)
+    database = _database()
+    _store(database, "1234", days, closes, flat={20})
+
+    census = count_limit_moves(database, symbols=["1234"])
+
+    # 翌日の始値は _store が終値と同じ値を入れるので 230。230/220 - 1。
+    assert census.gaps == [pytest.approx(230.0 / 220.0 - 1.0)]
+
+
+def test_the_open_position_says_where_in_the_day_you_bought() -> None:
+    """始値が当日の高安のどこか。1 に寄れば、いちばん悪いところで買っている。"""
+    days = _sessions(30)
+    closes = [200.0] * 30
+    closes[20] = 220.0
+    closes[21:] = [230.0] * (30 - 21)
+    database = _database()
+    _store(database, "1234", days, closes, flat={20})
+
+    census = count_limit_moves(database, symbols=["1234"])
+
+    # _store は高値 close*1.02、安値 close*0.98、始値 close なので中央になる。
+    assert census.open_positions == [pytest.approx(0.5)]
+
+
+def test_an_event_on_the_last_bar_has_no_next_day() -> None:
+    """系列の末尾は買う日が無い。**買えなかったのとは別に数える。**"""
+    days = _sessions(30)
+    closes = [200.0] * 30
+    closes[29] = 220.0
+    database = _database()
+    _store(database, "1234", days, closes, flat={29})
+
+    census = count_limit_moves(database, symbols=["1234"])
+
+    assert census.events == 1
+    assert census.no_next_bar == 1
+    assert census.unfillable == 0
+    assert census.fillable == 0
+
+
+def test_the_gap_is_not_the_split_ratio() -> None:
+    """**翌日が分割の初日なら、生値のギャップは分割比率になる。**
+
+    調整後で測らないと、費用の仮定が桁で狂う。例外は出ない。
+    """
+    days = _sessions(30)
+    # 20日目にストップ高（生 200 → 220）。21日目から 1:2 分割で生値が半分に
+    # なるが、**経済的には同じ値**（220 の半分が 110）。
+    closes = [200.0] * 20 + [220.0] + [110.0] * 9
+    database = _database()
+    frame = pd.DataFrame(
+        {
+            "open": closes,
+            "high": [c if i == 20 else c * 1.02 for i, c in enumerate(closes)],
+            "low": [c if i == 20 else c * 0.98 for i, c in enumerate(closes)],
+            "close": closes,
+            "adj_close": [c if i > 20 else c / 2 for i, c in enumerate(closes)],
+            "volume": [LIQUID_VOLUME] * len(closes),
+        },
+        index=pd.DatetimeIndex(days, name="date"),
+    )
+    with database.session() as session:
+        get_or_create_security(session, symbol := "1234", market="JP")
+        PriceRepository(session).upsert_prices(symbol, frame, market="JP")
+        session.commit()
+
+    census = count_limit_moves(database, symbols=["1234"])
+
+    assert census.moves == [pytest.approx(0.10)]  # 調整後で +10%
+    # 生値で測れば 110/220-1 = -50%。調整後なら 0。
+    assert census.gaps == [pytest.approx(0.0)]

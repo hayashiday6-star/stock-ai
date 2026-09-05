@@ -33,6 +33,20 @@
 **表を推測して書かない。** 出典の無い階段表を実装すると、当たっているかどうか
 を確かめる手段ごと失う。
 
+## 執行できるかを、同じ走査で測る
+
+**ストップ高の翌日に成行で買うのは、他の説と同じ 0.6% では済まない。** 寄り付き
+で上に食う。費用の仮定を実測せずに封印すると、**実行できない合格が出る。**
+7本の中でまだ経験していない失敗の形である。
+
+同じ走査で3つ測る。リターンではないので、判定は消費しない。
+
+- **翌日も張り付いた件数。** これは費用ではなく、**買えない**ということである。
+  約定を仮定した検証は、この件をそのまま「買えた」ことにする
+- **翌日始値のギャップ**（始値 ÷ 当日終値 − 1）。**払う分そのもの**
+- **始値が当日の高安のどこにあるか。** 1 に寄っていれば、その日のいちばん悪い
+  ところで買っている
+
 ## 売買停止の検出は暦との差である
 
 その銘柄に足が無く、市場には足がある日を数える。市場の暦は**実データから作る**
@@ -57,7 +71,7 @@ from sqlalchemy.orm import Session
 from stock_ai.backtest.pead import MIN_TURNOVER, TURNOVER_WINDOW
 from stock_ai.backtest.reversal import MAX_SESSION_MOVE
 from stock_ai.core.logging import get_logger
-from stock_ai.data.schema import CLOSE, HIGH, LOW, VOLUME, split_adjusted
+from stock_ai.data.schema import CLOSE, HIGH, LOW, OPEN, VOLUME, split_adjusted
 from stock_ai.database.engine import Database
 from stock_ai.database.repository import PriceRepository, list_securities
 
@@ -115,6 +129,25 @@ class EventCensus:
     crossed_discontinuity: int = 0
     """再開日が #6 の不連続の規則に当たった件数。値幅制限では 0。"""
 
+    unfillable: int = 0
+    """翌日も高値＝安値で、**買おうとしても約定しない**件数。
+
+    これは費用ではなく、**取れないということ**である。約定を仮定した検証は、
+    この件をそのまま「買えた」ことにしてしまう。例外は出ない。
+    """
+
+    no_next_bar: int = 0
+    """翌日の足が無い件数（系列の末尾、または翌日から停止）。"""
+
+    gaps: list[float] = field(default_factory=list)
+    """買えた件の、翌日始値 ÷ 当日終値 − 1。**これが払う分である。**"""
+
+    open_positions: list[float] = field(default_factory=list)
+    """翌日始値が、その日の高安のどこにあるか（0 が安値、1 が高値）。
+
+    1 に寄っていれば、**その日のいちばん悪いところで買っている。**
+    """
+
     @property
     def survival(self) -> float:
         """流動性フィルタを通った割合。**#1 はここが 2.5% だった。**"""
@@ -170,6 +203,30 @@ class EventCensus:
         return [
             (f"{length}日" if length < 10 else "10日以上", count)
             for length, count in sorted(counted.items())
+        ]
+
+    @property
+    def fillable(self) -> int:
+        """翌日に買える件数。**これが実際に使える母集団である。**"""
+        return len(self.gaps)
+
+    def gap_quantiles(self) -> list[tuple[str, float]]:
+        """翌日始値のギャップの分布。
+
+        **費用の仮定はここから決める。** 0.6%（他の説と同じ往復費用）で置いて
+        よいのは、この分布が 0.6% に収まっているときだけである。収まって
+        いなければ、**実行できない合格が出る。**
+        """
+        return [
+            (name, float(value))
+            for name, value in _quantiles(sorted(self.gaps), (0.05, 0.25, 0.5, 0.75, 0.95))
+        ]
+
+    def open_position_quantiles(self) -> list[tuple[str, float]]:
+        """翌日始値の、その日の高安の中での位置。"""
+        return [
+            (name, float(value))
+            for name, value in _quantiles(sorted(self.open_positions), (0.25, 0.5, 0.75))
         ]
 
     def turnover_quantiles(self) -> list[tuple[str, float]]:
@@ -232,7 +289,10 @@ def count_limit_moves(
     per_day: Counter[dt.date] = Counter()
     moves: list[float] = []
     turnovers: list[float] = []
+    gaps: list[float] = []
+    positions: list[float] = []
     raw_events = thin = no_history = no_prices = 0
+    unfillable = no_next_bar = 0
 
     with database.session() as session:
         if symbols is None:
@@ -251,6 +311,11 @@ def count_limit_moves(
             highs = raw[HIGH].to_numpy(dtype=float)
             lows = raw[LOW].to_numpy(dtype=float)
             volumes = raw[VOLUME].to_numpy(dtype=float)
+            # 執行は調整後で測る。翌日が分割の初日だと、生値では始値だけが
+            # 別の尺度になり、ギャップが分割比率そのものになる。
+            opens = adjusted[OPEN].to_numpy(dtype=float)
+            adj_high = adjusted[HIGH].to_numpy(dtype=float)
+            adj_low = adjusted[LOW].to_numpy(dtype=float)
             index = adjusted.index
 
             for position in range(1, len(index)):
@@ -280,6 +345,24 @@ def count_limit_moves(
                 moves.append(move)
                 turnovers.append(float(level))
 
+                # **翌日そこで買えるのか。** ここを飛ばすと、約定しない日を
+                # 「買えた」ことにした検証ができあがる。
+                nxt = position + 1
+                if nxt >= len(index):
+                    no_next_bar += 1
+                    continue
+                if highs[nxt] == lows[nxt] and volumes[nxt] > 0:
+                    # 翌日も張り付いている。成行を出しても約定しない。
+                    unfillable += 1
+                    continue
+                if not (volumes[nxt] > 0 and opens[nxt] > 0 and close[position] > 0):
+                    no_next_bar += 1
+                    continue
+                gaps.append(opens[nxt] / close[position] - 1.0)
+                span = adj_high[nxt] - adj_low[nxt]
+                if span > 0:
+                    positions.append((opens[nxt] - adj_low[nxt]) / span)
+
     return EventCensus(
         kind="値幅制限",
         symbols_scanned=len(symbols),
@@ -291,6 +374,10 @@ def count_limit_moves(
         per_day=per_day,
         moves=moves,
         turnovers=turnovers,
+        unfillable=unfillable,
+        no_next_bar=no_next_bar,
+        gaps=gaps,
+        open_positions=positions,
     )
 
 

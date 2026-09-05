@@ -93,6 +93,7 @@ from stock_ai.backtest.lowvol_census import VOLATILITY_WINDOWS
 from stock_ai.backtest.lowvol_census import run_census as run_lowvol_census
 from stock_ai.backtest.pead import (
     MIN_TURNOVER,
+    ONE_WAY_COST,
     OOS_FROM,
     SORT_REACTION,
     SORT_SUE,
@@ -5107,6 +5108,40 @@ def event_census(
             "[dim]制限幅の階段表が効いているなら、山は少数の位置に立つ。なだらかなら、"
             "拾っているのは制限ではなく薄い銘柄である。過去の制限幅の表を持っていない"
             "ので、当たり具合はこの形でしか見られない。[/]"
+        )
+
+    if limits.events:
+        console.print()
+        console.print(
+            f"[bold]執行[/]: 翌日に買えたのは {limits.fillable:,} 件。"
+            f"翌日も張り付いて買えなかった [bold]{limits.unfillable:,}[/] 件"
+            f"（{limits.unfillable / limits.events:.1%}）、翌日の足が無い "
+            f"{limits.no_next_bar:,} 件。"
+        )
+        gaps = limits.gap_quantiles()
+        if gaps:
+            console.print(
+                "翌日始値のギャップ: "
+                + "、".join(f"{name} {value:+.2%}" for name, value in gaps)
+                + "　／　当日の高安での位置: "
+                + "、".join(
+                    f"{name} {value:.2f}" for name, value in limits.open_position_quantiles()
+                )
+            )
+            median = dict(gaps).get("p50", 0.0)
+            if median > ONE_WAY_COST * 2:
+                console.print(
+                    f"[yellow]中央値のギャップ {median:.2%} が、他の説で使っている往復費用 "
+                    f"{ONE_WAY_COST * 2:.2%} を超えている。[/] "
+                    "0.6% のまま封印すると、**実行できない合格が出る。**"
+                )
+            else:
+                console.print(
+                    f"[dim]中央値のギャップは往復費用 {ONE_WAY_COST * 2:.2%} に収まっている。[/]"
+                )
+        console.print(
+            "[dim]買えなかった件は費用ではない。**取れないということ**である。"
+            "約定を仮定した検証は、この件をそのまま「買えた」ことにする。[/]"
         )
 
     lengths = halts.length_histogram()

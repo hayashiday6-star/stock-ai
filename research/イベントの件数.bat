@@ -17,11 +17,13 @@ echo only found that out after building the test.
 echo.
 echo No returns are computed, so this spends no verdict.
 echo.
-echo Three things to read off the output:
+echo Four things to read off the output:
 echo   1. count after the filter - does it reach 1,000
 echo   2. the move histogram - limit widths come from a step table,
 echo      so real limit days should pile up on a few values
 echo   3. turnover - still small-cap even after the filter?
+echo   4. execution - how often the next day is limit-locked too
+echo      (you cannot buy at all), and the open-gap you pay
 echo.
 echo Reads every daily bar. Takes several minutes.
 echo.
