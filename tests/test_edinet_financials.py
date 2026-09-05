@@ -200,7 +200,13 @@ def test_instant_fields_are_a_subset_of_the_elements() -> None:
     """
     instants = set(INSTANT_FIELDS)
     assert instants <= set(ELEMENTS)
-    assert instants == {"equity", "total_assets", "shares_outstanding"}
+    assert instants == {
+        "equity",
+        "net_assets",
+        "equity_ratio",
+        "total_assets",
+        "shares_outstanding",
+    }
 
 
 # --- 罠1: 連結と単体が同居する -------------------------------------------
@@ -404,6 +410,8 @@ def test_eps_and_bps_stay_unexposed() -> None:
         "revenue",
         "net_income",
         "equity",
+        "net_assets",
+        "equity_ratio",
         "total_assets",
         "roe",
         "shares_outstanding",
@@ -1072,8 +1080,14 @@ def test_the_same_element_names_carry_both_bases(jgaap_rows: list[dict[str, str]
 
 
 def test_the_remaining_figures_come_through(jgaap: AnnualFigures) -> None:
-    """自己資本・総資産・株式数。連結で絞った後も残る。"""
-    assert jgaap.equity == 17_988_245_000_000.0
+    """自己資本・純資産・総資産・株式数。連結で絞った後も残る。
+
+    **この検査は以前、``equity`` に純資産額をそのまま期待していた。** 日本基準の
+    表に自己資本の絶対額が無いことに気付いておらず、テストのほうが誤りを固定して
+    いた。罠5を参照。
+    """
+    assert jgaap.net_assets == 17_988_245_000_000.0
+    assert jgaap.equity == pytest.approx(17_004_802_000_000.0, rel=1e-6)
     assert jgaap.total_assets == 373_731_910_000_000.0
     assert jgaap.shares_outstanding == 13_281_995_120.0
 
@@ -1453,3 +1467,106 @@ def test_a_february_filer_survives_a_leap_day(rows: list[dict[str, str]]) -> Non
     reports = to_reports(header, figures)
 
     assert [r.fiscal_year_end for r in reports] == [dt.date(2023, 2, 28), dt.date(2024, 2, 29)]
+
+
+# --- 罠5: 日本基準の表に「自己資本」の絶対額は無い -------------------------
+
+
+def _figures(code: str) -> dict[str, AnnualFigures]:
+    """別の会社の実ファイルを、実運用と同じ経路で読む。"""
+    body = (pathlib.Path(__file__).parent / "fixtures" / f"edinet_{code}_summary.tsv").read_bytes()
+    return {f.year: f for f in parse_summary(read_csv_zip(make_zip(body)))}
+
+
+def test_japanese_gaap_equity_is_derived_not_borrowed_from_net_assets() -> None:
+    """三菱UFJの実ファイル。純資産 17.99兆 に対して自己資本 17.00兆。
+
+    差の約1兆円は非支配株主持分。**どちらも「もっともらしい」額で、例外は出ない。**
+    """
+    entry = _figures("8306")["四期前"]
+
+    assert entry.net_assets == 17_988_245_000_000.0
+    assert entry.equity == pytest.approx(0.0455 * 373_731_910_000_000.0)
+    assert entry.equity == pytest.approx(17_004_802_000_000.0, rel=1e-6)
+    assert entry.net_assets - entry.equity == pytest.approx(983_443_000_000.0, rel=1e-6)
+
+
+def test_the_reported_roe_says_which_denominator_is_right() -> None:
+    """**別の切り口で同じ数字を出す。** 同じ表の自己資本利益率が判定する。
+
+    純資産で割ると 0.0629、自己資本で割ると 0.0665。報告値は 0.0668。
+    """
+    entry = _figures("8306")["四期前"]
+
+    assert entry.roe == pytest.approx(0.0668)
+    from_equity = entry.net_income / entry.equity
+    from_net_assets = entry.net_income / entry.net_assets
+
+    assert abs(from_equity - entry.roe) < abs(from_net_assets - entry.roe)
+    assert from_equity == pytest.approx(0.0665, abs=0.0002)
+    assert from_net_assets == pytest.approx(0.0629, abs=0.0002)
+
+
+def test_the_same_holds_for_a_company_with_little_minority_interest() -> None:
+    """JR東日本。差は 1.1% しかないが、**向きは同じ。**
+
+    小さいから直さなくてよい、にはしない。会社ごとに差が違うということは、
+    直さないと**会社間の比較にその差がそのまま乗る**ということである。
+    """
+    entry = _figures("9020")["四期前"]
+
+    assert entry.net_assets == 2_418_110_000_000.0
+    assert entry.equity == pytest.approx(0.263 * 9_091_424_000_000.0)
+    assert entry.equity < entry.net_assets
+
+
+def test_ifrs_equity_is_the_reported_absolute_not_a_derived_one(
+    years: dict[str, AnnualFigures],
+) -> None:
+    """IFRS 適用会社は親会社所有者帰属持分をそのまま持っている。導出しない。"""
+    assert years["当期"].equity == 6_568_369_000_000.0
+    assert years["当期"].net_assets is None
+    assert years["当期"].equity_ratio is None
+
+
+def test_the_ifrs_named_ratio_is_never_used_as_a_ratio() -> None:
+    """罠4。``EquityToAssetRatioIFRS…`` は自己資本比率ではなく BPS である。
+
+    総資産と掛けたら桁が壊れる。トヨタの実ファイルでは 1904.88（円）。
+    """
+    assert ELEMENTS["equity_ratio"] == ("EquityToAssetRatioSummaryOfBusinessResults",)
+    assert not any("IFRS" in name for name in ELEMENTS["equity_ratio"])
+
+
+def test_net_assets_is_used_only_as_a_last_resort_and_says_so(caplog) -> None:
+    """自己資本比率が無ければ純資産で代用してよい。**黙って代用しない。**"""
+    import logging
+
+    body = make_zip(
+        utf16(
+            csv_text(
+                ("NetSalesSummaryOfBusinessResults", "当期", "5000000000"),
+                ("NetAssetsSummaryOfBusinessResults", "当期末", "2000000000"),
+            )
+        )
+    )
+    with caplog.at_level(logging.WARNING):
+        (current,) = parse_summary(read_csv_zip(body))
+
+    assert current.equity == 2_000_000_000.0
+    assert any("純資産で代用" in message for message in caplog.messages)
+
+
+def test_the_derivation_needs_both_halves() -> None:
+    """総資産が取れなければ導出できない。そのときは純資産に落ちる。"""
+    body = make_zip(
+        utf16(
+            csv_text(
+                ("EquityToAssetRatioSummaryOfBusinessResults", "当期末", "0.263"),
+                ("NetAssetsSummaryOfBusinessResults", "当期末", "2000000000"),
+            )
+        )
+    )
+    (current,) = parse_summary(read_csv_zip(body))
+
+    assert current.equity == 2_000_000_000.0

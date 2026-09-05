@@ -234,7 +234,13 @@ def normalize_statement(
 
     # Point-in-time fields: the newest record that has them, not merely the
     # newest record.
-    equity = _newest_value(records, "Eq", "Equity")
+    #
+    # **自己資本であって、純資産ではない。** ここは長らく `Eq`（純資産）を直に
+    # 読んでいた。一括取り込み側（`normalize_statements`）は `ShEq` を先に見るよう
+    # 直してあったのに、スナップショット側が取り残されていたため、**同じ銘柄の
+    # snapshot と statements で分母が違っていた。** PBR と、報告 ROE が無いときの
+    # 自前計算がその影響を受ける。
+    equity, borrowed_equity = _newest_equity(records)
     bps = _newest_value(records, "BPS")
     dividend = _newest_value(records, "DivAnn")
     dividend_total = _newest_value(records, "DivTotalAnn")
@@ -265,6 +271,14 @@ def normalize_statement(
         _ratio(dividend_total, market_cap) or _ratio(dividend, price), symbol
     )
     _warn_if_per_share_is_stale(symbol, per, _ratio(price, eps))
+    if borrowed_equity and equity is not None:
+        # 一括取り込みでは `normalize_statements` が同じことを警告するので、
+        # ここは info にとどめる。**黙って混ぜないことのほうが目的である。**
+        logger.info(
+            "%s: ShEq（自己資本）が無く Eq（純資産）で代用しました。"
+            "非支配株主持分を含むぶん、PBR と ROE の分母が大きくなります。",
+            symbol,
+        )
 
     if annual is None:
         logger.info(
@@ -397,6 +411,20 @@ def _equity_of(record: dict[str, Any]) -> tuple[float | None, bool]:
     if equity is not None:
         return equity, False
     return _first(record, *_EQUITY_FALLBACK_KEYS), True
+
+
+def _newest_equity(records: list[dict[str, Any]]) -> tuple[float | None, bool]:
+    """新しい開示から順に自己資本を探し、「純資産で代用したか」を添えて返す。
+
+    :func:`_newest_value` と同じ歩き方だが、**1つの開示の中では `ShEq` を
+    `Eq` より先に見る。** 素の `_newest_value(records, "Eq", ...)` だと、
+    自己資本を持っている開示があっても純資産のほうを掴む。
+    """
+    for record in sorted(records, key=_disclosure_key, reverse=True):
+        equity, borrowed = _equity_of(record)
+        if equity is not None:
+            return equity, borrowed
+    return None, False
 
 
 #: Field names that may carry the period marker, newest spelling first.
