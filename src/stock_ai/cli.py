@@ -55,6 +55,7 @@ from stock_ai.backtest.accumulation_signal import (
     explain_date,
     market_volume_context,
 )
+from stock_ai.backtest.cross_section import build_estimators, t_ratio
 from stock_ai.backtest.engine import BacktestEngine
 from stock_ai.backtest.factor_test import (
     FactorTestResult,
@@ -4326,6 +4327,135 @@ def power_gate(
         "[dim]このゲートは平均を見ない。**「効果がありそうだから通す」は書けない。**[/dim]"
     )
     raise typer.Exit(code=0 if result.passed else 2)
+
+
+@app.command(name="lowvol-estimator")
+def lowvol_estimator(
+    start: str = typer.Option("2014-01-01", "--start", help="First month, matching the judgment."),
+    window: int = typer.Option(DEFAULT_WINDOW, "--window", help="Volatility window in sessions."),
+    min_symbols: int = typer.Option(MIN_SYMBOLS_PER_MONTH, "--min-symbols", help="Per month."),
+    min_turnover: float = typer.Option(MIN_TURNOVER, "--min-turnover", help="Liquidity floor."),
+    lags: int = typer.Option(LOWVOL_LAGS, "--lags", help="Newey-West lags, in months."),
+    benchmark: str = typer.Option(BENCHMARK, "--benchmark", help="Sets the calendar."),
+) -> None:
+    """Calibrate the estimator: quintile sort against cross-sectional regression.
+
+    **This is not a judgement.** #6 and #7 are decided and closed. The t values
+    here calibrate one estimator against another; they are not evidence for or
+    against any hypothesis, and nothing here is compared to a pass threshold.
+    Declared in ``docs/HYPOTHESES.md`` before this was written.
+
+    **Ratios are taken on t, never on the standard deviation.** A quintile
+    spread is roughly 2.8x a one-sigma tilt when the cross-section is normal,
+    because the top quintile averages about +1.40 sigma and the bottom -1.40.
+    Change the estimator and the spread and its noise shrink together. Matching
+    standard deviations alone and then applying a published quintile-spread
+    effect size would manufacture that 2.8x as a free improvement - the same
+    trap this project keeps avoiding, moved from the noise to the effect. t is
+    dimensionless, so it does not happen.
+
+    Long-short is compared with long-short. The quintile spread and the tilt
+    both hold zero net, so neither needs a beta. The long-only pair is reported
+    separately and **carries no beta adjustment**, which is why it cannot be set
+    beside the judgement's alpha of 1.70.
+    """
+    settings = get_settings()
+    configure_logging(settings.log_level)
+
+    begin = _parse_date(start)
+    if begin is None:
+        raise typer.BadParameter(f"--start must be YYYY-MM-DD; got {start!r}.")
+
+    console.print(
+        "[bold yellow]これは判定ではない。[/] #6 と #7 は判定済みで閉じている。"
+        "**この数字を合否の主張に使わない。**"
+    )
+    console.print(
+        "[dim]比べるのは t（無次元）。SD の比は取らない——推定量を変えると"
+        "SD も効果も一緒に縮むので、比を掛けたところに文献の分位スプレッドの"
+        "効果量を当てると 2.8倍が無料で出る。[/dim]"
+    )
+    console.print()
+
+    database = Database()
+    database.create_all()
+    try:
+        series = build_lowvol_series(
+            database,
+            Period.ALL,
+            benchmark=benchmark,
+            start=begin,
+            window=window,
+            min_turnover=min_turnover,
+            min_symbols=min_symbols,
+        )
+    except ValueError as exc:
+        console.print(f"[red]{exc}[/]")
+        raise typer.Exit(code=1) from exc
+
+    estimators = build_estimators(series.cross_sections)
+    if estimators.months < 2:
+        console.print("[red]比べられる月が足りない。[/]")
+        raise typer.Exit(code=1)
+
+    console.print(
+        f"{estimators.months:,} ヶ月（{series.months[0]} 〜 {series.months[-1]}）、"
+        f"1ヶ月あたり中央値 {int(median(series.counts)):,} 銘柄。"
+        + (
+            f"[dim]断面がばらつかず落とした月 {estimators.skipped_flat}。[/dim]"
+            if estimators.skipped_flat
+            else ""
+        )
+    )
+
+    # **同じ断面から作っている。** 別経路で組み直すと、比が「推定量の差」では
+    # なく「フィルタの差」を含む。
+    measured = {
+        name: judge(values, lags=lags)
+        for name, values in (
+            ("分位1 − 分位5", estimators.quantile_spread),
+            ("1σチルト（横断回帰）", estimators.tilt),
+            ("分位1（等金額）", estimators.quantile_long_only),
+            ("上側チルト（傾きで加重）", estimators.long_only_tilt),
+        )
+    }
+
+    pairs = (
+        ("ロングショート（β不要）", "分位1 − 分位5", "1σチルト（横断回帰）"),
+        ("ロングオンリー（**β を引いていない**）", "分位1（等金額）", "上側チルト（傾きで加重）"),
+    )
+    for title, old_name, new_name in pairs:
+        table = Table(title=title)
+        for column in ("推定量", "平均", "標準誤差(NW)", "t"):
+            table.add_column(column, justify="left" if column == "推定量" else "right")
+        for name in (old_name, new_name):
+            result = measured[name]
+            table.add_row(
+                name,
+                f"{result.mean * 100:+.3f}%",
+                f"{result.standard_error * 100:.3f}%",
+                f"[bold]{result.t_statistic:+.2f}[/]",
+            )
+        console.print(table)
+
+        ratio = t_ratio(measured[new_name].t_statistic, measured[old_name].t_statistic)
+        if ratio is None:
+            console.print(
+                "  [yellow]符号が違うので比を出さない。[/] **「何倍良い」が意味を持たない。**"
+            )
+        else:
+            console.print(f"  **t 比 = [bold]{ratio:.2f}[/] 倍**")
+        console.print()
+
+    console.print(
+        "[dim]ロングオンリーの2つは β を引いていないので、#7 の判定（α, t +1.70）"
+        "とは**直接比べられない**。比べられないものを比べないために表を分けて"
+        "いる。[/dim]"
+    )
+    console.print(
+        "[bold]§0 ゲートに掛けるのはロングショートの t 比である。[/] "
+        "そちらが β の扱いを揃えた比較になる。"
+    )
 
 
 @app.command(name="lowvol-bias")
