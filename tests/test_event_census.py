@@ -15,6 +15,7 @@ import pytest
 from stock_ai.backtest.event_census import (
     CANDIDATE_GAP_DAYS,
     MIN_MARKET_BREADTH,
+    count_52w_highs,
     count_halt_resumptions,
     count_limit_moves,
 )
@@ -161,11 +162,12 @@ def test_a_thin_name_is_counted_before_the_filter_and_dropped_after() -> None:
     assert census.survival == 0.0
 
 
-def test_the_move_histogram_shows_whether_the_approximation_landed() -> None:
-    """制限幅が効いているなら、前日比は少数の位置に固まる。
+def test_the_move_histogram_bins_the_moves() -> None:
+    """前日比を刻むだけ。
 
-    **これが近似の当たり具合を見る唯一の手段である。** 過去の制限幅の表を
-    持っていないので、値そのものと突き合わせることはできない。
+    **近似の当たり具合はこれでは判定できない**（2026-09-05 に判明）。制限幅は
+    円建てなので、正しく拾えていてもパーセントでは連続的に散る。ここで確かめる
+    のは、同じ値の件が同じ山に入ることだけである。
     """
     days = _sessions(60)
     closes = [200.0] * 60
@@ -369,3 +371,88 @@ def test_the_gap_is_not_the_split_ratio() -> None:
     assert census.moves == [pytest.approx(0.10)]  # 調整後で +10%
     # 生値で測れば 110/220-1 = -50%。調整後なら 0。
     assert census.gaps == [pytest.approx(0.0)]
+
+
+# --- 52週高値更新 ---------------------------------------------------------
+
+
+def test_a_new_high_is_counted() -> None:
+    """過去 lookback 営業日の最高値を超えた日。"""
+    days = _sessions(60)
+    closes = [200.0] * 59 + [210.0]
+    database = _database()
+    _store(database, "1234", days, closes)
+
+    census = count_52w_highs(database, symbols=["1234"], lookback=50)
+
+    assert census.events == 1
+    assert census.per_day[days[59]] == 1
+    assert census.moves == [pytest.approx(0.05)]
+
+
+def test_the_trailing_high_excludes_the_day_itself() -> None:
+    """**その日を含めると、自分自身を超えられず1件も出ない。** 例外は出ない。"""
+    days = _sessions(60)
+    closes = [float(200 + index) for index in range(60)]  # 毎日更新している
+    database = _database()
+    _store(database, "1234", days, closes)
+
+    census = count_52w_highs(database, symbols=["1234"], lookback=50)
+
+    assert census.events == 10  # 50日目以降の10日すべてが更新
+
+
+def test_matching_the_old_high_is_not_an_update() -> None:
+    """同値は更新ではない。境目を等号でずらすと件数が変わる。"""
+    days = _sessions(60)
+    closes = [200.0] * 59 + [200.0]
+    database = _database()
+    _store(database, "1234", days, closes)
+
+    assert count_52w_highs(database, symbols=["1234"], lookback=50).events == 0
+
+
+def test_a_symbol_without_a_full_year_is_skipped() -> None:
+    """履歴が lookback に満たない銘柄は、更新のしようがない。"""
+    days = _sessions(30)
+    database = _database()
+    _store(database, "1234", days, [float(200 + i) for i in range(30)])
+
+    census = count_52w_highs(database, symbols=["1234"], lookback=50)
+
+    assert census.events == 0
+    assert census.excluded_no_history == 1
+
+
+def test_concentration_shows_when_events_pile_onto_the_same_days() -> None:
+    """**52週高値の要はここである。** 固まれば独立観測は件数より少ない。
+
+    件数だけ数えて「1,000件ある」と読むと、検出できる差を小さく見積もる。
+    """
+    days = _sessions(60)
+    database = _database()
+    # 20銘柄が同じ日に一斉に更新する。
+    for index in range(20):
+        _store(database, f"1{index:03d}", days, [200.0] * 59 + [210.0])
+
+    census = count_52w_highs(database, lookback=50)
+
+    assert census.events == 20
+    assert census.effective_days() == 1.0  # 20件あるが、日は1つしかない
+    assert census.concentration() == pytest.approx(1.0)
+
+
+def test_concentration_is_near_the_share_when_events_are_spread() -> None:
+    """均等に散っていれば、上位1割の日には1割ぶんしか乗らない。"""
+    days = _sessions(70)
+    database = _database()
+    # 20銘柄が1日ずつずれて更新する。
+    for index in range(20):
+        closes = [200.0] * 70
+        closes[50 + index :] = [210.0] * (70 - 50 - index)
+        _store(database, f"1{index:03d}", days, closes)
+
+    census = count_52w_highs(database, lookback=50)
+
+    assert census.effective_days() == 20.0
+    assert census.concentration() == pytest.approx(0.1, abs=0.01)

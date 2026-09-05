@@ -57,7 +57,11 @@ from stock_ai.backtest.accumulation_signal import (
 )
 from stock_ai.backtest.cross_section import beta_to_benchmark, build_estimators, t_ratio
 from stock_ai.backtest.engine import BacktestEngine
-from stock_ai.backtest.event_census import count_halt_resumptions, count_limit_moves
+from stock_ai.backtest.event_census import (
+    count_52w_highs,
+    count_halt_resumptions,
+    count_limit_moves,
+)
 from stock_ai.backtest.factor_panel import build_panel
 from stock_ai.backtest.factor_test import (
     FactorTestResult,
@@ -5030,14 +5034,15 @@ def reversal_bias(
 
 @app.command(name="event-census")
 def event_census(
+    what: str = typer.Option("all", "--what", help="limit | halt | high | all."),
     min_turnover: float = typer.Option(
         MIN_TURNOVER, "--min-turnover", help="Liquidity floor in yen. Same as the other censuses."
     ),
 ) -> None:
-    """Count limit-up days and halt resumptions, computing no returns.
+    """Count event populations without computing any returns.
 
     7本すべてが、検出力の最も不利な角にいた——長い保有窓と少ない独立観測。
-    この2つはどちらも保有1〜5営業日で、価格だけから検出できる。
+    ここで数えるのはどれも保有1〜5営業日で、価格だけから検出できる。
 
     **数えるのが先である。** #1 では条件を満たす銘柄の 97.5% が流動性フィルタで
     消え、それが分かったのは検証を組んだあとだった。ここでは順序を逆にする。
@@ -5045,6 +5050,10 @@ def event_census(
     """
     settings = get_settings()
     configure_logging(settings.log_level)
+
+    chosen = what.strip().lower()
+    if chosen not in {"limit", "halt", "high", "all"}:
+        raise typer.BadParameter(f"--what must be limit, halt, high or all; got {what!r}.")
 
     database = Database()
     database.create_all()
@@ -5054,106 +5063,107 @@ def event_census(
         f"売買代金 {floor / 1e8:.0f}億円以上。**リターンは計算しない。**判定は消費しない。"
     )
 
-    limits = count_limit_moves(database, min_turnover=floor)
-    halts = count_halt_resumptions(database, min_turnover=floor)
+    results = []
+    if chosen in {"limit", "all"}:
+        results.append(count_limit_moves(database, min_turnover=floor))
+    if chosen in {"halt", "all"}:
+        results.append(count_halt_resumptions(database, min_turnover=floor))
+    if chosen in {"high", "all"}:
+        results.append(count_52w_highs(database, min_turnover=floor))
 
     summary = Table(title="母集団")
-    for column in ("イベント", "フィルタ前", "フィルタ後", "通過率", "営業日数"):
+    for column in ("イベント", "フィルタ前", "フィルタ後", "通過率", "日数", "上位1割の日の占有"):
         summary.add_column(column, justify="right")
-    for census in (limits, halts):
+    for census in results:
         summary.add_row(
             census.kind,
             f"{census.raw_events:,}",
             f"{census.events:,}",
             f"{census.survival:.1%}",
             f"{census.trading_days:,}",
+            f"{census.concentration():.0%}" if census.events else "—",
         )
     console.print(summary)
-
     console.print(
-        f"[dim]銘柄 {limits.symbols_scanned:,} 件（価格の無いもの "
-        f"{limits.symbols_without_prices:,}）。除外の内訳——値幅制限: 売買代金不足 "
-        f"{limits.excluded_thin:,}／履歴不足 {limits.excluded_no_history:,}、"
-        f"売買停止: 売買代金不足 {halts.excluded_thin:,}／履歴不足 "
-        f"{halts.excluded_no_history:,}[/]"
+        "[dim]**日数が独立観測である。** 同じ日の銘柄は同じ市場の動きを共有するので、"
+        "件数をそのまま独立観測に数えると検出できる差を小さく見積もる。[/]"
     )
 
-    for census in (limits, halts):
+    for census in results:
         if census.events == 0:
             console.print(f"[yellow]{census.kind}: 1件も残らなかった。[/]")
             continue
-        years = census.by_year()
+
         table = Table(title=f"{census.kind}／年別")
-        for column in ("年", "件数", "営業日数", "1日あたり"):
+        for column in ("年", "件数", "日数", "1日あたり"):
             table.add_column(column, justify="right")
-        for year, count, day_count in years:
+        for year, count, day_count in census.by_year():
             table.add_row(str(year), f"{count:,}", f"{day_count:,}", f"{count / day_count:,.1f}")
         console.print(table)
         console.print(
-            "1営業日あたり: "
+            "1日あたり: "
             + "、".join(f"{name} {value:,}" for name, value in census.breadth())
             + "　／　売買代金（億円）: "
             + "、".join(f"{name} {value:,.1f}" for name, value in census.turnover_quantiles())
         )
 
-    histogram = limits.move_histogram()
-    if histogram:
-        table = Table(title="値幅制限／前日比の分布（近似が当たっているか）")
-        table.add_column("前日比")
-        table.add_column("件数", justify="right")
-        for label, count in histogram:
-            table.add_row(label, f"{count:,}")
-        console.print(table)
-        console.print(
-            "[dim]制限幅の階段表が効いているなら、山は少数の位置に立つ。なだらかなら、"
-            "拾っているのは制限ではなく薄い銘柄である。過去の制限幅の表を持っていない"
-            "ので、当たり具合はこの形でしか見られない。[/]"
-        )
-
-    if limits.events:
-        console.print()
-        console.print(
-            f"[bold]執行[/]: 翌日に買えたのは {limits.fillable:,} 件。"
-            f"翌日も張り付いて買えなかった [bold]{limits.unfillable:,}[/] 件"
-            f"（{limits.unfillable / limits.events:.1%}）、翌日の足が無い "
-            f"{limits.no_next_bar:,} 件。"
-        )
-        gaps = limits.gap_quantiles()
-        if gaps:
+        if census.fillable or census.unfillable:
             console.print(
-                "翌日始値のギャップ: "
-                + "、".join(f"{name} {value:+.2%}" for name, value in gaps)
-                + "　／　当日の高安での位置: "
-                + "、".join(
-                    f"{name} {value:.2f}" for name, value in limits.open_position_quantiles()
-                )
+                f"[bold]執行[/]: 翌日に買えたのは {census.fillable:,} 件。"
+                f"翌日も張り付いて買えなかった [bold]{census.unfillable:,}[/] 件"
+                f"（{census.unfillable / census.events:.1%}）、翌日の足が無い "
+                f"{census.no_next_bar:,} 件。"
             )
-            median = dict(gaps).get("p50", 0.0)
-            if median > ONE_WAY_COST * 2:
+            gaps = census.gap_quantiles()
+            if gaps:
                 console.print(
-                    f"[yellow]中央値のギャップ {median:.2%} が、他の説で使っている往復費用 "
-                    f"{ONE_WAY_COST * 2:.2%} を超えている。[/] "
-                    "0.6% のまま封印すると、**実行できない合格が出る。**"
+                    "翌日始値のギャップ: "
+                    + "、".join(f"{name} {value:+.2%}" for name, value in gaps)
+                    + "　／　当日の高安での位置: "
+                    + "、".join(
+                        f"{name} {value:.2f}" for name, value in census.open_position_quantiles()
+                    )
                 )
-            else:
-                console.print(
-                    f"[dim]中央値のギャップは往復費用 {ONE_WAY_COST * 2:.2%} に収まっている。[/]"
-                )
-        console.print(
-            "[dim]買えなかった件は費用ではない。**取れないということ**である。"
-            "約定を仮定した検証は、この件をそのまま「買えた」ことにする。[/]"
-        )
+                median = dict(gaps).get("p50", 0.0)
+                if median > ONE_WAY_COST * 2:
+                    console.print(
+                        f"[yellow]中央値のギャップ {median:.2%} が、他の説で使っている往復費用 "
+                        f"{ONE_WAY_COST * 2:.2%} を超えている。[/] "
+                        "この前提のまま封印すると、**実行できない合格が出る。**"
+                    )
+                else:
+                    console.print(
+                        f"[dim]中央値のギャップは往復費用 {ONE_WAY_COST * 2:.2%} に"
+                        "収まっている。[/]"
+                    )
 
-    lengths = halts.length_histogram()
-    if lengths:
-        console.print(
-            "売買停止の長さ: " + "、".join(f"{label} {count:,}" for label, count in lengths)
-        )
-    if halts.crossed_discontinuity:
-        console.print(
-            f"[yellow]うち {halts.crossed_discontinuity:,} 件は再開日が不連続だった[/]"
-            "（分割・併合による停止）。除外はしていない。"
-        )
+    limits = next((c for c in results if c.kind == "値幅制限"), None)
+    if limits is not None and limits.events:
+        histogram = limits.move_histogram()
+        if histogram:
+            table = Table(title="値幅制限／前日比の分布")
+            table.add_column("前日比")
+            table.add_column("件数", justify="right")
+            for label, count in histogram:
+                table.add_row(label, f"{count:,}")
+            console.print(table)
+            console.print(
+                "[dim]**近似の当たり具合はこの表では判定できない。** 制限幅は円建て"
+                "なので、正しく拾えていてもパーセントでは連続的に散る。[/]"
+            )
+
+    halts = next((c for c in results if c.kind == "売買停止明け"), None)
+    if halts is not None:
+        lengths = halts.length_histogram()
+        if lengths:
+            console.print(
+                "売買停止の長さ: " + "、".join(f"{label} {count:,}" for label, count in lengths)
+            )
+        if halts.crossed_discontinuity:
+            console.print(
+                f"[yellow]うち {halts.crossed_discontinuity:,} 件は再開日が不連続だった[/]"
+                "（分割・併合による停止）。除外はしていない。"
+            )
 
     console.print()
     console.print("[dim]件数と分布のみ。リターンは計算していない。[/]")

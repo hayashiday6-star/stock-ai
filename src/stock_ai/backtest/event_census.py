@@ -25,13 +25,22 @@
 
   高値 ＝ 安値、出来高あり、前日比がプラス
 
-**この近似が当たっているかは、前日比の分布で見る。** 制限幅の表が効いている
-なら、検出した日の前日比は**少数の離散値に固まる**はずである。散らばって
-いるなら、拾っているのは制限ではなく「1日に1回しか約定しなかった薄い銘柄」で
-ある。`move_histogram` がそれを出す。
-
 **表を推測して書かない。** 出典の無い階段表を実装すると、当たっているかどうか
 を確かめる手段ごと失う。
+
+### 前日比の分布では、当たり具合を判定できない（2026-09-05 に判明）
+
+`move_histogram` は「制限幅の表が効いているなら前日比は少数の離散値に固まる」
+という見込みで作った。**この見込みが間違っていた。**
+
+**制限幅は円建ての階段表である。** 同じ ±300円 でも、1,010円の株なら 29.7%、
+1,490円なら 20.1% になる。パーセントで刻めば、**正しく拾えていても連続的に
+散る。** 実測（2026-09-05、2,014件）は 12〜25% を中心になだらかな山になった。
+これは「近似が外れている」証拠でも「当たっている」証拠でもない。
+
+判定するなら**株価帯ごとに円建ての値幅を見る**必要がある。値幅制限の説は
+執行で閉じたので、そこは追っていない。`move_histogram` は分布を見るだけの
+ものとして残す。
 
 ## 執行できるかを、同じ走査で測る
 
@@ -174,11 +183,36 @@ class EventCensus:
         """1営業日あたりの件数の分布。"""
         return _quantiles(sorted(self.per_day.values()), (0.0, 0.5, 0.95, 1.0))
 
-    def move_histogram(self, buckets: int = 12) -> list[tuple[str, int]]:
-        """前日比の分布。**近似が当たっているかは、ここが固まるかで見る。**
+    def concentration(self, share: float = 0.1) -> float:
+        """上位 ``share`` の日に、件数の何割が乗っているか。
 
-        制限幅の階段表が効いているなら、山は少数の位置に立つ。なだらかなら、
-        拾っているのは制限ではない。
+        **これが 52週高値の要である。** イベントが同じ日に固まると、独立観測は
+        件数より少なくなり、標準誤差はその平方根ぶん大きくなる。件数だけ数えて
+        「1,000件ある」と読むと、**検出できる差を実際より小さく見積もる。**
+
+        均等に散っていれば ``share`` に近づく。1.0 に近ければ、ほとんどの件が
+        少数の日に乗っている。
+        """
+        if not self.per_day:
+            return 0.0
+        counts = sorted(self.per_day.values(), reverse=True)
+        top = max(1, int(len(counts) * share))
+        return sum(counts[:top]) / sum(counts)
+
+    def effective_days(self) -> float:
+        """日をひとかたまりと見たときの、実効的な独立観測数。
+
+        1日を1つの観測と数える（同じ日の銘柄は同じ市場の動きを共有するので、
+        独立ではない）。**件数ではなくこれが標準誤差を決める。**
+        """
+        return float(len(self.per_day))
+
+    def move_histogram(self, buckets: int = 12) -> list[tuple[str, int]]:
+        """前日比の分布。
+
+        **近似の当たり具合はここでは判定できない。** 制限幅は円建てなので、
+        正しく拾えていてもパーセントでは連続的に散る（モジュールの説明を参照）。
+        分布を見るためだけのものである。
         """
         if not self.moves:
             return []
@@ -365,6 +399,124 @@ def count_limit_moves(
 
     return EventCensus(
         kind="値幅制限",
+        symbols_scanned=len(symbols),
+        symbols_without_prices=no_prices,
+        raw_events=raw_events,
+        events=len(moves),
+        excluded_thin=thin,
+        excluded_no_history=no_history,
+        per_day=per_day,
+        moves=moves,
+        turnovers=turnovers,
+        unfillable=unfillable,
+        no_next_bar=no_next_bar,
+        gaps=gaps,
+        open_positions=positions,
+    )
+
+
+#: 52週高値を測る営業日数。1年はおよそ250営業日。
+HIGH_LOOKBACK = 250
+
+
+def count_52w_highs(
+    database: Database,
+    symbols: list[str] | None = None,
+    min_turnover: float = MIN_TURNOVER,
+    lookback: int = HIGH_LOOKBACK,
+) -> EventCensus:
+    """52週高値を更新した日を数える。
+
+    **ここで見るのは件数ではなく、固まり具合である。** 更新は上昇局面に集中
+    するので、件数が多くても独立観測はそれより少ない。`concentration` と
+    `effective_days` がそれを出す。
+
+    値幅制限と同じ執行の欄も埋める。翌日始値で買う前提は変わらないので、
+    ギャップは同じように効く。
+
+    Args:
+        database: 価格の保存先。
+        symbols: 対象銘柄。省略時は JP の全銘柄。
+        min_turnover: 流動性の下限（円）。他の説と同じ1億円。
+        lookback: 高値を測る営業日数。
+
+    Returns:
+        件数と分布。**リターンは含まない。**
+    """
+    per_day: Counter[dt.date] = Counter()
+    moves: list[float] = []
+    turnovers: list[float] = []
+    gaps: list[float] = []
+    positions: list[float] = []
+    raw_events = thin = no_history = no_prices = 0
+    unfillable = no_next_bar = 0
+
+    with database.session() as session:
+        if symbols is None:
+            symbols = _jp_symbols(session)
+        prices = PriceRepository(session)
+
+        for symbol in symbols:
+            raw = prices.get_raw_prices(symbol)
+            if raw.empty:
+                no_prices += 1
+                continue
+
+            adjusted = split_adjusted(raw)
+            close = adjusted[CLOSE].to_numpy(dtype=float)
+            if len(close) <= lookback:
+                no_history += 1
+                continue
+            floor = _turnover_floor(raw).to_numpy(dtype=float)
+            opens = adjusted[OPEN].to_numpy(dtype=float)
+            adj_high = adjusted[HIGH].to_numpy(dtype=float)
+            adj_low = adjusted[LOW].to_numpy(dtype=float)
+            highs = raw[HIGH].to_numpy(dtype=float)
+            lows = raw[LOW].to_numpy(dtype=float)
+            volumes = raw[VOLUME].to_numpy(dtype=float)
+            index = adjusted.index
+
+            # **その日を含めない**過去 lookback 営業日の最高値。含めると、
+            # 自分自身を超えられないので更新が1件も出ない。
+            trailing = adjusted[CLOSE].rolling(lookback).max().shift(1).to_numpy(dtype=float)
+
+            for position in range(lookback, len(index)):
+                previous_high = trailing[position]
+                if pd.isna(previous_high) or not close[position] > previous_high:
+                    continue
+                if not (close[position] > 0 and previous_high > 0):
+                    continue
+
+                raw_events += 1
+                level = floor[position]
+                if pd.isna(level):
+                    no_history += 1
+                    continue
+                if level < min_turnover:
+                    thin += 1
+                    continue
+
+                per_day[index[position].date()] += 1
+                moves.append(close[position] / previous_high - 1.0)
+                turnovers.append(float(level))
+
+                nxt = position + 1
+                if nxt >= len(index):
+                    no_next_bar += 1
+                    continue
+                if highs[nxt] == lows[nxt] and volumes[nxt] > 0:
+                    unfillable += 1
+                    continue
+                if not (volumes[nxt] > 0 and opens[nxt] > 0):
+                    no_next_bar += 1
+                    continue
+                gaps.append(opens[nxt] / close[position] - 1.0)
+                span = adj_high[nxt] - adj_low[nxt]
+                if span > 0:
+                    positions.append((opens[nxt] - adj_low[nxt]) / span)
+
+    return EventCensus(
+        kind="52週高値更新",
         symbols_scanned=len(symbols),
         symbols_without_prices=no_prices,
         raw_events=raw_events,
