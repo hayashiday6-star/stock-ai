@@ -37,7 +37,7 @@ from __future__ import annotations
 
 import datetime as dt
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import numpy as np
 
@@ -97,6 +97,12 @@ DETECTABLE = 0.0033
 
 #: 合格に要する t。
 TARGET_T = 2.0
+
+#: #7 の判定で実際に出た t（`PREREG_LOWVOL_JP.md` §18）。**判定には使わない。**
+#:
+#: 後から作った盤面が同じ universe を通っているかを確かめる検算に使う。
+#: 再現しなければ、どこかで違うフィルタを通している。
+JUDGED_T = 1.70
 
 PASS = "合格"
 FAIL = "不合格"
@@ -189,6 +195,16 @@ class LowVolSeries:
     excluded_thin_month: int = 0
     """最低銘柄数に届かなかった月。"""
     universe_label: str = "db"
+    cross_sections: list[list[tuple[float, float]]] = field(default_factory=list)
+    """月ごとの ``(ボラティリティ, 翌月リターン)``。``months`` と同じ並び。
+
+    **分位に潰す前の断面である。** 分位ソートは上下2割しか使わず、真ん中の
+    6割を捨てている。ほかの推定量と比べるには、潰す前が要る。
+
+    ここに持たせているのは、**同じ universe・同じフィルタを通った断面で
+    なければ、推定量どうしの比較にならない**からである。別経路で組み直すと、
+    比が「推定量の差」ではなく「フィルタの差」を含む。
+    """
 
     def long_only(self) -> list[float]:
         """主要指標。分位1 − ベンチマーク。**実行できる形で測る。**"""
@@ -396,6 +412,7 @@ def build_series(
     counts: list[int] = []
     rows: list[tuple[float, ...]] = []
     bench_returns: list[float] = []
+    sections: list[list[tuple[float, float]]] = []
     thin_month = 0
     for index, position in usable:
         members = buckets[index]
@@ -410,6 +427,7 @@ def build_series(
             continue
         members.sort(key=lambda pair: pair[0])
         size = len(members)
+        sections.append(list(members))
         means: list[float] = []
         for bucket in range(quantiles):
             lo = bucket * size // quantiles
@@ -436,6 +454,7 @@ def build_series(
         excluded_discontinuity=discontinuous,
         excluded_thin_month=thin_month,
         universe_label=label,
+        cross_sections=sections,
     )
     logger.info("低ボラ月次系列: %s", series.summary())
     return series

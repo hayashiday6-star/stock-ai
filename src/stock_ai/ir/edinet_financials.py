@@ -8,7 +8,7 @@ J-Quants の有料プランを外すのに残る最後の穴。立花が返す�
 UTF-16LE のタブ区切りで、``jpcrp`` で始まるファイルが本体（``jpaud`` は監査
 報告書）。iXBRL 一式（3.7MB・86ファイル）を解析する必要はない。
 
-実データ（日立 6501, 2026年6月提出）で確かめた罠が3つある。どれも数字は出る。
+実データ（6501・7203・8306・9020 の有報）で確かめた罠が6つある。どれも数字は出る。
 
 **1. 同じ表に連結と単体が同居する。見分けるのはコンテキストID。** 「連結・個別」
 列はどちらも「その他」で役に立たない。効くのは ``コンテキストID`` の
@@ -40,7 +40,14 @@ UTF-16LE のタブ区切りで、``jpcrp`` で始まるファイルが本体（`
 （0.454）。EDINET は会計基準ごとに別の概念へ同じ名前を使い回している。名前で
 選ぶときは項目名と値の桁を必ず確かめること。
 
-**5. 相対年度しか無いので、決算年度は自分で解決する。** 表には「当期」「前期」
+**5. 日本基準の表に「自己資本」の絶対額は無い。** あるのは純資産額・自己資本
+比率・自己資本利益率で、純資産は非支配株主持分と新株予約権を含む。IFRS 適用会社
+だけが親会社所有者帰属持分を絶対額で報告する。**そのまま列に入れると、会計基準に
+よって同じ列の意味が変わる。** 三菱UFJ（8306、四期前）は純資産 17.99兆 に対して
+自己資本 17.00兆で、差は約1兆円。報告された ROE 0.0668 を再現するのは自己資本の
+ほう（0.0665、純資産だと 0.0629）。日本基準では自己資本比率×総資産で導く。
+
+**6. 相対年度しか無いので、決算年度は自分で解決する。** 表には「当期」「前期」
 としか書いていない。実際の年度は ``jpdei`` の ``CurrentFiscalYearEndDateDEI``
 から1年ずつ遡って割り当てる。銘柄コードも同じ ``jpdei`` にあるが5桁
 （日立は ``65010``）で、末尾の株式種別を落とさないと watchlist と噛み合わない。
@@ -157,10 +164,19 @@ ELEMENTS: dict[str, tuple[str, ...]] = {
         "ProfitLossAttributableToOwnersOfParentSummaryOfBusinessResults",
         "NetIncomeLossSummaryOfBusinessResults",
     ),
-    "equity": (
-        "EquityAttributableToOwnersOfParentIFRSSummaryOfBusinessResults",
-        "NetAssetsSummaryOfBusinessResults",
-    ),
+    # **自己資本であって、純資産ではない。** IFRS 適用会社は親会社所有者帰属持分を
+    # 絶対額で報告するのでそのまま使える。日本基準の「主要な経営指標等」には自己
+    # 資本の絶対額が無く、あるのは純資産額・自己資本比率・自己資本利益率だけ
+    # （6501・7203・8306・9020 の実ファイルで確認）。純資産をここに入れると、
+    # **会計基準によって列の意味が変わる。** 解決は ``_shareholders_equity``。
+    "equity": ("EquityAttributableToOwnersOfParentIFRSSummaryOfBusinessResults",),
+    "net_assets": ("NetAssetsSummaryOfBusinessResults",),
+    # 自己資本比率。総資産と掛けて自己資本の絶対額にする。
+    #
+    # **IFRS 名のほう（``EquityToAssetRatioIFRS…``）を絶対にここに足さない。**
+    # 罠4のとおり、あれは自己資本比率ではなく BPS である（トヨタで 1904.88）。
+    # 掛けたら桁が壊れる。
+    "equity_ratio": ("EquityToAssetRatioSummaryOfBusinessResults",),
     "total_assets": (
         "TotalAssetsIFRSSummaryOfBusinessResults",
         "TotalAssetsSummaryOfBusinessResults",
@@ -199,7 +215,9 @@ REVENUE_ANTIPATTERNS = (
 )
 
 #: 時点の項目。相対年度が「当期末」側のラベルになる。残りは期間の項目。
-INSTANT_FIELDS = frozenset({"equity", "total_assets", "shares_outstanding"})
+INSTANT_FIELDS = frozenset(
+    {"equity", "net_assets", "equity_ratio", "total_assets", "shares_outstanding"}
+)
 
 #: 連結・単体の区別が意味を持たない項目。連結で絞る前の行から探す。
 #:
@@ -228,7 +246,20 @@ class AnnualFigures:
 
     revenue: float | None = None
     net_income: float | None = None
+
     equity: float | None = None
+    """自己資本（親会社株主に帰属する持分）。**純資産ではない。**
+
+    ``parse_summary`` が解決して入れる。日本基準の会社では自己資本比率×総資産、
+    IFRS 適用会社では報告された親会社所有者帰属持分。
+    """
+
+    net_assets: float | None = None
+    """純資産額（報告値そのまま）。非支配株主持分と新株予約権を含む。"""
+
+    equity_ratio: float | None = None
+    """自己資本比率（報告値）。``equity`` を導くのに使う。"""
+
     total_assets: float | None = None
     roe: float | None = None
     shares_outstanding: float | None = None
@@ -414,6 +445,40 @@ def _revenue_by_pattern(rows: list[dict[str, str]], year: str) -> float | None:
     return best[0]
 
 
+def _shareholders_equity(
+    equity: float | None,
+    net_assets: float | None,
+    equity_ratio: float | None,
+    total_assets: float | None,
+) -> tuple[float | None, str]:
+    """自己資本と、それをどこから得たかを返す。
+
+    **純資産で代用したことを、黙って隠さない。** 差は非支配株主持分と新株予約権
+    で、業種によっては効く大きさになる。三菱UFJ（8306、四期前）は純資産 17.99兆
+    に対して自己資本 17.00兆で、**約1兆円ちがう。**
+
+    どちらが正しいかは、同じ表の自己資本利益率が決めた。報告された ROE は 0.0668。
+    親会社株主に帰属する当期純利益 1.131兆をそれぞれで割ると、
+
+    - 純資産で割る: 0.0629（0.4ポイント下振れ）
+    - 自己資本比率×総資産で割る: **0.0665**
+
+    ``roe`` と ``pbr`` の分母はどちらも慣行として自己資本である。J-Quants 側でも
+    同じ理由で ``ShEq``（自己資本）を ``Eq``（純資産）より先に見ている。
+
+    Returns:
+        ``(自己資本, 由来)``。由来は ``報告値`` / ``自己資本比率×総資産`` /
+        ``純資産で代用`` / ``取れず``。
+    """
+    if equity is not None:
+        return equity, "報告値"
+    if equity_ratio is not None and total_assets is not None:
+        return equity_ratio * total_assets, "自己資本比率×総資産"
+    if net_assets is not None:
+        return net_assets, "純資産で代用"
+    return None, "取れず"
+
+
 def parse_summary(rows: list[dict[str, str]]) -> list[AnnualFigures]:
     """「主要な経営指標等」を、古い順の決算期の並びにする。
 
@@ -423,6 +488,7 @@ def parse_summary(rows: list[dict[str, str]]) -> list[AnnualFigures]:
     summary = summary_rows(rows)
     group = consolidated_rows(summary)
     figures: list[AnnualFigures] = []
+    borrowed = 0
     for duration, instant in YEAR_LABELS:
         values = {
             field: _pick(
@@ -434,9 +500,25 @@ def parse_summary(rows: list[dict[str, str]]) -> list[AnnualFigures]:
         }
         if values["revenue"] is None:
             values["revenue"] = _revenue_by_pattern(group, duration)
+        values["equity"], source = _shareholders_equity(
+            values["equity"],
+            values["net_assets"],
+            values["equity_ratio"],
+            values["total_assets"],
+        )
+        if source == "純資産で代用":
+            borrowed += 1
         entry = AnnualFigures(year=duration, **values)
         if not entry.is_empty():
             figures.append(entry)
+    # **有報1本につき1行にまとめる。** 期ごとに出すと5行になり、貼ったときに
+    # 他の警告が埋もれる。
+    if borrowed:
+        logger.warning(
+            "%d 期で自己資本が取れず、純資産で代用しました（非支配株主持分を含みます）。"
+            "ROE と PBR の分母がその分だけ大きくなります。",
+            borrowed,
+        )
     return figures
 
 

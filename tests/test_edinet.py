@@ -16,7 +16,7 @@ from pydantic import SecretStr
 
 from stock_ai.ir.edinet import (
     EdinetDisclosureSource,
-    _default_day_fetcher,
+    day_fetcher,
     normalize_sec_code,
     to_disclosure,
 )
@@ -269,7 +269,7 @@ def test_no_api_key_sends_neither_carrier(monkeypatch: pytest.MonkeyPatch) -> No
 
     monkeypatch.setattr(httpx, "Client", _FakeClient)
 
-    _default_day_fetcher(None)(dt.date(2026, 8, 1))
+    day_fetcher(None)(dt.date(2026, 8, 1))
 
     assert "Subscription-Key" not in _FakeClient.last["params"]
     assert _FakeClient.last["headers"] == {}
@@ -288,7 +288,7 @@ def test_a_keyless_empty_day_names_the_missing_key(
     monkeypatch.setattr(httpx, "Client", _EmptyClient)
 
     with caplog.at_level("WARNING"):
-        assert _default_day_fetcher(None)(dt.date(2026, 8, 1)) == []
+        assert day_fetcher(None)(dt.date(2026, 8, 1)) == []
 
     assert "EDINET_API_KEY" in caplog.text
 
@@ -308,7 +308,7 @@ def test_the_api_key_is_sent_every_way_the_service_might_read_it(
 
     monkeypatch.setattr(httpx, "Client", _FakeClient)
 
-    _default_day_fetcher(SecretStr("edb_secret"))(dt.date(2026, 8, 1))
+    day_fetcher(SecretStr("edb_secret"))(dt.date(2026, 8, 1))
 
     assert _FakeClient.last["params"]["Subscription-Key"] == "edb_secret"
     assert _FakeClient.last["headers"]["Ocp-Apim-Subscription-Key"] == "edb_secret"
@@ -347,7 +347,7 @@ def test_a_401_says_the_value_is_wrong_not_the_placement(
     monkeypatch.setattr(httpx, "Client", _Denied)
 
     with caplog.at_level(logging.ERROR):
-        assert _default_day_fetcher(SecretStr("k"))(dt.date(2026, 8, 7)) == []
+        assert day_fetcher(SecretStr("k"))(dt.date(2026, 8, 7)) == []
 
     assert "not where it was put" in caplog.text
     assert "EDINET_API_KEY" in caplog.text
@@ -366,7 +366,7 @@ def test_an_empty_day_without_metadata_names_the_keys_it_did_get(
     monkeypatch.setattr(httpx, "Client", _NoMetadata)
 
     with caplog.at_level("WARNING"):
-        assert _default_day_fetcher(SecretStr("k"))(dt.date(2026, 8, 1)) == []
+        assert day_fetcher(SecretStr("k"))(dt.date(2026, 8, 1)) == []
 
     assert "no 'metadata' block" in caplog.text
     assert "unexpectedKey" in caplog.text
@@ -385,7 +385,7 @@ def test_a_day_with_a_zero_count_is_not_an_alarm(
     monkeypatch.setattr(httpx, "Client", _Holiday)
 
     with caplog.at_level("WARNING"):
-        assert _default_day_fetcher(SecretStr("k"))(dt.date(2026, 8, 1)) == []
+        assert day_fetcher(SecretStr("k"))(dt.date(2026, 8, 1)) == []
 
     assert caplog.text == ""
 
@@ -427,7 +427,7 @@ def test_a_rejected_day_is_logged_at_error_with_the_reason(
     monkeypatch.setattr(httpx, "Client", _Rejected)
 
     with caplog.at_level(logging.WARNING):
-        assert _default_day_fetcher(SecretStr("k"))(dt.date(2026, 8, 7)) == []
+        assert day_fetcher(SecretStr("k"))(dt.date(2026, 8, 7)) == []
 
     assert any(record.levelno >= logging.ERROR for record in caplog.records)
     assert "Access denied" in caplog.text
@@ -542,7 +542,7 @@ def test_the_client_sends_the_placement_it_claims_to() -> None:
 
     with pytest.MonkeyPatch.context() as patch:
         patch.setattr(httpx, "Client", _Recording)
-        _default_day_fetcher(SecretStr("k"))(dt.date(2026, 8, 7))
+        day_fetcher(SecretStr("k"))(dt.date(2026, 8, 7))
 
     from stock_ai.ir.edinet import CURRENT_PLACEMENT, key_placements
 
@@ -590,7 +590,7 @@ def test_the_key_is_not_sent_in_the_header_the_gateway_ignores() -> None:
 
     with pytest.MonkeyPatch.context() as patch:
         patch.setattr(httpx, "Client", _Recording)
-        _default_day_fetcher(SecretStr("k"))(dt.date(2026, 8, 7))
+        day_fetcher(SecretStr("k"))(dt.date(2026, 8, 7))
 
     assert "Ocp-Apim-Subscription-Key" in seen["headers"]
     assert "Subscription-Key" not in seen["headers"]
@@ -915,3 +915,84 @@ def test_the_subject_name_is_learnt_from_days_fetched_for_the_watchlist() -> Non
 
     assert len(found) == 1
     assert "エア・ウォーター" in found[0].title
+
+
+# --- 0 件には2種類ある ---------------------------------------------------------
+#
+# 休日で提出が無かった 0 と、EDINET がその日付をそもそも持っていない 0。
+# 前者は 200 に resultset.count = 0、後者は 200 に metadata.status = 404。
+#
+# **同じ「0 件」として表に出して、実際に遡れる境目を読み違えた。** 本番で
+# 2016-06-15（水・営業日）の 404 と 2019-06-15（土）の 0 が同じ行に見えていた。
+
+
+def _reach_payload(status: str, count: int | None) -> dict:
+    resultset = {} if count is None else {"count": count}
+    return {"metadata": {"status": status, "resultset": resultset}, "results": []}
+
+
+def test_a_holiday_zero_and_an_out_of_range_zero_are_different(monkeypatch) -> None:
+    from stock_ai.ir.edinet import (
+        REACH_NO_FILINGS,
+        REACH_OUT_OF_RANGE,
+        day_reach,
+    )
+
+    def payloads(sequence):
+        it = iter(sequence)
+
+        def request(day, params, headers):
+            return next(it)
+
+        return request
+
+    monkeypatch.setattr(
+        "stock_ai.ir.edinet._request_day",
+        payloads([_reach_payload("200", 0), _reach_payload("404", None)]),
+    )
+
+    holiday = day_reach(SecretStr("k"), dt.date(2019, 6, 15))
+    outside = day_reach(SecretStr("k"), dt.date(2016, 6, 15))
+
+    assert holiday.reason == REACH_NO_FILINGS
+    assert outside.reason == REACH_OUT_OF_RANGE
+    assert holiday.reason != outside.reason
+
+
+def test_a_holiday_counts_as_held_but_out_of_range_does_not(monkeypatch) -> None:
+    """**境目は「持っている最も古い日」である。** 休日も持っている側に数える。"""
+    from stock_ai.ir.edinet import day_reach
+
+    monkeypatch.setattr(
+        "stock_ai.ir.edinet._request_day", lambda day, params, headers: _reach_payload("200", 0)
+    )
+    assert day_reach(SecretStr("k"), dt.date(2019, 6, 15)).held is True
+
+    monkeypatch.setattr(
+        "stock_ai.ir.edinet._request_day", lambda day, params, headers: _reach_payload("404", None)
+    )
+    assert day_reach(SecretStr("k"), dt.date(2016, 6, 15)).held is False
+
+
+def test_a_day_with_filings_reports_the_count(monkeypatch) -> None:
+    from stock_ai.ir.edinet import REACH_OK, day_reach
+
+    monkeypatch.setattr(
+        "stock_ai.ir.edinet._request_day",
+        lambda day, params, headers: {"results": [{"docID": "x"}, {"docID": "y"}]},
+    )
+
+    reach = day_reach(SecretStr("k"), dt.date(2017, 6, 15))
+
+    assert reach.reason == REACH_OK
+    assert reach.count == 2
+    assert reach.held is True
+
+
+def test_an_unreadable_payload_is_not_read_as_out_of_range(monkeypatch) -> None:
+    """**分からないときは「範囲外」と言わない。** 境目を早めに引いてしまう。"""
+    from stock_ai.ir.edinet import REACH_UNKNOWN, day_reach
+
+    monkeypatch.setattr("stock_ai.ir.edinet._request_day", lambda day, params, headers: [])
+
+    assert day_reach(SecretStr("k"), dt.date(2017, 6, 15)).reason == REACH_UNKNOWN

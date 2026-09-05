@@ -1022,3 +1022,87 @@ def test_delete_reports_on_an_unknown_symbol_is_a_no_op() -> None:
     database.create_all()
     with database.session() as session:
         assert FinancialStatementRepository(session).delete_reports("9999") == 0
+
+
+# --- 1つの値の中で尺度が混ざっている場合 ----------------------------------
+
+
+def _year(fiscal_year: int, shares: float, dps: float | None) -> FinancialReport:
+    return FinancialReport(
+        symbol="7203",
+        fiscal_year=fiscal_year,
+        period=FiscalPeriod.FY,
+        shares_outstanding=shares,
+        dividend_per_share=dps,
+    )
+
+
+def test_restated_cannot_fix_a_dividend_that_straddles_a_split() -> None:
+    """**どの倍率を掛けても正しくならない。** だから直さず、名指しする。
+
+    分割の年の年間配当が「分割前の中間 ＋ 分割後の期末」なら、そのままでも
+    倍率で割っても正しくない。``restated`` はこの期を倍率1のまま通す。
+    """
+    from stock_ai.fundamental.growth import dividends_crossing_a_split, restated
+
+    reports = [_year(2021, 1_000_000, 220.0), _year(2022, 5_000_000, 148.0)]
+
+    out = restated(reports)
+    # 分割の年そのものは最新の尺度なので触られない。148 のまま出ていく。
+    assert out[-1].dividend_per_share == pytest.approx(148.0)
+
+    [(suspect, factor)] = dividends_crossing_a_split(reports)
+    assert suspect.fiscal_year == 2022
+    assert factor == pytest.approx(5.0)
+
+
+def test_a_split_year_without_a_dividend_is_not_flagged() -> None:
+    """疑いであって断定ではない。配当が無ければ混ざりようがない。"""
+    from stock_ai.fundamental.growth import dividends_crossing_a_split
+
+    reports = [_year(2021, 1_000_000, 220.0), _year(2022, 5_000_000, None)]
+
+    assert dividends_crossing_a_split(reports) == []
+
+
+def test_a_buyback_year_is_not_flagged_as_a_straddled_dividend() -> None:
+    """数％の株数の増減は本物の1株当たりの変化。均さないし、疑いもしない。"""
+    from stock_ai.fundamental.growth import dividends_crossing_a_split
+
+    reports = [_year(2021, 1_000_000, 220.0), _year(2022, 980_000, 230.0)]
+
+    assert dividends_crossing_a_split(reports) == []
+
+
+def test_the_ingest_says_which_year_cannot_be_restated(caplog) -> None:
+    """取り込みが1度だけ言う。``restated`` 側で出すと、呼ばれるたびに並ぶ。"""
+    import logging
+
+    from stock_ai.data.jquants_fundamentals import normalize_statements
+
+    records = [
+        {
+            "Code": "72030",
+            "DiscDate": "2021-05-12",
+            "CurPerType": "FY",
+            "FYEnd": "2021-03-31",
+            "ShOutFY": "1000000",
+            "DivAnn": "220",
+        },
+        {
+            "Code": "72030",
+            "DiscDate": "2022-05-11",
+            "CurPerType": "FY",
+            "FYEnd": "2022-03-31",
+            "ShOutFY": "5000000",
+            "DivAnn": "148",
+        },
+    ]
+
+    with caplog.at_level(logging.WARNING):
+        reports = normalize_statements("7203", records)
+
+    assert len(reports) == 2
+    flagged = [m for m in caplog.messages if "1株配当" in m]
+    assert len(flagged) == 1
+    assert "FY2022" in flagged[0]

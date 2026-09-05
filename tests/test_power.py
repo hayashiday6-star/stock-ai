@@ -258,3 +258,66 @@ def test_periods_needed_refuses_a_zero_effect() -> None:
         periods_needed(0.0184, 1.09, 0.0)
     with _pytest.raises(ValueError):
         periods_needed(0.0, 1.09, 0.003)
+
+
+def test_required_improvement_is_the_ratio_that_closes_the_gap() -> None:
+    """期数を増やせないときに要る、推定量の改善倍率。"""
+    from stock_ai.backtest.power import required_improvement
+
+    # 検出できる差 0.33%、見込みの下限 0.25% なら 1.32 倍要る。
+    assert required_improvement(0.0033, 0.0025) == pytest.approx(1.32, rel=1e-3)
+    # 既に足りているなら 1 未満。
+    assert required_improvement(0.0033, 0.0050) < 1.0
+
+
+def test_required_improvement_refuses_a_zero_floor() -> None:
+    """0 を検出するのに要る改善は無限。黙って巨大な数を返さない。"""
+    import pytest as _pytest
+
+    from stock_ai.backtest.power import required_improvement
+
+    with _pytest.raises(ValueError):
+        required_improvement(0.0033, 0.0)
+
+
+# --- 合成の利得（r）の当てはめ ------------------------------------------------
+#
+# 閾値は docs/HYPOTHESES.md に測る前から書いてある。ここは、その表を人が読んで
+# 当てはめないようにするための関数である。
+
+
+def test_the_composite_table_is_applied_by_code_not_by_reading() -> None:
+    from stock_ai.backtest.power import (
+        COMPOSITE_PROCEED,
+        COMPOSITE_STOP,
+        composite_verdict,
+    )
+
+    assert composite_verdict(2.0)[0] == COMPOSITE_PROCEED
+    assert composite_verdict(2.5)[0] == COMPOSITE_PROCEED
+    assert composite_verdict(1.99)[0] == COMPOSITE_STOP
+    assert composite_verdict(1.5)[0] == COMPOSITE_STOP
+    assert composite_verdict(1.49)[0] == COMPOSITE_STOP
+    assert composite_verdict(0.5)[0] == COMPOSITE_STOP
+
+
+def test_the_ambiguous_band_stops_and_says_it_will_not_be_remeasured() -> None:
+    """**ここが緩むと、当てはまるまで測り方を変えられる。**"""
+    from stock_ai.backtest.power import COMPOSITE_STOP, composite_verdict
+
+    verdict, reading = composite_verdict(1.8)
+
+    assert verdict == COMPOSITE_STOP
+    assert "曖昧域" in reading
+    assert "再測定はしない" in reading
+
+
+def test_the_two_stopping_bands_read_differently_but_act_the_same() -> None:
+    """1.5 の線は記録上の区別だけ。**行動は同じ。**"""
+    from stock_ai.backtest.power import composite_verdict
+
+    ambiguous = composite_verdict(1.7)
+    clearly_short = composite_verdict(1.0)
+
+    assert ambiguous[0] == clearly_short[0]
+    assert ambiguous[1] != clearly_short[1]

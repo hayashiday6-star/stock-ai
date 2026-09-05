@@ -55,7 +55,9 @@ from stock_ai.backtest.accumulation_signal import (
     explain_date,
     market_volume_context,
 )
+from stock_ai.backtest.cross_section import beta_to_benchmark, build_estimators, t_ratio
 from stock_ai.backtest.engine import BacktestEngine
+from stock_ai.backtest.factor_panel import build_panel
 from stock_ai.backtest.factor_test import (
     FactorTestResult,
     formation_grid,
@@ -80,6 +82,7 @@ from stock_ai.backtest.lowvol import DEFAULT_LAGS as LOWVOL_LAGS
 from stock_ai.backtest.lowvol import (
     DETECTABLE as LOWVOL_DETECTABLE,
 )
+from stock_ai.backtest.lowvol import JUDGED_T as LOWVOL_JUDGED_T
 from stock_ai.backtest.lowvol import (
     PASS as LOWVOL_PASS,
 )
@@ -101,12 +104,16 @@ from stock_ai.backtest.pead import (
 )
 from stock_ai.backtest.pead_census import DRIFT_WINDOW, ENTRY_OFFSET, run_census
 from stock_ai.backtest.power import (
+    COMPOSITE_PROCEED,
+    COMPOSITE_STOP,
     DEFAULT_LAGS,
     TARGET_T,
+    composite_verdict,
     estimate_power,
     gate,
     judge,
     periods_needed,
+    required_improvement,
     trimmed_variance,
 )
 from stock_ai.backtest.report import metrics_frame
@@ -216,8 +223,12 @@ from stock_ai.database.repository import (
 )
 from stock_ai.ir.edinet import (
     CURRENT_PLACEMENT,
+    REACH_NO_FILINGS,
+    REACH_OK,
+    REACH_OUT_OF_RANGE,
     EdinetDisclosureSource,
     ProbeResult,
+    day_reach,
     doc_type_label,
     normalize_sec_code,
     probe_key_placements,
@@ -4068,6 +4079,157 @@ def _oos_session_count(database: Database, benchmark: str, holding: int) -> int:
     return max(0, len(days) - (holding + 1))
 
 
+@app.command(name="edinet-reach")
+def edinet_reach(
+    years: int = typer.Option(16, "--years", help="How many years back to probe."),
+    month: int = typer.Option(6, "--month", help="Month to probe each year (1-12)."),
+    day: int = typer.Option(15, "--day", help="Day of month to probe."),
+    pause: float = typer.Option(1.0, "--pause", help="Seconds between requests."),
+) -> None:
+    """Find out how far back EDINET actually serves documents.
+
+    **The financial history stops at 58 months, and 58 months is five years.**
+    That is the same number as the J-Quants rolling window, which makes it worth
+    asking whether it is EDINET's limit or our own harvest setting. The two look
+    identical from the database.
+
+    One request per year, on a fixed day, counting what comes back. Nothing is
+    stored and nothing is parsed beyond the count - this only answers "does the
+    service still have documents from that date".
+
+    A weekend or a holiday returns zero legitimately, so a zero is reported as
+    "0 件" rather than "reached the limit". The boundary is where zeros start
+    and never stop, not the first zero.
+
+    Costs about a dozen requests. It settles whether the composite test has 58
+    months to work with or twice that, and the standard error scales with the
+    square root of that number.
+    """
+    settings = get_settings()
+    configure_logging(settings.log_level)
+
+    api_key = settings.edinet_api_key
+    if api_key is None:
+        console.print("[red].env に EDINET_API_KEY がない。[/] APIキー設定.bat で設定する。")
+        raise typer.Exit(code=1)
+
+    if not 1 <= month <= 12:
+        raise typer.BadParameter(f"--month must be 1-12; got {month}.")
+
+    today = dt.date.today()
+
+    console.print(
+        f"[bold]{years} 年ぶん、毎年 {month:02d}-{day:02d} を1日ずつ叩く。[/] "
+        "件数を数えるだけで、中身は読まないし保存もしない。"
+    )
+    console.print(
+        "[dim]土日祝は 0 件が正しい。**境目は「0 が始まってそのまま続く所」**で、"
+        "最初の 0 ではない。[/dim]"
+    )
+    console.print()
+
+    table = Table(title="EDINET はどこまで遡れるか")
+    for column in ("日付", "曜日", "件数", "結果"):
+        table.add_column(column, justify="left" if column in ("日付", "結果") else "right")
+
+    held: list[dt.date] = []
+    out_of_range: list[dt.date] = []
+    failed = 0
+    weekday_names = "月火水木金土日"
+
+    for offset in range(years):
+        year = today.year - offset
+        try:
+            probe = dt.date(year, month, day)
+        except ValueError:
+            continue
+        if probe >= today:
+            continue
+        try:
+            reach = day_reach(api_key, probe)
+        except RateLimitError:
+            # 走行そのものの問題である。残りを同じ調子で叩いても同じ断りが返る。
+            console.print(
+                f"\n[yellow]レート制限に当たった（{year} 年まで確認）。[/] "
+                "時間を置いて再実行すれば続きから見られる。"
+            )
+            break
+        except DataError as exc:
+            failed += 1
+            table.add_row(probe.isoformat(), "", "[yellow]—[/]", f"[yellow]{exc}[/]")
+            continue
+
+        marker = weekday_names[probe.weekday()]
+        # **0 を2種類に分ける。** 休日の 0 と「その日付を持っていない」0 は
+        # 別の事実で、同じ行に見せると遡れる境目を読み違える。
+        if reach.reason == REACH_OK:
+            held.append(probe)
+            table.add_row(probe.isoformat(), marker, f"{reach.count:,}", "[green]取れる[/]")
+        elif reach.reason == REACH_NO_FILINGS:
+            held.append(probe)
+            table.add_row(probe.isoformat(), marker, "0", "[dim]0件（休日）[/dim]")
+        elif reach.reason == REACH_OUT_OF_RANGE:
+            out_of_range.append(probe)
+            table.add_row(
+                probe.isoformat(), marker, "—", f"[yellow]範囲外（status {reach.status}）[/]"
+            )
+        else:
+            table.add_row(probe.isoformat(), marker, "—", "[yellow]不明[/]")
+        if pause:
+            time.sleep(pause)
+
+    console.print(table)
+    console.print()
+
+    if not held:
+        console.print("[red]1日ぶんも取れなかった。[/] 鍵か接続を先に確かめる。")
+        raise typer.Exit(code=1)
+
+    # **境目は「持っている最も古い日」である。** 休日の 0 も「持っている」に
+    # 数える——提出が無かっただけで、その日付は範囲内にある。
+    oldest = min(held)
+    months = (today.year - oldest.year) * 12 + (today.month - oldest.month)
+    console.print(
+        f"書類が返った最も古い日は [bold]{oldest}[/]。"
+        f"いまから [bold]{months:,}[/] ヶ月（{months / 12:.1f}年）遡れる。"
+    )
+
+    # **58ヶ月と比べる。** ここが今回の問い。
+    current = 58
+    console.print()
+    if months > current * 1.2:
+        console.print(
+            f"[green]手元の財務データ（{current}ヶ月）より長い。[/] "
+            f"**58ヶ月は EDINET の制約ではない。** harvest の窓を広げる余地がある。"
+        )
+        console.print(
+            f"[dim]標準誤差は √({months}/{current}) = "
+            f"{(months / current) ** 0.5:.2f} 倍**小さく**なる方向。[/dim]"
+        )
+    elif months < current * 0.8:
+        console.print(
+            f"[yellow]手元の財務データ（{current}ヶ月）より短い。[/] "
+            "有報の「主要な経営指標等」は1本で5期ぶん持つので、**書類が取れる"
+            "範囲より古い年まで埋められる。** そちらを数える必要がある。"
+        )
+    else:
+        console.print(
+            f"[yellow]手元の財務データ（{current}ヶ月）とほぼ同じ。[/] "
+            "**58ヶ月は EDINET の制約である公算が高い。** ただし有報1本に5期ぶん"
+            "入るので、書類の範囲＋4年までは埋められる。"
+        )
+
+    if out_of_range:
+        newest_refused = max(out_of_range)
+        console.print(
+            f"[dim]範囲外と返ったうち最も新しい日は {newest_refused}。"
+            f"**境目は {newest_refused} と {oldest} のあいだにある。** "
+            "窓は毎日後ろへ動くので、古い側は待つほど失われる。[/dim]"
+        )
+    if failed:
+        console.print(f"[yellow]{failed} 日は断られた。[/] 上の理由を読む。")
+
+
 @app.command(name="power-gate")
 def power_gate(
     sd: float = typer.Option(..., "--sd", help="Per-period SD, in percent (e.g. 1.84)."),
@@ -4153,15 +4315,419 @@ def power_gate(
                 f"{count - periods:+,}" if count > periods else "足りている",
             )
         console.print(needed)
+        factor = required_improvement(detectable, floor)
+        console.print()
         console.print(
-            "[dim]期数を増やせないなら、**分散を下げる設計**に変えるしかない。"
-            "分位ソートは上下の2割しか使わず、真ん中を捨てている。[/dim]"
+            f"期数を増やせないなら、**推定量を [bold]{factor:.2f} 倍[/]"
+            "改善するしかない**（見込みの下限で通すために）。"
+        )
+        console.print(
+            "[dim]その改善は **t の比**で測る。SD の比ではない。分位スプレッドは"
+            "断面が正規なら ``2.8 × 1σチルト`` にあたり、**推定量を変えると SD も"
+            "効果も一緒に縮む。** SD 比を掛けたところに文献の分位スプレッドの"
+            "効果量を当てると、2.8倍の改善が無料で出たように見える。[/dim]"
         )
 
     console.print(
         "[dim]このゲートは平均を見ない。**「効果がありそうだから通す」は書けない。**[/dim]"
     )
     raise typer.Exit(code=0 if result.passed else 2)
+
+
+@app.command(name="composite-gain")
+def composite_gain(
+    start: str = typer.Option("2014-01-01", "--start", help="First month, matching the judgment."),
+    window: int = typer.Option(DEFAULT_WINDOW, "--window", help="Volatility window in sessions."),
+    min_symbols: int = typer.Option(MIN_SYMBOLS_PER_MONTH, "--min-symbols", help="Per month."),
+    min_turnover: float = typer.Option(MIN_TURNOVER, "--min-turnover", help="Liquidity floor."),
+    lags: int = typer.Option(LOWVOL_LAGS, "--lags", help="Newey-West lags, in months."),
+    benchmark: str = typer.Option(BENCHMARK, "--benchmark", help="Sets the calendar."),
+) -> None:
+    """Measure r, the t gain from combining factors rather than using one.
+
+    **This is not a judgement.** The thresholds were fixed before this ran and
+    are written in ``docs/HYPOTHESES.md``: r >= 2.0 proceeds to the financial
+    extraction, 1.5 <= r < 2.0 is the ambiguous band and **stops**, r < 1.5
+    stops. The 1.5 line only separates "clearly short" from "close" in the
+    record; the action either side of it is the same.
+
+    **The ambiguous band stops on purpose.** "It is an underestimate because
+    price factors correlate, so adding the financial ones would clear it" is an
+    argument that only becomes available after seeing the number, and using it
+    is indistinguishable from changing the measurement until it agrees.
+
+    r is the composite's t divided by the **best** single factor's t. Picking
+    the best after the fact inflates the denominator, so r comes out
+    conservative. That direction is the safe one.
+
+    Everything is measured on alpha with beta fixed from the estimation period,
+    on the quintile sort - the cross-sectional estimator was calibrated at 0.93
+    and is not used. Same universe for every column, because a composite
+    compared against a factor built on a different universe measures the
+    universe, not the combination.
+    """
+    settings = get_settings()
+    configure_logging(settings.log_level)
+
+    begin = _parse_date(start)
+    if begin is None:
+        raise typer.BadParameter(f"--start must be YYYY-MM-DD; got {start!r}.")
+
+    console.print(
+        "[bold yellow]これは判定ではない。[/] 閾値は測る前に確定済み（`docs/HYPOTHESES.md`）。"
+    )
+    console.print(
+        "[dim]r ≥ 2.0 通過 / 1.5 ≤ r < 2.0 曖昧域→打ち切り / r < 1.5 不足。"
+        "**測定後に変更しない。曖昧域で財務系の再測定はしない。**[/dim]"
+    )
+    console.print()
+
+    database = Database()
+    database.create_all()
+
+    # **最初に検算する。** 低ボラだけの盤面が #7 を再現しなければ、フィルタが
+    # 揃っていない。揃っていない盤面で比を取っても、それは合成の利得ではない。
+    console.print("[bold]検算：低ボラだけの盤面が #7 を再現するか。[/]")
+    try:
+        check_panel = build_panel(
+            database,
+            factors=("低ボラ",),
+            benchmark=benchmark,
+            start=begin,
+            window=window,
+            min_turnover=min_turnover,
+            min_symbols=min_symbols,
+        )
+        check_prior = build_panel(
+            database,
+            factors=("低ボラ",),
+            benchmark=benchmark,
+            end=begin - dt.timedelta(days=1),
+            window=window,
+            min_turnover=min_turnover,
+            min_symbols=min_symbols,
+        )
+    except ValueError as exc:
+        console.print(f"[red]{exc}[/]")
+        raise typer.Exit(code=1) from exc
+
+    reproduced = _alpha_of(check_panel, check_prior, "低ボラ", lags)
+    console.print(
+        f"  低ボラ単独: β {reproduced[0]:.3f}、α {reproduced[1].mean * 100:+.3f}%、"
+        f"t {reproduced[1].t_statistic:+.2f}"
+        f"  [dim]（#7 は β 0.542、α +0.242%、t +1.70）[/dim]"
+    )
+    close_enough = abs(reproduced[1].t_statistic - LOWVOL_JUDGED_T) <= 0.05
+    if close_enough:
+        console.print("  [green]再現した。フィルタは揃っている。[/]")
+    else:
+        console.print(
+            "  [yellow]再現しない。**どこかで違うフィルタを通している。**[/] "
+            "比を取っても合成の利得にならないので、先に揃える。"
+        )
+        raise typer.Exit(code=2)
+
+    console.print()
+    try:
+        panel = build_panel(
+            database,
+            benchmark=benchmark,
+            start=begin,
+            window=window,
+            min_turnover=min_turnover,
+            min_symbols=min_symbols,
+        )
+        prior = build_panel(
+            database,
+            benchmark=benchmark,
+            end=begin - dt.timedelta(days=1),
+            window=window,
+            min_turnover=min_turnover,
+            min_symbols=min_symbols,
+        )
+    except ValueError as exc:
+        console.print(f"[red]{exc}[/]")
+        raise typer.Exit(code=1) from exc
+
+    console.print(
+        f"合成の盤面: {len(panel.months):,} ヶ月"
+        f"（{panel.months[0]} 〜 {panel.months[-1]}）、"
+        f"因子 {'＋'.join(panel.factors)}。"
+    )
+    console.print(
+        "[dim]モメンタムが252営業日を要るので、低ボラ単独の盤面より月数・銘柄数が"
+        "少ない。**単一因子もこの盤面から取る**ので、比には効かない。[/dim]"
+    )
+
+    table = Table(title="単一因子と合成（α、β は推定期間で固定、分位ソート）")
+    for column in ("signal", "β", "α の平均", "標準誤差(NW)", "t"):
+        table.add_column(column, justify="left" if column == "signal" else "right")
+
+    singles: dict[str, float] = {}
+    for name in panel.factors:
+        beta, result = _alpha_of(panel, prior, name, lags)
+        singles[name] = result.t_statistic
+        table.add_row(
+            name,
+            f"{beta:.3f}",
+            f"{result.mean * 100:+.3f}%",
+            f"{result.standard_error * 100:.3f}%",
+            f"{result.t_statistic:+.2f}",
+        )
+
+    combined_beta, combined = _alpha_of(panel, prior, None, lags)
+    table.add_row(
+        "[bold]合成（等加重）[/]",
+        f"{combined_beta:.3f}",
+        f"[bold]{combined.mean * 100:+.3f}%[/]",
+        f"{combined.standard_error * 100:.3f}%",
+        f"[bold]{combined.t_statistic:+.2f}[/]",
+    )
+    console.print(table)
+
+    best_name = max(singles, key=lambda key: singles[key])
+    best = singles[best_name]
+    console.print(
+        f"[dim]最も良い単一因子は **{best_name}**（t {best:+.2f}）。"
+        "**後から選んでいるので分母が大きくなる方向**で、r は控えめに出る。[/dim]"
+    )
+
+    ratio = t_ratio(combined.t_statistic, best)
+    console.print()
+    if ratio is None:
+        console.print(
+            "[yellow]符号が違うので比を出さない。[/] **「何倍良い」が意味を持たない。** "
+            "閾値の表では r < 1.5 と同じ扱いになる。"
+        )
+        verdict, reading = COMPOSITE_STOP, "比が取れない。4' へ。"
+    else:
+        console.print(f"**r = [bold]{ratio:.2f}[/]**")
+        verdict, reading = composite_verdict(ratio)
+
+    console.print()
+    style = "green" if verdict == COMPOSITE_PROCEED else "red"
+    console.print(f"[{style}][bold]{verdict}[/][/] {reading}")
+    console.print(
+        "[dim]この当てはめは測る前に確定させた表による（`docs/HYPOTHESES.md`）。"
+        "結果を見てから線を引き直していない。[/dim]"
+    )
+
+
+def _alpha_of(panel, prior, factor: str | None, lags: int):
+    """Build the alpha series from a panel, with beta fixed out of period.
+
+    ``factor`` が ``None`` なら等加重の合成。**β は必ず推定期間から取る。**
+    判定期間から取れば、その期間に合う調整を選んだことになる。
+
+    ``factor_panel`` の signal は**大きいほど買う側**にそろえてある（低ボラは
+    符号を反転済み）。``build_estimators`` の既定は「小さいほど買う側」なので、
+    **``higher_is_better=True`` を渡さないと分位5を買う。** 例外は出ない——
+    2026-09-05 に既定のまま渡して β 1.442、α −0.944%、t −2.18 が出た。
+    """
+    sections = panel.column(factor) if factor else panel.composite()
+    prior_sections = prior.column(factor) if factor else prior.composite()
+
+    now = build_estimators(sections, panel.benchmark, higher_is_better=True)
+    before = build_estimators(prior_sections, prior.benchmark, higher_is_better=True)
+    beta = beta_to_benchmark(before.quantile_long_only, before.benchmark)
+    return beta, judge(now.alpha(now.quantile_long_only, beta), lags=lags)
+
+
+@app.command(name="lowvol-estimator")
+def lowvol_estimator(
+    start: str = typer.Option("2014-01-01", "--start", help="First month, matching the judgment."),
+    window: int = typer.Option(DEFAULT_WINDOW, "--window", help="Volatility window in sessions."),
+    min_symbols: int = typer.Option(MIN_SYMBOLS_PER_MONTH, "--min-symbols", help="Per month."),
+    min_turnover: float = typer.Option(MIN_TURNOVER, "--min-turnover", help="Liquidity floor."),
+    lags: int = typer.Option(LOWVOL_LAGS, "--lags", help="Newey-West lags, in months."),
+    benchmark: str = typer.Option(BENCHMARK, "--benchmark", help="Sets the calendar."),
+) -> None:
+    """Calibrate the estimator: quintile sort against cross-sectional regression.
+
+    **This is not a judgement.** #6 and #7 are decided and closed. The t values
+    here calibrate one estimator against another; they are not evidence for or
+    against any hypothesis, and nothing here is compared to a pass threshold.
+    Declared in ``docs/HYPOTHESES.md`` before this was written.
+
+    **Ratios are taken on t, never on the standard deviation.** A quintile
+    spread is roughly 2.8x a one-sigma tilt when the cross-section is normal,
+    because the top quintile averages about +1.40 sigma and the bottom -1.40.
+    Change the estimator and the spread and its noise shrink together. Matching
+    standard deviations alone and then applying a published quintile-spread
+    effect size would manufacture that 2.8x as a free improvement - the same
+    trap this project keeps avoiding, moved from the noise to the effect. t is
+    dimensionless, so it does not happen.
+
+    Long-short is compared with long-short. The quintile spread and the tilt
+    both hold zero net, so neither needs a beta. The long-only pair is reported
+    separately and **carries no beta adjustment**, which is why it cannot be set
+    beside the judgement's alpha of 1.70.
+    """
+    settings = get_settings()
+    configure_logging(settings.log_level)
+
+    begin = _parse_date(start)
+    if begin is None:
+        raise typer.BadParameter(f"--start must be YYYY-MM-DD; got {start!r}.")
+
+    console.print(
+        "[bold yellow]これは判定ではない。[/] #6 と #7 は判定済みで閉じている。"
+        "**この数字を合否の主張に使わない。**"
+    )
+    console.print(
+        "[dim]比べるのは t（無次元）。SD の比は取らない——推定量を変えると"
+        "SD も効果も一緒に縮むので、比を掛けたところに文献の分位スプレッドの"
+        "効果量を当てると 2.8倍が無料で出る。[/dim]"
+    )
+    console.print()
+
+    database = Database()
+    database.create_all()
+    try:
+        series = build_lowvol_series(
+            database,
+            Period.ALL,
+            benchmark=benchmark,
+            start=begin,
+            window=window,
+            min_turnover=min_turnover,
+            min_symbols=min_symbols,
+        )
+    except ValueError as exc:
+        console.print(f"[red]{exc}[/]")
+        raise typer.Exit(code=1) from exc
+
+    estimators = build_estimators(series.cross_sections, series.benchmark)
+    if estimators.months < 2:
+        console.print("[red]比べられる月が足りない。[/]")
+        raise typer.Exit(code=1)
+
+    console.print(
+        f"{estimators.months:,} ヶ月（{series.months[0]} 〜 {series.months[-1]}）、"
+        f"1ヶ月あたり中央値 {int(median(series.counts)):,} 銘柄。"
+        + (
+            f"[dim]断面がばらつかず落とした月 {estimators.skipped_flat}。[/dim]"
+            if estimators.skipped_flat
+            else ""
+        )
+    )
+
+    # **同じ断面から作っている。** 別経路で組み直すと、比が「推定量の差」では
+    # なく「フィルタの差」を含む。
+    measured = {
+        name: judge(values, lags=lags)
+        for name, values in (
+            ("分位1 − 分位5", estimators.quantile_spread),
+            ("1σチルト（横断回帰）", estimators.tilt),
+            ("分位1（等金額）", estimators.quantile_long_only),
+            ("上側チルト（傾きで加重）", estimators.long_only_tilt),
+        )
+    }
+
+    pairs = (
+        ("ロングショート（β不要）", "分位1 − 分位5", "1σチルト（横断回帰）"),
+        ("ロングオンリー（**β を引いていない**）", "分位1（等金額）", "上側チルト（傾きで加重）"),
+    )
+    for title, old_name, new_name in pairs:
+        table = Table(title=title)
+        for column in ("推定量", "平均", "標準誤差(NW)", "t"):
+            table.add_column(column, justify="left" if column == "推定量" else "right")
+        for name in (old_name, new_name):
+            result = measured[name]
+            table.add_row(
+                name,
+                f"{result.mean * 100:+.3f}%",
+                f"{result.standard_error * 100:.3f}%",
+                f"[bold]{result.t_statistic:+.2f}[/]",
+            )
+        console.print(table)
+
+        ratio = t_ratio(measured[new_name].t_statistic, measured[old_name].t_statistic)
+        if ratio is None:
+            console.print(
+                "  [yellow]符号が違うので比を出さない。[/] **「何倍良い」が意味を持たない。**"
+            )
+        else:
+            console.print(f"  **t 比 = [bold]{ratio:.2f}[/] 倍**")
+        console.print()
+
+    console.print(
+        "[dim]上の2つ目は β を引いていない。**標準誤差が市場リスクに支配される**"
+        "ので、推定量の差はそこに埋もれる。#7 の α（t +1.70）とも直接比べられ"
+        "ない。[/dim]"
+    )
+    console.print()
+
+    # **α で比べる。** ゲートに掛けたい合成はロングオンリーで、その指標は α
+    # である。生のロングオンリーは市場リスクに埋もれて推定量の差が見えない。
+    console.print(
+        "[bold]β を引いてもう一度比べる。[/] "
+        "[dim]β は**推定期間から取って固定する**（#7 と同じ規律）。"
+        "判定期間から取ると、その期間に合う調整を選んだことになる。[/dim]"
+    )
+    try:
+        estimation = build_lowvol_series(
+            database,
+            Period.ALL,
+            benchmark=benchmark,
+            end=begin - dt.timedelta(days=1),
+            window=window,
+            min_turnover=min_turnover,
+            min_symbols=min_symbols,
+        )
+    except ValueError as exc:
+        console.print(f"[yellow]推定期間の系列を作れなかった: {exc}[/]")
+        raise typer.Exit(code=1) from exc
+
+    prior = build_estimators(estimation.cross_sections, estimation.benchmark)
+    if prior.months < 2:
+        console.print("[yellow]推定期間の月が足りない。β を固定できない。[/]")
+        raise typer.Exit(code=1)
+
+    console.print(
+        f"[dim]推定期間 {estimation.months[0]} 〜 {estimation.months[-1]}、"
+        f"{prior.months:,} ヶ月から β を取る。[/dim]"
+    )
+
+    alpha_table = Table(title="ロングオンリー（β を引いた＝#7 の主要指標と同じ形）")
+    for column in ("推定量", "β（推定期間で固定）", "α の平均", "標準誤差(NW)", "t"):
+        alpha_table.add_column(column, justify="left" if column == "推定量" else "right")
+
+    alphas: dict[str, object] = {}
+    for name, attribute in (
+        ("分位1（等金額）", "quantile_long_only"),
+        ("上側チルト（傾きで加重）", "long_only_tilt"),
+    ):
+        fixed = beta_to_benchmark(getattr(prior, attribute), prior.benchmark)
+        result = judge(estimators.alpha(getattr(estimators, attribute), fixed), lags=lags)
+        alphas[name] = result
+        alpha_table.add_row(
+            name,
+            f"{fixed:.3f}",
+            f"{result.mean * 100:+.3f}%",
+            f"{result.standard_error * 100:.3f}%",
+            f"[bold]{result.t_statistic:+.2f}[/]",
+        )
+    console.print(alpha_table)
+
+    ratio = t_ratio(
+        alphas["上側チルト（傾きで加重）"].t_statistic,
+        alphas["分位1（等金額）"].t_statistic,
+    )
+    if ratio is None:
+        console.print("  [yellow]符号が違うので比を出さない。[/]")
+    else:
+        console.print(f"  **t 比 = [bold]{ratio:.2f}[/] 倍**")
+
+    console.print()
+    console.print(
+        "[bold]§0 ゲートに掛けるのは、この α の t 比である。[/] "
+        "ゲートに掛けたい合成はロングオンリーで、その指標は α だからである。"
+    )
+    console.print(
+        "[dim]ロングショートの比も併記しているが、そちらは建てられる形が違う"
+        "（空売りの実行可能性は確かめていない）。[/dim]"
+    )
 
 
 @app.command(name="lowvol-bias")

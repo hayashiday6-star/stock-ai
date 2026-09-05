@@ -409,3 +409,83 @@ def test_the_two_equity_fields_are_not_treated_as_synonyms() -> None:
     assert "ShEq" in _EQUITY_KEYS
     assert "Eq" in _EQUITY_FALLBACK_KEYS
     assert not set(_EQUITY_KEYS) & set(_EQUITY_FALLBACK_KEYS)
+
+
+def test_the_snapshot_and_the_statements_use_the_same_equity() -> None:
+    """**同じ records から出る2つの値が食い違わないこと。**
+
+    片方だけ直したせいで、同じ銘柄の snapshot が純資産、statements が自己資本
+    という状態が続いていた。部品はどちらも通っていて、突き合わせが無かった。
+
+    snapshot は自己資本を列に持たないので、PBR の分母として取り出す。
+    """
+    import datetime as dt
+
+    from stock_ai.data.jquants_fundamentals import normalize_statement, normalize_statements
+
+    records = [_equity_record(ShEq="262460", Eq="271548", ShOutFY="1000")]
+
+    snapshot = normalize_statement("7203", records, dt.date(2026, 9, 5), price=500.0)
+    reports = normalize_statements("7203", records)
+
+    assert snapshot.pbr is not None and snapshot.market_cap is not None
+    assert snapshot.market_cap / snapshot.pbr == pytest.approx(reports[0].equity)
+
+
+def test_the_snapshot_prefers_shareholders_equity_over_net_assets() -> None:
+    """純資産のほうを掴むと、PBR の分母が非支配株主持分だけ大きくなる。"""
+    import datetime as dt
+
+    from stock_ai.data.jquants_fundamentals import normalize_statement
+
+    snapshot = normalize_statement(
+        "7203",
+        [_equity_record(ShEq="262460", Eq="271548", ShOutFY="1000")],
+        dt.date(2026, 9, 5),
+        price=500.0,
+    )
+
+    # 純資産を掴んでいたら 500*1000/271548 = 1.841。例外は出ないので値で押さえる。
+    assert snapshot.pbr == pytest.approx(500.0 * 1000 / 262460)
+    assert snapshot.pbr != pytest.approx(500.0 * 1000 / 271548)
+
+
+def test_the_snapshot_says_when_it_borrowed_net_assets(caplog) -> None:
+    """代用してよいが、**黙って代用しない。**"""
+    import datetime as dt
+    import logging
+
+    from stock_ai.data.jquants_fundamentals import normalize_statement
+
+    with caplog.at_level(logging.INFO):
+        snapshot = normalize_statement(
+            "7203",
+            [_equity_record(Eq="271548", ShOutFY="1000")],
+            dt.date(2026, 9, 5),
+            price=500.0,
+        )
+
+    assert snapshot.pbr == pytest.approx(500.0 * 1000 / 271548)
+    assert any("純資産" in message for message in caplog.messages)
+
+
+def test_the_snapshot_walks_back_for_equity_but_still_prefers_shareholders_equity() -> None:
+    """新しい開示に自己資本があるなら、古い開示の純資産を掴まない。"""
+    import datetime as dt
+
+    from stock_ai.data.jquants_fundamentals import normalize_statement
+
+    records = [
+        {"Code": "72030", "DiscDate": "2021-05-11", "CurPerType": "FY", "Eq": "999999"},
+        {
+            "Code": "72030",
+            "DiscDate": "2022-05-11",
+            "CurPerType": "FY",
+            "ShEq": "262460",
+            "ShOutFY": "1000",
+        },
+    ]
+
+    snapshot = normalize_statement("7203", records, dt.date(2026, 9, 5), price=500.0)
+
+    assert snapshot.pbr == pytest.approx(500.0 * 1000 / 262460)

@@ -266,6 +266,34 @@ def periods_needed(
     return math.ceil((target_t * sd * inflation / effect) ** 2)
 
 
+def required_improvement(detectable: float, plausible_low: float) -> float:
+    """通すのに要る「推定量の改善倍率」。
+
+    期数を増やせないとき、残る手は**分散を下げる設計に変える**ことである。
+    分位ソートは上下2割しか使わず、真ん中を捨てている。横断回帰なら断面全体を
+    使える。
+
+    **その改善は t の比で測る。SD の比ではない。** 分位スプレッドは、断面が
+    正規なら上位20%が約 +1.40σ、下位が −1.40σ なので、``2.8 × 1σチルト``に
+    あたる。**推定量を変えると SD も効果も一緒に縮む。** SD 比だけを掛けた
+    ところに文献の分位スプレッドの効果量を当てると、2.8倍の改善が無料で出た
+    ように見える。t は無次元なのでこの取り違えが起きない。
+
+    Args:
+        detectable: いまの設計で検出できる差。
+        plausible_low: 見込みの下限。
+
+    Returns:
+        必要な倍率。1.0 以下なら、いまの設計で既に足りている。
+
+    Raises:
+        ValueError: ``plausible_low`` が 0 以下。
+    """
+    if plausible_low <= 0:
+        raise ValueError(f"plausible_low must be positive; got {plausible_low}.")
+    return detectable / plausible_low
+
+
 @dataclass(frozen=True)
 class Gate:
     """検出可能性ゲートの結果。**平均は持たない。**
@@ -338,3 +366,47 @@ def gate(detectable: float, plausible_low: float, plausible_high: float) -> Gate
         "見込みが検出できる差をまたいでいる。**通るかどうかが運になる。** "
         "#7 がこれで、負けた側に落ちた。期数を増やすか、分散を下げる設計にする。",
     )
+
+
+# --- 合成の利得（r）の当てはめ ------------------------------------------------
+#
+# 閾値は `docs/HYPOTHESES.md` に**測る前から**書いてある。ここは、その表を
+# 人が読んで当てはめないようにするためだけの関数である。
+#
+# **曖昧域は打ち切りに倒してある。** 「過小評価だから財務系を足せば届くかも
+# しれない」は測定後にしか使えない理屈で、それで測り直す形は「当てはまるまで
+# 測り方を変えること」と区別が付かない。
+
+COMPOSITE_PROCEED = "通過"
+COMPOSITE_STOP = "打ち切り"
+
+#: r がこれ以上なら財務抽出に進む。
+COMPOSITE_PASS = 2.0
+
+#: r がこれ未満なら「明確に不足」。**行動は曖昧域と同じ打ち切りである。**
+#:
+#: この線は記録上の区別だけで置いてある。「明確に足りない」と「惜しかった」を
+#: 後から読み分けるためで、どちらも 4' に進む。
+COMPOSITE_AMBIGUOUS = 1.5
+
+
+def composite_verdict(ratio: float) -> tuple[str, str]:
+    """合成の利得 r を、封印済みの表に当てはめる。
+
+    Args:
+        ratio: 合成の t ÷ 最も良い単一因子の t。
+
+    Returns:
+        ``(扱い, 読み方)``。
+    """
+    if ratio >= COMPOSITE_PASS:
+        return COMPOSITE_PROCEED, (
+            "財務抽出に進み、合成を**1本だけ**封印する。封印前に §0 ゲートを当てること。"
+        )
+    if ratio >= COMPOSITE_AMBIGUOUS:
+        return COMPOSITE_STOP, (
+            "**曖昧域。打ち切る。** 財務系を足した再測定はしない——"
+            "「過小評価だから」は測定後にしか使えない理屈で、それで測り直すのは"
+            "当てはまるまで測り方を変えることと区別が付かない。4' へ。"
+        )
+    return COMPOSITE_STOP, "**明確に不足。** 4' へ。"
