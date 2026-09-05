@@ -57,6 +57,7 @@ from stock_ai.backtest.accumulation_signal import (
 )
 from stock_ai.backtest.cross_section import beta_to_benchmark, build_estimators, t_ratio
 from stock_ai.backtest.engine import BacktestEngine
+from stock_ai.backtest.factor_panel import build_panel
 from stock_ai.backtest.factor_test import (
     FactorTestResult,
     formation_grid,
@@ -81,6 +82,7 @@ from stock_ai.backtest.lowvol import DEFAULT_LAGS as LOWVOL_LAGS
 from stock_ai.backtest.lowvol import (
     DETECTABLE as LOWVOL_DETECTABLE,
 )
+from stock_ai.backtest.lowvol import JUDGED_T as LOWVOL_JUDGED_T
 from stock_ai.backtest.lowvol import (
     PASS as LOWVOL_PASS,
 )
@@ -102,8 +104,11 @@ from stock_ai.backtest.pead import (
 )
 from stock_ai.backtest.pead_census import DRIFT_WINDOW, ENTRY_OFFSET, run_census
 from stock_ai.backtest.power import (
+    COMPOSITE_PROCEED,
+    COMPOSITE_STOP,
     DEFAULT_LAGS,
     TARGET_T,
+    composite_verdict,
     estimate_power,
     gate,
     judge,
@@ -4327,6 +4332,200 @@ def power_gate(
         "[dim]このゲートは平均を見ない。**「効果がありそうだから通す」は書けない。**[/dim]"
     )
     raise typer.Exit(code=0 if result.passed else 2)
+
+
+@app.command(name="composite-gain")
+def composite_gain(
+    start: str = typer.Option("2014-01-01", "--start", help="First month, matching the judgment."),
+    window: int = typer.Option(DEFAULT_WINDOW, "--window", help="Volatility window in sessions."),
+    min_symbols: int = typer.Option(MIN_SYMBOLS_PER_MONTH, "--min-symbols", help="Per month."),
+    min_turnover: float = typer.Option(MIN_TURNOVER, "--min-turnover", help="Liquidity floor."),
+    lags: int = typer.Option(LOWVOL_LAGS, "--lags", help="Newey-West lags, in months."),
+    benchmark: str = typer.Option(BENCHMARK, "--benchmark", help="Sets the calendar."),
+) -> None:
+    """Measure r, the t gain from combining factors rather than using one.
+
+    **This is not a judgement.** The thresholds were fixed before this ran and
+    are written in ``docs/HYPOTHESES.md``: r >= 2.0 proceeds to the financial
+    extraction, 1.5 <= r < 2.0 is the ambiguous band and **stops**, r < 1.5
+    stops. The 1.5 line only separates "clearly short" from "close" in the
+    record; the action either side of it is the same.
+
+    **The ambiguous band stops on purpose.** "It is an underestimate because
+    price factors correlate, so adding the financial ones would clear it" is an
+    argument that only becomes available after seeing the number, and using it
+    is indistinguishable from changing the measurement until it agrees.
+
+    r is the composite's t divided by the **best** single factor's t. Picking
+    the best after the fact inflates the denominator, so r comes out
+    conservative. That direction is the safe one.
+
+    Everything is measured on alpha with beta fixed from the estimation period,
+    on the quintile sort - the cross-sectional estimator was calibrated at 0.93
+    and is not used. Same universe for every column, because a composite
+    compared against a factor built on a different universe measures the
+    universe, not the combination.
+    """
+    settings = get_settings()
+    configure_logging(settings.log_level)
+
+    begin = _parse_date(start)
+    if begin is None:
+        raise typer.BadParameter(f"--start must be YYYY-MM-DD; got {start!r}.")
+
+    console.print(
+        "[bold yellow]これは判定ではない。[/] 閾値は測る前に確定済み（`docs/HYPOTHESES.md`）。"
+    )
+    console.print(
+        "[dim]r ≥ 2.0 通過 / 1.5 ≤ r < 2.0 曖昧域→打ち切り / r < 1.5 不足。"
+        "**測定後に変更しない。曖昧域で財務系の再測定はしない。**[/dim]"
+    )
+    console.print()
+
+    database = Database()
+    database.create_all()
+
+    # **最初に検算する。** 低ボラだけの盤面が #7 を再現しなければ、フィルタが
+    # 揃っていない。揃っていない盤面で比を取っても、それは合成の利得ではない。
+    console.print("[bold]検算：低ボラだけの盤面が #7 を再現するか。[/]")
+    try:
+        check_panel = build_panel(
+            database,
+            factors=("低ボラ",),
+            benchmark=benchmark,
+            start=begin,
+            window=window,
+            min_turnover=min_turnover,
+            min_symbols=min_symbols,
+        )
+        check_prior = build_panel(
+            database,
+            factors=("低ボラ",),
+            benchmark=benchmark,
+            end=begin - dt.timedelta(days=1),
+            window=window,
+            min_turnover=min_turnover,
+            min_symbols=min_symbols,
+        )
+    except ValueError as exc:
+        console.print(f"[red]{exc}[/]")
+        raise typer.Exit(code=1) from exc
+
+    reproduced = _alpha_of(check_panel, check_prior, "低ボラ", lags)
+    console.print(
+        f"  低ボラ単独: β {reproduced[0]:.3f}、α {reproduced[1].mean * 100:+.3f}%、"
+        f"t {reproduced[1].t_statistic:+.2f}"
+        f"  [dim]（#7 は β 0.542、α +0.242%、t +1.70）[/dim]"
+    )
+    close_enough = abs(reproduced[1].t_statistic - LOWVOL_JUDGED_T) <= 0.05
+    if close_enough:
+        console.print("  [green]再現した。フィルタは揃っている。[/]")
+    else:
+        console.print(
+            "  [yellow]再現しない。**どこかで違うフィルタを通している。**[/] "
+            "比を取っても合成の利得にならないので、先に揃える。"
+        )
+        raise typer.Exit(code=2)
+
+    console.print()
+    try:
+        panel = build_panel(
+            database,
+            benchmark=benchmark,
+            start=begin,
+            window=window,
+            min_turnover=min_turnover,
+            min_symbols=min_symbols,
+        )
+        prior = build_panel(
+            database,
+            benchmark=benchmark,
+            end=begin - dt.timedelta(days=1),
+            window=window,
+            min_turnover=min_turnover,
+            min_symbols=min_symbols,
+        )
+    except ValueError as exc:
+        console.print(f"[red]{exc}[/]")
+        raise typer.Exit(code=1) from exc
+
+    console.print(
+        f"合成の盤面: {len(panel.months):,} ヶ月"
+        f"（{panel.months[0]} 〜 {panel.months[-1]}）、"
+        f"因子 {'＋'.join(panel.factors)}。"
+    )
+    console.print(
+        "[dim]モメンタムが252営業日を要るので、低ボラ単独の盤面より月数・銘柄数が"
+        "少ない。**単一因子もこの盤面から取る**ので、比には効かない。[/dim]"
+    )
+
+    table = Table(title="単一因子と合成（α、β は推定期間で固定、分位ソート）")
+    for column in ("signal", "β", "α の平均", "標準誤差(NW)", "t"):
+        table.add_column(column, justify="left" if column == "signal" else "right")
+
+    singles: dict[str, float] = {}
+    for name in panel.factors:
+        beta, result = _alpha_of(panel, prior, name, lags)
+        singles[name] = result.t_statistic
+        table.add_row(
+            name,
+            f"{beta:.3f}",
+            f"{result.mean * 100:+.3f}%",
+            f"{result.standard_error * 100:.3f}%",
+            f"{result.t_statistic:+.2f}",
+        )
+
+    combined_beta, combined = _alpha_of(panel, prior, None, lags)
+    table.add_row(
+        "[bold]合成（等加重）[/]",
+        f"{combined_beta:.3f}",
+        f"[bold]{combined.mean * 100:+.3f}%[/]",
+        f"{combined.standard_error * 100:.3f}%",
+        f"[bold]{combined.t_statistic:+.2f}[/]",
+    )
+    console.print(table)
+
+    best_name = max(singles, key=lambda key: singles[key])
+    best = singles[best_name]
+    console.print(
+        f"[dim]最も良い単一因子は **{best_name}**（t {best:+.2f}）。"
+        "**後から選んでいるので分母が大きくなる方向**で、r は控えめに出る。[/dim]"
+    )
+
+    ratio = t_ratio(combined.t_statistic, best)
+    console.print()
+    if ratio is None:
+        console.print(
+            "[yellow]符号が違うので比を出さない。[/] **「何倍良い」が意味を持たない。** "
+            "閾値の表では r < 1.5 と同じ扱いになる。"
+        )
+        verdict, reading = COMPOSITE_STOP, "比が取れない。4' へ。"
+    else:
+        console.print(f"**r = [bold]{ratio:.2f}[/]**")
+        verdict, reading = composite_verdict(ratio)
+
+    console.print()
+    style = "green" if verdict == COMPOSITE_PROCEED else "red"
+    console.print(f"[{style}][bold]{verdict}[/][/] {reading}")
+    console.print(
+        "[dim]この当てはめは測る前に確定させた表による（`docs/HYPOTHESES.md`）。"
+        "結果を見てから線を引き直していない。[/dim]"
+    )
+
+
+def _alpha_of(panel, prior, factor: str | None, lags: int):
+    """Build the alpha series from a panel, with beta fixed out of period.
+
+    ``factor`` が ``None`` なら等加重の合成。**β は必ず推定期間から取る。**
+    判定期間から取れば、その期間に合う調整を選んだことになる。
+    """
+    sections = panel.column(factor) if factor else panel.composite()
+    prior_sections = prior.column(factor) if factor else prior.composite()
+
+    now = build_estimators(sections, panel.benchmark)
+    before = build_estimators(prior_sections, prior.benchmark)
+    beta = beta_to_benchmark(before.quantile_long_only, before.benchmark)
+    return beta, judge(now.alpha(now.quantile_long_only, beta), lags=lags)
 
 
 @app.command(name="lowvol-estimator")
