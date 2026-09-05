@@ -218,7 +218,9 @@ def build_panel(
         if not usable:
             raise ValueError("その期間に組み替え日が無い。")
 
-        targets = symbols or [row.symbol for row in list_securities(session, market="JP")]
+        # ``list_securities`` は ``(symbol, market)`` を返す。**キーワードで
+        # 市場を絞る引数は無い。** `lowvol` と同じ呼び方にそろえる。
+        targets = symbols or [sym for sym, market in list_securities(session) if market == "JP"]
         buckets: dict[int, list[tuple[tuple[float, ...], float]]] = {i: [] for i, _ in usable}
         no_history = thin = discontinuous = 0
 

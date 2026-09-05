@@ -19,6 +19,8 @@ from __future__ import annotations
 
 import datetime as dt
 
+import numpy as np
+import pandas as pd
 import pytest
 
 from stock_ai.backtest.factor_panel import (
@@ -29,7 +31,11 @@ from stock_ai.backtest.factor_panel import (
     REVERSAL_WINDOW,
     Panel,
     _signals,
+    build_panel,
 )
+from stock_ai.data.schema import ADJ_CLOSE, CLOSE, HIGH, LOW, OPEN, VOLUME
+from stock_ai.database.engine import Database
+from stock_ai.database.repository import PriceRepository
 
 
 def _panel(sections, factors=("低ボラ", "モメンタム")) -> Panel:
@@ -191,3 +197,86 @@ def test_the_required_history_comes_from_the_factors_asked_for() -> None:
     assert FACTOR_HISTORY["モメンタム"] == MOMENTUM_WINDOW
     assert FACTOR_HISTORY["低ボラ"] < FACTOR_HISTORY["モメンタム"]
     assert set(DEFAULT_FACTORS) == set(FACTOR_HISTORY)
+
+
+# --- 組み立てを実際に通す ------------------------------------------------------
+#
+# **上のテストは部品しか触っていなかった。** `Panel` を直に組むか `_signals` を
+# 呼ぶだけで、`build_panel` を一度も通っていない。そのせいで
+# ``list_securities(session, market="JP")`` という**存在しない呼び方**が本番まで
+# 出て行った。署名を間違えても、部品のテストは全部通る。
+
+_BARS = 700
+_INDEX = pd.bdate_range("2022-01-03", periods=_BARS, name="date")
+
+
+def _frame(seed: int, volatility: float = 0.01, volume: float = 500_000.0) -> pd.DataFrame:
+    rng = np.random.default_rng(seed)
+    close = 1_000.0 * np.exp(np.cumsum(rng.normal(0.0, volatility, _BARS)))
+    return pd.DataFrame(
+        {
+            OPEN: close,
+            HIGH: close,
+            LOW: close,
+            CLOSE: close,
+            ADJ_CLOSE: close,
+            VOLUME: [volume] * _BARS,
+        },
+        index=_INDEX,
+    )
+
+
+def _database(count: int = 20) -> Database:
+    database = Database("sqlite:///:memory:")
+    database.create_all()
+    with database.session() as session:
+        repo = PriceRepository(session)
+        repo.upsert_prices("1306", _frame(99), market="JP")
+        for index in range(count):
+            repo.upsert_prices(
+                f"{7200 + index:04d}",
+                _frame(index, volatility=0.004 + 0.002 * index),
+                market="JP",
+            )
+    return database
+
+
+def test_build_panel_runs_end_to_end() -> None:
+    """**これが無かったせいで、存在しない引数が本番まで出た。**"""
+    panel = build_panel(_database(), window=60, min_symbols=10)
+
+    assert panel.months
+    assert panel.factors == DEFAULT_FACTORS
+    assert len(panel.benchmark) == len(panel.months) == len(panel.sections)
+    assert all(len(signals) == len(DEFAULT_FACTORS) for signals, _f in panel.sections[0])
+
+
+def test_build_panel_with_one_factor_needs_less_history() -> None:
+    """低ボラだけなら月数が減らない。**これが #7 を再現できる条件である。**"""
+    database = _database()
+
+    low_only = build_panel(database, factors=("低ボラ",), window=60, min_symbols=10)
+    with_momentum = build_panel(database, window=60, min_symbols=10)
+
+    assert len(low_only.months) > len(with_momentum.months)
+
+
+def test_build_panel_refuses_a_factor_it_does_not_know() -> None:
+    with pytest.raises(ValueError):
+        build_panel(_database(), factors=("バリュー",), window=60, min_symbols=10)
+
+
+def test_build_panel_refuses_an_empty_factor_list() -> None:
+    with pytest.raises(ValueError):
+        build_panel(_database(), factors=(), window=60, min_symbols=10)
+
+
+def test_the_composite_of_a_real_panel_lines_up_with_its_months() -> None:
+    """月がずれていると、β を引くときに別の月と引き算する。"""
+    panel = build_panel(_database(), window=60, min_symbols=10)
+
+    composite = panel.composite()
+
+    assert len(composite) == len(panel.months)
+    for built, raw in zip(composite, panel.sections, strict=True):
+        assert not built or len(built) == len(raw)
