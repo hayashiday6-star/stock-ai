@@ -57,6 +57,7 @@ from stock_ai.backtest.accumulation_signal import (
 )
 from stock_ai.backtest.cross_section import beta_to_benchmark, build_estimators, t_ratio
 from stock_ai.backtest.engine import BacktestEngine
+from stock_ai.backtest.event_census import count_halt_resumptions, count_limit_moves
 from stock_ai.backtest.factor_panel import build_panel
 from stock_ai.backtest.factor_test import (
     FactorTestResult,
@@ -5024,6 +5025,103 @@ def reversal_bias(
         "[dim]これは IS の数字である。判定には使わない。"
         "**プロジェクト全体で使い回せる数字**として登録に書く。[/]"
     )
+
+
+@app.command(name="event-census")
+def event_census(
+    min_turnover: float = typer.Option(
+        MIN_TURNOVER, "--min-turnover", help="Liquidity floor in yen. Same as the other censuses."
+    ),
+) -> None:
+    """Count limit-up days and halt resumptions, computing no returns.
+
+    7本すべてが、検出力の最も不利な角にいた——長い保有窓と少ない独立観測。
+    この2つはどちらも保有1〜5営業日で、価格だけから検出できる。
+
+    **数えるのが先である。** #1 では条件を満たす銘柄の 97.5% が流動性フィルタで
+    消え、それが分かったのは検証を組んだあとだった。ここでは順序を逆にする。
+    判定は消費しない。
+    """
+    settings = get_settings()
+    configure_logging(settings.log_level)
+
+    database = Database()
+    database.create_all()
+    floor = min_turnover or MIN_TURNOVER
+
+    console.print(
+        f"売買代金 {floor / 1e8:.0f}億円以上。**リターンは計算しない。**判定は消費しない。"
+    )
+
+    limits = count_limit_moves(database, min_turnover=floor)
+    halts = count_halt_resumptions(database, min_turnover=floor)
+
+    summary = Table(title="母集団")
+    for column in ("イベント", "フィルタ前", "フィルタ後", "通過率", "営業日数"):
+        summary.add_column(column, justify="right")
+    for census in (limits, halts):
+        summary.add_row(
+            census.kind,
+            f"{census.raw_events:,}",
+            f"{census.events:,}",
+            f"{census.survival:.1%}",
+            f"{census.trading_days:,}",
+        )
+    console.print(summary)
+
+    console.print(
+        f"[dim]銘柄 {limits.symbols_scanned:,} 件（価格の無いもの "
+        f"{limits.symbols_without_prices:,}）。除外の内訳——値幅制限: 売買代金不足 "
+        f"{limits.excluded_thin:,}／履歴不足 {limits.excluded_no_history:,}、"
+        f"売買停止: 売買代金不足 {halts.excluded_thin:,}／履歴不足 "
+        f"{halts.excluded_no_history:,}[/]"
+    )
+
+    for census in (limits, halts):
+        if census.events == 0:
+            console.print(f"[yellow]{census.kind}: 1件も残らなかった。[/]")
+            continue
+        years = census.by_year()
+        table = Table(title=f"{census.kind}／年別")
+        for column in ("年", "件数", "営業日数", "1日あたり"):
+            table.add_column(column, justify="right")
+        for year, count, day_count in years:
+            table.add_row(str(year), f"{count:,}", f"{day_count:,}", f"{count / day_count:,.1f}")
+        console.print(table)
+        console.print(
+            "1営業日あたり: "
+            + "、".join(f"{name} {value:,}" for name, value in census.breadth())
+            + "　／　売買代金（億円）: "
+            + "、".join(f"{name} {value:,.1f}" for name, value in census.turnover_quantiles())
+        )
+
+    histogram = limits.move_histogram()
+    if histogram:
+        table = Table(title="値幅制限／前日比の分布（近似が当たっているか）")
+        table.add_column("前日比")
+        table.add_column("件数", justify="right")
+        for label, count in histogram:
+            table.add_row(label, f"{count:,}")
+        console.print(table)
+        console.print(
+            "[dim]制限幅の階段表が効いているなら、山は少数の位置に立つ。なだらかなら、"
+            "拾っているのは制限ではなく薄い銘柄である。過去の制限幅の表を持っていない"
+            "ので、当たり具合はこの形でしか見られない。[/]"
+        )
+
+    lengths = halts.length_histogram()
+    if lengths:
+        console.print(
+            "売買停止の長さ: " + "、".join(f"{label} {count:,}" for label, count in lengths)
+        )
+    if halts.crossed_discontinuity:
+        console.print(
+            f"[yellow]うち {halts.crossed_discontinuity:,} 件は再開日が不連続だった[/]"
+            "（分割・併合による停止）。除外はしていない。"
+        )
+
+    console.print()
+    console.print("[dim]件数と分布のみ。リターンは計算していない。[/]")
 
 
 @app.command(name="reversal-census")
