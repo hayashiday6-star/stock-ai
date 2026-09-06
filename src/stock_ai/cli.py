@@ -2806,10 +2806,16 @@ def jquants_archive(
         table.add_column(column, justify="left" if column == "エンドポイント" else "right")
 
     found: list[BulkFile] = []
+    refused: dict[str, str] = {}
     for name in wanted:
         try:
             files = bulk_list_files(settings.jquants_api_key, endpoint=name)
         except Exception as exc:  # noqa: BLE001 - 断られ方そのものが記録に値する
+            # **例外の型名だけを出さない。** `DataError` とだけ書くと、
+            # 「プランに入っていない」と「エンドポイント名が違う」が同じに
+            # 見える。2026-09-06 の下見では後者が6本混じっていて、断られ方の
+            # 中身を出していなかったせいで気付くのが1手遅れた。
+            refused[name] = f"{type(exc).__name__}: {exc}"
             table.add_row(name, "[yellow]—[/]", f"[yellow]{type(exc).__name__}[/]", "")
             continue
         span = bulk_coverage(files)
@@ -2824,6 +2830,19 @@ def jquants_archive(
 
     total_mb = sum(item.size for item in found) / 1_000_000
     console.print(f"合計 [bold]{len(found):,}[/] 本、[bold]{total_mb:,.0f} MB[/]。")
+
+    if refused:
+        # **断られ方は判断の材料である。** 定型ではないので削らない。
+        why = Table(title=f"落ちた理由 ({len(refused)})")
+        why.add_column("エンドポイント")
+        why.add_column("断られ方")
+        for name, reason in refused.items():
+            why.add_row(name, reason[:120])
+        console.print(why)
+        console.print(
+            "[dim]**「プランに入っていない」と「名前が違う」を読み分けること。**"
+            "プランで説明が付かない1本が混じっていたら、名前を疑う。[/]"
+        )
 
     if dry_run:
         console.print("[dim]--dry-run なので、ここで止める。1バイトも落としていない。[/]")

@@ -569,3 +569,58 @@ class TestBulkCsvEncoding:
 
         assert encoding == "utf-8/replace"
         assert caplog.records
+
+
+class TestArchiveEndpointNames:
+    """原本に残すエンドポイントの綴り。
+
+    **綴りが違うと `DataError` が返る。それは「プランに入っていない」ときと
+    見分けが付かない。** 最初は手で写して6本間違えており、2026-09-06 の下見で
+    Light でも取れるはずの取引カレンダーと TOPIX が落ちて初めて分かった。
+
+    Premium の週に同じことが起きれば、「Premium にも無いのだ」と読んで取らずに
+    終わる。**そのときは契約が終わっていて、確かめ直せない。**
+    """
+
+    def test_the_archive_list_is_taken_from_the_bulk_list(self) -> None:
+        """**2つ持たない。** 片方だけ直したときに気付けない。"""
+        from stock_ai.data.jquants_bulk import ARCHIVE_ENDPOINTS, BULK_ENDPOINTS
+
+        assert set(ARCHIVE_ENDPOINTS) <= set(BULK_ENDPOINTS)
+
+    def test_only_the_add_ons_are_left_out(self) -> None:
+        """分足とティックは通常プランとは別契約。他を落とすなら理由が要る。"""
+        from stock_ai.data.jquants_bulk import (
+            ARCHIVE_ADDONS,
+            ARCHIVE_ENDPOINTS,
+            BULK_ENDPOINTS,
+        )
+
+        assert set(BULK_ENDPOINTS) - set(ARCHIVE_ENDPOINTS) == set(ARCHIVE_ADDONS)
+
+    @pytest.mark.parametrize(
+        "wrong",
+        [
+            "/indices/topix",
+            "/indices/daily",
+            "/markets/trading-calendar",
+            "/derivatives/futures",
+            "/derivatives/options",
+            "/derivatives/options-225",
+        ],
+    )
+    def test_the_names_that_were_actually_wrong_stay_out(self, wrong: str) -> None:
+        """実際に間違えた6本。**もっともらしく見えるから間違えた。**
+
+        `jquants` CLI の短い名前（`idx daily` / `deriv futures`）に引きずられて
+        いる。API のパスは `/indices/bars/daily` のように `bars/daily` が入る。
+        """
+        from stock_ai.data.jquants_bulk import ARCHIVE_ENDPOINTS
+
+        assert wrong not in ARCHIVE_ENDPOINTS
+
+    def test_every_endpoint_the_deadline_work_needs_is_in_the_archive(self) -> None:
+        """期限ものが漏れていないこと。"""
+        from stock_ai.data.jquants_bulk import ARCHIVE_ENDPOINTS, DEADLINE_ENDPOINTS
+
+        assert set(DEADLINE_ENDPOINTS) <= set(ARCHIVE_ENDPOINTS)

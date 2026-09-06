@@ -78,24 +78,21 @@ DEADLINE_ENDPOINTS: tuple[str, ...] = ("/fins/summary", "/equities/bars/daily")
 #:
 #: プランで取れないものが混じっていてもよい。一覧が空で返るだけで、そのことは
 #: 数として出る。**こちらの表を信じて取り逃すより、聞いて空が返るほうがよい。**
-ARCHIVE_ENDPOINTS: tuple[str, ...] = (
-    "/equities/master",
-    "/equities/bars/daily",
-    "/fins/summary",
-    "/fins/details",
-    "/fins/dividend",
-    "/markets/margin-alert",
-    "/markets/margin-interest",
-    "/markets/short-sale-report",
-    "/markets/short-ratio",
-    "/markets/breakdown",
-    "/markets/trading-calendar",
-    "/equities/investor-types",
-    "/indices/topix",
-    "/indices/daily",
-    "/derivatives/futures",
-    "/derivatives/options",
-    "/derivatives/options-225",
+#:
+#: **`BULK_ENDPOINTS` から引く。手で写さない。** 最初は写して作り、6本を綴り
+#: 間違えた（`/indices/topix` / `/markets/trading-calendar` /
+#: `/derivatives/futures` …）。綴りが違うと `DataError` が返るが、**それは
+#: 「プランに入っていない」ときと見分けが付かない。** 2026-09-06 の下見で
+#: Light でも取れるはずの取引カレンダーと TOPIX が落ちて初めて分かった。
+#: Premium の週に同じことが起きれば、「Premium にも無いのだ」と読んで取らずに
+#: 終わる。
+#:
+#: 除くのはアドオン契約の2本だけである。分足とティックは通常プランとは別契約で、
+#: 契約していないものを一覧に出すと、落ちた理由が毎回1行増える。
+ARCHIVE_ADDONS: tuple[str, ...] = ("/equities/bars/minute", "/equities/trades")
+
+ARCHIVE_ENDPOINTS: tuple[str, ...] = tuple(
+    endpoint for endpoint in BULK_ENDPOINTS if endpoint not in ARCHIVE_ADDONS
 )
 
 #: プラン別の1分あたりリクエスト上限。出典は J-Quants 同梱の

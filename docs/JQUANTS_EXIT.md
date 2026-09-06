@@ -980,3 +980,63 @@ JQUANTS_PLAN=Premium
 目録（`manifest.csv`）は `size`（一覧が言う大きさ）と `bytes`（実際に届いた
 大きさ）を**別の列**で持つ。同じ列に入れると、切れたダウンロードが「落とせ
 た」ことになる。
+
+### 下見の実測（2026-09-06、Light のまま）
+
+`checks\原本の下見.bat`。**1バイトも落としていない。**
+
+| エンドポイント | 本数 | 覆う範囲 | 合計 |
+|---|---|---|---|
+| `/equities/master` | 65 | 2021-09 〜 2026-09 | 135 MB |
+| `/equities/bars/daily` | 64 | 2021-09 〜 2026-09 | 119 MB |
+| `/fins/summary` | 64 | 2021-09 〜 2026-09 | 9 MB |
+| `/equities/investor-types` | 61 | 2021-09 〜 2026-09 | 0 MB |
+| **合計** | **254** | | **263 MB** |
+
+残り13本は `DataError`。覆う範囲が5年であることから、Light である裏が取れた。
+
+`investor-types` の 0 MB は四捨五入である。**「取れなかった」ではない**——
+本数が 61 で範囲も出ている。
+
+#### 20年ぶんの見積もり
+
+| | |
+|---|---|
+| いま開いている4本を20年 | 約 1,016 本、**約 1 GB** |
+| リクエスト数 | 約 2,000（Premium 500回/分なら数分） |
+| Premium で新たに開く13本 | **測っていない。分からない。** |
+
+**転送は制約にならない**（b''' と同じ結論）。ディスクは1 GB では足りない
+——新しく開く13本のうち、デリバティブと売買内訳は日次で全銘柄なので、
+株価より大きくなりうる。**9/15 の下見をもう一度回して、そこで実測する。**
+
+#### エンドポイント名を6本間違えていた
+
+**この下見で見つかった。取引カレンダーと TOPIX は Light でも取れるはずなのに
+落ちていた。**
+
+| 書いていた名前 | 正しい名前 |
+|---|---|
+| `/markets/trading-calendar` | `/markets/calendar` |
+| `/indices/topix` | `/indices/bars/daily/topix` |
+| `/indices/daily` | `/indices/bars/daily` |
+| `/derivatives/futures` | `/derivatives/bars/daily/futures` |
+| `/derivatives/options` | `/derivatives/bars/daily/options` |
+| `/derivatives/options-225` | `/derivatives/bars/daily/options/225` |
+
+`jquants` CLI の短い名前（`idx daily` / `deriv futures`）に引きずられている。
+API のパスには `bars/daily` が入る。
+
+**綴りが違うと `DataError` が返るが、それは「プランに入っていない」ときと
+見分けが付かない。** Premium の週に同じことが起きれば、「Premium にも無いの
+だ」と読んで取らずに終わる。そのときは契約が終わっていて、確かめ直せない。
+
+直したのは名前だけではない。
+
+1. **一覧を2つ持つのをやめた。** `ARCHIVE_ENDPOINTS` は `BULK_ENDPOINTS`
+   から引く。手で写したから間違えた。
+2. **落ちた理由を表に出す。** 以前は例外の型名（`DataError`）だけを出して
+   いたので、13本が同じ見た目で並んでいた。**断られ方の中身は定型ではなく、
+   判断の材料である。**
+
+「プランで説明が付かない1本が混じっていたら、名前を疑う」を出力にも書いた。
