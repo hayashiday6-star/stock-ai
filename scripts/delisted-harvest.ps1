@@ -26,14 +26,19 @@
     マスタは現存銘柄のみで、廃止銘柄は返らないためです。
 
     期限があります。J-Quants の解約予定は 2026-09-22 で、それ以降はこの
-    名簿も廃止銘柄の株価も取り直せません。5年ローリング窓の外（2021-09 より
-    前）は、いま実行しても取れません。
+    名簿も廃止銘柄の株価も取り直せません。ローリング窓の外は、いま実行しても
+    取れません。**窓の幅は契約プランで決まります**（Light 5年 / Standard
+    10年 / Premium 20年）。
+
+    開始日を指定しなければ、`.env` の JQUANTS_PLAN から引きます。**ここを
+    固定値にすると、プランを上げた日に何も起きません**——例外も警告も出ない
+    まま、古い日付を要求せずに終わります。
 
     全期間で1時間以上かかることがあります。中断しても安全です。すでに
     ファイルがある日付は取りに行かず、株価も取れている銘柄は飛ばします。
 
 .PARAMETER Start
-    最初の名簿の日付。既定 2021-09-01（5年窓の境界）。
+    最初の名簿の日付。既定は JQUANTS_PLAN から引いた窓の前端。
 
 .PARAMETER End
     最後の名簿の日付。既定は今日。
@@ -62,7 +67,7 @@
 #>
 [CmdletBinding()]
 param(
-    [string]$Start = '2021-09-01',
+    [string]$Start = '',
     [string]$End = '',
     [int]$StepDays = 30,
     [int]$Limit = 0,
@@ -102,9 +107,10 @@ Write-Host ''
 
 $arguments = @(
     'run', 'stock-ai', 'delisted-harvest',
-    '--start', $Start,
     '--step-days', "$StepDays"
 )
+# 指定が無ければ渡さない。CLI が JQUANTS_PLAN から引く。
+if ($Start) { $arguments += @('--start', $Start) }
 if ($End) { $arguments += @('--end', $End) }
 if ($Limit -gt 0) { $arguments += @('--limit', "$Limit") }
 if ($NoPrices) { $arguments += '--no-prices' }

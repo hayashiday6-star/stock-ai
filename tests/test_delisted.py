@@ -408,3 +408,66 @@ def test_the_window_edge_moves_with_the_day() -> None:
 
     assert beyond_the_window([day], dt.date(2026, 9, 3)) == []
     assert beyond_the_window([day], dt.date(2026, 9, 6)) == [day]
+
+
+def test_the_reach_follows_the_plan_and_not_a_fixed_five_years() -> None:
+    """**プランを上げた日に、何も起きないのが一番困る。**
+
+    例外も警告も出ないまま、5年より前の日付を「窓の外だから取れない」と判断
+    して要求を出さない。20年ぶん払って5年ぶんだけ落とすことになる。
+    """
+    from stock_ai.data.delisted import window_days
+
+    assert window_days("Light") == 5 * 365
+    assert window_days("Standard") == 10 * 365
+    assert window_days("Premium") == 20 * 365
+
+
+def test_an_unknown_plan_falls_to_the_narrow_side() -> None:
+    """**広いほうに倒さない。**
+
+    広く見積もると、取れない日付を「取れるはず」と案内して、成功しない .bat を
+    何度も実行させることになる。狭く見積もったときの害は、断られ方が1回記録に
+    残るだけである。
+    """
+    from stock_ai.data.delisted import window_days
+
+    assert window_days("Enterprise") == 5 * 365
+    assert window_days(None) == 5 * 365
+    assert window_days("") == 5 * 365
+
+
+def test_the_plan_name_is_read_however_it_was_typed() -> None:
+    """`.env` を手で編集する値である。**大文字小文字で黙って Light に落ちない。**"""
+    from stock_ai.data.delisted import window_days
+
+    assert window_days("premium") == 20 * 365
+    assert window_days(" PREMIUM ") == 20 * 365
+
+
+def test_the_default_start_moves_back_when_the_plan_goes_up() -> None:
+    """既定の開始日は固定値ではなく、プランと今日から引く。
+
+    1年を365日で数えているので、20年では閏日のぶん**5日ほど手前**に出る。
+    直さないのは、ずれが**狭い側**だからである——本当は届く日を届かないと
+    見なすだけで、その害は断られ方が1回記録に残らないことに留まる。逆向きに
+    ずらすと、取れない日付を取れると案内することになる。
+    """
+    from stock_ai.data.delisted import earliest_reachable
+
+    today = dt.date(2026, 9, 15)
+
+    assert earliest_reachable("Light", today) == dt.date(2021, 9, 16)
+    assert earliest_reachable("Premium", today) == dt.date(2006, 9, 20)
+    assert earliest_reachable("Premium", today) > today.replace(year=today.year - 20)
+
+
+def test_a_date_outside_light_is_inside_premium() -> None:
+    """同じ日付が、プランによって「取り直せない」から「取れる」に変わる。"""
+    from stock_ai.data.delisted import beyond_the_window
+
+    day = dt.date(2015, 6, 1)
+    today = dt.date(2026, 9, 15)
+
+    assert beyond_the_window([day], today, plan="Light") == [day]
+    assert beyond_the_window([day], today, plan="Premium") == []

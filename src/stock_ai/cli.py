@@ -175,13 +175,13 @@ from stock_ai.data.bulk import latest_close as bulk_latest_close
 from stock_ai.data.delisted import (
     DEFAULT_SNAPSHOT_DIR,
     DEFAULT_STEP_DAYS,
-    ROLLING_WINDOW_START,
     TACHIBANA_SNAPSHOT_DIR,
     all_profiles,
     beyond_the_window,
     covered_from,
     dates_without_lending,
     delistings,
+    earliest_reachable,
     harvest_snapshots,
     lending_coverage,
     membership,
@@ -197,6 +197,7 @@ from stock_ai.data.jquants_bulk import (
     ARCHIVE_ENDPOINTS,
     BULK_ENDPOINTS,
     DEADLINE_ENDPOINTS,
+    PLAN_HISTORY_YEARS,
     PLAN_REQUESTS_PER_MINUTE,
     PRESIGNED_URL_TTL,
     BulkFile,
@@ -357,6 +358,18 @@ def info() -> None:
     ):
         note = "" if chosen.strip().lower() in allowed else "  [red](未対応の値)[/]"
         table.add_row(label, f"{chosen or '(未設定)'}{note}")
+    # **遡れる年数はプランで決まる。** 上げた日にここを直し忘れると、例外も
+    # 警告も出ないまま、窓の外だと判断して古い日付を要求しない——20年ぶん
+    # 払って5年ぶんだけ落とす形になる。上の3つと同じ理由でここに出す。
+    plan = (settings.jquants_plan or "").strip().capitalize()
+    known = plan in PLAN_HISTORY_YEARS
+    reach = earliest_reachable(plan)
+    table.add_row(
+        "jquants_plan",
+        f"{settings.jquants_plan or '(未設定)'}"
+        + ("" if known else "  [red](未知の値。5年として扱う)[/]")
+        + f"  遡れる: {reach} まで",
+    )
     if settings.jp_price_source.strip().lower() == "tachibana":
         version = settings.tachibana_api_version or tachibana_default_version()
         warning = tachibana_version_warning(version)
@@ -2395,10 +2408,10 @@ def universe_snapshots(
 
 @app.command(name="delisted-harvest")
 def delisted_harvest(
-    start: str = typer.Option(
-        ROLLING_WINDOW_START.isoformat(),
+    start: str | None = typer.Option(
+        None,
         "--start",
-        help="First snapshot date. J-Quants refuses anything outside its 5-year window.",
+        help="First snapshot date. Defaults to the oldest the plan can reach.",
     ),
     end: str | None = typer.Option(None, "--end", help="Last snapshot date. Defaults to today."),
     step_days: int = typer.Option(
@@ -2450,9 +2463,17 @@ def delisted_harvest(
     settings = get_settings()
     configure_logging(settings.log_level)
 
-    first = _parse_date(start)
+    # **既定の開始日をプランから引く。** 固定値にすると、プランを上げた日に
+    # 何も起きない——例外も警告も出ないまま、窓の外だと判断して古い日付を要求
+    # しない。20年ぶん払って5年ぶんだけ落とす形になる。
+    first = earliest_reachable(settings.jquants_plan) if start is None else _parse_date(start)
     if first is None:
         raise typer.BadParameter(f"--start must be YYYY-MM-DD; got {start!r}.")
+    if start is None:
+        console.print(
+            f"[dim]開始日は JQUANTS_PLAN=[bold]{settings.jquants_plan}[/] から "
+            f"{first}。違うなら .env を直すか --start で渡す。[/]"
+        )
     last = dt.date.today() if end is None else _parse_date(end)
     if last is None:
         raise typer.BadParameter(f"--end must be YYYY-MM-DD; got {end!r}.")
@@ -3291,12 +3312,12 @@ def jquants_inventory(
         # **5年ローリング窓の前端は毎日後ろへ動く。** 保存した当時は取れた日付が、
         # 今日はもう窓の外にある。そこを「取り直せる」と案内すると、成功しない
         # .bat を何度も実行させることになる。
-        stale = beyond_the_window(missing)
+        stale = beyond_the_window(missing, plan=settings.jquants_plan)
         if stale:
             console.print(
                 "[dim]このうち "
                 + "、".join(str(day) for day in stale)
-                + " は**5年窓の外**なので、もう取り直せない。"
+                + " は**窓の外**なので、もう取り直せない。"
                 "保存した当時は窓の中だった。窓の前端は毎日後ろへ動く。[/]"
             )
         if set(missing) - set(stale):

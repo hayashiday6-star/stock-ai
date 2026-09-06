@@ -61,9 +61,13 @@ COLUMNS = ("symbol", "name", "sector", "industry", "lending")
 #: 1ヶ月刻みなら「いつ消えたか」は月単位まで分かる。
 DEFAULT_STEP_DAYS = 30
 
-#: この日以降しか返らない、と実測で分かっている境界（2026-09 時点）。
+#: この日以降しか返らない、と実測で分かっている境界（2026-09 時点、Light）。
 #: 既定の開始日に使うだけで、これより前を禁止はしない——境界は時間とともに
 #: 前に進むのではなく**後ろに動く**ので、断られ方そのものが記録に値する。
+#:
+#: **プランを上げると後ろへ広がる。** 固定値のまま使うと、20年ぶん払って5年
+#: ぶんだけ落とすことになる。既定の開始日は :func:`earliest_reachable` から
+#: 取ること。
 ROLLING_WINDOW_START = dt.date(2021, 9, 1)
 
 #: 立花のマスタから毎月1枚ずつ残す名簿の置き場所。
@@ -195,7 +199,7 @@ def read_snapshot(path: Path) -> list[SecurityProfile]:
         ]
 
 
-#: 5年ローリング窓のおおよその幅（日）。
+#: Light のローリング窓のおおよその幅（日）。**プランで変わる。**
 #:
 #: J-Quants は窓の外を必ず断る。**前端は毎日後ろへ動く**ので、保存した当時は
 #: 取れた日付が、今日はもう取れない。厳密な境界は応答が持っている——ここは
@@ -203,14 +207,43 @@ def read_snapshot(path: Path) -> list[SecurityProfile]:
 ROLLING_WINDOW_DAYS = 5 * 365
 
 
-def beyond_the_window(dates: Iterable[dt.date], today: dt.date | None = None) -> list[dt.date]:
-    """5年窓の外に出てしまった日付を返す。**もう取り直せないもの。**
+def window_days(plan: str | None = None) -> int:
+    """そのプランで遡れるおおよその日数。
+
+    知らないプラン名は Light 相当に倒す。**広いほうに倒さない**——広く見積
+    もると、取れない日付を「取れるはず」と案内して、成功しない `.bat` を何度
+    も実行させることになる。狭く見積もったときの害は、断られ方が1回記録に
+    残るだけである。
+    """
+    from stock_ai.data.jquants_bulk import PLAN_HISTORY_YEARS
+
+    years = PLAN_HISTORY_YEARS.get((plan or "").strip().capitalize(), 5)
+    return years * 365
+
+
+def earliest_reachable(plan: str | None = None, today: dt.date | None = None) -> dt.date:
+    """そのプランで**いま**遡れる最も古い日付。
+
+    既定の開始日をここから取る。固定値にすると、プランを上げた日に何も起きない
+    ——例外も警告も出ないまま、窓の外だと判断して要求を出さない。
+    """
+    return (today or dt.date.today()) - dt.timedelta(days=window_days(plan))
+
+
+def beyond_the_window(
+    dates: Iterable[dt.date],
+    today: dt.date | None = None,
+    plan: str | None = None,
+) -> list[dt.date]:
+    """ローリング窓の外に出てしまった日付を返す。**もう取り直せないもの。**
 
     保存した当時は窓の中だった日付が、今日は外にある。ここを見ずに
     「取り直せる」と案内すると、**成功しない .bat を何度も実行させることに
     なる。** 警告が毎回出て、しかも消えない。
+
+    ``plan`` を渡さないと Light（5年）で見る。**プランを上げたら渡すこと。**
     """
-    edge = (today or dt.date.today()) - dt.timedelta(days=ROLLING_WINDOW_DAYS)
+    edge = (today or dt.date.today()) - dt.timedelta(days=window_days(plan))
     return [day for day in dates if day < edge]
 
 
