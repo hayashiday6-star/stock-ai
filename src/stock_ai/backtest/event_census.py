@@ -553,6 +553,7 @@ def high_event_returns(
     min_turnover: float = MIN_TURNOVER,
     lookback: int = HIGH_LOOKBACK,
     benchmark: str = BENCHMARK,
+    until: dt.date | None = None,
 ) -> list[float]:
     """52週高値更新の等加重バスケットの、**イベント日ごとの超過リターン**。
 
@@ -577,6 +578,10 @@ def high_event_returns(
         min_turnover: 流動性の下限（円）。
         lookback: 高値を測る営業日数。
         benchmark: 控除するベンチマークの銘柄コード。
+        until: **この日までのイベントだけを使う**（この日を含む）。``None`` なら
+            全期間。IS だけで推定するときに渡す。**降りる日がこの日を越えても
+            よい**——イベントが IS にあるかどうかで切る。境目のイベントを
+            落とすと、IS の端が薄くなる。
 
     Returns:
         イベント日ごとの超過リターン。**古い順。**
@@ -626,6 +631,8 @@ def high_event_returns(
                 # ベンチマークは**同じ日付**で取る。位置で取ると、その銘柄に
                 # 足の無い日があったぶんだけずれる。
                 when = index[position].date()
+                if until is not None and when > until:
+                    continue
                 mark = bench_at.get(index[position + 1].date())
                 leave = bench_at.get(index[position + holding].date())
                 if mark is None or leave is None:

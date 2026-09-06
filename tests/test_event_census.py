@@ -588,3 +588,64 @@ def test_the_benchmark_is_not_itself_an_event() -> None:
 
     assert census.events == 0
     assert high_event_returns(database, holding=1, lookback=50) == []
+
+
+# --- §0 段2：IS だけで推定する ---------------------------------------------
+
+
+def test_the_is_cutoff_drops_events_after_it() -> None:
+    """**IS の終わりより後のイベントを混ぜない。** 混ざっても数字では分からない。"""
+    days = _sessions(70)
+    database = _database()
+    _benchmark(database, days)
+    # 55日目と65日目の2回更新する。
+    closes = [200.0] * 55 + [210.0] * 10 + [220.0] * 5
+    _store(database, "1234", days, closes)
+
+    everything = high_event_returns(database, holding=1, lookback=50)
+    cut = high_event_returns(database, holding=1, lookback=50, until=days[60])
+
+    assert len(everything) == 2
+    assert len(cut) == 1
+
+
+def test_the_cutoff_keeps_an_event_whose_exit_falls_after_it() -> None:
+    """**イベントが IS にあるかどうかで切る。** 降りる日で切ると端が薄くなる。"""
+    days = _sessions(70)
+    database = _database()
+    _benchmark(database, days)
+    _store(database, "1234", days, [200.0] * 55 + [210.0] * 15)
+
+    # 55日目に更新、20日保有なので降りるのは 75日目相当（範囲内は 70日まで）。
+    kept = high_event_returns(database, holding=10, lookback=50, until=days[55])
+
+    assert len(kept) == 1
+
+
+def test_the_sealed_line_is_applied_not_recomputed() -> None:
+    """線は推定前に確定させてある。**当てはめるだけ。**"""
+    from stock_ai.backtest.power import (
+        HIGH_SEAL,
+        HIGH_SEAL_FLOOR,
+        HIGH_STOP,
+        high_verdict,
+    )
+
+    assert pytest.approx(0.0126) == HIGH_SEAL_FLOOR
+    assert high_verdict(HIGH_SEAL_FLOOR)[0] == HIGH_SEAL
+    assert high_verdict(HIGH_SEAL_FLOOR - 1e-9)[0] == HIGH_STOP
+    # 候補文書が「現実的」と書いた 1.0% は、この線を下回る。
+    assert high_verdict(0.010)[0] == HIGH_STOP
+
+
+def test_the_sealed_window_and_cutoff_are_the_ones_recorded() -> None:
+    """封印した設計が、記録した設計と一致していること。
+
+    **片方だけ動かすと、どちらが本当か分からなくなる。**
+    """
+    import datetime
+
+    from stock_ai.backtest.power import HIGH_HOLDING, HIGH_IS_END
+
+    assert HIGH_HOLDING == 20
+    assert datetime.date(2021, 9, 30) == HIGH_IS_END

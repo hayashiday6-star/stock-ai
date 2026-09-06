@@ -114,10 +114,15 @@ from stock_ai.backtest.power import (
     COMPOSITE_PROCEED,
     COMPOSITE_STOP,
     DEFAULT_LAGS,
+    HIGH_HOLDING,
+    HIGH_IS_END,
+    HIGH_SEAL,
+    HIGH_SEAL_FLOOR,
     TARGET_T,
     composite_verdict,
     estimate_power,
     gate,
+    high_verdict,
     judge,
     periods_needed,
     required_improvement,
@@ -5030,6 +5035,87 @@ def reversal_bias(
     console.print(
         "[dim]これは IS の数字である。判定には使わない。"
         "**プロジェクト全体で使い回せる数字**として登録に書く。[/]"
+    )
+
+
+@app.command(name="high-screen")
+def high_screen(
+    is_end: str = typer.Option(
+        HIGH_IS_END.isoformat(), "--is-end", help="Last day of IS. Cannot go past the sealed date."
+    ),
+    min_turnover: float = typer.Option(
+        MIN_TURNOVER, "--min-turnover", help="Liquidity floor in yen."
+    ),
+) -> None:
+    """Estimate the 52-week-high effect on IS only, and apply the sealed line.
+
+    **§0 の段2 である。** 同じ設計の文献値が無いので、見込みの下限を自分の IS
+    から推定する。封印しない線は**推定を1つも見ないうちに置いてある**
+    （`HIGH_SEAL_FLOOR` = 1.26%、`docs/NEXT_CANDIDATES.md`「決定3」）。
+
+    **OOS には触れない。** IS の終わりより後を渡すと終了コード2で止まる。
+    渡し間違えたときに黙って OOS を混ぜないための関門で、**混ざったことは
+    数字を見ても分からない。**
+    """
+    settings = get_settings()
+    configure_logging(settings.log_level)
+
+    try:
+        cutoff = dt.date.fromisoformat(is_end.strip())
+    except ValueError as exc:
+        raise typer.BadParameter(f"--is-end must be YYYY-MM-DD; got {is_end!r}.") from exc
+
+    if cutoff > HIGH_IS_END:
+        console.print(
+            f"[red]--is-end {cutoff} は封印済みの IS の終わり {HIGH_IS_END} より後です。[/]\n"
+            "  **OOS を混ぜることになります。** 混ざったことは数字を見ても分かりません。"
+        )
+        raise typer.Exit(code=2)
+
+    database = Database()
+    database.create_all()
+    floor = min_turnover or MIN_TURNOVER
+
+    console.print(
+        f"§0 の段2。**IS（{cutoff} まで）だけで推定する。** "
+        f"窓 {HIGH_HOLDING}営業日、売買代金 {floor / 1e8:.0f}億円以上。"
+    )
+    console.print(
+        f"[bold]封印しない線は {HIGH_SEAL_FLOOR * 100:.2f}%[/]"
+        "（推定を見る前に置いた。測定後に変更しない）。"
+    )
+
+    values = high_event_returns(database, holding=HIGH_HOLDING, min_turnover=floor, until=cutoff)
+    if len(values) < 2:
+        console.print(f"[red]IS のイベント日が足りません（{len(values)}）。[/]")
+        raise typer.Exit(code=1)
+
+    estimate = sum(values) / len(values)
+    result = judge(values, lags=HIGH_HOLDING)
+
+    table = Table(title=f"IS の推定（{cutoff} まで）")
+    for column in ("イベント日", "1イベントあたり", "標準誤差(NW)", "t"):
+        table.add_column(column, justify="right")
+    table.add_row(
+        f"{len(values):,}",
+        f"[bold]{estimate * 100:+.2f}%[/]",
+        f"{result.standard_error * 100:.2f}%",
+        f"{result.t_statistic:+.2f}",
+    )
+    console.print(table)
+    console.print(
+        "[dim]**この t は合否ではない。** IS は選別に使う期間で、判定は OOS で"
+        "一度だけ行う。ここでの t は推定の精度を読むためだけにある。[/]"
+    )
+
+    verdict, reading = high_verdict(estimate)
+    colour = "green" if verdict == HIGH_SEAL else "yellow"
+    console.print()
+    console.print(f"[{colour}][bold]{verdict}[/][/] {reading}")
+    console.print(
+        f"[dim]当てはめた線は推定前に確定させたものである"
+        f"（{HIGH_SEAL_FLOOR * 100:.2f}% ＝ OOS 1,197日での検出できる差 0.86% ＋ 費用 0.40%）。"
+        "結果を見てから引き直していない。[/]"
     )
 
 
