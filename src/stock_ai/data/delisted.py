@@ -42,7 +42,22 @@ logger = get_logger(__name__)
 DEFAULT_SNAPSHOT_DIR: Path = DATA_DIR / "universe_snapshots"
 
 #: CSV の列。順序ごと固定する（後から足すなら末尾に足す）。
+#:
+#: **J-Quants の日付ごとの名簿はこの4列だけ。** 立花の月次の名簿は
+#: ``MONTHLY_COLUMNS``（末尾に貸借の区分）を使う。2つは除外の仕方が違うので
+#: 混ぜない——その注意は置き場所を分けることで既に守っている。
 COLUMNS = ("symbol", "name", "sector", "industry")
+
+#: 立花の月次の名簿の列。``COLUMNS`` の末尾に貸借の区分を足したもの。
+#:
+#: **貸借の区分は現在値である。** 立花のマスタは「いまどうなっているか」しか
+#: 返さないので、#7 の時点では使えなかった。**月次で残せば、1年後には過去に
+#: 当てられる値になる。** 空売りできるかを決める項目なので、ロング・ショートの
+#: 設計では母集団そのものを左右する。
+#:
+#: 2026-09 以前のファイルにはこの列が無い。``read_snapshot`` は
+#: ``row.get`` で読むので、欠けていても落ちない。
+MONTHLY_COLUMNS = (*COLUMNS, "lending")
 
 #: 名簿を取りに行く間隔の既定値。月1回。廃止は年 50〜106 件なので、
 #: 1ヶ月刻みなら「いつ消えたか」は月単位まで分かる。
@@ -168,6 +183,8 @@ def read_snapshot(path: Path) -> list[SecurityProfile]:
                 name=row.get("name") or None,
                 sector=row.get("sector") or None,
                 industry=row.get("industry") or None,
+                # 2026-09 以前のファイルには無い列。**欠けていても落ちない。**
+                lending=row.get("lending") or None,
             )
             for row in reader
             if row.get("symbol")
@@ -357,10 +374,16 @@ def monthly_snapshot(
     rows = sorted(profiles, key=lambda profile: profile.symbol)
     with path.open("w", encoding="utf-8", newline="") as handle:
         writer = csv.writer(handle, lineterminator="\n")
-        writer.writerow(COLUMNS)
+        writer.writerow(MONTHLY_COLUMNS)
         for profile in rows:
             writer.writerow(
-                [profile.symbol, profile.name or "", profile.sector or "", profile.industry or ""]
+                [
+                    profile.symbol,
+                    profile.name or "",
+                    profile.sector or "",
+                    profile.industry or "",
+                    profile.lending or "",
+                ]
             )
     logger.info("%s に %d 銘柄を保存した（月次の名簿）。", path.name, len(rows))
     return path

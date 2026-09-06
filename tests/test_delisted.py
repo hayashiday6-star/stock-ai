@@ -255,3 +255,52 @@ def test_a_daily_file_is_not_read_as_a_month(tmp_path) -> None:
     monthly_snapshot(tmp_path, [_profile("7203")], on=dt.date(2026, 10, 5))
 
     assert list(monthly_membership(tmp_path)) == ["2026-10"]
+
+
+# --- 貸借の区分（2026-09-06 に足した列） ----------------------------------
+
+
+def test_the_monthly_roster_keeps_the_lending_class(tmp_path) -> None:
+    """**現在値を月次で残すことで、1年後に過去へ当てられる値になる。**
+
+    立花のマスタは「いまどうなっているか」しか返さない。#7 で ``sSinyouC`` が
+    現在値だと分かったとき、その場では使えなかった。
+    """
+    profile = SecurityProfile(symbol="7203", market="JP", name="トヨタ", lending="1")
+
+    path = monthly_snapshot(tmp_path, [profile], on=dt.date(2026, 10, 5))
+
+    assert path is not None
+    (back,) = read_snapshot(path)
+    assert back.lending == "1"
+
+
+def test_a_roster_written_before_the_column_existed_still_reads(tmp_path) -> None:
+    """**古いファイルには列が無い。落ちてはいけない。**
+
+    2026-09 以前の月次の名簿は4列で書かれている。読めなくなると、取り直せない
+    データが読めなくなる。
+    """
+    path = tmp_path / "2026-08.csv"
+    path.write_text(
+        "symbol,name,sector,industry\n7203,トヨタ,Consumer Discretionary,輸送用機器\n",
+        encoding="utf-8",
+    )
+
+    (back,) = read_snapshot(path)
+
+    assert back.symbol == "7203"
+    assert back.lending is None
+
+
+def test_the_jquants_roster_keeps_its_four_columns(tmp_path) -> None:
+    """**J-Quants の名簿には足さない。** 除外の仕方が違う2つを混ぜない。"""
+    from stock_ai.data.delisted import COLUMNS, MONTHLY_COLUMNS
+
+    assert COLUMNS == ("symbol", "name", "sector", "industry")
+    assert MONTHLY_COLUMNS[: len(COLUMNS)] == COLUMNS
+    assert MONTHLY_COLUMNS[-1] == "lending"
+
+    path = write_snapshot(tmp_path, dt.date(2026, 1, 5), [_profile("7203")])
+
+    assert path.read_text(encoding="utf-8").splitlines()[0] == ",".join(COLUMNS)
