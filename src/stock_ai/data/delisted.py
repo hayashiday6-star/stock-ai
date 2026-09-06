@@ -195,6 +195,25 @@ def read_snapshot(path: Path) -> list[SecurityProfile]:
         ]
 
 
+#: 5年ローリング窓のおおよその幅（日）。
+#:
+#: J-Quants は窓の外を必ず断る。**前端は毎日後ろへ動く**ので、保存した当時は
+#: 取れた日付が、今日はもう取れない。厳密な境界は応答が持っている——ここは
+#: 「取り直せる」と案内してよいかどうかの目安にだけ使う。
+ROLLING_WINDOW_DAYS = 5 * 365
+
+
+def beyond_the_window(dates: Iterable[dt.date], today: dt.date | None = None) -> list[dt.date]:
+    """5年窓の外に出てしまった日付を返す。**もう取り直せないもの。**
+
+    保存した当時は窓の中だった日付が、今日は外にある。ここを見ずに
+    「取り直せる」と案内すると、**成功しない .bat を何度も実行させることに
+    なる。** 警告が毎回出て、しかも消えない。
+    """
+    edge = (today or dt.date.today()) - dt.timedelta(days=ROLLING_WINDOW_DAYS)
+    return [day for day in dates if day < edge]
+
+
 def dates_without_lending(directory: Path) -> list[dt.date]:
     """保存済みの名簿のうち、貸借区分が1件も入っていない日付を返す。
 

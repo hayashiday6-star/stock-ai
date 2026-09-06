@@ -178,6 +178,7 @@ from stock_ai.data.delisted import (
     ROLLING_WINDOW_START,
     TACHIBANA_SNAPSHOT_DIR,
     all_profiles,
+    beyond_the_window,
     covered_from,
     dates_without_lending,
     delistings,
@@ -3135,11 +3136,29 @@ def jquants_inventory(
             f"[dim]名簿 {files} 件すべてに貸借区分が入っている（延べ {lending_rows:,} 行）。[/]"
         )
     elif files and with_lending:
+        missing = dates_without_lending(Path(DEFAULT_SNAPSHOT_DIR))
         console.print(
             f"[yellow]名簿 {files} 件のうち、貸借区分が入っているのは {with_lending} 件だけ"
-            f"（延べ {lending_rows:,} 行）。[/] 残りは列を足す前に保存したもので、"
-            "`checks\\貸借区分を取り直す.bat` で取り直せる（2026-09-22 まで）。"
+            f"（延べ {lending_rows:,} 行）。[/] 欠けているのは "
+            + "、".join(str(day) for day in missing)
+            + "。"
         )
+        # **5年ローリング窓の前端は毎日後ろへ動く。** 保存した当時は取れた日付が、
+        # 今日はもう窓の外にある。そこを「取り直せる」と案内すると、成功しない
+        # .bat を何度も実行させることになる。
+        stale = beyond_the_window(missing)
+        if stale:
+            console.print(
+                "[dim]このうち "
+                + "、".join(str(day) for day in stale)
+                + " は**5年窓の外**なので、もう取り直せない。"
+                "保存した当時は窓の中だった。窓の前端は毎日後ろへ動く。[/]"
+            )
+        if set(missing) - set(stale):
+            console.print(
+                "[dim]残りは `checks\\貸借区分を取り直す.bat` で取り直せる"
+                "（2026-09-22 まで）。当日ぶんは、その日の名簿が出てから。[/]"
+            )
     elif files:
         console.print(
             f"[red]名簿 {files} 件のどれにも貸借区分が入っていない。[/] "

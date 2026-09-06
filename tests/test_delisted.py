@@ -383,3 +383,28 @@ def test_dates_without_lending_ignores_files_that_are_not_dates(tmp_path) -> Non
     (tmp_path / "README.csv").write_text("symbol\n7203\n", encoding="utf-8")
 
     assert dates_without_lending(tmp_path) == []
+
+
+def test_dates_beyond_the_window_can_no_longer_be_refetched() -> None:
+    """**5年窓の前端は毎日後ろへ動く。**
+
+    保存した当時は取れた日付が、今日はもう外にある。ここを見ずに「取り直せる」
+    と案内すると、成功しない .bat を何度も実行させることになる。警告が毎回出て、
+    しかも消えない。
+    """
+    from stock_ai.data.delisted import beyond_the_window
+
+    today = dt.date(2026, 9, 6)
+    dates = [dt.date(2021, 9, 4), dt.date(2021, 10, 1), dt.date(2026, 9, 6)]
+
+    assert beyond_the_window(dates, today) == [dt.date(2021, 9, 4)]
+
+
+def test_the_window_edge_moves_with_the_day() -> None:
+    """同じ日付が、昨日は窓の中で今日は外になる。**それが起きる形を押さえる。**"""
+    from stock_ai.data.delisted import beyond_the_window
+
+    day = dt.date(2021, 9, 4)
+
+    assert beyond_the_window([day], dt.date(2026, 9, 3)) == []
+    assert beyond_the_window([day], dt.date(2026, 9, 6)) == [day]
