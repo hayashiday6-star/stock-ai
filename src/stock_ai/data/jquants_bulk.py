@@ -66,6 +66,38 @@ BULK_ENDPOINTS: tuple[str, ...] = (
 #: 解約前に取り切りたいもの。`docs/JQUANTS_EXIT.md` の期限作業に対応する。
 DEADLINE_ENDPOINTS: tuple[str, ...] = ("/fins/summary", "/equities/bars/daily")
 
+#: 原本として残すもの。**解約すると、どれも二度と取れない。**
+#:
+#: 「いま使う説がある」ではなく「**取り直せない**」で選んである。解析は後から
+#: 何度でもやり直せるが、取得は 2026-09-22 で終わる。**使い道が決まってから
+#: 取りに行くことはできない。**
+#:
+#: 株価（`/equities/bars/daily`）も入れてある。立花から 2001年以降が取れるので
+#: 現存銘柄には要らないが、**廃止銘柄は立花に無い。** そちらは J-Quants にしか
+#: 無く、生存バイアスを直す材料そのものである。
+#:
+#: プランで取れないものが混じっていてもよい。一覧が空で返るだけで、そのことは
+#: 数として出る。**こちらの表を信じて取り逃すより、聞いて空が返るほうがよい。**
+ARCHIVE_ENDPOINTS: tuple[str, ...] = (
+    "/equities/master",
+    "/equities/bars/daily",
+    "/fins/summary",
+    "/fins/details",
+    "/fins/dividend",
+    "/markets/margin-alert",
+    "/markets/margin-interest",
+    "/markets/short-sale-report",
+    "/markets/short-ratio",
+    "/markets/breakdown",
+    "/markets/trading-calendar",
+    "/equities/investor-types",
+    "/indices/topix",
+    "/indices/daily",
+    "/derivatives/futures",
+    "/derivatives/options",
+    "/derivatives/options-225",
+)
+
 #: プラン別の1分あたりリクエスト上限。出典は J-Quants 同梱の
 #: `.claude/skills/jquants-cli-usage/SKILL.md`（Rate Limits）。
 #:
@@ -325,6 +357,25 @@ def span_years(files: list[BulkFile]) -> float | None:
     return months / 12
 
 
+def download_raw(api_key: SecretStr | None, key: str, *, timeout: float = 300.0) -> bytes:
+    """1本を落として、**展開せずに**返す。原本を残すための口。
+
+    `download` との違いは gzip を展開しないことだけである。**原本は展開して
+    保存しない**——展開すると、gzip の中身が壊れていたときに区別が付かなく
+    なるし、こちらの読み方が入る。読み方は後から変えたい側である。
+
+    取得は 2026-09-22 で終わるが、パーサの誤りは10月にも見つかる。
+    `jquants_archive` を参照。
+    """
+    import httpx
+
+    url = presigned_url(api_key, key=key)
+    with httpx.Client(timeout=timeout, follow_redirects=True) as client:
+        response = client.get(url)
+        raise_for_status(response, f"bulk download for {key}")
+        return response.content
+
+
 def download(api_key: SecretStr | None, key: str, *, timeout: float = 300.0) -> bytes:
     """1本を落として、展開した中身を返す。
 
@@ -345,14 +396,7 @@ def download(api_key: SecretStr | None, key: str, *, timeout: float = 300.0) -> 
     """
     import gzip
 
-    import httpx
-
-    url = presigned_url(api_key, key=key)
-    with httpx.Client(timeout=timeout, follow_redirects=True) as client:
-        response = client.get(url)
-        raise_for_status(response, f"bulk download for {key}")
-        payload = response.content
-
+    payload = download_raw(api_key, key, timeout=timeout)
     if key.endswith(".gz"):
         payload = gzip.decompress(payload)
     return payload

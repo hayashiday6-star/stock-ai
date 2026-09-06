@@ -190,12 +190,17 @@ from stock_ai.data.delisted import (
     snapshot_dates,
 )
 from stock_ai.data.fx import FxConverter
+from stock_ai.data.jquants_archive import DEFAULT_ARCHIVE_DIR
+from stock_ai.data.jquants_archive import archive as archive_bulk
+from stock_ai.data.jquants_archive import verify as verify_archive
 from stock_ai.data.jquants_bulk import (
+    ARCHIVE_ENDPOINTS,
     BULK_ENDPOINTS,
     DEADLINE_ENDPOINTS,
     PLAN_REQUESTS_PER_MINUTE,
     PRESIGNED_URL_TTL,
     BulkFile,
+    download_raw,
     infer_plan,
     recommended_throttle,
 )
@@ -2732,6 +2737,146 @@ def _report_plan(found: dict[str, list[BulkFile]]) -> None:
             )
             + "大幅超過が続くと約5分あいだ完全に遮断される。[/dim]"
         )
+
+
+@app.command(name="jquants-archive")
+def jquants_archive(
+    endpoints: list[str] = typer.Option(  # noqa: B008 - typer builds the default list
+        list(ARCHIVE_ENDPOINTS), "--endpoint", help="Repeat to pick. Default: everything."
+    ),
+    directory: str = typer.Option(
+        str(DEFAULT_ARCHIVE_DIR), "--dir", help="Where the raw files are kept."
+    ),
+    throttle: float = typer.Option(0.5, "--throttle", help="Seconds between files."),
+    dry_run: bool = typer.Option(False, "--dry-run", help="List and size only. Fetch nothing."),
+) -> None:
+    """Save the bulk files as they arrive, before the plan that serves them ends.
+
+    **取得は1回きり、解析は何度でもやり直せる。** 契約は 2026-09-22 で終わるが、
+    パーサの誤りは10月にも11月にも見つかる。**原本が無ければ、そのとき取り返せ
+    ない。**
+
+    展開しない。CSV に直さない。**返ってきたバイト列をそのまま書く。**
+    名簿を CSV で残したのと同じ理屈である。
+
+    途中で止めても安全に再開できる。既にあって大きさの合うファイルは落としに
+    行かない。**大きさが合わないものは落とし直す**——「ファイルがある」と
+    「中身が揃っている」は別で、転送が途中で切れても例外が出ないことがある。
+
+    `--dry-run` は1バイトも落とさずに本数と合計サイズだけを出す。**先に回す
+    こと。** 何本・何MBかを知らずに始めない。
+    """
+    settings = get_settings()
+    configure_logging(settings.log_level)
+
+    target = Path(directory)
+    wanted = [item.strip() for item in endpoints if item.strip()]
+    if not wanted:
+        raise typer.BadParameter("--endpoint に1つ以上要る。")
+
+    console.print(f"原本の置き場所: [bold]{target}[/]　／　対象 {len(wanted)} エンドポイント")
+    console.print(
+        "[dim]**展開せずにそのまま保存する。** 解析は後から何度でもやり直せるが、"
+        "取得は 2026-09-22 で終わる。[/]"
+    )
+
+    table = Table(title="一覧（1バイトも落としていない）")
+    for column in ("エンドポイント", "本数", "覆う範囲", "合計"):
+        table.add_column(column, justify="left" if column == "エンドポイント" else "right")
+
+    found: list[BulkFile] = []
+    for name in wanted:
+        try:
+            files = bulk_list_files(settings.jquants_api_key, endpoint=name)
+        except Exception as exc:  # noqa: BLE001 - 断られ方そのものが記録に値する
+            table.add_row(name, "[yellow]—[/]", f"[yellow]{type(exc).__name__}[/]", "")
+            continue
+        span = bulk_coverage(files)
+        table.add_row(
+            name,
+            f"{len(files):,}",
+            f"{span[0]} 〜 {span[1]}" if span else "—",
+            f"{sum(item.size for item in files) / 1_000_000:,.0f} MB",
+        )
+        found.extend(files)
+    console.print(table)
+
+    total_mb = sum(item.size for item in found) / 1_000_000
+    console.print(f"合計 [bold]{len(found):,}[/] 本、[bold]{total_mb:,.0f} MB[/]。")
+
+    if dry_run:
+        console.print("[dim]--dry-run なので、ここで止める。1バイトも落としていない。[/]")
+        return
+    if not found:
+        console.print("[yellow]落とすものが無い。[/]")
+        return
+
+    def show(index: int, total: int, key: str) -> None:
+        # **進捗は1行に収める。** 途中経過を残す形にすると、貼ったときに
+        # 何百行にもなる。
+        console.print(f"[dim]{index}/{total} {key}[/]", end="\r")
+        if throttle:
+            time.sleep(throttle)
+
+    report = archive_bulk(
+        found,
+        lambda key: download_raw(settings.jquants_api_key, key),
+        target,
+        progress=show,
+    )
+    console.print()
+    console.print(report.summary())
+
+    if report.truncated:
+        console.print(
+            f"[yellow]大きさが合わないまま残したもの {len(report.truncated)} 本。[/] "
+            "もう一度実行すると落とし直す。"
+        )
+    if report.failed:
+        table = Table(title=f"落とせなかった ({len(report.failed)})")
+        table.add_column("key")
+        table.add_column("断られ方")
+        for key, why in list(report.failed.items())[:20]:
+            table.add_row(key, why)
+        console.print(table)
+        console.print("[dim]再実行すると、落とせたものは飛ばして続きから取る。[/]")
+
+    console.print()
+    console.print(
+        "[dim]原本は取り直せない。**解析の前にバックアップを取ること。**"
+        "確かめるだけなら `jquants-archive-verify`。[/]"
+    )
+
+
+@app.command(name="jquants-archive-verify")
+def jquants_archive_verify(
+    directory: str = typer.Option(
+        str(DEFAULT_ARCHIVE_DIR), "--dir", help="Where the raw files are kept."
+    ),
+) -> None:
+    """Check the archived originals against the manifest. Fetches nothing.
+
+    **解約後こそ実行する意味がある。** そのとき欠けていると分かっても取り返せ
+    ないが、**欠けているのに揃っていると思って解析するよりはよい。**
+    """
+    settings = get_settings()
+    configure_logging(settings.log_level)
+
+    missing, wrong_size, changed = verify_archive(Path(directory))
+    if not (missing or wrong_size or changed):
+        console.print("[green]目録と一致している。[/]")
+        return
+
+    for label, keys in (
+        ("消えている", missing),
+        ("大きさが合わない", wrong_size),
+        ("中身が変わった", changed),
+    ):
+        if keys:
+            console.print(f"[red]{label}: {len(keys)} 本[/]")
+            for key in keys[:10]:
+                console.print(f"  [dim]{key}[/]")
+    raise typer.Exit(code=1)
 
 
 @app.command(name="jquants-bulk-list")
