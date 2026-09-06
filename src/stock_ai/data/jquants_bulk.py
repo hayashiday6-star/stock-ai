@@ -402,6 +402,48 @@ def download(api_key: SecretStr | None, key: str, *, timeout: float = 300.0) -> 
     return payload
 
 
+#: 一括 CSV を読むときに試す文字コード。**順序に意味がある。**
+#:
+#: 配布サンプル（`sample_data_v2`）を実測すると、日本語を含むファイルは
+#: **cp932 で、UTF-8 ではない**（`Listed Issue Master.csv` /
+#: `Financial Statement Data(BSPLCF).csv` / 空売り残高報告など）。日本語を
+#: 含まないファイルだけが UTF-8 に見えている——**ASCII はどちらでも同じ
+#: バイト列だからで、UTF-8 だと確かめられたわけではない。**
+#:
+#: いままで気付かなかったのは、一括で読んでいたのが `fins/summary` と
+#: `equities/bars/daily` の2つだけで、どちらにも日本語が無いためである。
+#: **`/equities/master` を一括で読んだ瞬間に当たる。**
+CSV_ENCODINGS: tuple[str, ...] = ("utf-8-sig", "cp932")
+
+
+def decode_csv(payload: bytes) -> tuple[str, str]:
+    """一括 CSV のバイト列を文字列にする。**使った文字コードも返す。**
+
+    **`errors="replace"` を最初から使わない。** 使うと、会社名が化けたまま
+    表に並ぶ。例外は出ないし行数も合うので、化けていることに気付く手掛かりが
+    無くなる——このプロジェクトで繰り返し起きている「もっともらしいが違う値が
+    黙って出る」型そのものである。
+
+    どれでも読めなかったときだけ、最後に置換して読む。**そのときは警告を出す**
+    ——読めた文字だけを見て「取れた」と判断させない。
+
+    Returns:
+        ``(中身, 使った文字コード)``。呼ぶ側が何で読めたかを表に出せるように、
+        推測した結果を捨てない。
+    """
+    for encoding in CSV_ENCODINGS:
+        try:
+            return payload.decode(encoding), encoding
+        except UnicodeDecodeError:
+            continue
+    logger.warning(
+        "文字コードを決められなかった（%d バイト）。置換して読む——**表に出る値は"
+        "化けている可能性がある。**",
+        len(payload),
+    )
+    return payload.decode("utf-8", errors="replace"), "utf-8/replace"
+
+
 def records_from_csv(payload: bytes) -> list[dict[str, str]]:
     """展開した CSV を、API と同じ形の辞書の列にする。
 
@@ -412,11 +454,14 @@ def records_from_csv(payload: bytes) -> list[dict[str, str]]:
     空文字は ``None`` ではなく空文字のまま返す。既存の ``_text`` /
     ``_first`` が空文字を「無い」として扱うので、ここで変換すると
     二重に判断することになる。
+
+    **文字コードは UTF-8 とは限らない。** 配布サンプルでは日本語を含む
+    ファイルが cp932 だった。:func:`decode_csv` を見ること。
     """
     import csv
     import io
 
-    text = payload.decode("utf-8-sig")
+    text, _encoding = decode_csv(payload)
     return list(csv.DictReader(io.StringIO(text)))
 
 

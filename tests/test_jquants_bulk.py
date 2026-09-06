@@ -11,6 +11,9 @@
 
 from __future__ import annotations
 
+import logging
+from pathlib import Path
+
 import pytest
 from pydantic import SecretStr
 
@@ -489,3 +492,80 @@ def test_the_snapshot_walks_back_for_equity_but_still_prefers_shareholders_equit
     snapshot = normalize_statement("7203", records, dt.date(2026, 9, 5), price=500.0)
 
     assert snapshot.pbr == pytest.approx(500.0 * 1000 / 262460)
+
+
+class TestBulkCsvEncoding:
+    """一括 CSV の文字コード。**UTF-8 とは限らない。**
+
+    配布サンプル（`sample_data_v2`）を実測すると、日本語を含むファイルは
+    cp932 だった。日本語を含まないファイルだけが UTF-8 に見えている——
+    **ASCII はどちらでも同じバイト列だからで、UTF-8 だと確かめられたわけでは
+    ない。**
+
+    いままで当たらなかったのは、一括で読んでいたのが `fins/summary` と
+    `equities/bars/daily` の2つだけで、どちらにも日本語が無いためである。
+    """
+
+    SAMPLE = Path(__file__).parent / "fixtures" / "jquants_master_sample.csv"
+
+    def test_the_distributed_master_is_cp932(self) -> None:
+        """**前提そのものを固定する。** ここが変わったら読み方を見直す。"""
+        raw = self.SAMPLE.read_bytes()
+
+        with pytest.raises(UnicodeDecodeError):
+            raw.decode("utf-8")
+        assert "日本取引所グループ" in raw.decode("cp932")
+
+    def test_a_cp932_company_name_comes_back_unmangled(self) -> None:
+        """`utf-8-sig` 決め打ちだと、ここで例外が出て取り込みが止まる。"""
+        from stock_ai.data.jquants_bulk import records_from_csv
+
+        (row,) = records_from_csv(self.SAMPLE.read_bytes())
+
+        assert row["CoName"] == "日本取引所グループ"
+        assert row["MrgnNm"] == "貸借"
+
+    def test_the_encoding_that_worked_is_reported(self) -> None:
+        """何で読めたかを捨てない。**表に出せないと、化けても気付けない。**"""
+        from stock_ai.data.jquants_bulk import decode_csv
+
+        _text, encoding = decode_csv(self.SAMPLE.read_bytes())
+
+        assert encoding == "cp932"
+
+    def test_utf8_is_tried_first(self) -> None:
+        """cp932 はほぼ何でも読めてしまう。**先に試す順序に意味がある。**
+
+        UTF-8 の日本語を cp932 として読むと、例外を出さずに化ける。順序を
+        入れ替えると、いま通っている `fins/summary` まで静かに壊れる。
+        """
+        from stock_ai.data.jquants_bulk import decode_csv
+
+        payload = "Code,CoName\n86970,日本取引所グループ\n".encode()
+        text, encoding = decode_csv(payload)
+
+        assert encoding == "utf-8-sig"
+        assert "日本取引所グループ" in text
+
+    def test_a_byte_order_mark_is_not_left_in_the_first_column_name(self) -> None:
+        """BOM が残ると列名が `\\ufeffCode` になり、`row["Code"]` が空になる。"""
+        from stock_ai.data.jquants_bulk import records_from_csv
+
+        (row,) = records_from_csv("Code,Value\n86970,1\n".encode("utf-8-sig"))
+
+        assert row["Code"] == "86970"
+
+    def test_unreadable_bytes_are_read_but_warned_about(self, caplog) -> None:
+        """最後の手段は置換だが、**黙って置換しない。**
+
+        置換して黙ると、化けた会社名が表に並ぶ。例外は出ないし行数も合うので、
+        気付く手掛かりが無くなる。
+        """
+        from stock_ai.data.jquants_bulk import decode_csv
+
+        payload = b"Code,CoName\n86970," + bytes([0x81, 0x20, 0xFF, 0xFE]) + b"\n"
+        with caplog.at_level(logging.WARNING):
+            _text, encoding = decode_csv(payload)
+
+        assert encoding == "utf-8/replace"
+        assert caplog.records
