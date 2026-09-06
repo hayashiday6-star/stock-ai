@@ -195,6 +195,28 @@ def read_snapshot(path: Path) -> list[SecurityProfile]:
         ]
 
 
+def lending_coverage(directory: Path) -> tuple[int, int, int]:
+    """名簿に貸借区分がどれだけ入っているかを数える。
+
+    **「63件取れた」と「列が入った」は別である。** 取得は成功したのに列が
+    空、という形は例外を出さない——応答の項目名が想定と違えば、``row.get``
+    が静かに ``None`` を返すだけである。**それを数えるための関数。**
+
+    Returns:
+        ``(ファイル数, 貸借区分が1件でも入っているファイル数, 値のある行の数)``。
+    """
+    if not directory.is_dir():
+        return (0, 0, 0)
+    files = with_lending = rows = 0
+    for path in sorted(directory.glob("*.csv")):
+        files += 1
+        here = sum(1 for profile in read_snapshot(path) if profile.lending)
+        if here:
+            with_lending += 1
+        rows += here
+    return (files, with_lending, rows)
+
+
 def stored_dates(directory: Path) -> list[dt.date]:
     """すでに保存済みの名簿の日付を、古い順に返す。
 

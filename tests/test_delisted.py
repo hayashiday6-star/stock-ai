@@ -315,3 +315,37 @@ def test_the_jquants_roster_carries_the_lending_class_too(tmp_path) -> None:
     assert lines[0] == ",".join(COLUMNS)
     (back,) = read_snapshot(path)
     assert back.lending == "貸借"
+
+
+def test_lending_coverage_separates_taken_from_landed(tmp_path) -> None:
+    """**「63件取れた」と「列が入った」は別である。**
+
+    取得が成功していても列が空、という形は例外を出さない。応答の項目名が
+    想定と違えば ``row.get`` が静かに ``None`` を返すだけになる。
+    """
+    from stock_ai.data.delisted import lending_coverage
+
+    # 列を足す前に保存したもの（4列）。
+    (tmp_path / "2026-01-01.csv").write_text(
+        "symbol,name,sector,industry\n7203,トヨタ,Consumer Discretionary,輸送用機器\n",
+        encoding="utf-8",
+    )
+    # 列はあるが空（取得は成功、値は入っていない）。
+    (tmp_path / "2026-02-01.csv").write_text(
+        "symbol,name,sector,industry,lending\n7203,トヨタ,Consumer Discretionary,輸送用機器,\n",
+        encoding="utf-8",
+    )
+    # 入っている。
+    (tmp_path / "2026-03-01.csv").write_text(
+        "symbol,name,sector,industry,lending\n7203,トヨタ,Consumer Discretionary,輸送用機器,貸借\n",
+        encoding="utf-8",
+    )
+
+    assert lending_coverage(tmp_path) == (3, 1, 1)
+
+
+def test_lending_coverage_on_an_empty_directory_is_zero(tmp_path) -> None:
+    """名簿が1件も無くても落ちない。"""
+    from stock_ai.data.delisted import lending_coverage
+
+    assert lending_coverage(tmp_path / "無い") == (0, 0, 0)

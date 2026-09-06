@@ -181,6 +181,7 @@ from stock_ai.data.delisted import (
     covered_from,
     delistings,
     harvest_snapshots,
+    lending_coverage,
     membership,
     monthly_membership,
     monthly_snapshot,
@@ -3112,6 +3113,24 @@ def jquants_inventory(
     console.print(risk)
 
     console.print()
+    files, with_lending, lending_rows = lending_coverage(Path(DEFAULT_SNAPSHOT_DIR))
+    if files and with_lending == files:
+        console.print(
+            f"[dim]名簿 {files} 件すべてに貸借区分が入っている（延べ {lending_rows:,} 行）。[/]"
+        )
+    elif files and with_lending:
+        console.print(
+            f"[yellow]名簿 {files} 件のうち、貸借区分が入っているのは {with_lending} 件だけ"
+            f"（延べ {lending_rows:,} 行）。[/] 残りは列を足す前に保存したもので、"
+            "`checks\\貸借区分を取り直す.bat` で取り直せる（2026-09-22 まで）。"
+        )
+    elif files:
+        console.print(
+            f"[red]名簿 {files} 件のどれにも貸借区分が入っていない。[/] "
+            "**取得が成功していても列が空という形は例外を出さない。** "
+            "応答の項目名が想定と違う可能性がある。"
+        )
+
     console.print(
         "[dim]5年ローリング窓は解約より先に効く。いま取れるのは 2021-09 以降で、"
         "その端は**毎日後ろへ動く**。「解約日まで待てる」ものは1つも無い。[/]"
