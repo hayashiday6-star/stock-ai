@@ -21,14 +21,16 @@ echo is the only route to what it was on a past day. Tachibana's
 echo master only ever returns today.
 echo.
 echo Free plan. No prices are fetched - the DB already has them.
-echo Every one of the 63 dates gets requested again, so this takes
-echo a while. Interrupting is safe; re-running continues.
+echo.
+echo Only the rosters that are actually missing the column get
+echo requested. Re-running after it has finished asks for nothing
+echo and says so, so it is safe to run twice.
 echo.
 echo Afterwards the files under data\universe_snapshots\ will have
 echo changed. Commit them - they cannot be refetched later.
 echo.
 
-powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0..\scripts\delisted-harvest.ps1" -Refetch -NoPrices %*
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0..\scripts\delisted-harvest.ps1" -FillLending -NoPrices %*
 set CODE=%ERRORLEVEL%
 
 echo.

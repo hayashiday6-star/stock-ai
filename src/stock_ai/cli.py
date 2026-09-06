@@ -179,6 +179,7 @@ from stock_ai.data.delisted import (
     TACHIBANA_SNAPSHOT_DIR,
     all_profiles,
     covered_from,
+    dates_without_lending,
     delistings,
     harvest_snapshots,
     lending_coverage,
@@ -2403,6 +2404,11 @@ def delisted_harvest(
     refetch: bool = typer.Option(
         False, "--refetch", help="Re-request dates whose file already exists."
     ),
+    fill_lending: bool = typer.Option(
+        False,
+        "--fill-lending",
+        help="Re-request only the saved dates that carry no lending class.",
+    ),
     prices: bool = typer.Option(
         True, "--prices/--no-prices", help="Also backfill prices for symbols the DB lacks."
     ),
@@ -2444,15 +2450,25 @@ def delisted_harvest(
     last = dt.date.today() if end is None else _parse_date(end)
     if last is None:
         raise typer.BadParameter(f"--end must be YYYY-MM-DD; got {end!r}.")
-    try:
-        wanted = snapshot_dates(first, last, step_days)
-    except ValueError as exc:
-        raise typer.BadParameter(str(exc)) from exc
-
     target = Path(directory)
-    console.print(
-        f"名簿を [bold]{len(wanted)}[/] 日ぶん集める（{first} 〜 {last}、{step_days}日刻み）。"
-    )
+    if fill_lending:
+        # **取り直す対象を日付グリッドで決めない。** 日次で書かれる名簿は
+        # 30日刻みに乗らないので、グリッドで回すと取り残される。実際、63件を
+        # 取り直したあとに直近3日ぶんだけが残った。
+        wanted = dates_without_lending(target)
+        refetch = True
+        if not wanted:
+            console.print("[green]貸借区分の欠けている名簿は無い。[/] 取りに行かない。")
+            return
+        console.print(f"貸借区分の欠けている名簿だけを取り直す（[bold]{len(wanted)}[/] 日ぶん）。")
+    else:
+        try:
+            wanted = snapshot_dates(first, last, step_days)
+        except ValueError as exc:
+            raise typer.BadParameter(str(exc)) from exc
+        console.print(
+            f"名簿を [bold]{len(wanted)}[/] 日ぶん集める（{first} 〜 {last}、{step_days}日刻み）。"
+        )
     console.print(f"[dim]置き場所: {target}[/dim]")
     console.print(
         "[dim]取得元は J-Quants に固定（JP_PRICE_SOURCE は見ない）。立花のマスタは"

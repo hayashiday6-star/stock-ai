@@ -349,3 +349,37 @@ def test_lending_coverage_on_an_empty_directory_is_zero(tmp_path) -> None:
     from stock_ai.data.delisted import lending_coverage
 
     assert lending_coverage(tmp_path / "無い") == (0, 0, 0)
+
+
+def test_dates_without_lending_finds_the_ones_the_grid_would_miss(tmp_path) -> None:
+    """**取り直す対象を日付グリッドで決めない。**
+
+    日次で書かれる名簿は30日刻みに乗らないので、グリッドで回すと取り残される。
+    実際、63件を取り直したあとに直近3日ぶんだけが残った。
+    """
+    from stock_ai.data.delisted import dates_without_lending
+
+    (tmp_path / "2026-08-06.csv").write_text(
+        "symbol,name,sector,industry,lending\n7203,トヨタ,Industrials,輸送用機器,貸借\n",
+        encoding="utf-8",
+    )
+    # グリッド（30日刻み）に乗らない、日次で書かれたもの。
+    (tmp_path / "2026-09-05.csv").write_text(
+        "symbol,name,sector,industry\n7203,トヨタ,Industrials,輸送用機器\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "2026-09-06.csv").write_text(
+        "symbol,name,sector,industry,lending\n7203,トヨタ,Industrials,輸送用機器,\n",
+        encoding="utf-8",
+    )
+
+    assert dates_without_lending(tmp_path) == [dt.date(2026, 9, 5), dt.date(2026, 9, 6)]
+
+
+def test_dates_without_lending_ignores_files_that_are_not_dates(tmp_path) -> None:
+    """置き場所にメモ書きが1つあっても、取得を止めない。"""
+    from stock_ai.data.delisted import dates_without_lending
+
+    (tmp_path / "README.csv").write_text("symbol\n7203\n", encoding="utf-8")
+
+    assert dates_without_lending(tmp_path) == []

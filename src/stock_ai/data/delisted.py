@@ -195,6 +195,29 @@ def read_snapshot(path: Path) -> list[SecurityProfile]:
         ]
 
 
+def dates_without_lending(directory: Path) -> list[dt.date]:
+    """保存済みの名簿のうち、貸借区分が1件も入っていない日付を返す。
+
+    **取り直す対象を日付グリッドで決めない。** 日次で書かれる名簿は30日刻みの
+    グリッドに乗らないので、グリッドで回すと取り残される。実際、63件を取り直した
+    あとに直近3日ぶんだけが残った。
+
+    **「何が欠けているか」を数えて、それだけを取りに行く。** 余計な要求を出さず、
+    取り残しも出ない。
+    """
+    if not directory.is_dir():
+        return []
+    missing = []
+    for path in sorted(directory.glob("*.csv")):
+        try:
+            on = dt.date.fromisoformat(path.stem)
+        except ValueError:
+            continue
+        if not any(profile.lending for profile in read_snapshot(path)):
+            missing.append(on)
+    return missing
+
+
 def lending_coverage(directory: Path) -> tuple[int, int, int]:
     """名簿に貸借区分がどれだけ入っているかを数える。
 

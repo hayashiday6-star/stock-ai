@@ -47,6 +47,11 @@
 .PARAMETER NoPrices
     名簿だけを集め、株価は取りません。
 
+.PARAMETER FillLending
+    保存済みの名簿のうち、**貸借区分が入っていないものだけ**を取り直します。
+    日付グリッドではなく「欠けているファイル」を対象にするので、日次で書かれた
+    名簿も取り残しません。
+
 .PARAMETER Refetch
     すでにファイルがある日付も取り直します。**名簿に入れる列が増えたとき**に
     使います。既定では、ファイルがある日付は取りに行きません。
@@ -62,7 +67,8 @@ param(
     [int]$StepDays = 30,
     [int]$Limit = 0,
     [switch]$NoPrices,
-    [switch]$Refetch
+    [switch]$Refetch,
+    [switch]$FillLending
 )
 
 $ErrorActionPreference = 'Continue'
@@ -103,6 +109,7 @@ if ($End) { $arguments += @('--end', $End) }
 if ($Limit -gt 0) { $arguments += @('--limit', "$Limit") }
 if ($NoPrices) { $arguments += '--no-prices' }
 if ($Refetch) { $arguments += '--refetch' }
+if ($FillLending) { $arguments += '--fill-lending' }
 
 uv @arguments
 $code = $LASTEXITCODE
