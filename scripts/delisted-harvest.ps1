@@ -47,6 +47,10 @@
 .PARAMETER NoPrices
     名簿だけを集め、株価は取りません。
 
+.PARAMETER Refetch
+    すでにファイルがある日付も取り直します。**名簿に入れる列が増えたとき**に
+    使います。既定では、ファイルがある日付は取りに行きません。
+
 .EXAMPLE
     .\scripts\delisted-harvest.ps1 -Limit 20
     .\scripts\delisted-harvest.ps1
@@ -57,7 +61,8 @@ param(
     [string]$End = '',
     [int]$StepDays = 30,
     [int]$Limit = 0,
-    [switch]$NoPrices
+    [switch]$NoPrices,
+    [switch]$Refetch
 )
 
 $ErrorActionPreference = 'Continue'
@@ -83,6 +88,10 @@ Write-Host '和集合だと、まだ上場していない銘柄を過去の分�
 Write-Host '取得元は J-Quants 固定。立花のマスタには廃止銘柄が無いためです。' -ForegroundColor DarkGray
 Write-Host '解約予定 2026-09-22 を過ぎると、これは二度と取れません。' -ForegroundColor Yellow
 Write-Host '1時間以上かかることがあります。中断しても安全です。' -ForegroundColor DarkGray
+if ($Refetch) {
+    Write-Host ''
+    Write-Host '取り直しの指定があります。既にある日付も要求し直します。' -ForegroundColor Yellow
+}
 Write-Host ''
 
 $arguments = @(
@@ -93,6 +102,7 @@ $arguments = @(
 if ($End) { $arguments += @('--end', $End) }
 if ($Limit -gt 0) { $arguments += @('--limit', "$Limit") }
 if ($NoPrices) { $arguments += '--no-prices' }
+if ($Refetch) { $arguments += '--refetch' }
 
 uv @arguments
 $code = $LASTEXITCODE
