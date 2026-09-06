@@ -209,3 +209,13 @@ def test_a_share_class_code_is_dropped_rather_than_truncated() -> None:
     payload = b"PubDate,Code,AppDate,PubReason\n2023-07-05,13215,2023-07-04,{}\n"
 
     assert parse_alerts(payload) == []
+
+
+def test_the_fixture_still_has_the_line_endings_it_arrived_with() -> None:
+    """**整えたコピーで通しても、実物で通したことにはならない。**
+
+    配布物は CRLF である。git は既定で LF に直してしまうので、`.gitattributes`
+    で除外してある。その設定が外れても例外は出ない——テストは緑のまま、実物と
+    違うものを読んでいることになる。ここで気付く。
+    """
+    assert b"\r\n" in SAMPLE.read_bytes()

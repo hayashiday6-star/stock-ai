@@ -26,3 +26,9 @@
 *.jpg   binary
 *.ico   binary
 *.parquet binary
+
+# Vendor samples used as test fixtures are stored byte for byte. Normalizing
+# the line endings would make the fixture differ from the file J-Quants
+# actually distributes, which is the whole reason it is here: a parser proved
+# against a tidied-up copy has not been proved against the real thing.
+tests/fixtures/jquants_*_sample.csv -text
