@@ -293,14 +293,25 @@ def test_a_roster_written_before_the_column_existed_still_reads(tmp_path) -> Non
     assert back.lending is None
 
 
-def test_the_jquants_roster_keeps_its_four_columns(tmp_path) -> None:
-    """**J-Quants の名簿には足さない。** 除外の仕方が違う2つを混ぜない。"""
-    from stock_ai.data.delisted import COLUMNS, MONTHLY_COLUMNS
+def test_the_jquants_roster_carries_the_lending_class_too(tmp_path) -> None:
+    """**J-Quants の名簿も5列である。**
 
-    assert COLUMNS == ("symbol", "name", "sector", "industry")
-    assert MONTHLY_COLUMNS[: len(COLUMNS)] == COLUMNS
-    assert MONTHLY_COLUMNS[-1] == "lending"
+    最初は「立花の月次だけに足す」と書いた。**前提が間違っていた**——
+    J-Quants の ``equities/master`` は ``Mrgn``/``MrgnNm`` を返しており、
+    しかも日付を取る。**過去のある日にどうだったかを引けるのはこちらだけ**で、
+    立花のマスタは現在値しか返さない。
 
-    path = write_snapshot(tmp_path, dt.date(2026, 1, 5), [_profile("7203")])
+    2つの名簿を別のフォルダに置くのは、**除外の仕方が違うので差を取ると
+    消えてもいない銘柄が消えたことになる**ためで、列の話ではなかった。
+    """
+    from stock_ai.data.delisted import COLUMNS
 
-    assert path.read_text(encoding="utf-8").splitlines()[0] == ",".join(COLUMNS)
+    assert COLUMNS == ("symbol", "name", "sector", "industry", "lending")
+
+    profile = SecurityProfile(symbol="7203", market="JP", name="トヨタ", lending="貸借")
+    path = write_snapshot(tmp_path, dt.date(2026, 1, 5), [profile])
+
+    lines = path.read_text(encoding="utf-8").splitlines()
+    assert lines[0] == ",".join(COLUMNS)
+    (back,) = read_snapshot(path)
+    assert back.lending == "貸借"

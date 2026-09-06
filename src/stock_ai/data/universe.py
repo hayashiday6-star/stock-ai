@@ -194,6 +194,11 @@ def normalize_listings(
             name=_text(record, "CoName", "Name", "CompanyName", "CoNameEn", "CompanyNameEnglish"),
             sector=str(_sector_of(record)),
             industry=_text(record, "S33Nm", "Sec33Name", "Sector33CodeName", "S17Nm", "Sec17Name"),
+            # **貸借区分（``Mrgn``/``MrgnNm``）。** 空売りできるかを決める。
+            # J-Quants の ``equities/master`` は日付を取るので、**過去のある日に
+            # どうだったか**が引ける。立花のマスタは現在値しか返さないので、
+            # ここが唯一の遡れる経路である。解約後は増えない。
+            lending=_text(record, "MrgnNm", "MarginCodeName", "Mrgn", "MarginCode"),
         )
 
     if funds:

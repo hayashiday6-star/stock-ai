@@ -43,21 +43,19 @@ DEFAULT_SNAPSHOT_DIR: Path = DATA_DIR / "universe_snapshots"
 
 #: CSV の列。順序ごと固定する（後から足すなら末尾に足す）。
 #:
-#: **J-Quants の日付ごとの名簿はこの4列だけ。** 立花の月次の名簿は
-#: ``MONTHLY_COLUMNS``（末尾に貸借の区分）を使う。2つは除外の仕方が違うので
-#: 混ぜない——その注意は置き場所を分けることで既に守っている。
-COLUMNS = ("symbol", "name", "sector", "industry")
-
-#: 立花の月次の名簿の列。``COLUMNS`` の末尾に貸借の区分を足したもの。
+#: **``lending``（貸借区分）は 2026-09-06 に足した。** それまで、J-Quants の
+#: ``equities/master`` が返していた ``Mrgn``/``MrgnNm`` を読み捨てていた。
 #:
-#: **貸借の区分は現在値である。** 立花のマスタは「いまどうなっているか」しか
-#: 返さないので、#7 の時点では使えなかった。**月次で残せば、1年後には過去に
-#: 当てられる値になる。** 空売りできるかを決める項目なので、ロング・ショートの
-#: 設計では母集団そのものを左右する。
+#: 空売りできるかを決める項目なので、ロング・ショートの設計では母集団そのものを
+#: 左右する。**そして日付ごとに引ける**——立花のマスタは現在値しか返さないので、
+#: 過去のある日にどうだったかを知る経路はここしかない。
 #:
-#: 2026-09 以前のファイルにはこの列が無い。``read_snapshot`` は
-#: ``row.get`` で読むので、欠けていても落ちない。
-MONTHLY_COLUMNS = (*COLUMNS, "lending")
+#: **2026-09-22 を過ぎると取り戻せない。** 既に保存済みの63枚はこの列を持って
+#: いないので、``delisted-harvest --refetch`` で取り直す必要がある。
+#:
+#: 古いファイルにはこの列が無い。``read_snapshot`` は ``row.get`` で読むので、
+#: 欠けていても落ちない。
+COLUMNS = ("symbol", "name", "sector", "industry", "lending")
 
 #: 名簿を取りに行く間隔の既定値。月1回。廃止は年 50〜106 件なので、
 #: 1ヶ月刻みなら「いつ消えたか」は月単位まで分かる。
@@ -166,7 +164,13 @@ def write_snapshot(directory: Path, on: dt.date, profiles: Iterable[SecurityProf
         writer.writerow(COLUMNS)
         for profile in rows:
             writer.writerow(
-                [profile.symbol, profile.name or "", profile.sector or "", profile.industry or ""]
+                [
+                    profile.symbol,
+                    profile.name or "",
+                    profile.sector or "",
+                    profile.industry or "",
+                    profile.lending or "",
+                ]
             )
     logger.info("Wrote %d listing(s) for %s to %s", len(rows), on, path.name)
     return path
@@ -374,7 +378,7 @@ def monthly_snapshot(
     rows = sorted(profiles, key=lambda profile: profile.symbol)
     with path.open("w", encoding="utf-8", newline="") as handle:
         writer = csv.writer(handle, lineterminator="\n")
-        writer.writerow(MONTHLY_COLUMNS)
+        writer.writerow(COLUMNS)
         for profile in rows:
             writer.writerow(
                 [
