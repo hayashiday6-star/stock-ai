@@ -949,17 +949,44 @@ JQUANTS_PLAN=Premium
 
 ### 段0 の進み具合
 
-| 読み口 | 元にした実物 | 状態 |
+| 読み口 | 元にした実物 | 置き場所 |
 |---|---|---|
-| `margin-alert`（日々公表信用残） | `Daily Margin Interest.csv` | **できた**（`jquants_margin.py`） |
-| `short-sale-report` | `Outstanding Short Selling Positions Reported.csv` | まだ |
-| `fins details` | `Financial Statement Data(BSPLCF).csv` | まだ |
-| `fins dividend` | `Cash Dividend Data.csv` | まだ |
-| `breakdown` | `Breakdown Trading Data.csv` | まだ |
-| `margin-interest`（週末残） | `Margin Trading Outstandings.csv` | まだ |
+| `margin-alert`（日々公表信用残） | `Daily Margin Interest.csv` | `jquants_margin.py` |
+| `fins details` | `Financial Statement Data(BSPLCF).csv` | `jquants_details.py` |
+| `margin-interest`（週末残） | `Margin Trading Outstandings.csv` | `jquants_markets.py` |
+| `breakdown` | `Breakdown Trading Data.csv` | `jquants_markets.py` |
+| `short-sale-report` | `Outstanding Short Selling Positions Reported.csv` | `jquants_markets.py` |
+| `fins dividend` | `Cash Dividend Data.csv` | `jquants_dividend.py` |
+
+**6本とも通った（2026-09-06）。段0 は終わり。** 契約は1日も要らなかった。
 
 `margin-alert` を先にしたのは、**候補9 の材料がこれだけだから**である。JPX も
 日証金も過去分を配っていない（どちらもその日の断面だけ）。
+
+#### 段0 で分かったこと
+
+サンプルを読んだだけで、**契約していたら課金中に踏んでいた形**が6つ出た。
+
+| どこ | 素直に読むとどうなるか |
+|---|---|
+| 一括 CSV の文字コード | 日本語を含むファイルは cp932。`utf-8` 決め打ちだと例外で止まる |
+| 欠測の `-` と `*` | `0` にすると「増減なし」になる。**前の値が無いのとは違う** |
+| `PubReason` / `FS` | 単引用符の辞書。`json` では読めない |
+| `Equity` の前方一致 | 少数株主分を含む・含まないが入れ替わる。**どちらももっともらしい大きさ** |
+| 空売り残高の1行目 | 報告者ごとに1行。先頭を取ると1社の残高が銘柄の残高になる |
+| 配当の同じ公表日 | 期の違う行が並ぶ。足すと年間配当が3倍になる |
+
+**どれも例外を出さない。** 表は埋まり、桁も変わらない。
+
+もう1つ、説の設計に効くことが分かった。**四半期にキャッシュフローは無い。**
+CF の鍵が出るのは通期の開示だけで、四半期の CF 因子を作ると値が1つも埋まら
+ない——年1回しか観測が無いことに、件数が少ないという形でしか気付けない。
+
+#### まだ書いていないもの
+
+**日本基準（JGAAP）の鍵の対応表。** 配布サンプルには IFRS・連結の4件しか
+入っていない。見ていないものを書けば出典の無い数字になるので、`field_census`
+を置いて**原本を落としたあとに証拠から書く**ことにしてある。
 
 ### 原本をそのまま残す（段1〜2 の前提）
 
