@@ -2760,6 +2760,27 @@ def _report_plan(found: dict[str, list[BulkFile]]) -> None:
         )
 
 
+def _bytes_label(total: int) -> str:
+    """Format a byte count without rounding a real endpoint down to zero.
+
+    バイト数を読める単位で。**0 に丸めない。**
+
+    下見で `investor-types` が 61 本あるのに「0 MB」と出た。四捨五入である
+    ことは合っているが、**「取れなかった」と同じ見た目になる。** 数十本の
+    エンドポイントが 0 と並んでいたら、そこで手が止まる——止まる先が課金中
+    だと高い。
+    """
+    if total >= 1_000_000_000:
+        return f"{total / 1_000_000_000:,.2f} GB"
+    if total >= 10_000_000:
+        return f"{total / 1_000_000:,.0f} MB"
+    if total >= 1_000_000:
+        return f"{total / 1_000_000:,.1f} MB"
+    if total >= 1_000:
+        return f"{total / 1_000:,.0f} KB"
+    return f"{total:,} B"
+
+
 @app.command(name="jquants-archive")
 def jquants_archive(
     endpoints: list[str] = typer.Option(  # noqa: B008 - typer builds the default list
@@ -2823,13 +2844,15 @@ def jquants_archive(
             name,
             f"{len(files):,}",
             f"{span[0]} 〜 {span[1]}" if span else "—",
-            f"{sum(item.size for item in files) / 1_000_000:,.0f} MB",
+            _bytes_label(sum(item.size for item in files)),
         )
         found.extend(files)
     console.print(table)
 
-    total_mb = sum(item.size for item in found) / 1_000_000
-    console.print(f"合計 [bold]{len(found):,}[/] 本、[bold]{total_mb:,.0f} MB[/]。")
+    console.print(
+        f"合計 [bold]{len(found):,}[/] 本、"
+        f"[bold]{_bytes_label(sum(item.size for item in found))}[/]。"
+    )
 
     if refused:
         # **断られ方は判断の材料である。** 定型ではないので削らない。

@@ -929,3 +929,31 @@ def test_reversal_bias_refuses_to_reach_out_of_sample() -> None:
     result = runner.invoke(app, ["reversal-bias", "--end", "2024-06-01"])
     assert result.exit_code != 0
     assert "2024-01-01" in result.output
+
+
+class TestByteLabel:
+    """下見の大きさ表示。
+
+    **61本あるエンドポイントが「0 MB」と出た。** 四捨五入としては合っている
+    が、「取れなかった」と同じ見た目になる。課金中に手が止まる先を1つ減らす。
+    """
+
+    def test_a_small_but_real_endpoint_does_not_read_as_empty(self) -> None:
+        from stock_ai.cli import _bytes_label
+
+        assert _bytes_label(300_000) != "0 MB"
+        assert _bytes_label(300_000) == "300 KB"
+
+    def test_the_units_change_with_the_size(self) -> None:
+        from stock_ai.cli import _bytes_label
+
+        assert _bytes_label(900) == "900 B"
+        assert _bytes_label(9_000_000) == "9.0 MB"
+        assert _bytes_label(135_000_000) == "135 MB"
+        assert _bytes_label(1_200_000_000) == "1.20 GB"
+
+    def test_nothing_is_still_nothing(self) -> None:
+        """**空を空でなく見せてもいけない。**"""
+        from stock_ai.cli import _bytes_label
+
+        assert _bytes_label(0) == "0 B"
