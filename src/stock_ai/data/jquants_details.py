@@ -311,3 +311,81 @@ def field_census(items: list[StatementDetail]) -> dict[tuple[str | None, bool | 
         group: sorted(bucket.items(), key=lambda pair: (-pair[1], pair[0]))
         for group, bucket in counts.items()
     }
+
+
+#: 予想の修正を表す書類種別。出典は :data:`DOCUMENT_TYPES`（公式の45種）。
+REVISION_TYPES: tuple[str, ...] = (
+    "EarnForecastRevision",
+    "DividendForecastRevision",
+    "REITEarnForecastRevision",
+    "REITDividendForecastRevision",
+)
+
+#: 決算短信の書類種別を見分ける語。
+STATEMENT_MARKER = "FinancialStatements"
+
+
+@dataclasses.dataclass
+class RevisionCensus:
+    """予想修正が、決算発表と**別の日に**出ているか。
+
+    **説#5 を閉じた理由そのものを測る。** 記録にはこうある。
+
+        予想修正は**独立した開示として取得できない**。イベント日が決算発表日と
+        重なる。「決算とは独立」という前提が崩れる。
+
+    公式の書類種別一覧には `EarnForecastRevision`（業績予想の修正）が**独立
+    した種別として載っている。** 載っていることと、別の日に出ることは別で
+    ある——**後者を数える。**
+    """
+
+    doc_types: dict[str, int] = dataclasses.field(default_factory=dict)
+    revisions: int = 0
+    on_statement_day: int = 0
+    """同じ銘柄・同じ日に決算短信もあった修正。**独立ではない。**"""
+
+    standalone: int = 0
+    """決算短信の無い日に単独で出た修正。**これが独立イベントである。**"""
+
+    symbols: set[str] = dataclasses.field(default_factory=set)
+
+    def summary(self) -> str:
+        """1行のまとめ。"""
+        if not self.revisions:
+            return "予想修正の開示が1件も無い。"
+        share = self.standalone / self.revisions
+        return (
+            f"予想修正 {self.revisions:,} 件（{len(self.symbols):,} 銘柄）。"
+            f"うち決算と同じ日 {self.on_statement_day:,}、"
+            f"**単独 {self.standalone:,}（{share:.0%}）**"
+        )
+
+
+def revision_census(
+    items: list[StatementDetail], into: RevisionCensus | None = None
+) -> RevisionCensus:
+    """予想修正が決算発表日と重なっているかを数える。
+
+    **「取れるか」ではなく「別の日か」を見る。** 一覧に載っていても、いつも
+    決算と同じ日に出るなら、独立イベントにはならない——それが #5 を閉じた
+    理由である。
+
+    Args:
+        items: `fins/summary` の行（`DocType` を持つもの）。
+        into: 足し込み先。複数のファイルにまたがって数えるときに渡す。
+    """
+    census = into or RevisionCensus()
+    statement_days = {
+        (item.symbol, item.disclosed_on) for item in items if STATEMENT_MARKER in item.doc_type
+    }
+    for item in items:
+        census.doc_types[item.doc_type] = census.doc_types.get(item.doc_type, 0) + 1
+        if item.doc_type not in REVISION_TYPES:
+            continue
+        census.revisions += 1
+        census.symbols.add(item.symbol)
+        if (item.symbol, item.disclosed_on) in statement_days:
+            census.on_statement_day += 1
+        else:
+            census.standalone += 1
+    return census

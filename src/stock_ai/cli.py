@@ -192,7 +192,7 @@ from stock_ai.data.delisted import (
     stored_dates,
 )
 from stock_ai.data.fx import FxConverter
-from stock_ai.data.jquants_archive import DEFAULT_ARCHIVE_DIR, read_manifest
+from stock_ai.data.jquants_archive import DEFAULT_ARCHIVE_DIR, path_for, read_manifest
 from stock_ai.data.jquants_archive import archive as archive_bulk
 from stock_ai.data.jquants_archive import verify as verify_archive
 from stock_ai.data.jquants_bulk import (
@@ -213,6 +213,15 @@ from stock_ai.data.jquants_bulk import group_by_symbol as bulk_group_by_symbol
 from stock_ai.data.jquants_bulk import list_files as bulk_list_files
 from stock_ai.data.jquants_bulk import records_from_csv as bulk_records_from_csv
 from stock_ai.data.jquants_bulk import span_years as bulk_span_years
+from stock_ai.data.jquants_details import (
+    RevisionCensus,
+    describe_doc_type,
+    is_known_doc_type,
+    parse_details,
+)
+from stock_ai.data.jquants_details import (
+    revision_census as count_revisions,
+)
 from stock_ai.data.jquants_exit import CANCELLATION, audit
 from stock_ai.data.jquants_fundamentals import JQuantsFundamentalsProvider, normalize_statements
 from stock_ai.data.jquants_prices import ingest as price_ingest
@@ -222,7 +231,7 @@ from stock_ai.data.jquants_prices import split_day_returns as price_split_day_re
 from stock_ai.data.jquants_profile import JQuantsProfileProvider
 from stock_ai.data.jquants_provider import JQuantsPriceProvider
 from stock_ai.data.jquants_read import census as archive_census
-from stock_ai.data.jquants_read import samples_per_endpoint
+from stock_ai.data.jquants_read import endpoint_of, read_archived, samples_per_endpoint
 from stock_ai.data.jquants_read import shape_of as archive_shape
 from stock_ai.data.jquants_rosters import (
     DAILY_SNAPSHOT_DIR,
@@ -3401,6 +3410,89 @@ def _archive_first_date(directory: Path) -> dt.date | None:
     if found is None or not found.first_date:
         return None
     return _parse_date(found.first_date)
+
+
+@app.command(name="jquants-revision-census")
+def jquants_revision_census(
+    archive_dir: str = typer.Option(
+        str(DEFAULT_ARCHIVE_DIR), "--dir", help="Where the raw files are kept."
+    ),
+    show: int = typer.Option(12, "--show", help="How many document types to list."),
+) -> None:
+    """Count whether forecast revisions arrive on their own day.
+
+    **説#5 を閉じた理由そのものを測る。** 記録にはこうある。
+
+        予想修正は**独立した開示として取得できない**。イベント日が決算発表日
+        と重なる。「決算とは独立」という前提が崩れる。
+
+    公式の書類種別一覧には `EarnForecastRevision`（業績予想の修正）が**独立
+    した種別として載っている。** 載っていることと、別の日に出ることは別で
+    ある——**後者を数える。**
+
+    落とすことはしない。保存済みの `fins/summary` を読むだけである。
+    """
+    settings = get_settings()
+    configure_logging(settings.log_level)
+
+    source = Path(archive_dir)
+    keys = [key for key in sorted(read_manifest(source)) if endpoint_of(key) == "/fins/summary"]
+    if not keys:
+        console.print("[yellow]`/fins/summary` の原本が無い。[/]")
+        return
+
+    census = RevisionCensus()
+    for index, key in enumerate(keys, start=1):
+        console.print(f"[dim]{index}/{len(keys)} {key}[/]", end="\r")
+        try:
+            count_revisions(parse_details(read_archived(path_for(source, key))), census)
+        except Exception as exc:  # noqa: BLE001 - どこで読めないかが記録に値する
+            console.print(f"[yellow]{key}: {type(exc).__name__}[/]")
+
+    console.print()
+    table = Table(title=f"書類種別（{len(keys)} 本ぶん）")
+    table.add_column("書類種別")
+    table.add_column("件数", justify="right")
+    table.add_column("説明")
+    ordered = sorted(census.doc_types.items(), key=lambda pair: -pair[1])
+    for doc_type, count in ordered[:show]:
+        table.add_row(doc_type or "(空)", f"{count:,}", describe_doc_type(doc_type) or "")
+    console.print(table)
+    if len(ordered) > show:
+        console.print(f"[dim]他 {len(ordered) - show} 種別。[/]")
+
+    unknown = [name for name in census.doc_types if name and not is_known_doc_type(name)]
+    if unknown:
+        # **公式の一覧に無い種別は、読み取りが推測になっている。**
+        console.print(
+            f"[yellow]公式の一覧に無い書類種別が {len(unknown)} 種類。[/] " + "、".join(unknown[:5])
+        )
+
+    console.print()
+    console.print(f"[bold]{census.summary()}[/]")
+    if not census.revisions:
+        console.print(
+            "[dim]**#5 を閉じた理由は、この範囲では覆らない。**予想修正の開示が1件も出ていない。[/]"
+        )
+        return
+
+    share = census.standalone / census.revisions
+    if share >= 0.5:
+        console.print(
+            "[green]予想修正の過半が、決算と別の日に出ている。[/] "
+            "**#5 を閉じた理由（「独立した開示として取得できない」）は、"
+            "事実として誤りである。** 記録を直すこと。"
+        )
+    elif census.standalone:
+        console.print(
+            f"[yellow]単独で出た修正が {census.standalone:,} 件ある。[/] "
+            "**「取得できない」は言い過ぎだが、大半は決算と同じ日である。** "
+            "独立イベントとして使うなら、単独のぶんだけを数えることになる。"
+        )
+    else:
+        console.print(
+            "[dim]どの修正も決算と同じ日に出ている。**#5 を閉じた理由はそのまま正しい。**[/]"
+        )
 
 
 @app.command(name="jquants-archive-verify")

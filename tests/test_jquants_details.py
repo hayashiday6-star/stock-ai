@@ -258,3 +258,110 @@ class TestOfficialDocumentTypes:
         from stock_ai.data.jquants_details import is_known_doc_type
 
         assert is_known_doc_type(_sample()[0].doc_type)
+
+
+class TestRevisionCensus:
+    """予想修正が、決算発表と**別の日に**出ているか。
+
+    **説#5 を閉じた理由そのものを測る。** 記録にはこうある。
+
+        予想修正は**独立した開示として取得できない**。イベント日が決算発表日
+        と重なる。
+
+    公式の書類種別一覧には `EarnForecastRevision` が**独立した種別として載って
+    いる。** 載っていることと、別の日に出ることは別で、**後者が問題である。**
+    """
+
+    def _item(self, symbol: str, day: str, doc_type: str) -> StatementDetail:
+        return StatementDetail(
+            symbol=symbol,
+            disclosed_on=dt.date.fromisoformat(day),
+            disclosed_at=None,
+            number="1",
+            doc_type=doc_type,
+            period=None,
+            consolidated=None,
+            standard=None,
+            values={},
+        )
+
+    def test_a_revision_on_its_own_day_counts_as_standalone(self) -> None:
+        """**これが独立イベントである。**"""
+        from stock_ai.data.jquants_details import revision_census
+
+        items = [
+            self._item("7203", "2024-01-15", "EarnForecastRevision"),
+            self._item("7203", "2024-02-05", "3QFinancialStatements_Consolidated_JP"),
+        ]
+
+        census = revision_census(items)
+
+        assert census.revisions == 1
+        assert census.standalone == 1
+        assert census.on_statement_day == 0
+
+    def test_a_revision_on_the_earnings_day_is_not_independent(self) -> None:
+        """**#5 を閉じた理由は、こちらが大半であることだった。**"""
+        from stock_ai.data.jquants_details import revision_census
+
+        items = [
+            self._item("7203", "2024-02-05", "EarnForecastRevision"),
+            self._item("7203", "2024-02-05", "3QFinancialStatements_Consolidated_JP"),
+        ]
+
+        census = revision_census(items)
+
+        assert census.on_statement_day == 1
+        assert census.standalone == 0
+
+    def test_the_same_day_at_another_symbol_does_not_count(self) -> None:
+        """**銘柄をまたいで「同じ日」と数えない。**
+
+        決算発表は日ごとに何百件もある。日付だけで突き合わせると、ほぼ全部が
+        「決算と同じ日」になり、独立イベントが消える。
+        """
+        from stock_ai.data.jquants_details import revision_census
+
+        items = [
+            self._item("7203", "2024-02-05", "EarnForecastRevision"),
+            self._item("6758", "2024-02-05", "3QFinancialStatements_Consolidated_JP"),
+        ]
+
+        census = revision_census(items)
+
+        assert census.standalone == 1
+
+    def test_dividend_revisions_count_too(self) -> None:
+        from stock_ai.data.jquants_details import revision_census
+
+        census = revision_census([self._item("7203", "2024-01-15", "DividendForecastRevision")])
+
+        assert census.revisions == 1
+
+    def test_a_statement_is_not_a_revision(self) -> None:
+        from stock_ai.data.jquants_details import revision_census
+
+        census = revision_census(
+            [self._item("7203", "2024-02-05", "FYFinancialStatements_Consolidated_JP")]
+        )
+
+        assert census.revisions == 0
+        assert census.doc_types["FYFinancialStatements_Consolidated_JP"] == 1
+
+    def test_counting_across_files_adds_up(self) -> None:
+        """月ごとの原本を跨いで数える。**ファイルごとに数え直さない。**"""
+        from stock_ai.data.jquants_details import RevisionCensus, revision_census
+
+        census = RevisionCensus()
+        revision_census([self._item("7203", "2024-01-15", "EarnForecastRevision")], census)
+        revision_census([self._item("6758", "2024-02-15", "EarnForecastRevision")], census)
+
+        assert census.revisions == 2
+        assert census.symbols == {"7203", "6758"}
+
+    def test_no_revisions_says_so_rather_than_dividing_by_zero(self) -> None:
+        from stock_ai.data.jquants_details import revision_census
+
+        census = revision_census([])
+
+        assert "1件も無い" in census.summary()
