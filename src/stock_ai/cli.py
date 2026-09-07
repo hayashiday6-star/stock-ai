@@ -189,6 +189,7 @@ from stock_ai.data.delisted import (
     monthly_membership,
     monthly_snapshot,
     snapshot_dates,
+    stored_dates,
 )
 from stock_ai.data.fx import FxConverter
 from stock_ai.data.jquants_archive import DEFAULT_ARCHIVE_DIR
@@ -219,6 +220,8 @@ from stock_ai.data.jquants_provider import JQuantsPriceProvider
 from stock_ai.data.jquants_read import census as archive_census
 from stock_ai.data.jquants_read import samples_per_endpoint
 from stock_ai.data.jquants_read import shape_of as archive_shape
+from stock_ai.data.jquants_rosters import DAILY_SNAPSHOT_DIR
+from stock_ai.data.jquants_rosters import extract as roster_extract
 from stock_ai.data.markets import split_by_market, to_yahoo_symbol
 from stock_ai.data.schema import ADJ_CLOSE, CLOSE, OPEN
 from stock_ai.data.service import FundamentalsService, IngestionService, IngestResult
@@ -3068,6 +3071,79 @@ def jquants_archive_read(
                 columns,
             )
     console.print(forms)
+
+
+@app.command(name="jquants-daily-rosters")
+def jquants_daily_rosters(
+    archive_dir: str = typer.Option(
+        str(DEFAULT_ARCHIVE_DIR), "--dir", help="Where the raw files are kept."
+    ),
+    out_dir: str = typer.Option(
+        str(DAILY_SNAPSHOT_DIR), "--out", help="Where the daily rosters are written."
+    ),
+    refetch: bool = typer.Option(False, "--refetch", help="Rewrite dates that already exist."),
+) -> None:
+    """Turn the archived bulk master into one roster per trading day.
+
+    **一括ファイル1本の中に、その月の全営業日ぶんが入っている。** 2026-08 の
+    1本が 88,870 行で、4,441銘柄 × 20営業日である。
+
+    いまディスクにある名簿は JSON API を30日刻みで叩いた66枚だが、**同じ5年
+    ぶんが一括には約1,220枚（全営業日）入っている。** 廃止が「どの月か」から
+    「どの日か」になる。
+
+    **API を1回も叩かない。** 原本さえあれば、解約後にも実行できる。
+
+    書き出し先は `universe_snapshots/` とは別である。**混ぜない**——絞り込み
+    が食い違ったとき、境目をまたいだ差が「消えてもいない銘柄が消えた」になる。
+    """
+    settings = get_settings()
+    configure_logging(settings.log_level)
+
+    source, target = Path(archive_dir), Path(out_dir)
+    console.print(f"原本: [bold]{source}[/]　／　書き出し先: [bold]{target}[/]")
+    console.print(
+        "[dim]**API を1回も叩かない。** 原本から取り出すだけなので、解約後にも実行できる。[/]"
+    )
+
+    def show(index: int, total: int, key: str) -> None:
+        # **進捗は1行に収める。**
+        console.print(f"[dim]{index}/{total} {key}[/]", end="\r")
+
+    report = roster_extract(source, target, refetch=refetch, progress=show)
+    console.print()
+    console.print(report.summary())
+
+    if report.written:
+        first, last = min(report.written), max(report.written)
+        console.print(f"覆う範囲: [bold]{first} 〜 {last}[/]")
+    if report.undated:
+        # **列名が変わった疑いである。** 黙って捨てると、その月だけ薄くなる。
+        console.print(
+            f"[yellow]日付を読めない行が {report.undated:,} 行あった。[/] "
+            "**列名が変わった疑いがある。** 原本を1本見ること。"
+        )
+    if report.empty:
+        console.print(
+            f"[yellow]絞り込みのあと1銘柄も残らなかった日が {len(report.empty)} 日。[/] "
+            "書いていない——書くと、その日に全銘柄が廃止したように見える。"
+        )
+    if report.failed:
+        table = Table(title=f"読めなかった ({len(report.failed)})")
+        table.add_column("key")
+        table.add_column("理由")
+        for key, why in list(report.failed.items())[:10]:
+            table.add_row(key, why[:80])
+        console.print(table)
+
+    existing = len(stored_dates(Path(DEFAULT_SNAPSHOT_DIR)))
+    written = len(stored_dates(target))
+    if written:
+        console.print(
+            f"[dim]30日刻みの名簿は {existing} 枚、営業日ごとは [bold]{written}[/] 枚。"
+            "**別のフォルダに置いてある。** 混ぜると、絞り込みの違いが"
+            "「消えてもいない銘柄が消えた」に化ける。[/]"
+        )
 
 
 @app.command(name="jquants-archive-verify")

@@ -1,0 +1,282 @@
+"""保存した一括名簿から、営業日ごとの名簿を取り出す。
+
+**一括ファイル1本の中に、その月の全営業日ぶんが入っている。** 2026-08 の
+1本が 88,870 行で、4,441銘柄 × 20営業日である（2026-09-07 に実測）。
+
+いまディスクにある66枚は JSON API を30日刻みで叩いたもので、**同じ5年ぶんが
+一括には約1,220枚（全営業日）入っている。** 20年なら約5,000枚。しかも API を
+1回も叩かずに取り出せる。
+"""
+
+from __future__ import annotations
+
+import csv
+import datetime as dt
+import gzip
+import io
+from pathlib import Path
+
+from stock_ai.data.delisted import read_snapshot
+from stock_ai.data.jquants_archive import archive
+from stock_ai.data.jquants_bulk import BulkFile
+from stock_ai.data.jquants_rosters import (
+    DAILY_SNAPSHOT_DIR,
+    extract,
+    rosters_from_payload,
+)
+
+TODAY = dt.date(2026, 9, 7)
+
+COLUMNS = [
+    # 公式の `EQ_MASTER_COLUMNS_V2` と同じ並び。
+    "Date",
+    "Code",
+    "CoName",
+    "CoNameEn",
+    "S17",
+    "S17Nm",
+    "S33",
+    "S33Nm",
+    "ScaleCat",
+    "Mkt",
+    "MktNm",
+    "Mrgn",
+    "MrgnNm",
+    "ProdCat",
+]
+
+
+def _row(date: str, code: str, *, s33: str = "7200", name: str | None = None) -> dict[str, str]:
+    return {
+        "Date": date,
+        "Code": code,
+        "CoName": name or f"会社{code}",
+        "CoNameEn": "X",
+        "S17": "16",
+        "S17Nm": "金融（除く銀行）",
+        "S33": s33,
+        "S33Nm": "その他金融業",
+        "ScaleCat": "-",
+        "Mkt": "0111",
+        "MktNm": "プライム",
+        "Mrgn": "2",
+        "MrgnNm": "貸借",
+        "ProdCat": "011",
+    }
+
+
+def _csv(rows: list[dict[str, str]]) -> bytes:
+    buf = io.StringIO()
+    writer = csv.DictWriter(buf, fieldnames=COLUMNS, lineterminator="\r\n")
+    writer.writeheader()
+    writer.writerows(rows)
+    return buf.getvalue().encode("utf-8")
+
+
+def _archive(tmp_path: Path, rows: list[dict[str, str]], month: str = "202608") -> None:
+    payload = gzip.compress(_csv(rows))
+    key = f"equities/master/historical/2026/eq_master_{month}.csv.gz"
+    archive(
+        [BulkFile(key=key, last_modified="", size=len(payload))],
+        lambda _k: payload,
+        tmp_path,
+        on=TODAY,
+    )
+
+
+class TestSplittingByDate:
+    """**1本を1枚の名簿として扱わない。**"""
+
+    def test_one_file_becomes_one_roster_per_trading_day(self) -> None:
+        payload = _csv(
+            [_row("2026-08-03", "13010"), _row("2026-08-04", "13010"), _row("2026-08-05", "13010")]
+        )
+
+        rosters, rows, undated = rosters_from_payload(payload)
+
+        assert sorted(rosters) == [dt.date(2026, 8, day) for day in (3, 4, 5)]
+        assert rows == 3
+        assert undated == 0
+
+    def test_a_listing_that_starts_mid_month_is_absent_earlier(self) -> None:
+        """**ここが要点である。**
+
+        月ぶんをまとめて1枚にすると、月の途中で上場した銘柄が月初から居た
+        ことになる。「和集合だと、まだ上場していない銘柄を過去の分位に入れて
+        しまう」と既に記録がある——**同じ間違いが、月の中でも起きる。**
+        """
+        payload = _csv(
+            [
+                _row("2026-08-03", "13010"),
+                _row("2026-08-04", "13010"),
+                _row("2026-08-04", "72030"),  # 4日から
+            ]
+        )
+
+        rosters, _rows, _undated = rosters_from_payload(payload)
+
+        assert {p.symbol for p in rosters[dt.date(2026, 8, 3)]} == {"1301"}
+        assert {p.symbol for p in rosters[dt.date(2026, 8, 4)]} == {"1301", "7203"}
+
+    def test_a_delisting_shows_up_on_the_day_not_the_month(self) -> None:
+        """30日刻みでは「その月のどこか」しか分からない。"""
+        payload = _csv(
+            [
+                _row("2026-08-03", "13010"),
+                _row("2026-08-03", "72030"),
+                _row("2026-08-04", "13010"),  # 7203 が消えた
+            ]
+        )
+
+        rosters, _rows, _undated = rosters_from_payload(payload)
+
+        gone = {p.symbol for p in rosters[dt.date(2026, 8, 3)]} - {
+            p.symbol for p in rosters[dt.date(2026, 8, 4)]
+        }
+        assert gone == {"7203"}
+
+    def test_rows_without_a_date_are_counted_not_guessed(self) -> None:
+        """**0 でないなら、列名が変わった疑いがある。** 黙って捨てない。"""
+        payload = _csv([_row("", "13010"), _row("2026-08-03", "13010")])
+
+        rosters, rows, undated = rosters_from_payload(payload)
+
+        assert undated == 1
+        assert rows == 2
+        assert len(rosters) == 1
+
+
+class TestTheFilterIsNotDuplicated:
+    """**絞り込みの規則を2つ持たない。** JSON 経路と同じ関数を通す。"""
+
+    def test_a_fund_is_dropped_the_same_way_as_on_the_json_path(self) -> None:
+        """ETF・REIT は業種コードで落ちる。ここで自前の規則を書かない。"""
+        payload = _csv([_row("2026-08-03", "13010"), _row("2026-08-03", "13060", s33="9999")])
+
+        rosters, _rows, _undated = rosters_from_payload(payload)
+
+        assert {p.symbol for p in rosters[dt.date(2026, 8, 3)]} == {"1301"}
+
+    def test_a_share_class_code_is_dropped(self) -> None:
+        """5桁の末尾が `0` でないものは普通株ではない。"""
+        payload = _csv([_row("2026-08-03", "13010"), _row("2026-08-03", "13015")])
+
+        rosters, _rows, _undated = rosters_from_payload(payload)
+
+        assert {p.symbol for p in rosters[dt.date(2026, 8, 3)]} == {"1301"}
+
+    def test_the_lending_class_survives(self) -> None:
+        """貸借区分は空売りできるかを決める。**落とさない。**"""
+        payload = _csv([_row("2026-08-03", "13010")])
+
+        rosters, _rows, _undated = rosters_from_payload(payload)
+
+        assert rosters[dt.date(2026, 8, 3)][0].lending == "貸借"
+
+
+class TestExtract:
+    """保存 → 取り出し → 書き出しを1本通す。"""
+
+    def test_the_default_directory_is_not_the_api_one(self) -> None:
+        """**混ぜない。**
+
+        JSON 経路の名簿と一括の名簿を同じ場所に置くと、絞り込みが食い違った
+        とき、境目をまたいだ差が「消えてもいない銘柄が消えた」になる。
+        """
+        assert DAILY_SNAPSHOT_DIR.name == "universe_daily"
+        assert DAILY_SNAPSHOT_DIR.name != "universe_snapshots"
+
+    def test_a_saved_month_becomes_daily_rosters_on_disk(self, tmp_path) -> None:
+        out = tmp_path / "out"
+        _archive(tmp_path, [_row(f"2026-08-{day:02d}", "13010") for day in (3, 4, 5)])
+
+        report = extract(tmp_path, out)
+
+        assert sorted(path.stem for path in out.glob("*.csv")) == [
+            "2026-08-03",
+            "2026-08-04",
+            "2026-08-05",
+        ]
+        assert report.files == 1
+        assert len(report.written) == 3
+
+    def test_what_is_written_reads_back_through_the_existing_reader(self, tmp_path) -> None:
+        """**形式を1つしか持たない。** 既存の読み口でそのまま読めること。"""
+        out = tmp_path / "out"
+        _archive(tmp_path, [_row("2026-08-03", "13010")])
+
+        extract(tmp_path, out)
+
+        (profile,) = read_snapshot(out / "2026-08-03.csv")
+        assert profile.symbol == "1301"
+        assert profile.lending == "貸借"
+
+    def test_running_again_does_not_rewrite(self, tmp_path) -> None:
+        """途中で止めても安全に再開できる。"""
+        out = tmp_path / "out"
+        _archive(tmp_path, [_row("2026-08-03", "13010")])
+
+        extract(tmp_path, out)
+        report = extract(tmp_path, out)
+
+        assert report.written == []
+        assert report.skipped == [dt.date(2026, 8, 3)]
+
+    def test_refetch_writes_again(self, tmp_path) -> None:
+        out = tmp_path / "out"
+        _archive(tmp_path, [_row("2026-08-03", "13010")])
+
+        extract(tmp_path, out)
+        report = extract(tmp_path, out, refetch=True)
+
+        assert report.written == [dt.date(2026, 8, 3)]
+
+    def test_a_day_where_nothing_survives_the_filter_is_not_written(self, tmp_path) -> None:
+        """**空の名簿を書かない。**
+
+        書くと、その日に全銘柄が上場廃止したように見える。例外は出ない。
+        """
+        out = tmp_path / "out"
+        _archive(tmp_path, [_row("2026-08-03", "13060", s33="9999")])
+
+        report = extract(tmp_path, out)
+
+        assert report.empty == [dt.date(2026, 8, 3)]
+        assert not list(out.glob("*.csv"))
+
+    def test_other_endpoints_in_the_archive_are_left_alone(self, tmp_path) -> None:
+        """名簿以外の原本を読みに行かない。"""
+        out = tmp_path / "out"
+        payload = gzip.compress(b"Date,Code,O\n2026-08-03,13010,100\n")
+        archive(
+            [BulkFile(key="equities/bars/daily/x.csv.gz", last_modified="", size=len(payload))],
+            lambda _k: payload,
+            tmp_path,
+            on=TODAY,
+        )
+
+        report = extract(tmp_path, out)
+
+        assert report.files == 0
+        assert not list(out.glob("*.csv"))
+
+    def test_an_unreadable_file_does_not_stop_the_rest(self, tmp_path) -> None:
+        out = tmp_path / "out"
+        archive(
+            [BulkFile(key="equities/master/bad.csv.gz", last_modified="", size=4)],
+            lambda _k: b"nope",
+            tmp_path,
+            on=TODAY,
+        )
+        _archive(tmp_path, [_row("2026-08-03", "13010")])
+
+        report = extract(tmp_path, out)
+
+        assert len(report.failed) == 1
+        assert report.written == [dt.date(2026, 8, 3)]
+
+    def test_an_empty_archive_is_quiet(self, tmp_path) -> None:
+        report = extract(tmp_path, tmp_path / "out")
+
+        assert report.files == 0
+        assert report.summary()
