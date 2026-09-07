@@ -72,3 +72,41 @@ def test_every_launcher_script_is_readable() -> None:
     """一覧の名前が古くなっていないこと。**名前が変われば上の検査は空を通る。**"""
     for script, _option in DERIVED_FROM_SETTINGS:
         assert (_scripts_dir() / script).is_file(), script
+
+
+class TestRobocopyExitCodes:
+    """`robocopy` は**成功でも 0 を返さない。**
+
+    0 = 写すものが無かった / 1 = 写した / 2 = 余分があった / 4 = 食い違い、
+    8 以上が失敗である。`-ne 0` で見ると、**実際に写せた回が毎回「失敗」に
+    なる。** よくある踏み方なので、判定の形を固定しておく。
+    """
+
+    def test_success_is_judged_by_being_under_eight(self) -> None:
+        body = _text("archive-backup.ps1")
+
+        assert "$robo -ge 8" in body
+        assert "$robo -ne 0" not in body
+
+    def test_the_mirror_switch_is_not_used(self) -> None:
+        """`/MIR` は写し先の余分を消す。**打ち間違えた先のものを消してしまう。**
+
+        見るのは**実行している行だけ**である。最初はファイル全体を見ていて、
+        「/MIR は使わない」と書いた注釈そのものに引っ掛かった。注釈を消せば
+        通るが、それでは検査が理由を消したことになる。
+        """
+        (line,) = [
+            line
+            for line in _text("archive-backup.ps1").splitlines()
+            if line.strip().startswith("robocopy ")
+        ]
+
+        assert "/MIR" not in line
+        assert "/E" in line
+
+    def test_the_copy_is_verified_against_the_manifest(self) -> None:
+        """**写したつもりで写せていないのが、いちばん困る。**"""
+        body = _text("archive-backup.ps1")
+
+        assert "jquants-archive-verify" in body
+        assert "--dir" in body
