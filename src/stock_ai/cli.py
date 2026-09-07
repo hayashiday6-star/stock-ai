@@ -217,6 +217,7 @@ from stock_ai.data.jquants_exit import CANCELLATION, audit
 from stock_ai.data.jquants_fundamentals import JQuantsFundamentalsProvider, normalize_statements
 from stock_ai.data.jquants_prices import ingest as price_ingest
 from stock_ai.data.jquants_prices import join_returns as price_join_returns
+from stock_ai.data.jquants_prices import looks_unapplied as price_looks_unapplied
 from stock_ai.data.jquants_prices import split_day_returns as price_split_day_returns
 from stock_ai.data.jquants_profile import JQuantsProfileProvider
 from stock_ai.data.jquants_provider import JQuantsPriceProvider
@@ -3320,25 +3321,32 @@ def jquants_bulk_prices(
             repository = PriceRepository(session)
             on_split = price_split_day_returns(repository.get_prices, report.split_table)
         if on_split:
-            off = [item for item in on_split if abs(item[2]) > 0.2]
+            # **「大きく動いた」だけでは判定にならない。** 権利落ち日に本当に
+            # 25% 動く銘柄はあるし、分割以外の事由（併合・無償割当・合併）でも
+            # 係数は立つ。規約を間違えていれば、動きは**ちょうど係数 - 1**に
+            # なり、しかも**全件がそうなる。** 見るべきはそこである。
+            unapplied = [item for item in on_split if price_looks_unapplied(item[2], item[3])]
+            loud = [item for item in on_split if abs(item[2]) > 0.2]
             middle = sorted(abs(item[2]) for item in on_split)[len(on_split) // 2]
-            if off:
+            if unapplied:
                 console.print(
-                    f"[red]分割の権利落ち日に 20% 以上動いた例が {len(off)}/{len(on_split)}。[/] "
-                    "**調整の組み立てがずれている疑いがある。** "
-                    + "、".join(f"{s_} {d} {v:+.0%}" for s_, d, v in off[:5])
+                    f"[red]権利落ち日の動きが係数そのものになっている例が "
+                    f"{len(unapplied)}/{len(on_split)}。[/] "
+                    "**調整の組み立てがずれている。** "
+                    + "、".join(f"{a} {b} {c:+.0%}(係数 {d})" for a, b, c, d in unapplied[:5])
                 )
             else:
                 console.print(
-                    f"[green]分割の権利落ち日 {len(on_split):,} 件は、どれも普通の1日に"
-                    f"見える[/]（値動きの中央値 {middle:.1%}）。"
-                    "[dim] 期間の内側の分割も揃っている。[/]"
+                    f"[green]権利落ち日 {len(on_split):,} 件は、どれも係数どおりの"
+                    f"ずれ方をしていない[/]（値動きの中央値 {middle:.1%}）。"
+                    "[dim] 組み立ては効いている。[/]"
                 )
+                if loud:
+                    console.print(
+                        f"[dim]うち {len(loud)} 件は 20% 以上動いているが、**どの係数とも"
+                        "合わない**——本当に動いた日か、分割以外の事由である。[/]"
+                    )
 
-    # **出所の違う株価が継ぎ目でぶつかっていないか見る。** 立花は 2001年から、
-    # 一括の原本は 2021-09 から。どちらも「最新の分割を基準にした調整後」を
-    # 出しているはずだが、**はず**である。基準が違えば、継ぎ目の1日だけ
-    # 分割比ぶんの収益率が立つ——例外は出ず、収益率の表も指標も通ってしまう。
     boundary = _archive_first_date(source)
     if boundary is None:
         return

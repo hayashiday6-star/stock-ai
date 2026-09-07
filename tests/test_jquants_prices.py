@@ -631,10 +631,11 @@ class TestSplitDayReturns:
 
         assert found[0] == "1301"
         assert abs(found[2]) < 0.05
+        assert found[3] == 0.5
 
-    def test_an_off_by_one_convention_shows_up_as_the_ratio(self) -> None:
-        """`j >= d` で組み立てると、権利落ち日だけが係数ぶんずれる。"""
-        from stock_ai.data.jquants_prices import split_day_returns
+    def test_an_off_by_one_convention_shows_up_as_the_factor(self) -> None:
+        """`j >= d` で組み立てると、動きが**ちょうど `係数 - 1`** になる。"""
+        from stock_ai.data.jquants_prices import looks_unapplied, split_day_returns
 
         frames = {"1301": self._frame({"2026-08-03": 100.0, "2026-08-04": 50.0})}
         splits = {"1301": {dt.date(2026, 8, 4): 0.5}}
@@ -642,6 +643,7 @@ class TestSplitDayReturns:
         (found,) = split_day_returns(frames.__getitem__, splits)
 
         assert found[2] == -0.5
+        assert looks_unapplied(found[2], found[3])
 
     def test_a_split_on_the_first_stored_day_is_left_out(self) -> None:
         """**前日が無ければ、その日の収益率は測れない。**"""
@@ -661,3 +663,46 @@ class TestSplitDayReturns:
         splits = {"1301": {dt.date(2026, 8, 4): 0.5, dt.date(2026, 9, 1): 0.5}}
 
         assert len(split_day_returns(frames.__getitem__, splits)) == 2
+
+
+class TestTellingATrueMoveFromABug:
+    """**「大きく動いた」だけでは判定にならない。**
+
+    2026-09-07 の実測では、963件の権利落ち日のうち6件が 20% 以上動いた
+    （+25%、+21%、+38%、−21%、−25%）。**これを「組み立てがずれている」と
+    読んだのは早すぎた。**
+
+    - 規約の間違いなら、**963件全部**が外れる。6件ではない。
+    - しかも動きは**ちょうど `係数 - 1`** になる。1:2 なら −50%。
+      +25% や +38% は、どの分割比とも合わない。
+
+    権利落ち日に本当に 25% 動く銘柄はあるし、分割以外の事由（併合・株式無償
+    割当・合併）でも係数は立ち、その日の動きが係数どおりにならないことも
+    普通にある。
+    """
+
+    def test_a_move_that_matches_the_factor_is_the_bug(self) -> None:
+        from stock_ai.data.jquants_prices import looks_unapplied
+
+        assert looks_unapplied(-0.5, 0.5)  # 1:2
+        assert looks_unapplied(-0.75, 0.25)  # 1:4
+
+    def test_a_move_that_does_not_match_the_factor_is_not(self) -> None:
+        """実測で出た6件は、どの係数とも合わない。"""
+        from stock_ai.data.jquants_prices import looks_unapplied
+
+        assert not looks_unapplied(0.25, 0.5)
+        assert not looks_unapplied(0.38, 0.5)
+        assert not looks_unapplied(-0.21, 0.5)
+
+    def test_a_quiet_ex_date_is_not_the_bug(self) -> None:
+        from stock_ai.data.jquants_prices import looks_unapplied
+
+        assert not looks_unapplied(0.01, 0.5)
+
+    def test_rounding_does_not_flip_the_verdict(self) -> None:
+        """係数ちょうどでなくても、近ければ同じ形である。"""
+        from stock_ai.data.jquants_prices import looks_unapplied
+
+        assert looks_unapplied(-0.495, 0.5)
+        assert not looks_unapplied(-0.45, 0.5)

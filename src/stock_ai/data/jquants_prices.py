@@ -407,37 +407,52 @@ def join_returns(
     return found
 
 
+#: 「係数を掛け忘れた形」とみなす幅。
+#:
+#: 規約を `j >= d` で書くと、権利落ち日の収益率が **ちょうど `係数 - 1`**
+#: になる（1:2 なら −50%）。そこからどれだけ離れていたら「別の理由」と
+#: 見なすか。
+UNAPPLIED_TOLERANCE = 0.02
+
+
 def split_day_returns(
     load: Callable[[str], pd.DataFrame],
     splits: SplitTable,
-) -> list[tuple[str, dt.date, float]]:
-    """分割の権利落ち日の、調整後の収益率を返す。
+) -> list[tuple[str, dt.date, float, float]]:
+    """分割の権利落ち日の、調整後の収益率と係数を返す。
 
     **継ぎ目の検査は1日しか見ていない。** 期間の内側で起きた分割は、そこでは
     確かめられない。組み立てを `j >= d` で書いていたら、**継ぎ目は綺麗なまま、
     分割日だけが1日ずつずれる。** どちらも例外は出ない。
 
-    調整が正しければ、権利落ち日は普通の1日に見える。ずれていれば、その日
-    だけ分割比ぶん（1:2 なら ±50%、1:4 なら ±75%）の収益率が立つ。
-
-    Args:
-        load: 銘柄を受けて**調整後**の日足を返す呼び出し。
-        splits: 銘柄ごとの ``{権利落ち日: 係数}``。
-
     Returns:
-        ``(銘柄, 権利落ち日, その日の収益率)``。前日が無い分割は入れない。
+        ``(銘柄, 権利落ち日, その日の収益率, 係数)``。前日が無い分割は入れない。
     """
-    found: list[tuple[str, dt.date, float]] = []
+    found: list[tuple[str, dt.date, float, float]] = []
     for symbol, factors in splits.items():
         frame = load(symbol)
         if frame.empty or CLOSE not in frame:
             continue
         series = frame[CLOSE]
-        for date in sorted(factors):
+        for date, factor in sorted(factors.items()):
             stamp = pd.Timestamp(date)
             before = series[series.index < stamp]
             on = series[series.index == stamp]
             if before.empty or on.empty or float(before.iloc[-1]) <= 0:
                 continue
-            found.append((symbol, date, float(on.iloc[0]) / float(before.iloc[-1]) - 1.0))
+            change = float(on.iloc[0]) / float(before.iloc[-1]) - 1.0
+            found.append((symbol, date, change, factor))
     return found
+
+
+def looks_unapplied(change: float, factor: float) -> bool:
+    """その日の動きが、**係数を掛け忘れた形**に見えるか。
+
+    **「大きく動いた」だけでは判定にならない。** 権利落ち日に本当に 25% 動く
+    銘柄はある。分割以外の事由（併合・株式無償割当・合併）でも係数は立ち、
+    その日の動きが係数どおりにならないことも普通にある。
+
+    規約を間違えていれば、動きは**ちょうど `係数 - 1`** になる。しかも
+    **1件ではなく全件がそうなる。** 見るべきはそこである。
+    """
+    return abs(change - (factor - 1.0)) < UNAPPLIED_TOLERANCE
