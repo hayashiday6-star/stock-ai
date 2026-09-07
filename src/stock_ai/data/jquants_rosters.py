@@ -176,3 +176,78 @@ def extract(
 
     logger.info("営業日ごとの名簿: %s", report.summary())
     return report
+
+
+@dataclasses.dataclass
+class CompareReport:
+    """2つの名簿を突き合わせた結果。
+
+    **同じ日付が両方にあるなら、中身も同じはずである。** 違うなら、絞り込みか
+    日付の意味のどちらかが食い違っている。
+    """
+
+    common: list[dt.date] = dataclasses.field(default_factory=list)
+    same: list[dt.date] = dataclasses.field(default_factory=list)
+    differing: dict[dt.date, tuple[int, int]] = dataclasses.field(default_factory=dict)
+    """日付ごとの ``(片方だけにある数, もう片方だけにある数)``。"""
+
+    examples: dict[dt.date, tuple[list[str], list[str]]] = dataclasses.field(default_factory=dict)
+    lending_differs: dict[dt.date, int] = dataclasses.field(default_factory=dict)
+    """銘柄は同じで貸借区分が違った件数。**これも黙って通る種類である。**"""
+
+    def summary(self) -> str:
+        """1行のまとめ。"""
+        if not self.common:
+            return "重なる日付が無い。突き合わせられない。"
+        return (
+            f"重なる日付 {len(self.common)} 日のうち、"
+            f"{len(self.same)} 日が完全一致、{len(self.differing)} 日が食い違い"
+            + (
+                f"、貸借区分だけ違う日が {len(self.lending_differs)} 日"
+                if self.lending_differs
+                else ""
+            )
+        )
+
+
+def compare(first: Path, second: Path, limit: int = 5) -> CompareReport:
+    """2つの名簿フォルダを、**重なる日付だけ**突き合わせる。
+
+    30日刻みで集めた名簿と、一括から取り出した名簿は**別の経路で作った同じ
+    ものである。** 同じ日付で中身が違うなら、どちらかが間違っている。
+
+    **これをやらずに新しい経路へ乗り換えない。** 片方だけを見ているかぎり、
+    絞り込みの食い違いは「銘柄数がちょっと違う」としか見えず、それは毎日
+    変わる値なので区別が付かない。
+
+    Args:
+        first: 一方の名簿フォルダ。
+        second: もう一方。
+        limit: 食い違った銘柄を何件まで控えるか。
+
+    Returns:
+        :class:`CompareReport`。
+    """
+    from stock_ai.data.delisted import read_snapshot, snapshot_path
+
+    report = CompareReport()
+    shared = sorted(set(stored_dates(first)) & set(stored_dates(second)))
+    report.common = shared
+    for date in shared:
+        left = {p.symbol: p for p in read_snapshot(snapshot_path(first, date))}
+        right = {p.symbol: p for p in read_snapshot(snapshot_path(second, date))}
+        only_left = sorted(set(left) - set(right))
+        only_right = sorted(set(right) - set(left))
+        if only_left or only_right:
+            report.differing[date] = (len(only_left), len(only_right))
+            if len(report.examples) < limit:
+                report.examples[date] = (only_left[:limit], only_right[:limit])
+            continue
+        # 銘柄が同じでも、貸借区分が違うことはありうる。**そこも見る。**
+        differs = sum(
+            1 for symbol in left if (left[symbol].lending or "") != (right[symbol].lending or "")
+        )
+        if differs:
+            report.lending_differs[date] = differs
+        report.same.append(date)
+    return report

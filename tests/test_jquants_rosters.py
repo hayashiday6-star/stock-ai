@@ -280,3 +280,93 @@ class TestExtract:
 
         assert report.files == 0
         assert report.summary()
+
+
+class TestCompare:
+    """2つの経路で作った名簿を突き合わせる。
+
+    **これをやらずに新しい経路へ乗り換えない。** 片方だけを見ているかぎり、
+    絞り込みの食い違いは「銘柄数がちょっと違う」としか見えず、それは毎日
+    変わる値なので区別が付かない。
+    """
+
+    def _write(self, directory: Path, date: str, rows: list[dict[str, str]]) -> None:
+        from stock_ai.data.delisted import write_snapshot
+        from stock_ai.data.universe import Segment, normalize_listings
+
+        write_snapshot(
+            directory, dt.date.fromisoformat(date), normalize_listings(rows, Segment.ALL)
+        )
+
+    def test_identical_rosters_come_back_as_the_same(self, tmp_path) -> None:
+        from stock_ai.data.jquants_rosters import compare
+
+        rows = [_row("2026-08-03", "13010"), _row("2026-08-03", "72030")]
+        for name in ("a", "b"):
+            self._write(tmp_path / name, "2026-08-03", rows)
+
+        report = compare(tmp_path / "a", tmp_path / "b")
+
+        assert report.same == [dt.date(2026, 8, 3)]
+        assert not report.differing
+
+    def test_a_symbol_in_only_one_of_them_is_reported(self, tmp_path) -> None:
+        from stock_ai.data.jquants_rosters import compare
+
+        self._write(tmp_path / "a", "2026-08-03", [_row("2026-08-03", "13010")])
+        self._write(
+            tmp_path / "b",
+            "2026-08-03",
+            [_row("2026-08-03", "13010"), _row("2026-08-03", "72030")],
+        )
+
+        report = compare(tmp_path / "a", tmp_path / "b")
+
+        assert report.differing == {dt.date(2026, 8, 3): (0, 1)}
+        assert report.examples[dt.date(2026, 8, 3)][1] == ["7203"]
+
+    def test_only_the_overlapping_dates_are_compared(self, tmp_path) -> None:
+        """**片方にしか無い日付を「食い違い」にしない。**
+
+        30日刻みと営業日ごとでは、重ならない日付のほうが圧倒的に多い。それを
+        差として数えると、全部が食い違いになる。
+        """
+        from stock_ai.data.jquants_rosters import compare
+
+        self._write(tmp_path / "a", "2026-08-03", [_row("2026-08-03", "13010")])
+        self._write(tmp_path / "b", "2026-08-03", [_row("2026-08-03", "13010")])
+        self._write(tmp_path / "b", "2026-08-04", [_row("2026-08-04", "13010")])
+
+        report = compare(tmp_path / "a", tmp_path / "b")
+
+        assert report.common == [dt.date(2026, 8, 3)]
+        assert report.same == [dt.date(2026, 8, 3)]
+
+    def test_the_lending_class_is_compared_too(self, tmp_path) -> None:
+        """**銘柄が同じでも、区分が違えば別の結論が出る。**
+
+        貸借区分は空売りできるかを決める。銘柄集合だけ見ていると通ってしまう。
+        """
+        from stock_ai.data.jquants_rosters import compare
+
+        left = _row("2026-08-03", "13010")
+        right = dict(left, MrgnNm="信用", Mrgn="1")
+        self._write(tmp_path / "a", "2026-08-03", [left])
+        self._write(tmp_path / "b", "2026-08-03", [right])
+
+        report = compare(tmp_path / "a", tmp_path / "b")
+
+        assert report.lending_differs == {dt.date(2026, 8, 3): 1}
+        assert report.same == [dt.date(2026, 8, 3)]  # 銘柄は同じ
+
+    def test_no_overlap_says_so_rather_than_claiming_agreement(self, tmp_path) -> None:
+        """**重なりが無いことを「一致」と読ませない。**"""
+        from stock_ai.data.jquants_rosters import compare
+
+        self._write(tmp_path / "a", "2026-08-03", [_row("2026-08-03", "13010")])
+        self._write(tmp_path / "b", "2026-08-04", [_row("2026-08-04", "13010")])
+
+        report = compare(tmp_path / "a", tmp_path / "b")
+
+        assert report.common == []
+        assert "突き合わせられない" in report.summary()

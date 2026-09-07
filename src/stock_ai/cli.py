@@ -221,6 +221,7 @@ from stock_ai.data.jquants_read import census as archive_census
 from stock_ai.data.jquants_read import samples_per_endpoint
 from stock_ai.data.jquants_read import shape_of as archive_shape
 from stock_ai.data.jquants_rosters import DAILY_SNAPSHOT_DIR
+from stock_ai.data.jquants_rosters import compare as roster_compare
 from stock_ai.data.jquants_rosters import extract as roster_extract
 from stock_ai.data.markets import split_by_market, to_yahoo_symbol
 from stock_ai.data.schema import ADJ_CLOSE, CLOSE, OPEN
@@ -3143,6 +3144,36 @@ def jquants_daily_rosters(
             f"[dim]30日刻みの名簿は {existing} 枚、営業日ごとは [bold]{written}[/] 枚。"
             "**別のフォルダに置いてある。** 混ぜると、絞り込みの違いが"
             "「消えてもいない銘柄が消えた」に化ける。[/]"
+        )
+
+    # **別の経路で作った同じものを突き合わせる。** 片方だけを見ているかぎり、
+    # 絞り込みの食い違いは「銘柄数がちょっと違う」としか見えず、それは毎日
+    # 変わる値なので区別が付かない。
+    console.print()
+    check = roster_compare(Path(DEFAULT_SNAPSHOT_DIR), target)
+    console.print(f"[bold]突き合わせ[/]: {check.summary()}")
+    if check.differing:
+        table = Table(title=f"食い違った日 ({len(check.differing)})")
+        for column in ("日付", "30日刻みだけ", "営業日ごとだけ", "例"):
+            table.add_column(column)
+        for date, (left, right) in list(check.differing.items())[:10]:
+            sample = check.examples.get(date, ([], []))
+            table.add_row(
+                str(date),
+                f"{left}",
+                f"{right}",
+                ("−" + "、".join(sample[0]) if sample[0] else "")
+                + ("　+" + "、".join(sample[1]) if sample[1] else ""),
+            )
+        console.print(table)
+        console.print(
+            "[yellow]**食い違いがある。** 絞り込みか日付の意味のどちらかが違う。[/] "
+            "生存バイアスの計算に使う前に、ここを説明できるようにすること。"
+        )
+    elif check.common:
+        console.print(
+            "[green]重なる日付では、2つの経路が同じ名簿を出している。[/] "
+            "[dim]片方だけを見ていては確かめられないことである。[/]"
         )
 
 
