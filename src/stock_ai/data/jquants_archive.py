@@ -51,10 +51,12 @@ import csv
 import dataclasses
 import datetime as dt
 import hashlib
+import time
 from collections.abc import Callable
 from pathlib import Path
 
 from stock_ai.config.constants import DATA_DIR
+from stock_ai.core.exceptions import RateLimitError
 from stock_ai.core.logging import get_logger
 from stock_ai.data.jquants_bulk import BulkFile
 
@@ -112,6 +114,9 @@ class ArchiveReport:
     truncated: list[str] = dataclasses.field(default_factory=list)
     """落とし直しても大きさが合わなかったもの。**残るが、印を付ける。**"""
 
+    waits: int = 0
+    """レート制限で待った回数。**0 でないなら、間隔が速すぎる。**"""
+
     bytes_written: int = 0
 
     def summary(self) -> str:
@@ -120,6 +125,7 @@ class ArchiveReport:
             f"{len(self.written)} 本を保存、{len(self.reused)} 本は既存、"
             f"{len(self.refetched)} 本を取り直し、{len(self.failed)} 本が失敗、"
             f"{self.bytes_written / 1_000_000:.1f} MB"
+            + (f"、レート制限で {self.waits} 回待った" if self.waits else "")
         )
 
 
@@ -191,12 +197,29 @@ def _int(text: str | None) -> int:
         return 0
 
 
+#: 目録を書き直す間隔（本）。
+#:
+#: **最後にまとめて書かない。** 途中で止めると目録だけが失われ、ファイルは
+#: 残る。次に実行したとき「あるのに目録に無い」状態になり、**全部を落とし
+#: 直す。** 2026-09-07 のリハーサルで、171本がこれで落とし直された。
+MANIFEST_EVERY = 20
+
+#: レート制限で待ち直す回数の上限。
+#:
+#: **レート制限はその1本ではなく走行全体のものである。** 次へ進んでも同じ
+#: 拒否を集めるだけで、`RateLimitError` の説明にもそう書いてある。それなのに
+#: 1本ぶんの失敗として飛ばしていて、リハーサルで74本が同じ理由で落ちた。
+RATE_LIMIT_RETRIES = 4
+
+
 def archive(
     files: list[BulkFile],
     fetch: RawFetcher,
     directory: Path = DEFAULT_ARCHIVE_DIR,
     on: dt.date | None = None,
     progress: Callable[[int, int, str], None] | None = None,
+    sleep: Callable[[float], None] = time.sleep,
+    retries: int = RATE_LIMIT_RETRIES,
 ) -> ArchiveReport:
     """一覧のファイルを1本ずつ落として、**そのまま**保存する。
 
@@ -215,6 +238,8 @@ def archive(
         directory: 置き場所。
         on: 落とした日として記録する日付。省略時は今日。
         progress: 1本ごとに ``(番号, 総数, key)`` で呼ばれる。
+        sleep: 待つときに呼ぶもの。試験で実際に待たないために差し替える。
+        retries: レート制限で取り直す回数の上限。
 
     Returns:
         :class:`ArchiveReport`。**1本の失敗で全体を止めない**——落とせるものを
@@ -224,8 +249,29 @@ def archive(
     today = on or dt.date.today()
     manifest = read_manifest(directory)
     report = ArchiveReport()
-    total = len(files)
 
+    try:
+        _run(files, fetch, directory, today, progress, sleep, retries, manifest, report)
+    finally:
+        # **中断でも目録を書く。** Ctrl-C は `except Exception` に掛からない。
+        write_manifest(directory, manifest)
+    logger.info("原本の保存: %s", report.summary())
+    return report
+
+
+def _run(
+    files: list[BulkFile],
+    fetch: RawFetcher,
+    directory: Path,
+    today: dt.date,
+    progress: Callable[[int, int, str], None] | None,
+    sleep: Callable[[float], None],
+    retries: int,
+    manifest: dict[str, ArchivedFile],
+    report: ArchiveReport,
+) -> None:
+    """保存の本体。目録の書き出しは呼び元が `finally` で受け持つ。"""
+    total = len(files)
     for index, item in enumerate(files, start=1):
         if progress is not None:
             progress(index, total, item.key)
@@ -237,11 +283,8 @@ def archive(
             continue
 
         stale = target.is_file()
-        try:
-            payload = fetch(item.key)
-        except Exception as exc:  # noqa: BLE001 - 断られ方そのものが記録に値する
-            report.failed[item.key] = f"{type(exc).__name__}: {exc}"
-            logger.warning("原本を落とせなかった: %s: %s", item.key, exc)
+        payload = _fetch_with_backoff(item.key, fetch, sleep, retries, report)
+        if payload is None:
             continue
 
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -268,9 +311,46 @@ def archive(
                 entry.bytes_written,
             )
 
-    write_manifest(directory, manifest)
-    logger.info("原本の保存: %s", report.summary())
-    return report
+        saved = len(report.written) + len(report.refetched)
+        if saved % MANIFEST_EVERY == 0:
+            write_manifest(directory, manifest)
+
+
+def _fetch_with_backoff(
+    key: str,
+    fetch: RawFetcher,
+    sleep: Callable[[float], None],
+    retries: int,
+    report: ArchiveReport,
+) -> bytes | None:
+    """1本を落とす。**レート制限なら待って同じ本を取り直す。**
+
+    飛ばさないのは、`RateLimitError` の説明にある通り「レート制限はその1本
+    ではなく走行全体のもの」だからである。次へ進んでも、残り全部が同じ拒否を
+    集める。**リハーサルでは74本がそうなった。**
+
+    レート制限以外の失敗は1本ぶんの話なので、記録して次へ行く。期限のある
+    作業では、落とせるものを落としきるほうが合う。
+    """
+    for attempt in range(retries + 1):
+        try:
+            return fetch(key)
+        except RateLimitError as exc:
+            if attempt == retries:
+                report.failed[key] = f"{type(exc).__name__}: {exc}"
+                logger.warning("レート制限が解けなかった: %s", key)
+                return None
+            wait = getattr(exc, "retry_after", None) or 5.0
+            # **回を追うごとに長く待つ。** 同じ間隔で叩き直すと、向こうから
+            # 見れば速度が変わっていない。
+            report.waits += 1
+            logger.info("レート制限。%.0f 秒待つ（%d 回目）", wait * (attempt + 1), attempt + 1)
+            sleep(wait * (attempt + 1))
+        except Exception as exc:  # noqa: BLE001 - 断られ方そのものが記録に値する
+            report.failed[key] = f"{type(exc).__name__}: {exc}"
+            logger.warning("原本を落とせなかった: %s: %s", key, exc)
+            return None
+    return None
 
 
 def verify(directory: Path = DEFAULT_ARCHIVE_DIR) -> tuple[list[str], list[str], list[str]]:

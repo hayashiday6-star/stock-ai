@@ -2804,7 +2804,9 @@ def jquants_archive(
     directory: str = typer.Option(
         str(DEFAULT_ARCHIVE_DIR), "--dir", help="Where the raw files are kept."
     ),
-    throttle: float = typer.Option(0.5, "--throttle", help="Seconds between files."),
+    throttle: float | None = typer.Option(
+        None, "--throttle", help="Seconds between files. Default: from JQUANTS_PLAN."
+    ),
     dry_run: bool = typer.Option(False, "--dry-run", help="List and size only. Fetch nothing."),
 ) -> None:
     """Save the bulk files as they arrive, before the plan that serves them ends.
@@ -2830,6 +2832,19 @@ def jquants_archive(
     wanted = [item.strip() for item in endpoints if item.strip()]
     if not wanted:
         raise typer.BadParameter("--endpoint に1つ以上要る。")
+
+    # **間隔をプランから引く。** 0.5 秒は 120回/分で、**Light の上限の2倍**
+    # である。2026-09-07 のリハーサルで、384本のうち74本が 429 で落ちた。
+    # `recommended_throttle` は前からあったのに、この口が呼んでいなかった
+    # ——「CLI側が新しい設定を配線し忘れる」型そのものである。
+    plan = (settings.jquants_plan or "").strip().capitalize()
+    if throttle is None:
+        throttle = recommended_throttle(plan) or 1.2
+        console.print(
+            f"[dim]間隔は JQUANTS_PLAN=[bold]{settings.jquants_plan}[/] から "
+            f"{throttle:.2f} 秒（{PLAN_REQUESTS_PER_MINUTE.get(plan, '?')} 回/分の上限に"
+            f"余裕を見た値）。[/]"
+        )
 
     console.print(f"原本の置き場所: [bold]{target}[/]　／　対象 {len(wanted)} エンドポイント")
     console.print(
@@ -2872,7 +2887,7 @@ def jquants_archive(
         # しかないので、そこがそのまま判断の材料になる。
         floor_seconds = len(found) * max(throttle, 0.0)
         console.print(
-            f"[dim]間隔 {throttle} 秒なら、待ち時間だけで最短 "
+            f"[dim]間隔 {throttle:.2f} 秒なら、待ち時間だけで最短 "
             f"[bold]{floor_seconds / 60:,.0f} 分[/]。**転送の時間は別に乗る。**[/]"
         )
         try:

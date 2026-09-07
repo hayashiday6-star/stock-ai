@@ -213,3 +213,125 @@ def test_an_empty_listing_writes_an_empty_manifest(tmp_path) -> None:
 
     assert report.summary()
     assert (tmp_path / "manifest.csv").is_file()
+
+
+class TestTheRehearsalFindings:
+    """2026-09-07 のリハーサルで出た2つ。**課金週の前に出てよかった側。**
+
+    384本のうち **74本が 429 で落ち、171本が落とし直しになった。** どちらも
+    保存の口の作りが原因で、20年ぶんでやれば1日ぶんの契約を捨てることになる。
+    """
+
+    def test_a_rate_limit_waits_and_takes_the_same_file_again(self, tmp_path) -> None:
+        """**飛ばさない。**
+
+        `RateLimitError` の説明にある通り「レート制限はその1本ではなく走行
+        全体のもの」で、次へ進んでも残り全部が同じ拒否を集める。リハーサルでは
+        74本がそうなった。
+        """
+        from stock_ai.core.exceptions import RateLimitError
+
+        payload = _gz("x")
+        attempts: list[str] = []
+        waited: list[float] = []
+
+        def fetch(key: str) -> bytes:
+            attempts.append(key)
+            if len(attempts) == 1:
+                raise RateLimitError("429", retry_after=3.0)
+            return payload
+
+        report = archive(
+            [_file("a.csv.gz", len(payload))],
+            fetch,
+            tmp_path,
+            on=TODAY,
+            sleep=waited.append,
+        )
+
+        assert attempts == ["a.csv.gz", "a.csv.gz"]  # 同じ本を取り直す
+        assert report.written == ["a.csv.gz"]
+        assert not report.failed
+        assert waited == [3.0]
+        assert report.waits == 1
+
+    def test_the_wait_grows_with_each_try(self, tmp_path) -> None:
+        """**同じ間隔で叩き直すと、向こうから見れば速度が変わっていない。**"""
+        from stock_ai.core.exceptions import RateLimitError
+
+        waited: list[float] = []
+
+        def fetch(_key: str) -> bytes:
+            raise RateLimitError("429", retry_after=2.0)
+
+        report = archive(
+            [_file("a.csv.gz", 10)], fetch, tmp_path, on=TODAY, sleep=waited.append, retries=3
+        )
+
+        assert waited == [2.0, 4.0, 6.0]
+        assert "RateLimitError" in report.failed["a.csv.gz"]
+
+    def test_an_ordinary_failure_still_moves_on(self, tmp_path) -> None:
+        """レート制限**以外**は1本ぶんの話である。待たずに次へ行く。"""
+        payload = _gz("x")
+        waited: list[float] = []
+
+        def fetch(key: str) -> bytes:
+            if key == "a.csv.gz":
+                raise RuntimeError("403")
+            return payload
+
+        report = archive(
+            [_file("a.csv.gz", 10), _file("b.csv.gz", len(payload))],
+            fetch,
+            tmp_path,
+            on=TODAY,
+            sleep=waited.append,
+        )
+
+        assert not waited
+        assert list(report.failed) == ["a.csv.gz"]
+        assert report.written == ["b.csv.gz"]
+
+    def test_the_manifest_survives_an_interruption(self, tmp_path) -> None:
+        """**最後にまとめて書かない。**
+
+        Ctrl-C は `except Exception` に掛からない。目録だけが失われてファイル
+        は残り、次の実行が「あるのに目録に無い」と判断して**全部を落とし直す。**
+        リハーサルで171本がこれになった。
+        """
+        payload = _gz("x")
+        files = [_file(f"{index}.csv.gz", len(payload)) for index in range(5)]
+
+        def fetch(key: str) -> bytes:
+            if key == "3.csv.gz":
+                raise KeyboardInterrupt
+            return payload
+
+        with pytest.raises(KeyboardInterrupt):
+            archive(files, fetch, tmp_path, on=TODAY)
+
+        saved = read_manifest(tmp_path)
+        assert sorted(saved) == ["0.csv.gz", "1.csv.gz", "2.csv.gz"]
+
+    def test_after_an_interruption_the_saved_files_are_not_fetched_again(self, tmp_path) -> None:
+        """中断のあと再実行しても、落とせていた分は飛ばす。"""
+        payload = _gz("x")
+        files = [_file(f"{index}.csv.gz", len(payload)) for index in range(5)]
+        calls: list[str] = []
+
+        def stopping(key: str) -> bytes:
+            calls.append(key)
+            if key == "3.csv.gz":
+                raise KeyboardInterrupt
+            return payload
+
+        with pytest.raises(KeyboardInterrupt):
+            archive(files, stopping, tmp_path, on=TODAY)
+        calls.clear()
+
+        report = archive(files, lambda k: (calls.append(k), payload)[1], tmp_path, on=TODAY)
+
+        assert calls == ["3.csv.gz", "4.csv.gz"]  # 続きから
+        assert len(report.reused) == 3
+        assert not report.refetched
