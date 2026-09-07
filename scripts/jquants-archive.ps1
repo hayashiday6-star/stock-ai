@@ -28,6 +28,11 @@
 .PARAMETER Dir
     置き場所。既定は data/jquants_bulk。
 
+.PARAMETER Throttle
+    1本あたりの間隔（秒）。**既定では渡しません**——CLI が .env の
+    JQUANTS_PLAN から引きます。ここに固定値を置くと、CLI を直しても
+    こちらが上書きしてしまいます。
+
 .EXAMPLE
     .\scripts\jquants-archive.ps1 -DryRun
     .\scripts\jquants-archive.ps1
@@ -37,7 +42,7 @@ param(
     [switch]$DryRun,
     [string]$Endpoint = '',
     [string]$Dir = '',
-    [double]$Throttle = 0.5
+    [double]$Throttle = 0
 )
 
 $ErrorActionPreference = 'Continue'
@@ -72,7 +77,11 @@ $arguments = @('run', 'stock-ai', 'jquants-archive')
 if ($DryRun) { $arguments += '--dry-run' }
 if ($Endpoint -ne '') { $arguments += @('--endpoint', $Endpoint) }
 if ($Dir -ne '') { $arguments += @('--dir', $Dir) }
-$arguments += @('--throttle', ([string]$Throttle))
+# **指定が無ければ渡さない。** CLI が JQUANTS_PLAN から引きます。
+# ここに既定値を置いて常に渡すと、CLI 側を直しても上書きされます——
+# delisted-harvest.ps1 の -Start で同じことをして、2026-09-07 に直した
+# ばかりでした。
+if ($Throttle -gt 0) { $arguments += @('--throttle', ([string]$Throttle)) }
 
 uv @arguments
 $code = $LASTEXITCODE
