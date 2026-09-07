@@ -370,3 +370,67 @@ class TestCompare:
 
         assert report.common == []
         assert "突き合わせられない" in report.summary()
+
+
+class TestExplainMissing:
+    """重ならなかった日付を、取引カレンダーに当てる。
+
+    **「たぶん休日だろう」で済ませない。** 30日刻みの日付は休日にも当たり、
+    一括には立会日しか無いので重ならない——それは欠けではない。だが立会日
+    なのに名簿が無い日が混じっていたら、それは本当の欠けである。**件数では
+    区別が付かない。**
+    """
+
+    def test_a_holiday_is_not_a_gap(self) -> None:
+        from stock_ai.data.jquants_rosters import explain_missing
+
+        trading = {dt.date(2026, 8, 3)}
+
+        holidays, gaps = explain_missing([dt.date(2026, 8, 2)], trading)
+
+        assert holidays == [dt.date(2026, 8, 2)]
+        assert gaps == []
+
+    def test_a_trading_day_with_no_roster_is_a_gap(self) -> None:
+        """**ここが本当の欠けである。**"""
+        from stock_ai.data.jquants_rosters import explain_missing
+
+        trading = {dt.date(2026, 8, 3)}
+
+        holidays, gaps = explain_missing([dt.date(2026, 8, 3)], trading)
+
+        assert holidays == []
+        assert gaps == [dt.date(2026, 8, 3)]
+
+    def test_no_calendar_means_nothing_is_explained(self) -> None:
+        """**カレンダーが無いことを「全部休日」と読ませない。**
+
+        空集合を返すと「1日も立会が無い」になり、全部が休日として説明された
+        ことになってしまう。`None` と空集合を分ける。
+        """
+        from stock_ai.data.jquants_rosters import explain_missing
+
+        holidays, gaps = explain_missing([dt.date(2026, 8, 3)], None)
+
+        assert holidays == []
+        assert gaps == [dt.date(2026, 8, 3)]
+
+    def test_the_calendar_comes_from_the_archive(self, tmp_path) -> None:
+        from stock_ai.data.jquants_rosters import trading_days_from_archive
+
+        payload = gzip.compress(b"Date,HolDiv\n2026-08-03,1\n2026-08-02,0\n2026-08-04,2\n")
+        archive(
+            [BulkFile(key="markets/calendar/calendar.csv.gz", last_modified="", size=len(payload))],
+            lambda _k: payload,
+            tmp_path,
+            on=TODAY,
+        )
+
+        found = trading_days_from_archive(tmp_path)
+
+        assert found == {dt.date(2026, 8, 3), dt.date(2026, 8, 4)}  # 半日立会も入る
+
+    def test_no_calendar_in_the_archive_says_none(self, tmp_path) -> None:
+        from stock_ai.data.jquants_rosters import trading_days_from_archive
+
+        assert trading_days_from_archive(tmp_path) is None

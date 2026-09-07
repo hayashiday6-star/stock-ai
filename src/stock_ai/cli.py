@@ -220,7 +220,11 @@ from stock_ai.data.jquants_provider import JQuantsPriceProvider
 from stock_ai.data.jquants_read import census as archive_census
 from stock_ai.data.jquants_read import samples_per_endpoint
 from stock_ai.data.jquants_read import shape_of as archive_shape
-from stock_ai.data.jquants_rosters import DAILY_SNAPSHOT_DIR
+from stock_ai.data.jquants_rosters import (
+    DAILY_SNAPSHOT_DIR,
+    explain_missing,
+    trading_days_from_archive,
+)
 from stock_ai.data.jquants_rosters import compare as roster_compare
 from stock_ai.data.jquants_rosters import extract as roster_extract
 from stock_ai.data.markets import split_by_market, to_yahoo_symbol
@@ -3175,6 +3179,30 @@ def jquants_daily_rosters(
             "[green]重なる日付では、2つの経路が同じ名簿を出している。[/] "
             "[dim]片方だけを見ていては確かめられないことである。[/]"
         )
+
+    # **重ならなかった日付を「たぶん休日」で済ませない。** 30日刻みの日付は
+    # 休日にも当たり、一括には立会日しか無いので重ならない。それは欠けでは
+    # ない。だが立会日なのに名簿が無い日が混じっていたら、それは本当の欠けで
+    # ある。**件数では区別が付かないので、カレンダーに当てる。**
+    grid_only = sorted(set(stored_dates(Path(DEFAULT_SNAPSHOT_DIR))) - set(stored_dates(target)))
+    if grid_only:
+        holidays, gaps = explain_missing(grid_only, trading_days_from_archive(source))
+        if holidays and not gaps:
+            console.print(
+                f"[dim]重ならなかった {len(grid_only)} 日は、**全部が非立会日**だった"
+                "（取引カレンダーで確認）。欠けではない。[/]"
+            )
+        elif gaps:
+            console.print(
+                f"[yellow]立会日なのに営業日ごとの名簿が無い日が {len(gaps)} 日ある。[/] "
+                + "、".join(str(day) for day in gaps[:10])
+                + "。**これは本当の欠けである。**"
+            )
+        else:
+            console.print(
+                f"[dim]重ならなかった {len(grid_only)} 日は、取引カレンダーの原本が"
+                "無いので説明できない。[/]"
+            )
 
 
 @app.command(name="jquants-archive-verify")

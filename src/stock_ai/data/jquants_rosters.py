@@ -251,3 +251,55 @@ def compare(first: Path, second: Path, limit: int = 5) -> CompareReport:
             report.lending_differs[date] = differs
         report.same.append(date)
     return report
+
+
+CALENDAR_ENDPOINT = "/markets/calendar"
+
+
+def trading_days_from_archive(archive_dir: Path) -> set[dt.date] | None:
+    """保存済みの取引カレンダーから、立会のある日を読む。
+
+    **半日立会（`HolDiv=2`）を落とさない。** 落とすと、その日を挟んだ
+    「N営業日後」が1日ずれる。年に数日なので件数からは気付けない。
+
+    Returns:
+        立会日の集合。カレンダーの原本が無ければ ``None``——**空集合と
+        区別する。** 空集合を返すと「1日も立会が無い」と読めてしまう。
+    """
+    from stock_ai.data.jquants_archive import path_for, read_manifest
+    from stock_ai.data.jquants_markets import parse_calendar, trading_days
+
+    keys = [
+        key for key in sorted(read_manifest(archive_dir)) if endpoint_of(key) == CALENDAR_ENDPOINT
+    ]
+    if not keys:
+        return None
+    found: set[dt.date] = set()
+    for key in keys:
+        try:
+            found.update(trading_days(parse_calendar(read_archived(path_for(archive_dir, key)))))
+        except Exception as exc:  # noqa: BLE001 - 読めない理由が記録に値する
+            logger.warning("取引カレンダーを読めなかった: %s: %s", key, exc)
+    return found
+
+
+def explain_missing(
+    dates: list[dt.date], trading: set[dt.date] | None
+) -> tuple[list[dt.date], list[dt.date]]:
+    """重ならなかった日付を、取引カレンダーで説明できるか見る。
+
+    30日刻みの日付は、休日にも当たる。一括の名簿には**立会日しか無い**ので、
+    休日ぶんは重ならない。それは欠けではない。
+
+    **「たぶん休日だろう」で済ませない。** 立会日なのに名簿が無い日が混じって
+    いたら、それは本当の欠けである。両者は件数では区別が付かない。
+
+    Returns:
+        ``(休日だった, 立会日なのに無かった)``。
+    """
+    if trading is None:
+        return [], list(dates)
+    return (
+        [date for date in dates if date not in trading],
+        [date for date in dates if date in trading],
+    )
