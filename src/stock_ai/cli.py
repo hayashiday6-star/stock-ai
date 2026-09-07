@@ -192,7 +192,7 @@ from stock_ai.data.delisted import (
     stored_dates,
 )
 from stock_ai.data.fx import FxConverter
-from stock_ai.data.jquants_archive import DEFAULT_ARCHIVE_DIR
+from stock_ai.data.jquants_archive import DEFAULT_ARCHIVE_DIR, read_manifest
 from stock_ai.data.jquants_archive import archive as archive_bulk
 from stock_ai.data.jquants_archive import verify as verify_archive
 from stock_ai.data.jquants_bulk import (
@@ -216,6 +216,7 @@ from stock_ai.data.jquants_bulk import span_years as bulk_span_years
 from stock_ai.data.jquants_exit import CANCELLATION, audit
 from stock_ai.data.jquants_fundamentals import JQuantsFundamentalsProvider, normalize_statements
 from stock_ai.data.jquants_prices import ingest as price_ingest
+from stock_ai.data.jquants_prices import join_returns as price_join_returns
 from stock_ai.data.jquants_profile import JQuantsProfileProvider
 from stock_ai.data.jquants_provider import JQuantsPriceProvider
 from stock_ai.data.jquants_read import census as archive_census
@@ -3289,6 +3290,68 @@ def jquants_bulk_prices(
         for key, why in list(report.failed.items())[:10]:
             table.add_row(key, why[:80])
         console.print(table)
+
+    if not report.symbols:
+        return
+
+    # **出所の違う株価が継ぎ目でぶつかっていないか見る。** 立花は 2001年から、
+    # 一括の原本は 2021-09 から。どちらも「最新の分割を基準にした調整後」を
+    # 出しているはずだが、**はず**である。基準が違えば、継ぎ目の1日だけ
+    # 分割比ぶんの収益率が立つ——例外は出ず、収益率の表も指標も通ってしまう。
+    boundary = _archive_first_date(source)
+    if boundary is None:
+        return
+    console.print()
+    console.print(f"[dim]継ぎ目（原本が覆い始める日）: {boundary}[/]")
+
+    sample = sorted(report.symbols)[:: max(1, len(report.symbols) // 100)][:100]
+    with database.session() as session:
+        repository = PriceRepository(session)
+        jumps = price_join_returns(repository.get_prices, sample, boundary)
+
+    if not jumps:
+        console.print(
+            "[dim]継ぎ目をまたぐ銘柄が無い。**確かめられない**——DB に原本より"
+            "前の株価が入っていないだけかもしれない。[/]"
+        )
+        return
+
+    big = [(symbol, value) for symbol, value in jumps if abs(value) > 0.2]
+    typical = sorted(abs(value) for _symbol, value in jumps)[len(jumps) // 2]
+    if big:
+        console.print(
+            f"[red]継ぎ目の日に 20% 以上動いた銘柄が {len(big)}/{len(jumps)}。[/] "
+            "**分割調整の基準が出所で違う疑いがある。** "
+            + "、".join(f"{symbol} {value:+.0%}" for symbol, value in big[:5])
+        )
+        console.print(
+            "[yellow]このまま分析に使わないこと。[/] 立花と J-Quants のどちらか"
+            "1つに揃えるか、継ぎ目より前を使わないかを決める。"
+        )
+    else:
+        console.print(
+            f"[green]継ぎ目の日は普通の1日に見える[/]（{len(jumps)} 銘柄、"
+            f"値動きの中央値 {typical:.1%}）。"
+            "[dim] 分割調整の基準は、出所をまたいでも揃っている。[/]"
+        )
+
+
+def _archive_first_date(directory: Path) -> dt.date | None:
+    """Return the first date the archived bars cover.
+
+    原本が覆い始める日。**継ぎ目はここである。**
+    """
+    from stock_ai.data.jquants_prices import BARS_ENDPOINT
+    from stock_ai.data.jquants_read import endpoint_of
+
+    manifest = read_manifest(directory)
+    keys = [key for key in sorted(manifest) if endpoint_of(key) == BARS_ENDPOINT]
+    if not keys:
+        return None
+    found = archive_shape(directory, keys[0])
+    if found is None or not found.first_date:
+        return None
+    return _parse_date(found.first_date)
 
 
 @app.command(name="jquants-archive-verify")

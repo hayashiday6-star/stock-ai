@@ -445,3 +445,52 @@ class TestExplainingTheDroppedRows:
         _frames, report = frames_from_payload(_csv([_row("2026-08-03", "13010", 100.0)]))
 
         assert "出来高あり" not in report.summary()
+
+
+class TestJoinReturns:
+    """出所の違う株価が継ぎ目でぶつかっていないか。
+
+    **DB には立花（2001年〜）と一括の原本（2021-09〜）が入りうる。** どちらも
+    「最新の分割を基準にした調整後」を出しているはずだが、**はず**である。
+
+    基準が違えば、継ぎ目の1日だけ分割比ぶんの収益率が立つ。**例外は出ない。**
+    収益率の表も指標もそのまま通り、「その日に大きく動いた銘柄が沢山あった」
+    にしか見えない。
+    """
+
+    def _frame(self, values: dict[str, float]) -> pd.DataFrame:
+        index = pd.DatetimeIndex([pd.Timestamp(day) for day in values], name="date")
+        return pd.DataFrame({CLOSE: list(values.values())}, index=index)
+
+    def test_a_clean_join_looks_like_an_ordinary_day(self) -> None:
+        from stock_ai.data.jquants_prices import join_returns
+
+        frames = {"1301": self._frame({"2021-08-31": 100.0, "2021-09-01": 101.0})}
+
+        (found,) = join_returns(frames.__getitem__, ["1301"], dt.date(2021, 9, 1))
+
+        assert found[0] == "1301"
+        assert abs(found[1]) < 0.05
+
+    def test_a_basis_mismatch_shows_up_as_the_split_ratio(self) -> None:
+        """**片方が分割調整済み、もう片方が別基準なら、その1日に比が立つ。**"""
+        from stock_ai.data.jquants_prices import join_returns
+
+        frames = {"1301": self._frame({"2021-08-31": 100.0, "2021-09-01": 50.0})}
+
+        (found,) = join_returns(frames.__getitem__, ["1301"], dt.date(2021, 9, 1))
+
+        assert found[1] == -0.5
+
+    def test_a_symbol_with_data_on_only_one_side_is_left_out(self) -> None:
+        """**継ぎ目をまたいでいない銘柄で、継ぎ目は測れない。**"""
+        from stock_ai.data.jquants_prices import join_returns
+
+        frames = {"1301": self._frame({"2021-09-01": 100.0, "2021-09-02": 101.0})}
+
+        assert join_returns(frames.__getitem__, ["1301"], dt.date(2021, 9, 1)) == []
+
+    def test_an_empty_series_is_skipped_rather_than_raising(self) -> None:
+        from stock_ai.data.jquants_prices import join_returns
+
+        assert join_returns(lambda _s: pd.DataFrame(), ["1301"], dt.date(2021, 9, 1)) == []

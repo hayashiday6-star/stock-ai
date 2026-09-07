@@ -225,3 +225,45 @@ def span_of(frames: dict[str, pd.DataFrame]) -> tuple[dt.date, dt.date] | None:
     if not dates:
         return None
     return (min(dates).date(), max(dates).date())
+
+
+def join_returns(
+    load: Callable[[str], pd.DataFrame],
+    symbols: list[str],
+    on: dt.date,
+) -> list[tuple[str, float]]:
+    """継ぎ目の日の、調整後の収益率を銘柄ごとに返す。
+
+    **DB には出所の違う株価が入りうる。** 立花は 2001年から、一括の原本は
+    2021-09 からで、重なる期間は一括が上書きする。継ぎ目より前は立花、後は
+    J-Quants という系列になる。
+
+    どちらも「最新の分割を基準にした調整後」を出しているはずだが、**はず**で
+    ある。基準が違えば、継ぎ目の1日だけ分割比ぶんの収益率が立つ。
+
+    **例外は出ない。** 収益率の表も、指標も、そのまま通る。そこだけ見れば
+    「その日に大きく動いた銘柄が沢山あった」に見える。
+
+    Args:
+        load: 銘柄を受けて**調整後**の日足を返す呼び出し。
+        symbols: 見る銘柄。全部見なくてよい——**基準が違えば、ほぼ全部が跳ぶ。**
+        on: 継ぎ目の日（原本が覆い始める日）。
+
+    Returns:
+        ``(銘柄, 継ぎ目の日の収益率)``。前後どちらかが欠ける銘柄は入れない。
+    """
+    found: list[tuple[str, float]] = []
+    for symbol in symbols:
+        frame = load(symbol)
+        if frame.empty or CLOSE not in frame:
+            continue
+        series = frame[CLOSE]
+        before = series[series.index < pd.Timestamp(on)]
+        after = series[series.index >= pd.Timestamp(on)]
+        if before.empty or after.empty:
+            continue
+        previous = float(before.iloc[-1])
+        if previous <= 0:
+            continue
+        found.append((symbol, float(after.iloc[0]) / previous - 1.0))
+    return found
