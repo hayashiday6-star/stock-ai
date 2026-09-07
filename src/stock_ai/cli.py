@@ -4010,6 +4010,28 @@ def jquants_inventory(
                 console.print("[dim]名簿に出ていた期間:[/]")
                 for symbol, (first, last) in list(when.items())[:10]:
                     console.print(f"  [dim]{symbol}  {first} 〜 {last}[/]")
+
+            # **この比較は JSON 経路の名簿に対して行っている。** 一括の名簿とは
+            # 出所が違うので、片方にしか無い銘柄がありうる。そこを先に切り分け
+            # ないと、「株価が取れなかった」と「そもそも一括に載っていない」を
+            # 取り違える。
+            daily = set(stored_dates(DAILY_SNAPSHOT_DIR))
+            if daily:
+                in_bulk = set()
+                for on, codes in membership(DAILY_SNAPSHOT_DIR).items():
+                    if on in daily:
+                        in_bulk |= codes & set(coverage.missing_priced)
+                only_json = [s_ for s_ in coverage.missing_priced if s_ not in in_bulk]
+                console.print(
+                    f"[dim]このうち一括の名簿にも出るのは {len(in_bulk)} 銘柄、"
+                    f"**JSON 経路の名簿にしか出ないのは {len(only_json)} 銘柄。**[/]"
+                )
+                if only_json:
+                    console.print(
+                        "[dim]" + "、".join(only_json[:40]) + "[/]  "
+                        "[dim]一括に載っていない銘柄は、株価も来ない。"
+                        "**取りこぼしではなく、出所の違いである。**[/]"
+                    )
     console.print(
         "[dim]会社予想と開示時刻は決算ドリフトのテーマ用で、そのテーマは"
         "2026-09-03 に閉じた（docs/HYPOTHESES.md）。**再開する予定が無いなら"
