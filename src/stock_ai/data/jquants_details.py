@@ -60,12 +60,88 @@ from stock_ai.data.universe import four_digit_code
 
 logger = get_logger(__name__)
 
-#: `DocType` に現れる会計基準。**実物から取った値だけ**を載せる。
-#: 配布サンプルにあるのは `IFRS` だけで、他は原本を見てから足す。
-KNOWN_STANDARDS: tuple[str, ...] = ("IFRS", "JP", "US")
+#: 出典: J-Quants 公式 `j-quants-doc-mcp` の `reference_data.json`
+#: （コミット 4f9e404、2026-08-27 時点）。**手で写していない**——前に一覧を
+#: 手で写して6本綴りを間違えている。
+#:
+#: **書類種別は45通りある。** 配布サンプルには IFRS・連結の4件しか入っておらず、
+#: 最初は `IFRS` / `JP` / `US` の3つだけを見ていた。実際には `JMIS`・`Foreign`・
+#: `REIT` があり、**16通りで会計基準が読めていなかった。** 期間も `OtherPeriod`
+#: を落としていて、8通りで読めていなかった。どちらも例外は出ず、`None` が並ぶ
+#: だけである。
+DOCUMENT_TYPES: dict[str, str] = {
+    "FYFinancialStatements_Consolidated_JP": "決算短信（連結・日本基準）",
+    "FYFinancialStatements_Consolidated_US": "決算短信（連結・米国基準）",
+    "FYFinancialStatements_NonConsolidated_JP": "決算短信（非連結・日本基準）",
+    "1QFinancialStatements_Consolidated_JP": "第1四半期決算短信（連結・日本基準）",
+    "1QFinancialStatements_Consolidated_US": "第1四半期決算短信（連結・米国基準）",
+    "1QFinancialStatements_NonConsolidated_JP": "第1四半期決算短信（非連結・日本基準）",
+    "2QFinancialStatements_Consolidated_JP": "第2四半期決算短信（連結・日本基準）",
+    "2QFinancialStatements_Consolidated_US": "第2四半期決算短信（連結・米国基準）",
+    "2QFinancialStatements_NonConsolidated_JP": "第2四半期決算短信（非連結・日本基準）",
+    "3QFinancialStatements_Consolidated_JP": "第3四半期決算短信（連結・日本基準）",
+    "3QFinancialStatements_Consolidated_US": "第3四半期決算短信（連結・米国基準）",
+    "3QFinancialStatements_NonConsolidated_JP": "第3四半期決算短信（非連結・日本基準）",
+    "OtherPeriodFinancialStatements_Consolidated_JP": "その他四半期決算短信（連結・日本基準）",
+    "OtherPeriodFinancialStatements_Consolidated_US": "その他四半期決算短信（連結・米国基準）",
+    "OtherPeriodFinancialStatements_NonConsolidated_JP": "その他四半期決算短信（非連結・日本基準）",
+    "FYFinancialStatements_Consolidated_JMIS": "決算短信（連結・ＪＭＩＳ）",
+    "1QFinancialStatements_Consolidated_JMIS": "第1四半期決算短信（連結・ＪＭＩＳ）",
+    "2QFinancialStatements_Consolidated_JMIS": "第2四半期決算短信（連結・ＪＭＩＳ）",
+    "3QFinancialStatements_Consolidated_JMIS": "第3四半期決算短信（連結・ＪＭＩＳ）",
+    "OtherPeriodFinancialStatements_Consolidated_JMIS": "その他四半期決算短信（連結・ＪＭＩＳ）",
+    "FYFinancialStatements_NonConsolidated_IFRS": "決算短信（非連結・ＩＦＲＳ）",
+    "1QFinancialStatements_NonConsolidated_IFRS": "第1四半期決算短信（非連結・ＩＦＲＳ）",
+    "2QFinancialStatements_NonConsolidated_IFRS": "第2四半期決算短信（非連結・ＩＦＲＳ）",
+    "3QFinancialStatements_NonConsolidated_IFRS": "第3四半期決算短信（非連結・ＩＦＲＳ）",
+    "OtherPeriodFinancialStatements_NonConsolidated_IFRS": (
+        "その他四半期決算短信（非連結・ＩＦＲＳ）"
+    ),
+    "FYFinancialStatements_Consolidated_IFRS": "決算短信（連結・ＩＦＲＳ）",
+    "1QFinancialStatements_Consolidated_IFRS": "第1四半期決算短信（連結・ＩＦＲＳ）",
+    "2QFinancialStatements_Consolidated_IFRS": "第2四半期決算短信（連結・ＩＦＲＳ）",
+    "3QFinancialStatements_Consolidated_IFRS": "第3四半期決算短信（連結・ＩＦＲＳ）",
+    "OtherPeriodFinancialStatements_Consolidated_IFRS": "その他四半期決算短信（連結・ＩＦＲＳ）",
+    "FYFinancialStatements_NonConsolidated_Foreign": "決算短信（非連結・外国株）",
+    "1QFinancialStatements_NonConsolidated_Foreign": "第1四半期決算短信（非連結・外国株）",
+    "2QFinancialStatements_NonConsolidated_Foreign": "第2四半期決算短信（非連結・外国株）",
+    "3QFinancialStatements_NonConsolidated_Foreign": "第3四半期決算短信（非連結・外国株）",
+    "OtherPeriodFinancialStatements_NonConsolidated_Foreign": (
+        "その他四半期決算短信（非連結・外国株）"
+    ),
+    "FYFinancialStatements_Consolidated_Foreign": "決算短信（連結・外国株）",
+    "1QFinancialStatements_Consolidated_Foreign": "第1四半期決算短信（連結・外国株）",
+    "2QFinancialStatements_Consolidated_Foreign": "第2四半期決算短信（連結・外国株）",
+    "3QFinancialStatements_Consolidated_Foreign": "第3四半期決算短信（連結・外国株）",
+    "OtherPeriodFinancialStatements_Consolidated_Foreign": "その他四半期決算短信（連結・外国株）",
+    "FYFinancialStatements_Consolidated_REIT": "決算短信（REIT）",
+    "DividendForecastRevision": "配当予想の修正",
+    "EarnForecastRevision": "業績予想の修正",
+    "REITDividendForecastRevision": "分配予想の修正",
+    "REITEarnForecastRevision": "利益予想の修正",
+}
 
-#: `DocType` の先頭に来る期間。
-KNOWN_PERIODS: tuple[str, ...] = ("1Q", "2Q", "3Q", "FY")
+#: `DocType` の末尾に来る値。**会計基準とは限らない**（`REIT` が入る）ので、
+#: 「基準」と呼びきらずに末尾の区分として扱う。
+KNOWN_STANDARDS: tuple[str, ...] = ("Foreign", "IFRS", "JMIS", "JP", "REIT", "US")
+
+#: `DocType` の先頭に来る期間。**長いものから照合する**——`OtherPeriod` を
+#: 短いものより後に置くと、先に当たった側が勝ってしまう。
+KNOWN_PERIODS: tuple[str, ...] = ("OtherPeriod", "FY", "3Q", "2Q", "1Q")
+
+
+def is_known_doc_type(doc_type: str | None) -> bool:
+    """公式の一覧に載っている書類種別か。
+
+    **載っていなければ、読み取りは推測である。** 一覧は45通りで、増えることが
+    ありうる。増えたときに黙って `None` を並べるのではなく、ここで分かる。
+    """
+    return bool(doc_type) and doc_type in DOCUMENT_TYPES
+
+
+def describe_doc_type(doc_type: str | None) -> str | None:
+    """書類種別の日本語の説明。"""
+    return DOCUMENT_TYPES.get(doc_type or "")
 
 
 @dataclasses.dataclass(frozen=True)
@@ -141,8 +217,16 @@ def parse_doc_type(text: str | None) -> tuple[str | None, bool | None, str | Non
             consolidated = False
         elif lowered.startswith("consolidated"):
             consolidated = True
-        elif part.upper() in KNOWN_STANDARDS:
-            standard = part.upper()
+        else:
+            # **大文字に直して照合しない。** 末尾に来る値は `IFRS` のような
+            # 頭字語と `Foreign` のような語が混ざっている。`"FOREIGN"` は
+            # 一覧のどれとも一致せず、**例外を出さずに `None` になる。**
+            match = next(
+                (name for name in KNOWN_STANDARDS if name.lower() == lowered),
+                None,
+            )
+            if match is not None:
+                standard = match
     return period, consolidated, standard
 
 

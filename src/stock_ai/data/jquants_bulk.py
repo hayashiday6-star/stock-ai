@@ -50,6 +50,7 @@ BULK_ENDPOINTS: tuple[str, ...] = (
     "/fins/summary",
     "/fins/details",
     "/fins/dividend",
+    "/fins/earnings-date",
     "/indices/bars/daily/topix",
     "/indices/bars/daily",
     "/derivatives/bars/daily/options/225",

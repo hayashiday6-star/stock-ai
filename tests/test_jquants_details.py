@@ -199,3 +199,62 @@ def test_an_unreadable_dictionary_does_not_take_the_row_with_it() -> None:
 
     assert item.symbol == "8697"
     assert item.values == {}
+
+
+class TestOfficialDocumentTypes:
+    """公式の書類種別一覧（45通り）。
+
+    出典は J-Quants の `j-quants-doc-mcp`（`reference_data.json`、コミット
+    4f9e404）。**手で写していない。**
+
+    最初は配布サンプルにあった `IFRS` だけを見て `IFRS` / `JP` / `US` の3つを
+    書いていた。実際には `JMIS`・`Foreign`・`REIT` があり、**16通りで会計基準が
+    読めていなかった。** 期間も `OtherPeriod` を落としていて8通り。どちらも
+    例外は出ず、`None` が並ぶだけである。
+    """
+
+    def test_every_official_financial_statement_type_parses_completely(self) -> None:
+        """**45通り全部を通す。** 1つでも読めなければ、そこが黙って欠ける。"""
+        from stock_ai.data.jquants_details import DOCUMENT_TYPES
+
+        unread = [
+            name
+            for name in DOCUMENT_TYPES
+            if "FinancialStatements" in name and None in parse_doc_type(name)
+        ]
+
+        assert not unread
+
+    def test_the_types_the_first_version_could_not_read(self) -> None:
+        """実際に落としていた形。**もっともらしく見えるから落とした。**"""
+        assert parse_doc_type("OtherPeriodFinancialStatements_Consolidated_JP")[0] == "OtherPeriod"
+        assert parse_doc_type("FYFinancialStatements_Consolidated_JMIS")[2] == "JMIS"
+        assert parse_doc_type("FYFinancialStatements_Consolidated_Foreign")[2] == "Foreign"
+        assert parse_doc_type("FYFinancialStatements_Consolidated_REIT")[2] == "REIT"
+
+    def test_the_period_match_prefers_the_longer_name(self) -> None:
+        """`OtherPeriod` を短いものより後に置くと、先に当たった側が勝つ。"""
+        from stock_ai.data.jquants_details import KNOWN_PERIODS
+
+        assert KNOWN_PERIODS[0] == "OtherPeriod"
+
+    def test_a_forecast_revision_has_no_period_and_that_is_correct(self) -> None:
+        """`EarnForecastRevision` は決算短信ではない。**期も基準も無い。**"""
+        assert parse_doc_type("EarnForecastRevision") == (None, None, None)
+
+    def test_a_type_outside_the_official_list_is_flagged(self) -> None:
+        """**載っていなければ、読み取りは推測である。**
+
+        一覧が増えたときに黙って `None` を並べるのではなく、ここで分かる。
+        """
+        from stock_ai.data.jquants_details import describe_doc_type, is_known_doc_type
+
+        assert is_known_doc_type("EarnForecastRevision")
+        assert not is_known_doc_type("SomethingNew_Consolidated_JP")
+        assert describe_doc_type("EarnForecastRevision") == "業績予想の修正"
+
+    def test_the_sample_type_is_in_the_official_list(self) -> None:
+        """実物と定義表が噛み合っていること。"""
+        from stock_ai.data.jquants_details import is_known_doc_type
+
+        assert is_known_doc_type(_sample()[0].doc_type)

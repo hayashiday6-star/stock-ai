@@ -166,3 +166,58 @@ class TestShortPositions:
         ]
 
         assert total_short_position(rows)[("8697", day)] == 0.006
+
+
+class TestCalendar:
+    """取引カレンダー。
+
+    固定データは配布サンプルの `Trading Calendar.csv`（2022年、365日）。
+    """
+
+    SAMPLE = FIXTURES / "jquants_calendar_sample.csv"
+
+    def test_the_distributed_sample_parses(self) -> None:
+        from stock_ai.data.jquants_markets import parse_calendar, trading_days
+
+        days = parse_calendar(self.SAMPLE.read_bytes())
+
+        assert len(days) == 365
+        assert len(trading_days(days)) == 244
+
+    def test_the_2022_sample_has_no_half_day(self) -> None:
+        """**だから見落とす。**
+
+        20年ぶんに広げると、半日立会のあった年が入ってくる。近い年のデータだけ
+        で「`1` かどうか」の判定を作ると、古い年に入った時点で静かに欠ける。
+        """
+        from stock_ai.data.jquants_markets import parse_calendar
+
+        assert not any(day.half_day for day in parse_calendar(self.SAMPLE.read_bytes()))
+
+    def test_a_half_day_still_counts_as_a_trading_day(self) -> None:
+        """**`1` だけで判定すると、半日立会が非営業日に落ちる。**
+
+        落とすと、その日を挟んだ「N営業日後」が1日ずれる。年に数日なので、
+        ずれたことに件数からは気付けない。
+        """
+        from stock_ai.data.jquants_markets import parse_calendar, trading_days
+
+        days = parse_calendar(b"Date,HolDiv\n2009-12-30,2\n2010-01-01,0\n")
+
+        assert days[0].trading
+        assert days[0].half_day
+        assert trading_days(days) == [dt.date(2009, 12, 30)]
+
+    def test_a_holiday_with_trading_is_not_a_trading_day(self) -> None:
+        """`3`（非営業日・祝日取引あり）はデリバティブの話で、立会ではない。"""
+        from stock_ai.data.jquants_markets import parse_calendar
+
+        (day,) = parse_calendar(b"Date,HolDiv\n2022-01-03,3\n")
+
+        assert not day.trading
+
+    def test_the_division_stays_a_code(self) -> None:
+        from stock_ai.data.jquants_markets import HOLIDAY_DIVISION, parse_calendar
+
+        for day in parse_calendar(self.SAMPLE.read_bytes()):
+            assert day.division in HOLIDAY_DIVISION

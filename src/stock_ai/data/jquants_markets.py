@@ -8,6 +8,7 @@
 | :func:`parse_margin_interest` | `/markets/margin-interest` | 信用取引の**週末**残高 |
 | :func:`parse_breakdown` | `/markets/breakdown` | 売買の内訳（新規・返済、金額・株数） |
 | :func:`parse_short_positions` | `/markets/short-sale-report` | 空売り残高報告（**報告者ごと**） |
+| :func:`parse_calendar` | `/markets/calendar` | 取引カレンダー（**半日立会がある**） |
 
 ## 3つに共通する、黙って間違える形
 
@@ -207,3 +208,61 @@ def total_short_position(
         key = (item.symbol, item.disclosed_on)
         seen.setdefault(key, {})[item.reporter] = item.ratio_to_shares_outstanding
     return {key: sum(byreporter.values()) for key, byreporter in seen.items()}
+
+
+#: 取引カレンダーの `HolDiv`。
+#:
+#: 出典: J-Quants 公式 `j-quants-doc-mcp` の `reference_data.json`
+#: （`holiday_division`、コミット 4f9e404、2026-08-27 時点）。
+#:
+#: **`2`（東証半日立会日）が要点である。** 営業日を「`1` かどうか」で判定すると
+#: 半日立会が非営業日に落ちる。大納会・大発会まわりが毎年消えるので、**年に
+#: 数日だけ静かに欠ける。**
+HOLIDAY_DIVISION: dict[str, str] = {
+    "0": "非営業日",
+    "1": "営業日",
+    "2": "東証半日立会日",
+    "3": "非営業日(祝日取引あり)",
+}
+
+#: 立会のある区分。**`1` だけにしない。**
+TRADING_DIVISIONS = frozenset({"1", "2"})
+
+
+@dataclasses.dataclass(frozen=True)
+class CalendarDay:
+    """取引カレンダーの1日。"""
+
+    date: dt.date
+    division: str
+    """`HolDiv`。**文字列のまま。** 区分の符号であって量ではない。"""
+
+    @property
+    def trading(self) -> bool:
+        """立会があるか。**半日立会（`2`）を含む。**"""
+        return self.division in TRADING_DIVISIONS
+
+    @property
+    def half_day(self) -> bool:
+        """半日立会か。**引けの時刻が違うので、日中のリターンは比べられない。**"""
+        return self.division == "2"
+
+
+def parse_calendar(payload: bytes) -> list[CalendarDay]:
+    """取引カレンダーの CSV を読む。列は `Date` と `HolDiv` の2つだけ。"""
+    days: list[CalendarDay] = []
+    for row in records_from_csv(payload):
+        date = parse_date(row.get("Date"))
+        if date is None:
+            continue
+        days.append(CalendarDay(date=date, division=(row.get("HolDiv") or "").strip()))
+    return days
+
+
+def trading_days(days: list[CalendarDay]) -> list[dt.date]:
+    """立会のある日だけ。**半日立会を落とさない。**
+
+    落とすと、その日を挟んだ「N営業日後」が1日ずれる。年に数日なので、**ずれた
+    ことに件数からは気付けない。**
+    """
+    return sorted(day.date for day in days if day.trading)

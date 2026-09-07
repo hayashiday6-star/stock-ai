@@ -219,3 +219,69 @@ def test_the_fixture_still_has_the_line_endings_it_arrived_with() -> None:
     違うものを読んでいることになる。ここで気付く。
     """
     assert b"\r\n" in SAMPLE.read_bytes()
+
+
+class TestOfficialCodes:
+    """公式の定義表から写した符号。
+
+    出典は J-Quants の `j-quants-doc-mcp`（`reference_data.json`、コミット
+    4f9e404）。**手で写していない**——前に一覧を手で写して6本綴りを間違えた。
+    """
+
+    def test_the_flag_names_match_what_the_sample_actually_contained(self) -> None:
+        """公式の定義と、配布サンプルに出ていた6つが**一致すること。**
+
+        片方だけ見ていると、名前が変わったことに気付けない。
+        """
+        from stock_ai.data.jquants_margin import REASON_DESCRIPTIONS
+
+        text = SAMPLE.read_text(encoding="utf-8")
+
+        assert len(REASON_DESCRIPTIONS) == 6
+        for name in REASON_DESCRIPTIONS:
+            assert f"'{name}'" in text
+
+    def test_the_restriction_flag_is_not_the_daily_publication_flag(self) -> None:
+        """**混ぜると、規制の掛かっていない銘柄がイベントに入る。**
+
+        `Restricted` は東証の規制措置、`DailyPublication` は残高を毎日公表する
+        指定であって、規制そのものではない。
+        """
+        from stock_ai.data.jquants_margin import REASON_DESCRIPTIONS
+
+        assert "規制措置銘柄" in REASON_DESCRIPTIONS["Restricted"]
+        assert "日々公表銘柄" in REASON_DESCRIPTIONS["DailyPublication"]
+
+    def test_the_regulation_codes_are_described_not_ranked(self) -> None:
+        """**`101` は「規制解除」である。**
+
+        数として扱うと、解除が最も強い規制として並ぶ。
+        """
+        from stock_ai.data.jquants_margin import (
+            MARGIN_REGULATION_CODES,
+            REGULATION_RELEASED,
+            describe_regulation,
+        )
+
+        assert len(MARGIN_REGULATION_CODES) == 8
+        assert "解除" in MARGIN_REGULATION_CODES[REGULATION_RELEASED]
+        assert describe_regulation("001") is not None
+        assert describe_regulation("002") is not None
+
+    def test_the_code_in_the_sample_is_one_of_the_official_ones(self) -> None:
+        """実物と定義表が噛み合っていること。"""
+        from stock_ai.data.jquants_margin import MARGIN_REGULATION_CODES
+
+        first = parse_alerts(_sample())[0]
+
+        assert first.regulation in MARGIN_REGULATION_CODES
+
+    def test_an_unknown_code_is_not_read_as_no_regulation(self) -> None:
+        """**知らない符号を「規制なし」と読まない。**
+
+        増えたときに黙って落とすと、その銘柄だけイベントから消える。
+        """
+        from stock_ai.data.jquants_margin import describe_regulation
+
+        assert describe_regulation("999") is None
+        assert describe_regulation(None) is None

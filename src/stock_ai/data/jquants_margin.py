@@ -50,16 +50,67 @@ logger = get_logger(__name__)
 #: どちらも `0` とは違う意味である。
 MISSING = frozenset({"", "-", "*", "－", "ー"})
 
-#: `PubReason` に入る旗の名前。出典は配布サンプル `sample_data_v2` の
-#: `Daily Margin Interest.csv` に実際に入っていた値。
-REASONS: tuple[str, ...] = (
-    "Restricted",
-    "DailyPublication",
-    "Monitoring",
-    "RestrictedByJSF",
-    "PrecautionByJSF",
-    "UnclearOrSecOnAlert",
-)
+#: `PubReason` に入る旗と、その意味。
+#:
+#: 出典: J-Quants 公式 `j-quants-doc-mcp` の `reference_data.json`
+#: （`publication_reasons`、コミット 4f9e404、2026-08-27 時点）。配布サンプル
+#: `Daily Margin Interest.csv` に出ていた6つと**名前が一致した。**
+#:
+#: **候補9 で見たいのは `Restricted`（東証の規制措置＝増担保など）である。**
+#: `DailyPublication`（日々公表）は規制そのものではなく、残高を毎日公表する
+#: 指定である。混ぜると、規制の掛かっていない銘柄がイベントに入る。
+REASON_DESCRIPTIONS: dict[str, str] = {
+    "Restricted": (
+        "1の場合、東京証券取引所が定める信用取引の規制措置銘柄に選定されている。0の場合、非該当。"
+    ),
+    "DailyPublication": (
+        "1の場合、東京証券取引所が定める日々公表銘柄に選定されている。0の場合、非該当。"
+    ),
+    "Monitoring": (
+        "1の場合、東京証券取引所が定める特別注意銘柄に選定されている。0の場合、非該当。"
+    ),
+    "RestrictedByJSF": (
+        "1の場合、日本証券金融が定める貸株申込制限措置銘柄に選定されている。0の場合、非該当。"
+    ),
+    "PrecautionByJSF": (
+        "1の場合、日本証券金融が定める貸株注意喚起銘柄に選定されている。0の場合、非該当。"
+    ),
+    "UnclearOrSecOnAlert": (
+        "1の場合、東京証券取引所が定める不明確情報等により注意喚起の対象となった銘柄"
+        "、特別注意銘柄等に選定されている。0の場合、非該当。"
+    ),
+}
+
+REASONS: tuple[str, ...] = tuple(REASON_DESCRIPTIONS)
+
+#: `TSEMrgnRegCls`（東証信用貸借規制区分）の符号。同じ出典
+#: （`margin_regulation_codes`）。
+#:
+#: **`101` は「規制解除」である。** 数の大小に意味は無く、`001` 〜 `006` が
+#: 規制の段階、`101` が解除、`102` が監理。数として扱うと、解除が最も強い
+#: 規制として並ぶ。
+MARGIN_REGULATION_CODES: dict[str, str] = {
+    "001": ("日本証券金融が実施する貸株注意喚起銘柄および貸株申込制限措置銘柄"),
+    "002": ("東京証券取引所が定める日々公表銘柄"),
+    "003": ("東京証券取引所が定める規制銘柄"),
+    "004": ("東京証券取引所が定める規制銘柄（2次規制）"),
+    "005": ("東京証券取引所が定める規制銘柄（3次規制）"),
+    "006": ("東京証券取引所が定める規制銘柄（4次規制）"),
+    "101": ("東京証券取引所が定める規制解除銘柄"),
+    "102": ("東京証券取引所が定める監理銘柄"),
+}
+
+#: 規制が解除されたことを表す符号。**「規制が無い」ではなく「解けた」である。**
+REGULATION_RELEASED = "101"
+
+
+def describe_regulation(code: str | None) -> str | None:
+    """`TSEMrgnRegCls` の説明。載っていない符号は `None`。
+
+    **知らない符号を「規制なし」と読まない。** 増えたときに黙って落とすと、
+    その銘柄だけイベントから消える。
+    """
+    return MARGIN_REGULATION_CODES.get((code or "").strip())
 
 
 @dataclasses.dataclass(frozen=True)

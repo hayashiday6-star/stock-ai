@@ -624,3 +624,46 @@ class TestArchiveEndpointNames:
         from stock_ai.data.jquants_bulk import ARCHIVE_ENDPOINTS, DEADLINE_ENDPOINTS
 
         assert set(DEADLINE_ENDPOINTS) <= set(ARCHIVE_ENDPOINTS)
+
+
+class TestAgainstTheOfficialClient:
+    """一括対応エンドポイントを、公式クライアントの一覧と突き合わせる。
+
+    固定データ（`tests/fixtures/jquants_bulk_endpoints.txt`）は
+    `jquants-api-client-python` の `BulkEndpoint`（コミット 4f9e404）から
+    **生成した**もので、手で写していない。
+
+    この突き合わせで `/fins/earnings-date` が1本抜けているのが見つかった
+    （2026-09-06）。**抜けていても `DataError` は出ない。一覧に無いものは
+    そもそも聞きに行かないので、出力に何も現れない。**
+    """
+
+    OFFICIAL = Path(__file__).parent / "fixtures" / "jquants_bulk_endpoints.txt"
+
+    def _official(self) -> set[str]:
+        lines = self.OFFICIAL.read_text(encoding="utf-8").splitlines()
+        return {line.strip() for line in lines if line.strip() and not line.startswith("#")}
+
+    def test_nothing_the_official_client_knows_is_missing(self) -> None:
+        """**取り逃すのは、聞かないからである。**"""
+        from stock_ai.data.jquants_bulk import BULK_ENDPOINTS
+
+        assert not self._official() - set(BULK_ENDPOINTS)
+
+    def test_the_endpoint_that_was_actually_missing(self) -> None:
+        """実際に抜けていた1本。決算発表**予定日**である。"""
+        from stock_ai.data.jquants_bulk import BULK_ENDPOINTS
+
+        assert "/fins/earnings-date" in BULK_ENDPOINTS
+
+    def test_the_calendar_is_kept_even_though_the_reference_data_omits_it(self) -> None:
+        """**実測が一覧に勝つ。**
+
+        J-Quants の `reference_data.json` の一括一覧（18本）には
+        `/markets/calendar` が載っていない。しかし 2026-09-06 の下見で
+        **1本返ってきている。** 向こうの表を信じて外すと、取れるものを取り
+        逃す。
+        """
+        from stock_ai.data.jquants_bulk import ARCHIVE_ENDPOINTS
+
+        assert "/markets/calendar" in ARCHIVE_ENDPOINTS
