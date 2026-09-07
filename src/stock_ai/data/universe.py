@@ -72,6 +72,23 @@ _SEGMENT_CODES: dict[Segment, frozenset[str]] = {
     Segment.GROWTH: frozenset({"0113", "0104", "0107"}),  # グロース (+ 旧マザーズ/JQG)
 }
 
+#: 銘柄一覧に載るが、**この universe には入れない市場。**
+#:
+#: `0105` は TOKYO PRO Market。プロ投資家しか売買できず、通常の証券口座から
+#: は買えない。出典は J-Quants 公式 `j-quants-doc-mcp` の `reference_data.json`
+#: （`market_codes`、コミット 4f9e404）。
+#:
+#: **売買できない銘柄を universe に入れるのは、説#1 を閉じた理由の繰り返し
+#: である**——「現象は見つかったが、自分が買える銘柄では起きていなかった」。
+#:
+#: 実測でも裏が取れている（2026-09-08）。名簿に出て株価が1本も無い16銘柄は
+#: **全部が TOKYO PRO Market** で、四本値の行はあるのに**終値が1つも無い。**
+#: 5年ぶんで 1,126行あって0件という銘柄もある。売買が成立していない。
+EXCLUDED_MARKETS: frozenset[str] = frozenset({"0105"})
+
+#: 符号が無いときに市場名で見る語。
+EXCLUDED_MARKET_NAMES: tuple[str, ...] = ("TOKYO PRO",)
+
 #: Substrings matched against the segment *name*, for payloads that carry the
 #: label but not the code.
 _SEGMENT_NAMES: dict[Segment, tuple[str, ...]] = {
@@ -145,6 +162,25 @@ def _code_of(record: dict[str, Any]) -> str | None:
     return four_digit_code(_text(record, "Code", "LocalCode", "SecCode"))
 
 
+def _is_tradable_market(record: dict[str, Any]) -> bool:
+    """Whether the listing is on a market this account can actually trade.
+
+    TOKYO PRO Market はプロ投資家向けで、通常の口座からは買えない。**買えない
+    銘柄を universe に入れると、分位も収益率も「実行できない結果」になる。**
+
+    符号（`Mkt`）を優先し、無いときだけ市場名を見る。名前で先に見ると、符号と
+    名前が食い違う行を名前のほうで救ってしまう。
+    """
+    code = _text(record, "Mkt", "MktCd", "MarketCode")
+    if code:
+        return code not in EXCLUDED_MARKETS
+    label = _text(record, "MktNm", "MktCdName", "MarketCodeName", "MarketName")
+    if label:
+        upper = label.upper()
+        return not any(token in upper for token in EXCLUDED_MARKET_NAMES)
+    return True
+
+
 def _is_operating_company(record: dict[str, Any]) -> bool:
     """Whether a listing is an ordinary company rather than a fund.
 
@@ -174,6 +210,7 @@ def normalize_listings(
     """
     profiles: dict[str, SecurityProfile] = {}
     funds = 0
+    untradable = 0
     unclassified = 0
 
     for record in records:
@@ -181,6 +218,9 @@ def normalize_listings(
             continue
         code = _code_of(record)
         if code is None:
+            continue
+        if not _is_tradable_market(record):
+            untradable += 1
             continue
         if not _is_operating_company(record):
             funds += 1
@@ -203,6 +243,10 @@ def normalize_listings(
 
     if funds:
         logger.info("Excluded %d fund/index listing(s) from the universe", funds)
+    if untradable:
+        # **落とした数は必ず出す。** 黙って減ると、universe が縮んだことに
+        # 気付けない。
+        logger.info("Excluded %d listing(s) on markets we cannot trade", untradable)
     if unclassified:
         logger.warning(
             "%d listing(s) had no sector code and were kept unfiltered - "

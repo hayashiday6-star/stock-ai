@@ -434,3 +434,61 @@ class TestExplainMissing:
         from stock_ai.data.jquants_rosters import trading_days_from_archive
 
         assert trading_days_from_archive(tmp_path) is None
+
+
+class TestUntradableMarkets:
+    """**買えない銘柄を universe に入れない。**
+
+    2026-09-08 の実測。名簿に出て株価が1本も無い16銘柄は、**全部が TOKYO PRO
+    Market** だった。四本値の行はあるのに、**終値が1つも無い**——5年ぶんで
+    1,126行あって0件という銘柄もある。売買が成立していない。
+
+    説#1 を閉じた理由がまさにこれだった——「現象は見つかったが、**自分が
+    買える銘柄では起きていなかった**」。同じ間違いを universe の側で繰り返さ
+    ない。
+    """
+
+    def test_a_tokyo_pro_listing_is_left_out(self) -> None:
+        from stock_ai.data.universe import Segment, normalize_listings
+
+        rows = [_row("2026-08-03", "13010"), dict(_row("2026-08-03", "72030"), Mkt="0105")]
+
+        profiles = normalize_listings(rows, Segment.ALL)
+
+        assert {p.symbol for p in profiles} == {"1301"}
+
+    def test_the_market_name_is_used_when_the_code_is_missing(self) -> None:
+        from stock_ai.data.universe import Segment, normalize_listings
+
+        row = dict(_row("2026-08-03", "72030"), Mkt="", MktNm="TOKYO PRO MARKET")
+
+        assert normalize_listings([row], Segment.ALL) == []
+
+    def test_the_code_wins_over_the_name(self) -> None:
+        """**名前で先に見ると、符号と名前が食い違う行を名前のほうで救う。**"""
+        from stock_ai.data.universe import Segment, normalize_listings
+
+        row = dict(_row("2026-08-03", "72030"), Mkt="0111", MktNm="TOKYO PRO MARKET")
+
+        assert {p.symbol for p in normalize_listings([row], Segment.ALL)} == {"7203"}
+
+    def test_an_ordinary_market_is_untouched(self) -> None:
+        from stock_ai.data.universe import Segment, normalize_listings
+
+        for code in ("0111", "0112", "0113", "0101", "0104"):
+            row = dict(_row("2026-08-03", "72030"), Mkt=code)
+            assert normalize_listings([row], Segment.ALL), code
+
+    def test_a_record_with_no_market_at_all_is_kept(self) -> None:
+        """**分からないものを落とさない。** 落とすと universe が黙って縮む。"""
+        from stock_ai.data.universe import Segment, normalize_listings
+
+        row = dict(_row("2026-08-03", "72030"), Mkt="", MktNm="")
+
+        assert {p.symbol for p in normalize_listings([row], Segment.ALL)} == {"7203"}
+
+    def test_the_excluded_code_is_the_official_one(self) -> None:
+        """出典: 公式の `market_codes`（`0105` = TOKYO PRO MARKET）。"""
+        from stock_ai.data.universe import EXCLUDED_MARKETS
+
+        assert set(EXCLUDED_MARKETS) == {"0105"}
