@@ -396,3 +396,52 @@ class TestAgainstTheRealRepository:
 
         assert raw.iloc[1] / raw.iloc[0] == 0.5  # 生値は跳ぶ
         assert adjusted.iloc[1] / adjusted.iloc[0] == 1.0  # 調整後は跳ばない
+
+
+class TestExplainingTheDroppedRows:
+    """**落とした行を「取引が無かった日」で説明できるか。**
+
+    2026-09-07 の1本で 82,610行中 2,113行（2.6%）が終値なしだった。約4,100
+    銘柄・20営業日なので、1日あたり約105銘柄。**もっともらしい数だが、
+    もっともらしいだけでは足りない。**
+
+    売買が無ければ終値も出来高も無い。**出来高だけある行があれば、それは
+    説明が付かない**——読み方か、向こうの列の意味のどちらかが違う。
+    """
+
+    def test_a_row_with_no_trade_at_all_is_explained(self) -> None:
+        rows = [_row("2026-08-03", "13010", 100.0)]
+        rows[0]["C"] = ""
+        rows[0]["Vo"] = "0"
+
+        _frames, report = frames_from_payload(_csv(rows))
+
+        assert report.skipped_no_close == 1
+        assert report.no_close_but_traded == 0
+
+    def test_a_row_with_volume_but_no_close_is_flagged(self) -> None:
+        """**ここが 0 でなければ、落とした行を説明できない。**"""
+        rows = [_row("2026-08-03", "13010", 100.0)]
+        rows[0]["C"] = ""
+        rows[0]["Vo"] = "5000"
+
+        _frames, report = frames_from_payload(_csv(rows))
+
+        assert report.skipped_no_close == 1
+        assert report.no_close_but_traded == 1
+
+    def test_the_unexplained_count_reaches_the_summary(self) -> None:
+        """**数えても出さなければ、数えていないのと同じ。**"""
+        rows = [_row("2026-08-03", "13010", 100.0)]
+        rows[0]["C"] = ""
+        rows[0]["Vo"] = "5000"
+
+        _frames, report = frames_from_payload(_csv(rows))
+
+        assert "出来高あり" in report.summary()
+
+    def test_a_clean_run_does_not_mention_it(self) -> None:
+        """**説明の付いた落とし方で、警告を出さない。** 毎回出ると読まれなくなる。"""
+        _frames, report = frames_from_payload(_csv([_row("2026-08-03", "13010", 100.0)]))
+
+        assert "出来高あり" not in report.summary()

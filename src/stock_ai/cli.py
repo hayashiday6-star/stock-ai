@@ -3265,6 +3265,18 @@ def jquants_bulk_prices(
             f"[dim]終値の無い行 {report.skipped_no_close:,} を落とした。"
             "`0` を入れると「値がゼロになった日」として並ぶ。[/]"
         )
+        if report.no_close_but_traded:
+            # **もっともらしい数では足りない。** 売買が無ければ終値も出来高も
+            # 無い。出来高だけあるなら、読み方か列の意味のどちらかが違う。
+            console.print(
+                f"[red]うち {report.no_close_but_traded:,} 行は出来高がある。[/] "
+                "**「取引が無かった日」では説明が付かない。** 読み方か、向こうの"
+                "列の意味が変わった疑いがある。原本を1本見ること。"
+            )
+        else:
+            console.print(
+                "[dim]どれも出来高が無い。**「その日は取引が無かった」で説明が付いている。**[/]"
+            )
     if report.undated:
         console.print(
             f"[yellow]日付を読めない行が {report.undated:,} 行あった。[/] "

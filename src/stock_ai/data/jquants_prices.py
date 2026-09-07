@@ -75,6 +75,14 @@ class PriceIngestReport:
     skipped_no_close: int = 0
     """終値の無い行。**0 にしない。** 売買が無かった日と、値が欠けた日は別。"""
 
+    no_close_but_traded: int = 0
+    """終値が無いのに出来高がある行。**これは説明が付かない。**
+
+    売買が無ければ終値も出来高も無い。出来高だけあるなら、こちらの読み方が
+    間違っているか、向こうの列の意味が変わったかである。**0 でなければ、
+    落とした行を「取引が無かった日」で説明できない。**
+    """
+
     skipped_code: int = 0
     """4桁に直せないコード（優先株・種類株）。"""
 
@@ -87,6 +95,11 @@ class PriceIngestReport:
             f"{self.files} 本から {self.written:,} 行を書き込み、"
             f"{len(self.symbols):,} 銘柄、{self.rows:,} 行を読んだ"
             + (f"、終値なし {self.skipped_no_close:,}" if self.skipped_no_close else "")
+            + (
+                f"（うち出来高あり **{self.no_close_but_traded:,}**）"
+                if self.no_close_but_traded
+                else ""
+            )
             + (f"、日付なし {self.undated:,}" if self.undated else "")
             + (f"、{len(self.failed)} 本が読めず" if self.failed else "")
         )
@@ -117,6 +130,11 @@ def frames_from_payload(payload: bytes) -> tuple[dict[str, pd.DataFrame], PriceI
         close = parse_number(row.get("C"))
         if close is None or close == 0:
             report.skipped_no_close += 1
+            # **落とした理由を確かめられるようにする。** 売買が無ければ終値も
+            # 出来高も無い。出来高だけあるなら「取引が無かった日」では説明が
+            # 付かず、読み方か列の意味のどちらかが違う。
+            if (parse_number(row.get("Vo")) or 0) > 0:
+                report.no_close_but_traded += 1
             continue
 
         values: dict[str, object] = {DATE: pd.Timestamp(date)}
@@ -190,6 +208,7 @@ def ingest(
         total_report.files += 1
         total_report.rows += report.rows
         total_report.skipped_no_close += report.skipped_no_close
+        total_report.no_close_but_traded += report.no_close_but_traded
         total_report.skipped_code += report.skipped_code
         total_report.undated += report.undated
         total_report.symbols |= report.symbols
