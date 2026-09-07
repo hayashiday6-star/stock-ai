@@ -957,3 +957,32 @@ class TestByteLabel:
         from stock_ai.cli import _bytes_label
 
         assert _bytes_label(0) == "0 B"
+
+
+class TestProgressLine:
+    """進捗の1行。
+
+    **復帰文字で上書きするので、短い行のあとに長い行の尻尾が残る。** 実際に
+    `fins_summary_20260904.csv.gz08.csv.gz` という表示が出た。ファイル名が
+    2つ繋がったように見え、**どれを読んでいるのか分からなくなる。**
+    """
+
+    def test_a_short_line_is_padded_so_it_clears_the_previous_one(self) -> None:
+        from stock_ai.cli import _progress_line
+
+        assert len(_progress_line(64, 64, "short.gz")) == 100
+        assert _progress_line(64, 64, "short.gz").endswith(" ")
+
+    def test_a_long_line_is_cut_rather_than_wrapping(self) -> None:
+        """**折り返すと1行に収まらない。** 貼ったときに何十行にもなる。"""
+        from stock_ai.cli import _progress_line
+
+        found = _progress_line(1, 2, "x" * 200)
+
+        assert len(found) == 100
+        assert found.endswith("…")
+
+    def test_the_numbers_stay_at_the_front(self) -> None:
+        from stock_ai.cli import _progress_line
+
+        assert _progress_line(3, 64, "a.gz").startswith("3/64 a.gz")

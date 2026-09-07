@@ -2785,6 +2785,19 @@ def _report_plan(found: dict[str, list[BulkFile]]) -> None:
         )
 
 
+def _progress_line(index: int, total: int, key: str, width: int = 100) -> str:
+    """One-line progress text, padded so a shorter line clears the last one.
+
+    **進捗は1行に収める。** 復帰文字で上書きするので、短い行のあとに長い行の
+    尻尾が残る。実際に `fins_summary_20260904.csv.gz08.csv.gz` という表示が
+    出た。
+
+    見えている文字だけを詰める。**タグごと詰めると閉じタグを切る。**
+    """
+    text = f"{index}/{total} {key}"
+    return text[: width - 1] + "…" if len(text) > width else text.ljust(width)
+
+
 def _existing_parent(path: Path) -> Path:
     """Return ``path`` or its nearest existing ancestor.
 
@@ -2952,7 +2965,7 @@ def jquants_archive(
     def show(index: int, total: int, key: str) -> None:
         # **進捗は1行に収める。** 途中経過を残す形にすると、貼ったときに
         # 何百行にもなる。
-        console.print(f"[dim]{index}/{total} {key}[/]", end="\r")
+        console.print(f"[dim]{_progress_line(index, total, key)}[/]", end="\r")
         if throttle:
             time.sleep(throttle)
 
@@ -3126,7 +3139,7 @@ def jquants_daily_rosters(
 
     def show(index: int, total: int, key: str) -> None:
         # **進捗は1行に収める。**
-        console.print(f"[dim]{index}/{total} {key}[/]", end="\r")
+        console.print(f"[dim]{_progress_line(index, total, key)}[/]", end="\r")
 
     report = roster_extract(source, target, refetch=refetch, progress=show)
     console.print()
@@ -3256,7 +3269,7 @@ def jquants_bulk_prices(
 
     def show(index: int, total: int, key: str) -> None:
         # **進捗は1行に収める。**
-        console.print(f"[dim]{index}/{total} {key}[/]", end="\r")
+        console.print(f"[dim]{_progress_line(index, total, key)}[/]", end="\r")
 
     with database.session() as session:
         repository = PriceRepository(session)
@@ -3443,7 +3456,7 @@ def jquants_revision_census(
 
     census = RevisionCensus()
     for index, key in enumerate(keys, start=1):
-        console.print(f"[dim]{index}/{len(keys)} {key}[/]", end="\r")
+        console.print(f"[dim]{_progress_line(index, len(keys), key)}[/]", end="\r")
         try:
             count_revisions(parse_details(read_archived(path_for(source, key))), census)
         except Exception as exc:  # noqa: BLE001 - どこで読めないかが記録に値する
