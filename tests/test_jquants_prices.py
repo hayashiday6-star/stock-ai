@@ -607,3 +607,57 @@ class TestCountingWhatWasCompared:
 
         assert "AdjC のある行" in report.summary()
         assert "うち違う" in report.summary()
+
+
+class TestSplitDayReturns:
+    """分割の権利落ち日が、普通の1日に見えるか。
+
+    **継ぎ目の検査は1日しか見ていない。** 期間の内側で起きた分割は、そこでは
+    確かめられない。組み立てを `j >= d` で書いていたら、**継ぎ目は綺麗なまま、
+    分割日だけが1日ずつずれる。** どちらも例外は出ない。
+    """
+
+    def _frame(self, values: dict[str, float]) -> pd.DataFrame:
+        index = pd.DatetimeIndex([pd.Timestamp(day) for day in values], name="date")
+        return pd.DataFrame({CLOSE: list(values.values())}, index=index)
+
+    def test_a_correct_adjustment_makes_the_ex_date_ordinary(self) -> None:
+        from stock_ai.data.jquants_prices import split_day_returns
+
+        frames = {"1301": self._frame({"2026-08-03": 100.0, "2026-08-04": 101.0})}
+        splits = {"1301": {dt.date(2026, 8, 4): 0.5}}
+
+        (found,) = split_day_returns(frames.__getitem__, splits)
+
+        assert found[0] == "1301"
+        assert abs(found[2]) < 0.05
+
+    def test_an_off_by_one_convention_shows_up_as_the_ratio(self) -> None:
+        """`j >= d` で組み立てると、権利落ち日だけが係数ぶんずれる。"""
+        from stock_ai.data.jquants_prices import split_day_returns
+
+        frames = {"1301": self._frame({"2026-08-03": 100.0, "2026-08-04": 50.0})}
+        splits = {"1301": {dt.date(2026, 8, 4): 0.5}}
+
+        (found,) = split_day_returns(frames.__getitem__, splits)
+
+        assert found[2] == -0.5
+
+    def test_a_split_on_the_first_stored_day_is_left_out(self) -> None:
+        """**前日が無ければ、その日の収益率は測れない。**"""
+        from stock_ai.data.jquants_prices import split_day_returns
+
+        frames = {"1301": self._frame({"2026-08-04": 50.0})}
+        splits = {"1301": {dt.date(2026, 8, 4): 0.5}}
+
+        assert split_day_returns(frames.__getitem__, splits) == []
+
+    def test_several_splits_for_one_symbol_are_all_checked(self) -> None:
+        from stock_ai.data.jquants_prices import split_day_returns
+
+        frames = {
+            "1301": self._frame({"2026-08-03": 100.0, "2026-08-04": 101.0, "2026-09-01": 102.0})
+        }
+        splits = {"1301": {dt.date(2026, 8, 4): 0.5, dt.date(2026, 9, 1): 0.5}}
+
+        assert len(split_day_returns(frames.__getitem__, splits)) == 2

@@ -217,6 +217,7 @@ from stock_ai.data.jquants_exit import CANCELLATION, audit
 from stock_ai.data.jquants_fundamentals import JQuantsFundamentalsProvider, normalize_statements
 from stock_ai.data.jquants_prices import ingest as price_ingest
 from stock_ai.data.jquants_prices import join_returns as price_join_returns
+from stock_ai.data.jquants_prices import split_day_returns as price_split_day_returns
 from stock_ai.data.jquants_profile import JQuantsProfileProvider
 from stock_ai.data.jquants_provider import JQuantsPriceProvider
 from stock_ai.data.jquants_read import census as archive_census
@@ -3310,6 +3311,29 @@ def jquants_bulk_prices(
 
     if not report.symbols:
         return
+
+    # **継ぎ目の検査は1日しか見ていない。** 期間の内側で起きた分割は、そこでは
+    # 確かめられない。組み立てを `j >= d` で書いていたら、継ぎ目は綺麗なまま
+    # 分割日だけが1日ずつずれる——どちらも例外は出ない。
+    if report.split_table:
+        with database.session() as session:
+            repository = PriceRepository(session)
+            on_split = price_split_day_returns(repository.get_prices, report.split_table)
+        if on_split:
+            off = [item for item in on_split if abs(item[2]) > 0.2]
+            middle = sorted(abs(item[2]) for item in on_split)[len(on_split) // 2]
+            if off:
+                console.print(
+                    f"[red]分割の権利落ち日に 20% 以上動いた例が {len(off)}/{len(on_split)}。[/] "
+                    "**調整の組み立てがずれている疑いがある。** "
+                    + "、".join(f"{s_} {d} {v:+.0%}" for s_, d, v in off[:5])
+                )
+            else:
+                console.print(
+                    f"[green]分割の権利落ち日 {len(on_split):,} 件は、どれも普通の1日に"
+                    f"見える[/]（値動きの中央値 {middle:.1%}）。"
+                    "[dim] 期間の内側の分割も揃っている。[/]"
+                )
 
     # **出所の違う株価が継ぎ目でぶつかっていないか見る。** 立花は 2001年から、
     # 一括の原本は 2021-09 から。どちらも「最新の分割を基準にした調整後」を

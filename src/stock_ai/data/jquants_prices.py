@@ -95,6 +95,9 @@ FACTOR_TOLERANCE = 1e-9
 #: 組み立て直した調整値が、ファイルの `AdjC` とどれだけ違えば「違う」と数えるか。
 ADJ_MISMATCH_TOLERANCE = 0.001
 
+#: 銘柄ごとの ``{分割の権利落ち日: 係数}``。
+SplitTable = dict[str, dict[dt.date, float]]
+
 
 @dataclasses.dataclass
 class PriceIngestReport:
@@ -142,6 +145,9 @@ class PriceIngestReport:
 
     failed: dict[str, str] = dataclasses.field(default_factory=dict)
 
+    split_table: SplitTable = dataclasses.field(default_factory=dict)
+    """集めた分割。**書き込んだあとに、権利落ち日を確かめるために持っておく。**"""
+
     def summary(self) -> str:
         """1行のまとめ。"""
         return (
@@ -162,9 +168,6 @@ class PriceIngestReport:
             )
             + (f"、{len(self.failed)} 本が読めず" if self.failed else "")
         )
-
-
-SplitTable = dict[str, dict[dt.date, float]]
 
 
 def split_factors_from_payload(payload: bytes, into: SplitTable) -> int:
@@ -349,6 +352,7 @@ def ingest(
         for symbol, frame in frames.items():
             total_report.written += upsert(symbol, frame)
 
+    total_report.split_table = splits
     logger.info("株価の取り込み: %s", total_report.summary())
     return total_report
 
@@ -400,4 +404,40 @@ def join_returns(
         if previous <= 0:
             continue
         found.append((symbol, float(after.iloc[0]) / previous - 1.0))
+    return found
+
+
+def split_day_returns(
+    load: Callable[[str], pd.DataFrame],
+    splits: SplitTable,
+) -> list[tuple[str, dt.date, float]]:
+    """分割の権利落ち日の、調整後の収益率を返す。
+
+    **継ぎ目の検査は1日しか見ていない。** 期間の内側で起きた分割は、そこでは
+    確かめられない。組み立てを `j >= d` で書いていたら、**継ぎ目は綺麗なまま、
+    分割日だけが1日ずつずれる。** どちらも例外は出ない。
+
+    調整が正しければ、権利落ち日は普通の1日に見える。ずれていれば、その日
+    だけ分割比ぶん（1:2 なら ±50%、1:4 なら ±75%）の収益率が立つ。
+
+    Args:
+        load: 銘柄を受けて**調整後**の日足を返す呼び出し。
+        splits: 銘柄ごとの ``{権利落ち日: 係数}``。
+
+    Returns:
+        ``(銘柄, 権利落ち日, その日の収益率)``。前日が無い分割は入れない。
+    """
+    found: list[tuple[str, dt.date, float]] = []
+    for symbol, factors in splits.items():
+        frame = load(symbol)
+        if frame.empty or CLOSE not in frame:
+            continue
+        series = frame[CLOSE]
+        for date in sorted(factors):
+            stamp = pd.Timestamp(date)
+            before = series[series.index < stamp]
+            on = series[series.index == stamp]
+            if before.empty or on.empty or float(before.iloc[-1]) <= 0:
+                continue
+            found.append((symbol, date, float(on.iloc[0]) / float(before.iloc[-1]) - 1.0))
     return found
