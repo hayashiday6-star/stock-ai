@@ -706,3 +706,117 @@ class TestTellingATrueMoveFromABug:
 
         assert looks_unapplied(-0.495, 0.5)
         assert not looks_unapplied(-0.45, 0.5)
+
+
+class TestSymbolProbe:
+    """**「株価が無い」の理由を、当てずっぽうでなく原本から決める。**
+
+    名簿には出ているのに株価が1本も無い銘柄が16件あり、そのうち0件が出所の
+    違いだった（2026-09-08）。残る説明は原本の中にしかない。
+
+    区別すべきは3つで、**件数だけでは区別が付かない。**
+    """
+
+    def _archive(self, tmp_path, key: str, rows: list[dict[str, str]], columns=None) -> None:
+        import csv as _csv
+        import io as _io
+
+        buf = _io.StringIO()
+        writer = _csv.DictWriter(buf, fieldnames=columns or COLUMNS, lineterminator="\r\n")
+        writer.writeheader()
+        writer.writerows(rows)
+        payload = gzip.compress(buf.getvalue().encode("utf-8"))
+        archive(
+            [BulkFile(key=key, last_modified="", size=len(payload))],
+            lambda _k: payload,
+            tmp_path,
+            on=TODAY,
+        )
+
+    def test_a_symbol_absent_from_the_bars_is_named_as_such(self, tmp_path) -> None:
+        """**一括の株価に載っていない銘柄。** 取り直しても埋まらない。"""
+        from stock_ai.data.jquants_prices import probe_symbols
+
+        self._archive(
+            tmp_path, "equities/bars/daily/x.csv.gz", [_row("2026-08-03", "13010", 100.0)]
+        )
+
+        found = probe_symbols(tmp_path, {"7203"})
+
+        assert found["7203"].bar_rows == 0
+        assert found["7203"].verdict == "四本値に行が無い"
+
+    def test_a_symbol_that_never_traded_is_named_as_such(self, tmp_path) -> None:
+        """**上場しているが売買が成立していない。** これも埋まらない。"""
+        from stock_ai.data.jquants_prices import probe_symbols
+
+        rows = [_row("2026-08-03", "72030", 100.0)]
+        rows[0]["C"] = ""
+        self._archive(tmp_path, "equities/bars/daily/x.csv.gz", rows)
+
+        found = probe_symbols(tmp_path, {"7203"})
+
+        assert found["7203"].bar_rows == 1
+        assert found["7203"].priced_rows == 0
+        assert found["7203"].verdict == "行はあるが終値が無い"
+
+    def test_a_symbol_with_prices_in_the_originals_is_our_bug(self, tmp_path) -> None:
+        """**原本に終値があるのに DB に無いなら、落としているのはこちらである。**"""
+        from stock_ai.data.jquants_prices import probe_symbols
+
+        self._archive(
+            tmp_path, "equities/bars/daily/x.csv.gz", [_row("2026-08-03", "72030", 100.0)]
+        )
+
+        found = probe_symbols(tmp_path, {"7203"})
+
+        assert found["7203"].priced_rows == 1
+        assert "不具合" in found["7203"].verdict
+
+    def test_the_master_supplies_the_name_and_market(self, tmp_path) -> None:
+        """廃止直前の市場区分が分かれば、性質に見当が付く。"""
+        from stock_ai.data.jquants_prices import probe_symbols
+
+        master_columns = ["Date", "Code", "CoName", "MktNm", "ProdCat"]
+        self._archive(
+            tmp_path,
+            "equities/master/x.csv.gz",
+            [
+                {
+                    "Date": "2026-08-03",
+                    "Code": "72030",
+                    "CoName": "会社7203",
+                    "MktNm": "グロース",
+                    "ProdCat": "011",
+                }
+            ],
+            columns=master_columns,
+        )
+
+        found = probe_symbols(tmp_path, {"7203"})
+
+        assert found["7203"].name == "会社7203"
+        assert found["7203"].market == "グロース"
+
+    def test_the_dates_seen_are_reported(self, tmp_path) -> None:
+        from stock_ai.data.jquants_prices import probe_symbols
+
+        self._archive(
+            tmp_path,
+            "equities/bars/daily/x.csv.gz",
+            [_row("2026-08-03", "72030", 100.0), _row("2026-08-05", "72030", 101.0)],
+        )
+
+        found = probe_symbols(tmp_path, {"7203"})
+
+        assert found["7203"].first == dt.date(2026, 8, 3)
+        assert found["7203"].last == dt.date(2026, 8, 5)
+
+    def test_symbols_not_asked_for_are_not_collected(self, tmp_path) -> None:
+        from stock_ai.data.jquants_prices import probe_symbols
+
+        self._archive(
+            tmp_path, "equities/bars/daily/x.csv.gz", [_row("2026-08-03", "13010", 100.0)]
+        )
+
+        assert set(probe_symbols(tmp_path, {"7203"})) == {"7203"}

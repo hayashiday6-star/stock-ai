@@ -227,6 +227,7 @@ from stock_ai.data.jquants_fundamentals import JQuantsFundamentalsProvider, norm
 from stock_ai.data.jquants_prices import ingest as price_ingest
 from stock_ai.data.jquants_prices import join_returns as price_join_returns
 from stock_ai.data.jquants_prices import looks_unapplied as price_looks_unapplied
+from stock_ai.data.jquants_prices import probe_symbols
 from stock_ai.data.jquants_prices import split_day_returns as price_split_day_returns
 from stock_ai.data.jquants_profile import JQuantsProfileProvider
 from stock_ai.data.jquants_provider import JQuantsPriceProvider
@@ -3520,6 +3521,78 @@ def jquants_revision_census(
     else:
         console.print(
             "[dim]どの修正も決算と同じ日に出ている。**#5 を閉じた理由はそのまま正しい。**[/]"
+        )
+
+
+@app.command(name="jquants-symbol-probe")
+def jquants_symbol_probe(
+    symbols: list[str] | None = typer.Argument(None, help="JP codes; omit to use the gap."),
+    archive_dir: str = typer.Option(
+        str(DEFAULT_ARCHIVE_DIR), "--dir", help="Where the raw files are kept."
+    ),
+) -> None:
+    """Say why a symbol in the roster has no prices, from the originals.
+
+    **「株価が無い」には、少なくとも3つの理由がありうる。**
+
+    | 見え方 | 意味 |
+    |---|---|
+    | 四本値に行が無い | 一括の株価に載っていない銘柄である |
+    | 行はあるが終値が無い | 上場しているが売買が成立していない |
+    | 終値もある | こちらの取り込みが落としている——**不具合** |
+
+    **件数だけでは、この3つが区別できない。** 原本まで降りて決める。
+
+    銘柄を渡さなければ、棚卸しが数えている「名簿にあって株価が無い」銘柄を
+    そのまま調べる。**引数を打たずに済むようにしてある。**
+    """
+    settings = get_settings()
+    configure_logging(settings.log_level)
+
+    database = Database()
+    database.create_all()
+    wanted = {code.strip() for code in (symbols or []) if code.strip()}
+    if not wanted:
+        coverage = audit(database, snapshots=membership(Path(DEFAULT_SNAPSHOT_DIR)))
+        wanted = set(coverage.missing_priced)
+        console.print(f"[dim]棚卸しの「名簿にあって株価が無い」{len(wanted)} 銘柄を調べる。[/]")
+    if not wanted:
+        console.print("[green]株価の無い銘柄は無い。[/]")
+        return
+
+    console.print("[dim]原本を読むだけ。**取得はしない。**[/]")
+    found = probe_symbols(Path(archive_dir), wanted)
+
+    table = Table(title="株価が無い理由（原本から）")
+    for column in ("銘柄", "名前", "市場", "四本値の行", "終値のある行", "見え方"):
+        table.add_column(column, justify="right" if "行" in column else "left")
+    for symbol in sorted(found):
+        probe = found[symbol]
+        table.add_row(
+            symbol,
+            probe.name[:16],
+            probe.market[:10],
+            f"{probe.bar_rows:,}",
+            f"{probe.priced_rows:,}",
+            probe.verdict,
+        )
+    console.print(table)
+
+    broken = [p for p in found.values() if p.priced_rows]
+    if broken:
+        console.print(
+            f"[red]{len(broken)} 銘柄は原本に終値がある。[/] "
+            "**取り込みが落としている——不具合である。**"
+        )
+    elif all(p.bar_rows == 0 for p in found.values()):
+        console.print(
+            "[dim]どれも四本値に1行も無い。**一括の株価に載っていない銘柄である。**"
+            "取り直しても埋まらないので、生存バイアスの残りとして数えること。[/]"
+        )
+    else:
+        console.print(
+            "[dim]行はあるが終値が無い。**上場しているが売買が成立していない。**"
+            "取り直しても埋まらない。[/]"
         )
 
 

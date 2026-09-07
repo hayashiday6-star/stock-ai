@@ -456,3 +456,81 @@ def looks_unapplied(change: float, factor: float) -> bool:
     **1件ではなく全件がそうなる。** 見るべきはそこである。
     """
     return abs(change - (factor - 1.0)) < UNAPPLIED_TOLERANCE
+
+
+@dataclasses.dataclass
+class SymbolProbe:
+    """1銘柄が、原本の中でどう見えているか。
+
+    **「株価が無い」には、少なくとも3つの理由がありうる。**
+
+    | 見え方 | 意味 |
+    |---|---|
+    | 四本値に行が無い | 一括の株価に載っていない銘柄である |
+    | 行はあるが終値が無い | 上場しているが売買が成立していない |
+    | 終値もある | こちらの取り込みが落としている——**不具合** |
+
+    **件数だけでは、この3つが区別できない。**
+    """
+
+    symbol: str
+    bar_rows: int = 0
+    priced_rows: int = 0
+    first: dt.date | None = None
+    last: dt.date | None = None
+    name: str = ""
+    market: str = ""
+    product: str = ""
+
+    @property
+    def verdict(self) -> str:
+        """3つのどれか。"""
+        if self.bar_rows == 0:
+            return "四本値に行が無い"
+        if self.priced_rows == 0:
+            return "行はあるが終値が無い"
+        return "終値もある（取り込みの不具合）"
+
+
+def probe_symbols(archive_dir: Path, symbols: set[str]) -> dict[str, SymbolProbe]:
+    """原本を読んで、その銘柄がどう見えているかを返す。**取得はしない。**
+
+    株価が無い理由を、**当てずっぽうではなく原本から**決める。名簿には出て
+    いるのに株価が1本も無い銘柄が16件あり、そのうち0件が出所の違いだった
+    （2026-09-08）。残る説明は原本の中にしかない。
+    """
+    from stock_ai.data.jquants_archive import path_for, read_manifest
+
+    found = {symbol: SymbolProbe(symbol=symbol) for symbol in symbols}
+    manifest = sorted(read_manifest(archive_dir))
+
+    for key in manifest:
+        endpoint = endpoint_of(key)
+        if endpoint not in (BARS_ENDPOINT, "/equities/master"):
+            continue
+        try:
+            rows = records_from_csv(read_archived(path_for(archive_dir, key)))
+        except Exception as exc:  # noqa: BLE001 - どこで読めないかが記録に値する
+            logger.warning("原本を読めなかった: %s: %s", key, exc)
+            continue
+
+        for row in rows:
+            symbol = four_digit_code((row.get("Code") or "").strip())
+            if symbol is None or symbol not in found:
+                continue
+            probe = found[symbol]
+            if endpoint == "/equities/master":
+                # **最後に見えた姿を残す。** 廃止直前の市場区分が知りたい。
+                probe.name = (row.get("CoName") or probe.name).strip()
+                probe.market = (row.get("MktNm") or probe.market).strip()
+                probe.product = (row.get("ProdCat") or probe.product).strip()
+                continue
+            probe.bar_rows += 1
+            date = parse_date(row.get("Date"))
+            if date is not None:
+                probe.first = date if probe.first is None else min(probe.first, date)
+                probe.last = date if probe.last is None else max(probe.last, date)
+            close = parse_number(row.get("C"))
+            if close is not None and close > 0:
+                probe.priced_rows += 1
+    return found
