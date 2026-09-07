@@ -215,6 +215,7 @@ from stock_ai.data.jquants_bulk import records_from_csv as bulk_records_from_csv
 from stock_ai.data.jquants_bulk import span_years as bulk_span_years
 from stock_ai.data.jquants_exit import CANCELLATION, audit
 from stock_ai.data.jquants_fundamentals import JQuantsFundamentalsProvider, normalize_statements
+from stock_ai.data.jquants_prices import ingest as price_ingest
 from stock_ai.data.jquants_profile import JQuantsProfileProvider
 from stock_ai.data.jquants_provider import JQuantsPriceProvider
 from stock_ai.data.jquants_read import census as archive_census
@@ -3203,6 +3204,79 @@ def jquants_daily_rosters(
                 f"[dim]重ならなかった {len(grid_only)} 日は、取引カレンダーの原本が"
                 "無いので説明できない。[/]"
             )
+
+
+@app.command(name="jquants-bulk-prices")
+def jquants_bulk_prices(
+    archive_dir: str = typer.Option(
+        str(DEFAULT_ARCHIVE_DIR), "--dir", help="Where the raw files are kept."
+    ),
+    limit: int | None = typer.Option(None, "--limit", help="Read only this many files. Try small."),
+) -> None:
+    """Load prices for every symbol from the archived bulk bars.
+
+    **銘柄ごとに叩かない。** `BulkIngester` は1銘柄1リクエストで、この経路は
+    2回止まっている——84銘柄で1回、3,700銘柄で1回、どちらも 429 である。
+    20年 × 約4,400銘柄は1週間に収まらない。
+
+    一括ファイルには**全銘柄の四本値が日付ごとに**入っている。**API を1回も
+    叩かない**ので、解約後にも実行できる。
+
+    保存するのは**生値**である。`get_prices` が読み出しのときに
+    `adj_close / close` を掛けるので、ここで調整すると二重に掛かる。
+
+    何度実行しても同じ結果になる。**DB は作り直せる**——原本と違って、ここでの
+    失敗は安い。
+    """
+    settings = get_settings()
+    configure_logging(settings.log_level)
+
+    source = Path(archive_dir)
+    database = Database()
+    database.create_all()
+
+    console.print(f"原本: [bold]{source}[/]")
+    console.print(
+        "[dim]**API を1回も叩かない。** 一括ファイルから読むだけなので、解約後にも実行できる。[/]"
+    )
+    if limit:
+        console.print(f"[yellow]{limit} 本だけ読む。[/] まず少数で試す形。")
+
+    def show(index: int, total: int, key: str) -> None:
+        # **進捗は1行に収める。**
+        console.print(f"[dim]{index}/{total} {key}[/]", end="\r")
+
+    with database.session() as session:
+        repository = PriceRepository(session)
+        report = price_ingest(
+            source,
+            lambda symbol, frame: repository.upsert_prices(symbol, frame, market="JP"),
+            limit=limit,
+            progress=show,
+        )
+        session.commit()
+
+    console.print()
+    console.print(report.summary())
+
+    if report.skipped_no_close:
+        # **売買が無かった日と、値が欠けた日は別である。** 数えて出す。
+        console.print(
+            f"[dim]終値の無い行 {report.skipped_no_close:,} を落とした。"
+            "`0` を入れると「値がゼロになった日」として並ぶ。[/]"
+        )
+    if report.undated:
+        console.print(
+            f"[yellow]日付を読めない行が {report.undated:,} 行あった。[/] "
+            "**列名が変わった疑いがある。**"
+        )
+    if report.failed:
+        table = Table(title=f"読めなかった ({len(report.failed)})")
+        table.add_column("key")
+        table.add_column("理由")
+        for key, why in list(report.failed.items())[:10]:
+            table.add_row(key, why[:80])
+        console.print(table)
 
 
 @app.command(name="jquants-archive-verify")
