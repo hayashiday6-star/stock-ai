@@ -10,6 +10,7 @@ import contextlib
 import datetime as dt
 import hashlib
 import math
+import shutil
 import sys
 import time
 from collections import Counter
@@ -2760,6 +2761,20 @@ def _report_plan(found: dict[str, list[BulkFile]]) -> None:
         )
 
 
+def _existing_parent(path: Path) -> Path:
+    """Return ``path`` or its nearest existing ancestor.
+
+    ``path`` か、その一番近い既存の親。
+
+    空き容量は**これから作るディレクトリでは測れない。** 測れないまま黙って
+    進むと、容量の話が出力から消える。
+    """
+    current = path.resolve()
+    while not current.exists() and current != current.parent:
+        current = current.parent
+    return current
+
+
 def _bytes_label(total: int) -> str:
     """Format a byte count without rounding a real endpoint down to zero.
 
@@ -2849,10 +2864,31 @@ def jquants_archive(
         found.extend(files)
     console.print(table)
 
-    console.print(
-        f"合計 [bold]{len(found):,}[/] 本、"
-        f"[bold]{_bytes_label(sum(item.size for item in found))}[/]。"
-    )
+    total_bytes = sum(item.size for item in found)
+    console.print(f"合計 [bold]{len(found):,}[/] 本、[bold]{_bytes_label(total_bytes)}[/]。")
+
+    if found:
+        # **本数と MB だけでは、何日ぶんの作業かが分からない。** 契約が8日
+        # しかないので、そこがそのまま判断の材料になる。
+        floor_seconds = len(found) * max(throttle, 0.0)
+        console.print(
+            f"[dim]間隔 {throttle} 秒なら、待ち時間だけで最短 "
+            f"[bold]{floor_seconds / 60:,.0f} 分[/]。**転送の時間は別に乗る。**[/]"
+        )
+        try:
+            free = shutil.disk_usage(_existing_parent(target)).free
+        except OSError:
+            free = None
+        if free is not None:
+            # 展開しないので、必要なのは一覧の合計とほぼ同じ。倍を目安に
+            # するのは、取り直しと、この先エンドポイントが増えるぶんである。
+            enough = free > total_bytes * 2
+            console.print(
+                f"[dim]置き場所の空き [bold]{_bytes_label(free)}[/]。[/]"
+                if enough
+                else f"[yellow]置き場所の空きが {_bytes_label(free)} しかない。[/] "
+                "**途中で書けなくなると、切れたファイルが残る。**"
+            )
 
     if refused:
         # **断られ方は判断の材料である。** 定型ではないので削らない。
