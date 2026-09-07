@@ -7,6 +7,27 @@
 一括ファイルには**全銘柄の四本値が日付ごとに**入っている。名簿と同じ形で
 ある。240本を保存すれば、あとはローカルで読むだけになる。
 
+## 一括ファイルの `AdjC` は、そのままでは使えない
+
+**2026-09-07 に実測して分かった。** 立花（2001年〜）の上に一括（2021-09〜）
+を重ねると、継ぎ目の 2021-09-01 で 76銘柄中16銘柄が 20% 以上動いた。値は
++100%、+102%、+109%、+301% ——**市場の動きではなく、分割比そのものである。**
+
+向きは「立花 → J-Quants で価格が上がる」。立花は後の分割で割ってあり、
+**一括ファイルの `AdjC` は割っていない。** 月ごとの原本は静的なので、その月
+より後に起きた分割を知らない。
+
+**`AdjFactor` は行ごとに入っている**ので、こちらで組み立て直せる。
+
+    adj_close(d) = close(d) × Π{ factor(j) : j が d より後 }
+
+分割の権利落ち日に `factor = 0.5`（1:2 の場合）が立つ。その日より**前**の
+価格に掛けると、後の基準に揃う。権利落ち日そのものは既に新しい基準なので
+掛けない——**`j > d` であって `j >= d` ではない。**
+
+分割は稀なので、`factor != 1` の行だけ集めれば足りる。**全期間を一度なめて
+から書き込む**必要があるのはこのためである。
+
 ## 生値と調整値を取り違えない
 
 このプロジェクトが繰り返し踏んでいるのが「分割前後で尺度の違う値を組み
@@ -15,7 +36,7 @@
 | 入れる先 | 元の列 | 何か |
 |---|---|---|
 | `open` `high` `low` `close` | `O` `H` `L` `C` | **実際に売買された値** |
-| `adj_close` | `AdjC` | `close` に対応する調整後 |
+| `adj_close` | `C` × 後の `AdjFactor` の積 | **こちらで組み立てる**（上を見よ） |
 | `volume` | `Vo` | 調整前の出来高 |
 
 **`adj_close` は、同じ行の `close` に対応していなければならない。**
@@ -59,9 +80,15 @@ COLUMN_MAP: dict[str, str] = {
     "H": HIGH,
     "L": LOW,
     "C": CLOSE,
-    "AdjC": ADJ_CLOSE,
     "Vo": VOLUME,
 }
+
+#: 調整係数が1とみなせる幅。浮動小数の丸めで `1.0000000001` が来ても、
+#: 分割として数えない。
+FACTOR_TOLERANCE = 1e-9
+
+#: 組み立て直した調整値が、ファイルの `AdjC` とどれだけ違えば「違う」と数えるか。
+ADJ_MISMATCH_TOLERANCE = 0.001
 
 
 @dataclasses.dataclass
@@ -87,6 +114,16 @@ class PriceIngestReport:
     """4桁に直せないコード（優先株・種類株）。"""
 
     undated: int = 0
+    splits: int = 0
+    """`AdjFactor` が1でない行の数。**分割の権利落ち日である。**"""
+
+    adj_mismatch: int = 0
+    """組み立て直した調整値が、ファイルの `AdjC` と違った行。
+
+    **これが多いのが正常である。** 月ごとの原本は、その月より後の分割を
+    知らない。0 だったら、こちらの組み立てが効いていない疑いがある。
+    """
+
     failed: dict[str, str] = dataclasses.field(default_factory=dict)
 
     def summary(self) -> str:
@@ -101,11 +138,57 @@ class PriceIngestReport:
                 else ""
             )
             + (f"、日付なし {self.undated:,}" if self.undated else "")
+            + (f"、分割 {self.splits:,}" if self.splits else "")
+            + (f"、AdjC と違う行 {self.adj_mismatch:,}" if self.adj_mismatch else "")
             + (f"、{len(self.failed)} 本が読めず" if self.failed else "")
         )
 
 
-def frames_from_payload(payload: bytes) -> tuple[dict[str, pd.DataFrame], PriceIngestReport]:
+SplitTable = dict[str, dict[dt.date, float]]
+
+
+def split_factors_from_payload(payload: bytes, into: SplitTable) -> int:
+    """`AdjFactor` が1でない行を拾って ``into`` に足す。**分割の権利落ち日。**
+
+    分割は稀なので、これだけ集めれば全期間ぶんでも小さい。**全部の行を覚えて
+    おく必要は無い。**
+
+    Returns:
+        拾った件数。
+    """
+    found = 0
+    for row in records_from_csv(payload):
+        factor = parse_number(row.get("AdjFactor"))
+        if factor is None or abs(factor - 1.0) <= FACTOR_TOLERANCE:
+            continue
+        symbol = four_digit_code((row.get("Code") or "").strip())
+        date = parse_date(row.get("Date"))
+        if symbol is None or date is None:
+            continue
+        into.setdefault(symbol, {})[date] = factor
+        found += 1
+    return found
+
+
+def cumulative_factor(factors: dict[dt.date, float] | None, on: dt.date) -> float:
+    """``on`` の価格を最新の基準に揃えるための倍率。
+
+    **``on`` より後の分割だけを掛ける。** 権利落ち日そのものの価格は既に新しい
+    基準なので、その日の係数は掛けない——`j > d` であって `j >= d` ではない。
+    ここを取り違えると、分割日1日だけが分割比ぶんずれる。
+    """
+    if not factors:
+        return 1.0
+    total = 1.0
+    for date, factor in factors.items():
+        if date > on:
+            total *= factor
+    return total
+
+
+def frames_from_payload(
+    payload: bytes, splits: SplitTable | None = None
+) -> tuple[dict[str, pd.DataFrame], PriceIngestReport]:
     """展開済みの一括四本値を、**銘柄ごとの表**にする。
 
     `upsert_prices` が銘柄ごとに受け取る形に合わせる。日付を索引に持つ。
@@ -140,15 +223,26 @@ def frames_from_payload(payload: bytes) -> tuple[dict[str, pd.DataFrame], PriceI
         values: dict[str, object] = {DATE: pd.Timestamp(date)}
         for source, target in COLUMN_MAP.items():
             values[target] = parse_number(row.get(source))
-        # 調整後が無いときは、生値をそのまま置く。**`0` にしない**——
-        # `split_adjusted` は `adj_close / close` を掛けるので、0 は全ての足を
-        # 0 にする。1倍（＝調整なし）のほうが、間違いとして軽い。
-        if values[ADJ_CLOSE] is None:
-            values[ADJ_CLOSE] = close
         for column in (OPEN, HIGH, LOW):
             if values[column] is None:
                 values[column] = close
         values[VOLUME] = values[VOLUME] or 0
+
+        # **`AdjC` をそのまま使わない。** 月ごとの原本は、その月より後に
+        # 起きた分割を知らない。全期間の `AdjFactor` から組み立てる。
+        factor = cumulative_factor((splits or {}).get(symbol), date)
+        values[ADJ_CLOSE] = close * factor
+        if abs(factor - 1.0) > FACTOR_TOLERANCE:
+            report.splits += 1
+        # **食い違いを数える。** 多いのが正常で、0 なら組み立てが効いていない
+        # 疑いがある。
+        provided = parse_number(row.get("AdjC"))
+        if (
+            provided is not None
+            and provided > 0
+            and abs(values[ADJ_CLOSE] / provided - 1.0) > ADJ_MISMATCH_TOLERANCE
+        ):
+            report.adj_mismatch += 1
         collected.setdefault(symbol, []).append(values)
 
     frames: dict[str, pd.DataFrame] = {}
@@ -195,11 +289,29 @@ def ingest(
         return total_report
 
     total = len(keys)
+
+    # **1周目: 分割だけを集める。** 月ごとの原本はその月より後の分割を知らない
+    # ので、調整値は全期間を見てからでないと組み立てられない。分割は稀なので、
+    # `AdjFactor != 1` の行だけなら全期間ぶんでも小さい。
+    splits: SplitTable = {}
     for index, key in enumerate(keys, start=1):
         if progress is not None:
-            progress(index, total, key)
+            progress(index, total * 2, key)
         try:
-            frames, report = frames_from_payload(read_archived(path_for(archive_dir, key)))
+            split_factors_from_payload(read_archived(path_for(archive_dir, key)), splits)
+        except Exception as exc:  # noqa: BLE001 - どこで読めないかが記録に値する
+            total_report.failed[key] = f"{type(exc).__name__}: {exc}"
+            logger.warning("原本を読めなかった: %s: %s", key, exc)
+    logger.info("分割のある銘柄: %d", len(splits))
+
+    # 2周目: 書き込む。
+    for index, key in enumerate(keys, start=1):
+        if progress is not None:
+            progress(total + index, total * 2, key)
+        if key in total_report.failed:
+            continue
+        try:
+            frames, report = frames_from_payload(read_archived(path_for(archive_dir, key)), splits)
         except Exception as exc:  # noqa: BLE001 - どこで読めないかが記録に値する
             total_report.failed[key] = f"{type(exc).__name__}: {exc}"
             logger.warning("原本を読めなかった: %s: %s", key, exc)
@@ -211,6 +323,8 @@ def ingest(
         total_report.no_close_but_traded += report.no_close_but_traded
         total_report.skipped_code += report.skipped_code
         total_report.undated += report.undated
+        total_report.splits += report.splits
+        total_report.adj_mismatch += report.adj_mismatch
         total_report.symbols |= report.symbols
         for symbol, frame in frames.items():
             total_report.written += upsert(symbol, frame)

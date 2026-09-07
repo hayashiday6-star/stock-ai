@@ -3283,6 +3283,17 @@ def jquants_bulk_prices(
             f"[yellow]日付を読めない行が {report.undated:,} 行あった。[/] "
             "**列名が変わった疑いがある。**"
         )
+    console.print(
+        f"[dim]調整値は `AdjFactor` から組み立てた（分割の当たった行 "
+        f"{report.splits:,}）。ファイルの `AdjC` と違った行 "
+        f"{report.adj_mismatch:,}——**月ごとの原本は、その月より後の分割を"
+        "知らない。**[/]"
+    )
+    if report.splits and not report.adj_mismatch:
+        console.print(
+            "[yellow]分割があるのに `AdjC` と1行も違わない。[/] "
+            "**組み立てが効いていない疑いがある。**"
+        )
     if report.failed:
         table = Table(title=f"読めなかった ({len(report.failed)})")
         table.add_column("key")

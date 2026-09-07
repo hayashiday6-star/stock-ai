@@ -46,9 +46,15 @@ COLUMNS = [
 ]
 
 
-def _row(date: str, code: str, close: float, adj_close: float | None = None) -> dict[str, str]:
-    adjusted = close if adj_close is None else adj_close
-    factor = adjusted / close if close else 1.0
+def _row(date: str, code: str, close: float, factor: float = 1.0) -> dict[str, str]:
+    """1行ぶん。
+
+    `AdjFactor` は**分割の権利落ち日にだけ**1以外が立つ。1:2 なら 0.5。
+
+    `AdjC` はファイルが自分で言っている調整後だが、**月ごとの原本はその月より
+    後の分割を知らない。** 実測（2026-09-07）で、立花より2倍高い値が入って
+    いた。ここでは「後の分割を知らない」状態、つまり `C` と同じ値を入れる。
+    """
     return {
         "Date": date,
         "Code": code,
@@ -61,10 +67,10 @@ def _row(date: str, code: str, close: float, adj_close: float | None = None) -> 
         "Vo": "1000",
         "Va": f"{close * 1000}",
         "AdjFactor": f"{factor}",
-        "AdjO": f"{(close - 1) * factor}",
-        "AdjH": f"{(close + 2) * factor}",
-        "AdjL": f"{(close - 3) * factor}",
-        "AdjC": f"{adjusted}",
+        "AdjO": f"{close - 1}",
+        "AdjH": f"{close + 2}",
+        "AdjL": f"{close - 3}",
+        "AdjC": f"{close}",
         "AdjVo": "1000",
         "MktCap": "1000000",
     }
@@ -86,48 +92,92 @@ class TestRawAndAdjustedStayInTheirLanes:
     足がずれる。**
     """
 
-    def test_close_is_the_traded_price_and_adj_close_is_the_adjusted_one(self) -> None:
-        frames, _report = frames_from_payload(_csv([_row("2026-08-03", "13010", 200.0, 100.0)]))
+    def _split(self) -> bytes:
+        """1:2 の分割。権利落ち日は 08-04 で、そこに `AdjFactor=0.5` が立つ。"""
+        return _csv(
+            [
+                _row("2026-08-03", "13010", 200.0),
+                _row("2026-08-04", "13010", 100.0, factor=0.5),
+            ]
+        )
 
-        row = frames["1301"].iloc[0]
+    def _splits(self) -> dict:
+        from stock_ai.data.jquants_prices import split_factors_from_payload
 
-        assert row[CLOSE] == 200.0  # 実際に売買された値
-        assert row[ADJ_CLOSE] == 100.0  # 調整後
+        table: dict = {}
+        split_factors_from_payload(self._split(), table)
+        return table
+
+    def test_close_is_the_traded_price(self) -> None:
+        frames, _report = frames_from_payload(self._split(), self._splits())
+
+        assert frames["1301"][CLOSE].iloc[0] == 200.0  # 実際に売買された値
+
+    def test_the_adjusted_close_is_built_from_the_later_factors(self) -> None:
+        """**ファイルの `AdjC` を使わない。**
+
+        月ごとの原本はその月より後の分割を知らない。実測では、立花より2倍高い
+        値が入っていた。
+        """
+        frames, _report = frames_from_payload(self._split(), self._splits())
+
+        assert frames["1301"][ADJ_CLOSE].iloc[0] == 100.0  # 200 × 0.5
+        assert frames["1301"][ADJ_CLOSE].iloc[1] == 100.0  # 権利落ち日は掛けない
 
     def test_open_high_low_are_the_raw_ones(self) -> None:
         """**`AdjO` を `open` に入れない。**"""
-        frames, _report = frames_from_payload(_csv([_row("2026-08-03", "13010", 200.0, 100.0)]))
+        frames, _report = frames_from_payload(_csv([_row("2026-08-03", "13010", 200.0)]))
 
         row = frames["1301"].iloc[0]
 
-        assert row[OPEN] == 199.0  # 生値。調整後なら 99.5 になる
+        assert row[OPEN] == 199.0
         assert row[HIGH] == 202.0
         assert row[LOW] == 197.0
 
-    def test_the_column_map_never_pairs_a_raw_column_with_an_adjusted_one(self) -> None:
-        """調整後を取るのは `adj_close` だけである。"""
-        adjusted = {source for source in COLUMN_MAP if source.startswith("Adj")}
+    def test_no_adjusted_column_is_read_at_all(self) -> None:
+        """**調整後の列は1つも読まない。** 組み立てるのはこちらである。"""
+        assert not [source for source in COLUMN_MAP if source.startswith("Adj")]
+        assert ADJ_CLOSE not in COLUMN_MAP.values()
 
-        assert adjusted == {"AdjC"}
-        assert COLUMN_MAP["AdjC"] == ADJ_CLOSE
+    def test_the_factor_on_the_ex_date_itself_is_not_applied(self) -> None:
+        """**`j > d` であって `j >= d` ではない。**
+
+        権利落ち日の価格は既に新しい基準である。その日の係数まで掛けると、
+        分割日1日だけが分割比ぶんずれる。
+        """
+        from stock_ai.data.jquants_prices import cumulative_factor
+
+        factors = {dt.date(2026, 8, 4): 0.5}
+
+        assert cumulative_factor(factors, dt.date(2026, 8, 3)) == 0.5
+        assert cumulative_factor(factors, dt.date(2026, 8, 4)) == 1.0
 
     def test_a_split_reads_as_continuous_after_adjustment(self) -> None:
         """**分割日を挟んで、調整後の系列が跳ばないこと。**
 
-        生の終値は半分になるが、調整後は連続する。`split_adjusted` を通した
-        結果で確かめる——部品ではなく、組み立てで見る。
+        生の終値は半分になるが、調整後は連続する。部品ではなく組み立てで見る。
         """
-        rows = [
-            _row("2026-08-03", "13010", 200.0, 100.0),  # 分割前（調整後は半分）
-            _row("2026-08-04", "13010", 100.0, 100.0),  # 分割後
-        ]
-        frames, _report = frames_from_payload(_csv(rows))
+        frames, _report = frames_from_payload(self._split(), self._splits())
 
         raw = frames["1301"][CLOSE]
         adjusted = split_adjusted(frames["1301"])[CLOSE]
 
         assert raw.iloc[1] / raw.iloc[0] == 0.5  # 生値は跳ぶ
         assert adjusted.iloc[1] / adjusted.iloc[0] == 1.0  # 調整後は跳ばない
+
+    def test_two_splits_multiply(self) -> None:
+        """分割が2回あれば、係数は掛け合わせる。"""
+        from stock_ai.data.jquants_prices import cumulative_factor
+
+        factors = {dt.date(2026, 8, 4): 0.5, dt.date(2026, 9, 1): 0.5}
+
+        assert cumulative_factor(factors, dt.date(2026, 8, 3)) == 0.25
+
+    def test_a_symbol_that_never_split_is_left_alone(self) -> None:
+        frames, report = frames_from_payload(_csv([_row("2026-08-03", "13010", 200.0)]))
+
+        assert frames["1301"][ADJ_CLOSE].iloc[0] == 200.0
+        assert report.splits == 0
 
 
 class TestFiltering:
@@ -172,17 +222,18 @@ class TestFiltering:
         assert frames == {}
         assert report.skipped_no_close == 1
 
-    def test_a_missing_adjusted_close_falls_back_to_the_raw_one(self) -> None:
-        """**`0` にしない。**
+    def test_a_missing_adjustment_factor_counts_as_no_split(self) -> None:
+        """**空欄を `0` にしない。**
 
         `split_adjusted` は `adj_close / close` を掛けるので、0 は全ての足を
-        0 にする。1倍（調整なし）のほうが、間違いとして軽い。
+        0 にする。分割が無かったものとして扱うほうが、間違いとして軽い。
         """
         rows = [_row("2026-08-03", "13010", 100.0)]
-        rows[0]["AdjC"] = ""
-        frames, _report = frames_from_payload(_csv(rows))
+        rows[0]["AdjFactor"] = ""
+        frames, report = frames_from_payload(_csv(rows))
 
         assert frames["1301"].iloc[0][ADJ_CLOSE] == 100.0
+        assert report.splits == 0
 
 
 class TestFrameShape:
@@ -306,7 +357,12 @@ class TestAgainstTheRealRepository:
         from stock_ai.database.repository import PriceRepository
 
         payload = gzip.compress(
-            _csv([_row("2026-08-03", "13010", 200.0, 100.0), _row("2026-08-04", "13010", 100.0)])
+            _csv(
+                [
+                    _row("2026-08-03", "13010", 200.0),
+                    _row("2026-08-04", "13010", 100.0, factor=0.5),
+                ]
+            )
         )
         archive(
             [
@@ -375,7 +431,12 @@ class TestAgainstTheRealRepository:
         from stock_ai.database.repository import PriceRepository
 
         payload = gzip.compress(
-            _csv([_row("2026-08-03", "13010", 200.0, 100.0), _row("2026-08-04", "13010", 100.0)])
+            _csv(
+                [
+                    _row("2026-08-03", "13010", 200.0),
+                    _row("2026-08-04", "13010", 100.0, factor=0.5),
+                ]
+            )
         )
         archive(
             [BulkFile(key="equities/bars/daily/x.csv.gz", last_modified="", size=len(payload))],
