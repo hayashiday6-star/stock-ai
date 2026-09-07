@@ -2785,6 +2785,21 @@ def _report_plan(found: dict[str, list[BulkFile]]) -> None:
         )
 
 
+def _roster_span(directory: Path, symbols: tuple[str, ...]) -> dict[str, tuple[dt.date, dt.date]]:
+    """Return the first and last roster date each symbol appears on.
+
+    **いつ名簿に載っていたか**が分かれば、株価が無い理由に見当が付く。全部が
+    同じ日で終わっていれば廃止の取りこぼし、1日しか出ていなければ名簿側の
+    ゆらぎ、といった具合である。
+    """
+    seen: dict[str, list[dt.date]] = {}
+    wanted = set(symbols)
+    for on, codes in membership(directory).items():
+        for symbol in wanted & codes:
+            seen.setdefault(symbol, []).append(on)
+    return {symbol: (min(days), max(days)) for symbol, days in sorted(seen.items())}
+
+
 def _progress_line(index: int, total: int, key: str, width: int = 100) -> str:
     """One-line progress text, padded so a shorter line clears the last one.
 
@@ -3980,6 +3995,21 @@ def jquants_inventory(
             f"[yellow]名簿にあって株価が無い {coverage.roster_without_prices:,} 銘柄が"
             "残っている。[/] これがそのまま生存バイアスの残りである。"
         )
+        # **件数だけでは追えない。** 一括で株価を入れる前も後も 16 のままだった。
+        # 名前が並べば、全部が同じ性質か（同じ日に廃止した、同じ市場、同じ桁数）
+        # が一目で分かる。
+        if coverage.missing_priced:
+            console.print(
+                "[dim]"
+                + "、".join(coverage.missing_priced[:40])
+                + "[/]"
+                + ("" if len(coverage.missing_priced) <= 40 else " …")
+            )
+            when = _roster_span(Path(DEFAULT_SNAPSHOT_DIR), coverage.missing_priced)
+            if when:
+                console.print("[dim]名簿に出ていた期間:[/]")
+                for symbol, (first, last) in list(when.items())[:10]:
+                    console.print(f"  [dim]{symbol}  {first} 〜 {last}[/]")
     console.print(
         "[dim]会社予想と開示時刻は決算ドリフトのテーマ用で、そのテーマは"
         "2026-09-03 に閉じた（docs/HYPOTHESES.md）。**再開する予定が無いなら"

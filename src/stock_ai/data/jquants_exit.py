@@ -62,6 +62,13 @@ class Coverage:
     roster_symbols: int
     """名簿に一度でも出た銘柄。"""
     roster_without_prices: int
+    missing_priced: tuple[str, ...] = ()
+    """名簿にあって株価が無い銘柄そのもの。
+
+    **件数だけでは追えない。** 16件という数字は、一括で株価を入れる前も後も
+    16 のままだった。名前が並べば、全部が同じ性質か（同じ日に廃止した、同じ
+    市場、同じ桁数）が一目で分かる。
+    """
     """そのうち株価が手元に無いもの。**ここが生存バイアスの残り。**"""
 
     def days_left(self, today: dt.date | None = None) -> int:
@@ -153,6 +160,7 @@ def audit(database: Database, snapshots: dict[dt.date, set[str]] | None = None) 
         snapshot_last=ordered[-1] if ordered else None,
         roster_symbols=len(union),
         roster_without_prices=len(union - with_bars),
+        missing_priced=tuple(sorted(union - with_bars)),
     )
     logger.info(
         "解約前の棚卸し: 株価 %d 銘柄、財務 %d 行、名簿 %d 件、名簿にあって株価が無い %d 銘柄",

@@ -155,3 +155,48 @@ def test_days_left_counts_down_to_the_cancellation() -> None:
     coverage = audit(_database())
     assert coverage.days_left(CANCELLATION - dt.timedelta(days=19)) == 19
     assert coverage.days_left(CANCELLATION + dt.timedelta(days=1)) == -1
+
+
+class TestNamingWhatIsMissing:
+    """**件数だけでは追えない。**
+
+    「名簿にあって株価が無い16銘柄」は、一括で株価を入れる前も後も 16 のまま
+    だった。+438銘柄ぶん増えたのに、その16件だけ動かない。**数字が動かない
+    ことは分かっても、なぜ動かないかは分からない。**
+
+    名前が並べば、全部が同じ性質か（同じ日に廃止した、同じ市場、同じ桁数）が
+    一目で分かる。
+    """
+
+    def test_the_missing_symbols_are_listed_not_just_counted(self, tmp_path) -> None:
+        database = Database("sqlite:///:memory:")
+        database.create_all()
+        frame = pd.DataFrame(
+            {
+                "open": [1.0],
+                "high": [1.0],
+                "low": [1.0],
+                "close": [1.0],
+                "adj_close": [1.0],
+                "volume": [1],
+            },
+            index=pd.DatetimeIndex([pd.Timestamp("2024-01-04")], name="date"),
+        )
+        with database.session() as session:
+            PriceRepository(session).upsert_prices("1301", frame, market="JP")
+            session.commit()
+
+        coverage = audit(database, snapshots={dt.date(2024, 1, 4): {"1301", "7203", "6758"}})
+
+        assert coverage.roster_without_prices == 2
+        assert coverage.missing_priced == ("6758", "7203")
+
+    def test_nothing_missing_gives_an_empty_list_not_a_placeholder(self, tmp_path) -> None:
+        """**空を「まだ数えていない」と読ませない。**"""
+        database = Database("sqlite:///:memory:")
+        database.create_all()
+
+        coverage = audit(database, snapshots={})
+
+        assert coverage.missing_priced == ()
+        assert coverage.roster_without_prices == 0
