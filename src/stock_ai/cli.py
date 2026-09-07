@@ -3284,16 +3284,22 @@ def jquants_bulk_prices(
             "**列名が変わった疑いがある。**"
         )
     console.print(
-        f"[dim]調整値は `AdjFactor` から組み立てた（分割の当たった行 "
-        f"{report.splits:,}）。ファイルの `AdjC` と違った行 "
-        f"{report.adj_mismatch:,}——**月ごとの原本は、その月より後の分割を"
-        "知らない。**[/]"
+        f"[dim]調整値は `AdjFactor` から組み立てた（分割の当たった行 {report.splits:,}）。[/]"
     )
-    if report.splits and not report.adj_mismatch:
+    if not report.adj_c_rows:
+        # **「一致した」と「比べていない」を混ぜない。**
         console.print(
-            "[yellow]分割があるのに `AdjC` と1行も違わない。[/] "
-            "**組み立てが効いていない疑いがある。**"
+            "[dim]ファイルに `AdjC` の列は無い（配布サンプルには有る）。"
+            "**突き合わせる相手がいないので、組み立てが唯一の調整である。**[/]"
         )
+    elif report.adj_mismatch:
+        console.print(
+            f"[yellow]`AdjC` のある {report.adj_c_rows:,} 行のうち "
+            f"{report.adj_mismatch:,} 行が組み立てと違う。[/] どちらが正しいか"
+            "を決めるまで、分割をまたぐ期間を分析に使わないこと。"
+        )
+    else:
+        console.print(f"[green]`AdjC` のある {report.adj_c_rows:,} 行と、組み立てが一致した。[/]")
     if report.failed:
         table = Table(title=f"読めなかった ({len(report.failed)})")
         table.add_column("key")

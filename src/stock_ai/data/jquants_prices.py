@@ -7,26 +7,31 @@
 一括ファイルには**全銘柄の四本値が日付ごとに**入っている。名簿と同じ形で
 ある。240本を保存すれば、あとはローカルで読むだけになる。
 
-## 一括ファイルの `AdjC` は、そのままでは使えない
+## 調整値はこちらで組み立てる。ファイルの `AdjC` には頼らない
 
-**2026-09-07 に実測して分かった。** 立花（2001年〜）の上に一括（2021-09〜）
-を重ねると、継ぎ目の 2021-09-01 で 76銘柄中16銘柄が 20% 以上動いた。値は
-+100%、+102%、+109%、+301% ——**市場の動きではなく、分割比そのものである。**
+**一括ファイルに `AdjC` の列は入っていない**（2026-09-07 実測。4,996,413行
+すべてで読めなかった）。配布サンプルの `Stock Prices (OHLC).csv` には有る
+ので、**サンプルだけ見て「有る」と思い込むと、静かに外れる。**
 
-向きは「立花 → J-Quants で価格が上がる」。立花は後の分割で割ってあり、
-**一括ファイルの `AdjC` は割っていない。** 月ごとの原本は静的なので、その月
-より後に起きた分割を知らない。
+最初の実装は `AdjC` を読み、無ければ生値をそのまま入れていた。つまり
+**全期間が無調整**になり、立花（調整済み）の上に重ねたところ、継ぎ目の
+2021-09-01 で76銘柄中16銘柄が 20% 以上跳んだ——+100%、+102%、+301%。
+**市場の動きではなく分割比そのものである。**
 
-**`AdjFactor` は行ごとに入っている**ので、こちらで組み立て直せる。
+`AdjFactor` は行ごとに入っている（分割の権利落ち日に `0.5` など）。そこから
+組み立てる。
 
     adj_close(d) = close(d) × Π{ factor(j) : j が d より後 }
 
-分割の権利落ち日に `factor = 0.5`（1:2 の場合）が立つ。その日より**前**の
-価格に掛けると、後の基準に揃う。権利落ち日そのものは既に新しい基準なので
-掛けない——**`j > d` であって `j >= d` ではない。**
+**`j > d` であって `j >= d` ではない。** 権利落ち日の価格は既に新しい基準
+なので、その日の係数は掛けない。取り違えると分割日1日だけがずれる。
 
-分割は稀なので、`factor != 1` の行だけ集めれば足りる。**全期間を一度なめて
-から書き込む**必要があるのはこのためである。
+分割は稀なので、`factor != 1` の行だけ集めれば全期間ぶんでも小さい。取り
+込みが2周なのはこのためである——1周目で分割を集め、2周目で書き込む。
+
+**`AdjC` が読めた行数も数える。** 0 なら列が無い。数えていなければ、
+「一致した」と「比べていない」の区別が付かない——**実際にそこで診断を1回
+間違えた。**
 
 ## 生値と調整値を取り違えない
 
@@ -117,11 +122,22 @@ class PriceIngestReport:
     splits: int = 0
     """`AdjFactor` が1でない行の数。**分割の権利落ち日である。**"""
 
+    adj_c_rows: int = 0
+    """ファイルの `AdjC` が読めた行。
+
+    **0 なら、その列がそもそも無い。** 2026-09-07 の実測がこれだった——
+    配布サンプルには `AdjC` があるのに、一括ファイルには入っていない。
+
+    **これを数えていなかったせいで、診断を1回間違えた。** 「`AdjC` は後の
+    分割を知らない」と書いたが、実際は `AdjC` が無く、古い実装が生値を
+    そのまま調整値に入れていた（＝無調整）だけだった。
+    """
+
     adj_mismatch: int = 0
     """組み立て直した調整値が、ファイルの `AdjC` と違った行。
 
-    **これが多いのが正常である。** 月ごとの原本は、その月より後の分割を
-    知らない。0 だったら、こちらの組み立てが効いていない疑いがある。
+    `adj_c_rows` が 0 なら、これも必ず 0 になる。**2つを並べて見ること**
+    ——片方だけでは「一致した」と「比べていない」の区別が付かない。
     """
 
     failed: dict[str, str] = dataclasses.field(default_factory=dict)
@@ -139,7 +155,11 @@ class PriceIngestReport:
             )
             + (f"、日付なし {self.undated:,}" if self.undated else "")
             + (f"、分割 {self.splits:,}" if self.splits else "")
-            + (f"、AdjC と違う行 {self.adj_mismatch:,}" if self.adj_mismatch else "")
+            + (
+                f"、AdjC のある行 {self.adj_c_rows:,}（うち違う {self.adj_mismatch:,}）"
+                if self.adj_c_rows
+                else "、AdjC の列は無い"
+            )
             + (f"、{len(self.failed)} 本が読めず" if self.failed else "")
         )
 
@@ -228,21 +248,20 @@ def frames_from_payload(
                 values[column] = close
         values[VOLUME] = values[VOLUME] or 0
 
-        # **`AdjC` をそのまま使わない。** 月ごとの原本は、その月より後に
-        # 起きた分割を知らない。全期間の `AdjFactor` から組み立てる。
+        # 調整値は全期間の `AdjFactor` から組み立てる。**ファイルの `AdjC` に
+        # 頼らない**——一括ファイルにその列が無いことが実測で分かっている。
         factor = cumulative_factor((splits or {}).get(symbol), date)
         values[ADJ_CLOSE] = close * factor
         if abs(factor - 1.0) > FACTOR_TOLERANCE:
             report.splits += 1
-        # **食い違いを数える。** 多いのが正常で、0 なら組み立てが効いていない
-        # 疑いがある。
+
+        # **`AdjC` があるなら、突き合わせる。** 無いなら、無いと数える。
+        # 「一致した」と「比べていない」を、件数で区別できるようにする。
         provided = parse_number(row.get("AdjC"))
-        if (
-            provided is not None
-            and provided > 0
-            and abs(values[ADJ_CLOSE] / provided - 1.0) > ADJ_MISMATCH_TOLERANCE
-        ):
-            report.adj_mismatch += 1
+        if provided is not None and provided > 0:
+            report.adj_c_rows += 1
+            if abs(values[ADJ_CLOSE] / provided - 1.0) > ADJ_MISMATCH_TOLERANCE:
+                report.adj_mismatch += 1
         collected.setdefault(symbol, []).append(values)
 
     frames: dict[str, pd.DataFrame] = {}
@@ -324,6 +343,7 @@ def ingest(
         total_report.skipped_code += report.skipped_code
         total_report.undated += report.undated
         total_report.splits += report.splits
+        total_report.adj_c_rows += report.adj_c_rows
         total_report.adj_mismatch += report.adj_mismatch
         total_report.symbols |= report.symbols
         for symbol, frame in frames.items():

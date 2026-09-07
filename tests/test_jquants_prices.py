@@ -555,3 +555,55 @@ class TestJoinReturns:
         from stock_ai.data.jquants_prices import join_returns
 
         assert join_returns(lambda _s: pd.DataFrame(), ["1301"], dt.date(2021, 9, 1)) == []
+
+
+class TestCountingWhatWasCompared:
+    """**「一致した」と「比べていない」を、件数で区別する。**
+
+    2026-09-07 に、ここで診断を1回間違えた。「`AdjC` と違った行 0」を見て
+    「組み立てが効いていない」と読んだが、実際は **`AdjC` の列がそもそも
+    無かった**（4,996,413行すべてで読めなかった）。比べていないだけである。
+
+    配布サンプルには `AdjC` が有る。**サンプルだけ見て「有る」と思い込むと、
+    静かに外れる。**
+    """
+
+    def test_a_file_without_the_column_says_it_was_never_compared(self) -> None:
+        rows = [_row("2026-08-03", "13010", 100.0)]
+        rows[0]["AdjC"] = ""
+
+        _frames, report = frames_from_payload(_csv(rows))
+
+        assert report.adj_c_rows == 0
+        assert report.adj_mismatch == 0
+        assert "AdjC の列は無い" in report.summary()
+
+    def test_a_file_with_the_column_counts_the_comparison(self) -> None:
+        _frames, report = frames_from_payload(_csv([_row("2026-08-03", "13010", 100.0)]))
+
+        assert report.adj_c_rows == 1
+        assert report.adj_mismatch == 0
+        assert "AdjC のある行 1" in report.summary()
+
+    def test_a_disagreement_is_counted_separately(self) -> None:
+        rows = [
+            _row("2026-08-03", "13010", 200.0),
+            _row("2026-08-04", "13010", 100.0, factor=0.5),
+        ]
+        from stock_ai.data.jquants_prices import split_factors_from_payload
+
+        table: dict = {}
+        split_factors_from_payload(_csv(rows), table)
+
+        _frames, report = frames_from_payload(_csv(rows), table)
+
+        # 08-03 は組み立てが 100、ファイルは 200 と言っている（後の分割を知らない）
+        assert report.adj_c_rows == 2
+        assert report.adj_mismatch == 1
+
+    def test_the_two_counts_are_both_in_the_summary(self) -> None:
+        """**片方だけでは読めない。** 並べて出す。"""
+        _frames, report = frames_from_payload(_csv([_row("2026-08-03", "13010", 100.0)]))
+
+        assert "AdjC のある行" in report.summary()
+        assert "うち違う" in report.summary()
