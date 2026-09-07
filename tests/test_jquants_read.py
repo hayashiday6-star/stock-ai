@@ -257,24 +257,48 @@ class TestShapeOnRealisticFiles:
 
         assert shape_of(tmp_path, "nothing/here.csv.gz") is None
 
-    def test_one_key_is_chosen_for_each_endpoint(self, tmp_path) -> None:
-        """**385本を全部開かない。** 形を見るだけなら1本で足りる。"""
-        from stock_ai.data.jquants_read import one_per_endpoint
-
+    def _put(self, tmp_path, key: str) -> None:
         payload = gzip.compress(b"Date,Code\n2024-01-04,13010\n")
-        for month in ("202401", "202402", "202403"):
-            key = f"equities/master/historical/2024/equities_master_{month}.csv.gz"
-            archive(
-                [BulkFile(key=key, last_modified="", size=len(payload))],
-                lambda _k: payload,
-                tmp_path,
-                on=TODAY,
-            )
+        archive(
+            [BulkFile(key=key, last_modified="", size=len(payload))],
+            lambda _k: payload,
+            tmp_path,
+            on=TODAY,
+        )
 
-        chosen = one_per_endpoint(tmp_path)
+    def test_one_key_is_chosen_for_each_kind(self, tmp_path) -> None:
+        """**385本を全部開かない。** ただし種類ごとには見る。"""
+        from stock_ai.data.jquants_read import samples_per_endpoint
+
+        for month in ("202401", "202402", "202403"):
+            self._put(tmp_path, f"equities/master/historical/2024/eq_master_{month}.csv.gz")
+        self._put(tmp_path, "equities/master/live/eq_master_20260907.csv.gz")
+
+        chosen = samples_per_endpoint(tmp_path)
 
         assert list(chosen) == ["/equities/master"]
-        assert chosen["/equities/master"].endswith("202403.csv.gz")  # いちばん新しい
+        assert len(chosen["/equities/master"]) == 2  # historical と live
+        assert any("202403" in key for key in chosen["/equities/master"])
+        assert any("/live/" in key for key in chosen["/equities/master"])
+
+    def test_the_daily_file_does_not_hide_the_monthly_one(self, tmp_path) -> None:
+        """**ここで実際に読み違えた。**
+
+        最初は「いちばん新しい1本」を選んでいた。`live` は `historical` より
+        後に並ぶので、毎回その日ぶんの日次ファイルが選ばれ、月次の一括ファイル
+        が1本も見えていなかった。
+
+        **1本が1ヶ月ぶんか1日ぶんかで、20年ぶんの本数が20倍変わる。** 契約
+        日数の見積もりがそこで決まる。
+        """
+        from stock_ai.data.jquants_read import samples_per_endpoint
+
+        self._put(tmp_path, "fins/summary/historical/2021/fins_summary_202109.csv.gz")
+        self._put(tmp_path, "fins/summary/live/fins_summary_20260904.csv.gz")
+
+        keys = samples_per_endpoint(tmp_path)["/fins/summary"]
+
+        assert any("/historical/" in key for key in keys)
 
     def test_a_file_with_no_rows_does_not_pretend_to_have_dates(self, tmp_path) -> None:
         from stock_ai.data.jquants_read import shape_of

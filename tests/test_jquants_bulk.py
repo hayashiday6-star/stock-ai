@@ -509,7 +509,14 @@ class TestBulkCsvEncoding:
     SAMPLE = Path(__file__).parent / "fixtures" / "jquants_master_sample.csv"
 
     def test_the_distributed_master_is_cp932(self) -> None:
-        """**前提そのものを固定する。** ここが変わったら読み方を見直す。"""
+        """**配り方で文字コードが違う。**
+
+        配布サンプルは cp932。**一括ファイルのほうは UTF-8 である**
+        （2026-09-07 に実測。保存した385本の7エンドポイントすべてが
+        `utf-8-sig` で、会社名の入る `/equities/master` も含む）。
+
+        片方だけを見て決め打ちすると、もう片方で落ちる。**両方を固定する。**
+        """
         raw = self.SAMPLE.read_bytes()
 
         with pytest.raises(UnicodeDecodeError):
@@ -532,6 +539,21 @@ class TestBulkCsvEncoding:
         _text, encoding = decode_csv(self.SAMPLE.read_bytes())
 
         assert encoding == "cp932"
+
+    def test_the_real_bulk_file_is_utf8(self) -> None:
+        """実測（2026-09-07）を固定する。**サンプルとは違う。**
+
+        `/equities/master` の一括ファイルには会社名が入っているのに
+        `utf-8-sig` で読めた。cp932 だと決め打ちしていたら、ここで落ちていた。
+        """
+        from stock_ai.data.jquants_bulk import decode_csv
+
+        payload = "Date,Code,CoName\n2026-09-07,86970,日本取引所グループ\n".encode()
+
+        text, encoding = decode_csv(payload)
+
+        assert encoding == "utf-8-sig"
+        assert "日本取引所グループ" in text
 
     def test_utf8_is_tried_first(self) -> None:
         """cp932 はほぼ何でも読めてしまう。**先に試す順序に意味がある。**

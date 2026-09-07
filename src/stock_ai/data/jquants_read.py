@@ -181,14 +181,29 @@ def shape_of(directory: Path, key: str) -> Shape | None:
     )
 
 
-def one_per_endpoint(directory: Path = DEFAULT_ARCHIVE_DIR) -> dict[str, str]:
-    """エンドポイントごとに、いちばん新しい `key` を1つ選ぶ。
+#: `key` の中で「まとめて配る過去分」と「その日ぶん」を分ける語。
+#:
+#: ``fins/summary/historical/2021/fins_summary_202109.csv.gz``（月次）と
+#: ``fins/summary/live/fins_summary_20260904.csv.gz``（日次）。
+KEY_KINDS = ("historical", "live")
 
-    **全部を開かない。** 385本を開くと数分かかるうえ、貼ったときに長くなる。
-    形を見るだけなら1本で足りる。
+
+def samples_per_endpoint(directory: Path = DEFAULT_ARCHIVE_DIR) -> dict[str, list[str]]:
+    """エンドポイントごとに、**種類ごとに1本ずつ**選ぶ。
+
+    **全部を開かない。** 385本を開くと数分かかるうえ、貼ると長い。
+
+    最初は「いちばん新しい1本」を選んでいた。`live` は `historical` より後に
+    並ぶので、**毎回その日ぶんの日次ファイルが選ばれた。** 実際の出力では
+    `/equities/bars/daily` が「4,441行・1日ぶん」と出て、月次の一括ファイルは
+    1本も見えていなかった。
+
+    **1本が1ヶ月ぶんか1日ぶんかで、20年ぶんの本数が20倍変わる。** 契約日数の
+    見積もりがそこで決まるので、取り違えたまま進めない。
     """
-    latest: dict[str, str] = {}
+    chosen: dict[str, dict[str, str]] = {}
     for key in sorted(read_manifest(directory)):
         endpoint = endpoint_of(key) or "(不明)"
-        latest[endpoint] = key  # 昇順なので最後が残る
-    return latest
+        kind = next((name for name in KEY_KINDS if f"/{name}/" in f"/{key}"), "その他")
+        chosen.setdefault(endpoint, {})[kind] = key  # 昇順なので各種類の最後が残る
+    return {endpoint: list(kinds.values()) for endpoint, kinds in chosen.items()}

@@ -402,15 +402,17 @@ def download(api_key: SecretStr | None, key: str, *, timeout: float = 300.0) -> 
 
 #: 一括 CSV を読むときに試す文字コード。**順序に意味がある。**
 #:
-#: 配布サンプル（`sample_data_v2`）を実測すると、日本語を含むファイルは
-#: **cp932 で、UTF-8 ではない**（`Listed Issue Master.csv` /
-#: `Financial Statement Data(BSPLCF).csv` / 空売り残高報告など）。日本語を
-#: 含まないファイルだけが UTF-8 に見えている——**ASCII はどちらでも同じ
-#: バイト列だからで、UTF-8 だと確かめられたわけではない。**
+#: **一括ファイルは UTF-8 である**（2026-09-07 に実測。保存した385本のうち
+#: 7エンドポイントすべてが `utf-8-sig`。会社名の入る `/equities/master` も
+#: 含む）。
 #:
-#: いままで気付かなかったのは、一括で読んでいたのが `fins/summary` と
-#: `equities/bars/daily` の2つだけで、どちらにも日本語が無いためである。
-#: **`/equities/master` を一括で読んだ瞬間に当たる。**
+#: **配布サンプル（`sample_data_v2`）のほうは cp932 だった**（`Listed Issue
+#: Master.csv` / `Financial Statement Data(BSPLCF).csv` / 空売り残高報告）。
+#: 同じデータでも、配り方で文字コードが違う。
+#:
+#: つまり片方だけを見て決め打ちすると、**もう片方で落ちる。** 順序は UTF-8
+#: が先——cp932 はほぼ何でも読めてしまうので、先に試すと UTF-8 の日本語が
+#: 例外なしで化ける。
 CSV_ENCODINGS: tuple[str, ...] = ("utf-8-sig", "cp932")
 
 

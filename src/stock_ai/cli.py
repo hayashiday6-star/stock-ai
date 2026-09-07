@@ -217,7 +217,7 @@ from stock_ai.data.jquants_fundamentals import JQuantsFundamentalsProvider, norm
 from stock_ai.data.jquants_profile import JQuantsProfileProvider
 from stock_ai.data.jquants_provider import JQuantsPriceProvider
 from stock_ai.data.jquants_read import census as archive_census
-from stock_ai.data.jquants_read import one_per_endpoint
+from stock_ai.data.jquants_read import samples_per_endpoint
 from stock_ai.data.jquants_read import shape_of as archive_shape
 from stock_ai.data.markets import split_by_market, to_yahoo_symbol
 from stock_ai.data.schema import ADJ_CLOSE, CLOSE, OPEN
@@ -3050,13 +3050,23 @@ def jquants_archive_read(
     forms = Table(title="1本ずつ見た形（実物であって、配布サンプルではない）")
     for column in ("エンドポイント", "行", "文字", "日付の範囲", "列"):
         forms.add_column(column, justify="right" if column == "行" else "left")
-    for endpoint, key in sorted(one_per_endpoint(target).items()):
-        found = archive_shape(target, key)
-        if found is None:
-            continue
-        span = f"{found.first_date} 〜 {found.last_date}" if found.first_date else "—"
-        columns = ", ".join(found.columns[:6]) + ("…" if len(found.columns) > 6 else "")
-        forms.add_row(endpoint, f"{found.rows:,}", found.encoding, span, columns)
+    for endpoint, keys in sorted(samples_per_endpoint(target).items()):
+        for key in keys:
+            found = archive_shape(target, key)
+            if found is None:
+                continue
+            span = f"{found.first_date} 〜 {found.last_date}" if found.first_date else "—"
+            columns = ", ".join(found.columns[:5]) + ("…" if len(found.columns) > 5 else "")
+            # **月次か日次かを名前で出す。** 1本が何日ぶんかで、20年の本数が
+            # 20倍変わる。
+            kind = next((name for name in ("historical", "live") if f"/{name}/" in key), "—")
+            forms.add_row(
+                f"{endpoint}  [dim]{kind}[/]",
+                f"{found.rows:,}",
+                found.encoding,
+                span,
+                columns,
+            )
     console.print(forms)
 
 
