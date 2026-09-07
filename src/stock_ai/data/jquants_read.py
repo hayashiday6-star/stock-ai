@@ -131,3 +131,64 @@ def census(directory: Path = DEFAULT_ARCHIVE_DIR) -> dict[str, ReadReport]:
             # **0行は例外を出さない。** 読めたことと、中身があることは別である。
             report.empty.append(key)
     return reports
+
+
+@dataclasses.dataclass(frozen=True)
+class Shape:
+    """原本1本の「形」。**中身ではなく、読める形かどうかを見る。**"""
+
+    key: str
+    columns: tuple[str, ...]
+    rows: int
+    encoding: str
+    first_date: str
+    last_date: str
+
+
+#: 日付が入っていそうな列名。先に書いたものから探す。
+DATE_COLUMNS = ("Date", "DiscDate", "PubDate", "SchDate", "AppDate", "CalcDate")
+
+
+def shape_of(directory: Path, key: str) -> Shape | None:
+    """原本1本の列名・行数・文字コード・日付の範囲を読む。
+
+    **保存したものが何なのかを、落としてから確かめる口である。** 配布サンプル
+    は1〜6行しか無く、月次の全銘柄ファイルとは形が違いうる。サンプルで通った
+    ことは、実物で通ったことにならない。
+    """
+    from stock_ai.data.jquants_bulk import decode_csv, records_from_csv
+
+    path = path_for(directory, key)
+    if not path.is_file():
+        return None
+    payload = read_archived(path)
+    _text, encoding = decode_csv(payload)
+    rows = records_from_csv(payload)
+    if not rows:
+        return Shape(key, (), 0, encoding, "", "")
+
+    columns = tuple(rows[0])
+    column = next((name for name in DATE_COLUMNS if name in columns), None)
+    dates = sorted({(row.get(column) or "").strip() for row in rows}) if column else []
+    dates = [value for value in dates if value]
+    return Shape(
+        key=key,
+        columns=columns,
+        rows=len(rows),
+        encoding=encoding,
+        first_date=dates[0] if dates else "",
+        last_date=dates[-1] if dates else "",
+    )
+
+
+def one_per_endpoint(directory: Path = DEFAULT_ARCHIVE_DIR) -> dict[str, str]:
+    """エンドポイントごとに、いちばん新しい `key` を1つ選ぶ。
+
+    **全部を開かない。** 385本を開くと数分かかるうえ、貼ったときに長くなる。
+    形を見るだけなら1本で足りる。
+    """
+    latest: dict[str, str] = {}
+    for key in sorted(read_manifest(directory)):
+        endpoint = endpoint_of(key) or "(不明)"
+        latest[endpoint] = key  # 昇順なので最後が残る
+    return latest

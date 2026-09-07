@@ -216,6 +216,9 @@ from stock_ai.data.jquants_exit import CANCELLATION, audit
 from stock_ai.data.jquants_fundamentals import JQuantsFundamentalsProvider, normalize_statements
 from stock_ai.data.jquants_profile import JQuantsProfileProvider
 from stock_ai.data.jquants_provider import JQuantsPriceProvider
+from stock_ai.data.jquants_read import census as archive_census
+from stock_ai.data.jquants_read import one_per_endpoint
+from stock_ai.data.jquants_read import shape_of as archive_shape
 from stock_ai.data.markets import split_by_market, to_yahoo_symbol
 from stock_ai.data.schema import ADJ_CLOSE, CLOSE, OPEN
 from stock_ai.data.service import FundamentalsService, IngestionService, IngestResult
@@ -2957,9 +2960,104 @@ def jquants_archive(
 
     console.print()
     console.print(
-        "[dim]原本は取り直せない。**解析の前にバックアップを取ること。**"
-        "確かめるだけなら `jquants-archive-verify`。[/]"
+        "[dim]原本は git で追跡していない（大きすぎる）。**追跡しない = 消えてよい、"
+        "ではない。** 2026-09-22 を過ぎたら取り直せないので、外付けか同期フォルダに"
+        "写しを1つ置くこと。写した先でも `原本の照合.bat` で欠けを見つけられる。[/]"
     )
+
+
+@app.command(name="jquants-archive-read")
+def jquants_archive_read(
+    directory: str = typer.Option(
+        str(DEFAULT_ARCHIVE_DIR), "--dir", help="Where the raw files are kept."
+    ),
+    shapes: bool = typer.Option(
+        True, "--shapes/--no-shapes", help="Also show one file's columns per endpoint."
+    ),
+) -> None:
+    """Read every archived original through its parser and count the rows.
+
+    **「落とせた」と「読めた」は別である。** このプロジェクトは2日で2回それを
+    踏んでいる。原本を保存したあとで読み口が繋がっていないと分かるのが、
+    いちばん高い。
+
+    **配布サンプルで通ったことは、実物で通ったことにならない。** サンプルは
+    1〜6行しかなく、月次の全銘柄ファイルとは形が違いうる。文字コードも、
+    サンプルが cp932 だったからといって一括ファイルもそうとは限らない。
+
+    落とすことはしない。**解約後にも実行できる。**
+    """
+    settings = get_settings()
+    configure_logging(settings.log_level)
+
+    target = Path(directory)
+    reports = archive_census(target)
+    if not reports:
+        console.print("[yellow]原本がまだ無い。[/] 先に `原本をまるごと保存.bat`。")
+        return
+
+    table = Table(title="原本を読み口に通す（1バイトも落としていない）")
+    for column, justify in (
+        ("エンドポイント", "left"),
+        ("本", "right"),
+        ("行", "right"),
+        ("状態", "left"),
+    ):
+        table.add_column(column, justify=justify)
+
+    unread = 0
+    for endpoint in sorted(reports):
+        report = reports[endpoint]
+        if report.rows:
+            state = "[green]読めた[/]"
+            if report.empty:
+                state += f"  [yellow]中身なし {len(report.empty)} 本[/]"
+            if report.failed:
+                state += f"  [red]読めず {len(report.failed)} 本[/]"
+        elif report.failed and all(why == "読み口が無い" for why in report.failed.values()):
+            # **消さずに出す。** 読み口が無いことと、読めないことは別である。
+            state = "[dim]読み口を作っていない[/]"
+            unread += report.files
+        else:
+            state = f"[red]読めなかった {len(report.failed)} 本[/]"
+        table.add_row(endpoint, f"{report.files:,}", f"{report.rows:,}", state)
+    console.print(table)
+
+    if unread:
+        console.print(
+            f"[dim]{unread:,} 本は読み口を作っていない（株価・名簿・財務は既存の"
+            "取り込みが読む）。**保存はできている。**[/]"
+        )
+
+    broken = {
+        key: why
+        for report in reports.values()
+        for key, why in report.failed.items()
+        if why != "読み口が無い"
+    }
+    if broken:
+        problems = Table(title=f"読めなかった ({len(broken)})")
+        problems.add_column("key")
+        problems.add_column("理由")
+        for key, why in list(broken.items())[:10]:
+            problems.add_row(key, why[:80])
+        console.print(problems)
+
+    if not shapes:
+        return
+
+    console.print()
+    forms = Table(title="1本ずつ見た形（実物であって、配布サンプルではない）")
+    for column in ("エンドポイント", "行", "文字", "日付の範囲", "列"):
+        forms.add_column(column, justify="right" if column == "行" else "left")
+    for endpoint, key in sorted(one_per_endpoint(target).items()):
+        found = archive_shape(target, key)
+        if found is None:
+            continue
+        span = f"{found.first_date} 〜 {found.last_date}" if found.first_date else "—"
+        columns = ", ".join(found.columns[:6]) + ("…" if len(found.columns) > 6 else "")
+        forms.add_row(endpoint, f"{found.rows:,}", found.encoding, span, columns)
+    console.print(forms)
 
 
 @app.command(name="jquants-archive-verify")

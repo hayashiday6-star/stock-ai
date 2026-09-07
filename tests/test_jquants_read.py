@@ -172,3 +172,124 @@ class TestCensus:
 
     def test_an_empty_archive_is_quiet(self, tmp_path) -> None:
         assert census(tmp_path) == {}
+
+
+class TestShapeOnRealisticFiles:
+    """**配布サンプルで通ったことは、実物で通ったことにならない。**
+
+    サンプルは1〜6行しかない。一括ファイルは月次で全銘柄が入っていて、
+    gzip で、cp932 かもしれない。385本を保存したあとで読めないと分かるのが
+    いちばん高い。
+    """
+
+    def _monthly(self, tmp_path, encoding: str = "cp932", days: int = 20, codes: int = 300):
+        import csv
+        import io
+
+        rows = [
+            {
+                "Date": f"2024-03-{day:02d}",
+                "Code": f"{code}0",
+                "CoName": "日本取引所グループ",
+                "S33": "7200",
+                "Mkt": "0111",
+                "Mrgn": "2",
+                "MrgnNm": "貸借",
+            }
+            for day in range(1, days + 1)
+            for code in range(1301, 1301 + codes)
+        ]
+        buf = io.StringIO()
+        writer = csv.DictWriter(buf, fieldnames=list(rows[0]), lineterminator="\r\n")
+        writer.writeheader()
+        writer.writerows(rows)
+        payload = gzip.compress(buf.getvalue().encode(encoding))
+        key = "equities/master/historical/2024/equities_master_202403.csv.gz"
+        archive(
+            [BulkFile(key=key, last_modified="", size=len(payload))],
+            lambda _k: payload,
+            tmp_path,
+            on=TODAY,
+        )
+        return key, len(rows)
+
+    def test_a_monthly_all_symbol_file_reads_back(self, tmp_path) -> None:
+        """6,000行・gzip・cp932。**サンプルの1行とは別物である。**"""
+        from stock_ai.data.jquants_read import shape_of
+
+        key, expected = self._monthly(tmp_path)
+
+        found = shape_of(tmp_path, key)
+
+        assert found is not None
+        assert found.rows == expected
+        assert found.encoding == "cp932"
+        assert found.columns[:3] == ("Date", "Code", "CoName")
+
+    def test_the_date_range_inside_the_file_is_reported(self, tmp_path) -> None:
+        """**1本が1日ぶんか1ヶ月ぶんかで、20年ぶんの本数が20倍変わる。**
+
+        月次なら240本、日次なら5,000本。契約日数の見積もりがそこで決まる。
+        """
+        from stock_ai.data.jquants_read import shape_of
+
+        key, _ = self._monthly(tmp_path)
+
+        found = shape_of(tmp_path, key)
+
+        assert found is not None
+        assert found.first_date == "2024-03-01"
+        assert found.last_date == "2024-03-20"
+
+    def test_a_utf8_file_is_reported_as_utf8(self, tmp_path) -> None:
+        """**推測した結果を捨てない。** 化けても気付けるようにする。"""
+        from stock_ai.data.jquants_read import shape_of
+
+        key, _ = self._monthly(tmp_path, encoding="utf-8")
+
+        found = shape_of(tmp_path, key)
+
+        assert found is not None
+        assert found.encoding == "utf-8-sig"
+
+    def test_a_missing_file_says_so_rather_than_raising(self, tmp_path) -> None:
+        from stock_ai.data.jquants_read import shape_of
+
+        assert shape_of(tmp_path, "nothing/here.csv.gz") is None
+
+    def test_one_key_is_chosen_for_each_endpoint(self, tmp_path) -> None:
+        """**385本を全部開かない。** 形を見るだけなら1本で足りる。"""
+        from stock_ai.data.jquants_read import one_per_endpoint
+
+        payload = gzip.compress(b"Date,Code\n2024-01-04,13010\n")
+        for month in ("202401", "202402", "202403"):
+            key = f"equities/master/historical/2024/equities_master_{month}.csv.gz"
+            archive(
+                [BulkFile(key=key, last_modified="", size=len(payload))],
+                lambda _k: payload,
+                tmp_path,
+                on=TODAY,
+            )
+
+        chosen = one_per_endpoint(tmp_path)
+
+        assert list(chosen) == ["/equities/master"]
+        assert chosen["/equities/master"].endswith("202403.csv.gz")  # いちばん新しい
+
+    def test_a_file_with_no_rows_does_not_pretend_to_have_dates(self, tmp_path) -> None:
+        from stock_ai.data.jquants_read import shape_of
+
+        payload = gzip.compress(b"Date,Code\n")
+        key = "equities/master/2024/x.csv.gz"
+        archive(
+            [BulkFile(key=key, last_modified="", size=len(payload))],
+            lambda _k: payload,
+            tmp_path,
+            on=TODAY,
+        )
+
+        found = shape_of(tmp_path, key)
+
+        assert found is not None
+        assert found.rows == 0
+        assert found.first_date == ""

@@ -51,6 +51,18 @@ tachibana_public*.txt
 tachibana_master*.json
 # EDINET から落とした書類本体（公開情報だが、生成物なので追跡しない）。
 edinet_probe/
+# 一括ダウンロードの原本。**名簿とは扱いを分ける。**
+#
+# 名簿（data/universe_snapshots/）は追跡している。取り直せないうえに、
+# 全部で 15MB ほどだからである。原本は同じく取り直せないが、Light で
+# 265MB、Premium の20年で 1GB を超える。git に入れる大きさではない
+# （pre-commit の large files 検査にも掛かる）。
+#
+# **追跡しない = 消えてよい、ではない。** 2026-09-22 を過ぎたら
+# どこからも取り直せないので、外付けなり同期フォルダなりに写しを1つ
+# 置くこと。目録（manifest.csv）があるので、写した先でも
+# `原本の照合.bat` で欠けを見つけられる。
+data/jquants_bulk/
 
 # --- Diagnostic reports (regenerated on demand; may name an account) ---
 verify-output.txt
