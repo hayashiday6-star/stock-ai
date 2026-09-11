@@ -47,7 +47,7 @@ from stock_ai.data.jquants_bulk import records_from_csv
 from stock_ai.data.jquants_margin import parse_date
 from stock_ai.data.jquants_read import endpoint_of, read_archived
 from stock_ai.data.types import SecurityProfile
-from stock_ai.data.universe import Segment, normalize_listings
+from stock_ai.data.universe import Segment, four_digit_code, normalize_listings
 
 logger = get_logger(__name__)
 
@@ -303,3 +303,33 @@ def explain_missing(
         [date for date in dates if date not in trading],
         [date for date in dates if date in trading],
     )
+
+
+def markets_from_archive(archive_dir: Path, symbols: set[str]) -> dict[str, str]:
+    """保存済みの名簿から、その銘柄の市場区分（`MktNm`）を引く。
+
+    **食い違いを「たぶん◯◯だろう」で閉じない。** 2つの経路の名簿が食い違う
+    とき、片方にしか無い銘柄が全部 TOKYO PRO Market なら説明が付くが、
+    **付くかどうかは数えるまで分からない。** 1件でも別のものが混じっていれば、
+    そこは説明できていない。
+
+    四本値は読まない。名簿だけなので速い。
+    """
+    from stock_ai.data.jquants_archive import path_for, read_manifest
+
+    found: dict[str, str] = {}
+    wanted = set(symbols)
+    for key in sorted(read_manifest(archive_dir)):
+        if endpoint_of(key) != MASTER_ENDPOINT:
+            continue
+        try:
+            rows = records_from_csv(read_archived(path_for(archive_dir, key)))
+        except Exception as exc:  # noqa: BLE001 - どこで読めないかが記録に値する
+            logger.warning("名簿の原本を読めなかった: %s: %s", key, exc)
+            continue
+        for row in rows:
+            symbol = four_digit_code((row.get("Code") or "").strip())
+            if symbol in wanted:
+                # **最後に見えた姿を残す。** 廃止直前の市場区分が知りたい。
+                found[symbol] = (row.get("MktNm") or "").strip()
+    return found

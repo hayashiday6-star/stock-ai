@@ -492,3 +492,48 @@ class TestUntradableMarkets:
         from stock_ai.data.universe import EXCLUDED_MARKETS
 
         assert set(EXCLUDED_MARKETS) == {"0105"}
+
+
+class TestExplainingTheGap:
+    """食い違いを「たぶん◯◯だろう」で閉じない。
+
+    2つの経路の名簿が食い違うとき、片方にしか無い銘柄が全部 TOKYO PRO Market
+    なら説明が付く。**付くかどうかは、数えるまで分からない。** 1件でも別の
+    ものが混じっていれば、そこは説明できていない。
+    """
+
+    def test_the_market_comes_from_the_archived_master(self, tmp_path) -> None:
+        from stock_ai.data.jquants_rosters import markets_from_archive
+
+        rows = [
+            dict(_row("2026-08-03", "72030"), MktNm="TOKYO PRO MARKET"),
+            dict(_row("2026-08-03", "13010"), MktNm="プライム"),
+        ]
+        _archive(tmp_path, rows)
+
+        found = markets_from_archive(tmp_path, {"7203", "1301"})
+
+        assert found["7203"] == "TOKYO PRO MARKET"
+        assert found["1301"] == "プライム"
+
+    def test_the_last_seen_market_wins(self, tmp_path) -> None:
+        """**廃止直前の姿が知りたい。** 市場は移ることがある。"""
+        from stock_ai.data.jquants_rosters import markets_from_archive
+
+        _archive(tmp_path, [dict(_row("2026-07-03", "72030"), MktNm="グロース")], month="202607")
+        _archive(tmp_path, [dict(_row("2026-08-03", "72030"), MktNm="プライム")], month="202608")
+
+        assert markets_from_archive(tmp_path, {"7203"})["7203"] == "プライム"
+
+    def test_a_symbol_not_in_the_master_is_simply_absent(self, tmp_path) -> None:
+        """**「市場不明」を勝手に埋めない。**"""
+        from stock_ai.data.jquants_rosters import markets_from_archive
+
+        _archive(tmp_path, [_row("2026-08-03", "13010")])
+
+        assert markets_from_archive(tmp_path, {"7203"}) == {}
+
+    def test_nothing_archived_gives_nothing(self, tmp_path) -> None:
+        from stock_ai.data.jquants_rosters import markets_from_archive
+
+        assert markets_from_archive(tmp_path, {"7203"}) == {}

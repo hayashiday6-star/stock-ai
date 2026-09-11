@@ -188,7 +188,9 @@ from stock_ai.data.delisted import (
     membership,
     monthly_membership,
     monthly_snapshot,
+    read_snapshot,
     snapshot_dates,
+    snapshot_path,
     stored_dates,
 )
 from stock_ai.data.fx import FxConverter
@@ -237,6 +239,7 @@ from stock_ai.data.jquants_read import shape_of as archive_shape
 from stock_ai.data.jquants_rosters import (
     DAILY_SNAPSHOT_DIR,
     explain_missing,
+    markets_from_archive,
     trading_days_from_archive,
 )
 from stock_ai.data.jquants_rosters import compare as roster_compare
@@ -2786,6 +2789,22 @@ def _report_plan(found: dict[str, list[BulkFile]]) -> None:
         )
 
 
+def _differing_symbols(first: Path, second: Path, dates: list[dt.date]) -> set[str]:
+    """Collect every symbol that only one of the two rosters carries.
+
+    ``dates`` で、片方の名簿にしか出ない銘柄をすべて集める。
+
+    表に出す例は先頭5件に絞ってあるが、**説明が付くかを見るには全部が要る。**
+    5件を見て「全部 TOKYO PRO だ」と言うのは、5件を見ただけである。
+    """
+    found: set[str] = set()
+    for date in dates:
+        left = {profile.symbol for profile in read_snapshot(snapshot_path(first, date))}
+        right = {profile.symbol for profile in read_snapshot(snapshot_path(second, date))}
+        found |= (left - right) | (right - left)
+    return found
+
+
 def _roster_span(directory: Path, symbols: tuple[str, ...]) -> dict[str, tuple[dt.date, dt.date]]:
     """Return the first and last roster date each symbol appears on.
 
@@ -3212,10 +3231,29 @@ def jquants_daily_rosters(
                 + ("　+" + "、".join(sample[1]) if sample[1] else ""),
             )
         console.print(table)
+        # **「たぶん◯◯だろう」で閉じない。** 片方にしか無い銘柄の市場区分を
+        # 原本から引いて、説明が付くかどうかを数える。1件でも別のものが混じって
+        # いれば、そこは説明できていない。
+        gap = _differing_symbols(Path(DEFAULT_SNAPSHOT_DIR), target, list(check.differing))
+        markets = markets_from_archive(source, gap) if gap else {}
+        excluded = {s_ for s_, name in markets.items() if "TOKYO PRO" in name.upper()}
+        unexplained = sorted(gap - excluded)
         console.print(
-            "[yellow]**食い違いがある。** 絞り込みか日付の意味のどちらかが違う。[/] "
-            "生存バイアスの計算に使う前に、ここを説明できるようにすること。"
+            f"[dim]片方にしか無い銘柄は {len(gap)} 種類。"
+            f"うち買えない市場（TOKYO PRO Market）が {len(excluded)}。[/]"
         )
+        if unexplained:
+            console.print(
+                f"[yellow]説明の付かない銘柄が {len(unexplained)} ある。[/] "
+                + "、".join(f"{s_}({markets.get(s_) or '市場不明'})" for s_ in unexplained[:10])
+                + "。**生存バイアスの計算に使う前に、ここを説明できるようにすること。**"
+            )
+        else:
+            console.print(
+                "[green]食い違いは、買えない市場を universe から外したぶんで"
+                "全部説明が付く。[/] [dim]git にある名簿は、外す前の規則で"
+                "作られている。[/]"
+            )
     elif check.common:
         console.print(
             "[green]重なる日付では、2つの経路が同じ名簿を出している。[/] "

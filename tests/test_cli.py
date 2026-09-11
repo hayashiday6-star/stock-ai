@@ -986,3 +986,60 @@ class TestProgressLine:
         from stock_ai.cli import _progress_line
 
         assert _progress_line(3, 64, "a.gz").startswith("3/64 a.gz")
+
+
+class TestDifferingSymbols:
+    """片方の名簿にしか出ない銘柄を、**全部**集める。
+
+    表に出す例は先頭5件に絞ってある。**5件を見て「全部 TOKYO PRO だ」と言う
+    のは、5件を見ただけである。** 説明が付くかを見るには全部が要る。
+    """
+
+    def _write(self, directory, date: str, symbols: list[str]) -> None:
+        from stock_ai.data.delisted import write_snapshot
+        from stock_ai.data.types import SecurityProfile
+
+        write_snapshot(
+            directory,
+            __import__("datetime").date.fromisoformat(date),
+            [SecurityProfile(symbol=s, market="JP", name=s) for s in symbols],
+        )
+
+    def test_symbols_from_every_date_are_collected(self, tmp_path) -> None:
+        import datetime as dt
+
+        from stock_ai.cli import _differing_symbols
+
+        self._write(tmp_path / "a", "2026-08-03", ["1301", "7203"])
+        self._write(tmp_path / "b", "2026-08-03", ["1301"])
+        self._write(tmp_path / "a", "2026-08-04", ["1301", "6758"])
+        self._write(tmp_path / "b", "2026-08-04", ["1301"])
+
+        found = _differing_symbols(
+            tmp_path / "a", tmp_path / "b", [dt.date(2026, 8, 3), dt.date(2026, 8, 4)]
+        )
+
+        assert found == {"7203", "6758"}  # 日付をまたいで集める
+
+    def test_a_difference_in_either_direction_counts(self, tmp_path) -> None:
+        import datetime as dt
+
+        from stock_ai.cli import _differing_symbols
+
+        self._write(tmp_path / "a", "2026-08-03", ["1301"])
+        self._write(tmp_path / "b", "2026-08-03", ["7203"])
+
+        assert _differing_symbols(tmp_path / "a", tmp_path / "b", [dt.date(2026, 8, 3)]) == {
+            "1301",
+            "7203",
+        }
+
+    def test_identical_rosters_give_nothing(self, tmp_path) -> None:
+        import datetime as dt
+
+        from stock_ai.cli import _differing_symbols
+
+        for name in ("a", "b"):
+            self._write(tmp_path / name, "2026-08-03", ["1301"])
+
+        assert _differing_symbols(tmp_path / "a", tmp_path / "b", [dt.date(2026, 8, 3)]) == set()
