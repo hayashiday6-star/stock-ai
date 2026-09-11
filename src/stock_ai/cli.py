@@ -3245,9 +3245,31 @@ def jquants_daily_rosters(
         if unexplained:
             console.print(
                 f"[yellow]説明の付かない銘柄が {len(unexplained)} ある。[/] "
-                + "、".join(f"{s_}({markets.get(s_) or '市場不明'})" for s_ in unexplained[:10])
-                + "。**生存バイアスの計算に使う前に、ここを説明できるようにすること。**"
+                "**生存バイアスの計算に使う前に、ここを説明できるようにすること。**"
             )
+            # **「6件ある」で止めない。** いつ食い違い、一括の名簿にそもそも
+            # 出るのかまで出せば、上場直後のずれか、出所そのものの違いかが
+            # 分かれる。前者は端の1日、後者は全期間である。
+            detail = Table(title="説明の付かない銘柄")
+            for column in ("銘柄", "市場", "食い違った日", "一括の名簿に出る期間"):
+                detail.add_column(column)
+            daily_span = _roster_span(target, tuple(unexplained))
+            # **日付ごとの差を1度だけ作る。** 銘柄×日付で引き直すと、同じ
+            # ファイルを何百回も読むことになる。
+            per_date = {
+                date: _differing_symbols(Path(DEFAULT_SNAPSHOT_DIR), target, [date])
+                for date in sorted(check.differing)
+            }
+            for symbol in unexplained[:10]:
+                days = [str(date) for date, gap_on in per_date.items() if symbol in gap_on]
+                span = daily_span.get(symbol)
+                detail.add_row(
+                    symbol,
+                    markets.get(symbol) or "市場不明",
+                    "、".join(days[:3]) + ("…" if len(days) > 3 else ""),
+                    f"{span[0]} 〜 {span[1]}" if span else "[red]一度も出ない[/]",
+                )
+            console.print(detail)
         else:
             console.print(
                 "[green]食い違いは、買えない市場を universe から外したぶんで"
