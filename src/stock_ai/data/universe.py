@@ -25,6 +25,7 @@ Two things here were learned the expensive way, from a live run:
 from __future__ import annotations
 
 import datetime as dt
+from collections import Counter
 from collections.abc import Callable
 from enum import StrEnum
 from typing import Any
@@ -200,6 +201,37 @@ def _is_operating_company(record: dict[str, Any]) -> bool:
     return from_tse33(code) is not Sector.OTHER
 
 
+#: 名簿から落とす理由。**表示用の文字列を鍵として使う。**
+#: 落とした件数を数えるだけでなく、**どの銘柄がどの理由で落ちたか**を外から
+#: 引けるようにするため。四本値にあって名簿に無い銘柄を突き合わせるとき、
+#: 「理由が言えない」ことだけが本当の食い違いである。
+NO_CODE = "4桁の証券コードにならない"
+UNTRADABLE = "買えない市場"
+FUND = "投信・ETF・REIT など"
+OFF_SEGMENT = "別の区分"
+
+
+def rejection_reason(record: dict[str, Any], segment: Segment = Segment.ALL) -> str | None:
+    """この行が名簿に残らない理由。残るなら ``None``。
+
+    **絞り込みの規則はここ1箇所にしか無い。** :func:`normalize_listings` は
+    これを呼ぶ。2つ持つと、片方だけ直したときに気付けない——このプロジェクトが
+    繰り返し踏んでいる型である。
+
+    順番を変えないこと。符号にならない行を「買えない市場」と呼ぶと、理由の
+    件数が意味を失う。
+    """
+    if not _matches_segment(record, segment):
+        return OFF_SEGMENT
+    if _code_of(record) is None:
+        return NO_CODE
+    if not _is_tradable_market(record):
+        return UNTRADABLE
+    if not _is_operating_company(record):
+        return FUND
+    return None
+
+
 def normalize_listings(
     records: list[dict[str, Any]], segment: Segment = Segment.ALL
 ) -> list[SecurityProfile]:
@@ -209,21 +241,16 @@ def normalize_listings(
     securities code, and funds (see :func:`_is_operating_company`).
     """
     profiles: dict[str, SecurityProfile] = {}
-    funds = 0
-    untradable = 0
+    dropped: Counter[str] = Counter()
     unclassified = 0
 
     for record in records:
-        if not _matches_segment(record, segment):
+        reason = rejection_reason(record, segment)
+        if reason is not None:
+            dropped[reason] += 1
             continue
         code = _code_of(record)
-        if code is None:
-            continue
-        if not _is_tradable_market(record):
-            untradable += 1
-            continue
-        if not _is_operating_company(record):
-            funds += 1
+        if code is None:  # pragma: no cover - rejection_reason が先に弾く
             continue
         if _text(record, "S33", "Sec33Cd", "Sector33Code") is None:
             unclassified += 1
@@ -241,12 +268,12 @@ def normalize_listings(
             lending=_text(record, "MrgnNm", "MarginCodeName", "Mrgn", "MarginCode"),
         )
 
-    if funds:
-        logger.info("Excluded %d fund/index listing(s) from the universe", funds)
-    if untradable:
+    if dropped[FUND]:
+        logger.info("Excluded %d fund/index listing(s) from the universe", dropped[FUND])
+    if dropped[UNTRADABLE]:
         # **落とした数は必ず出す。** 黙って減ると、universe が縮んだことに
         # 気付けない。
-        logger.info("Excluded %d listing(s) on markets we cannot trade", untradable)
+        logger.info("Excluded %d listing(s) on markets we cannot trade", dropped[UNTRADABLE])
     if unclassified:
         logger.warning(
             "%d listing(s) had no sector code and were kept unfiltered - "

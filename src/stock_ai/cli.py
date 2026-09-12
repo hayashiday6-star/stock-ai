@@ -215,6 +215,8 @@ from stock_ai.data.jquants_bulk import group_by_symbol as bulk_group_by_symbol
 from stock_ai.data.jquants_bulk import list_files as bulk_list_files
 from stock_ai.data.jquants_bulk import records_from_csv as bulk_records_from_csv
 from stock_ai.data.jquants_bulk import span_years as bulk_span_years
+from stock_ai.data.jquants_consistency import NO_ROSTER_ROW, ROSTER_DISAGREES
+from stock_ai.data.jquants_consistency import check as consistency_check
 from stock_ai.data.jquants_crosscheck import DailyMatch, compare_daily, summarise
 from stock_ai.data.jquants_details import (
     RevisionCensus,
@@ -3786,6 +3788,109 @@ def jquants_crosscheck(
                 if adjusted
                 else "[dim] 調整後も一致している。[/]"
             )
+        )
+
+
+@app.command(name="jquants-roster-prices")
+def jquants_roster_prices(
+    archive_dir: str = typer.Option(
+        str(DEFAULT_ARCHIVE_DIR), "--dir", help="Where the raw files are kept."
+    ),
+    roster_dir: str = typer.Option(
+        str(DAILY_SNAPSHOT_DIR), "--rosters", help="Where the daily rosters are kept."
+    ),
+    limit: int | None = typer.Option(None, "--limit", help="Read only this many bars files."),
+    show: int = typer.Option(10, "--show", help="How many symbols to list per warning."),
+) -> None:
+    """Check the roster and the bars against each other, day by day.
+
+    **同じ原本から出た2本が、互いに整合しているか。** 名簿は
+    `normalize_listings`（ETF・REIT・TOKYO PRO を落とす）を通り、四本値は
+    証券コードの変換しか通らない。**だから差が出るのが普通で、件数からは何も
+    分からない。** 分かるのは理由が言えるかどうかである。
+
+    API を1回も叩かない。解約後にも実行できる。
+    """
+    settings = get_settings()
+    configure_logging(settings.log_level)
+
+    source = Path(archive_dir)
+    report = consistency_check(
+        source,
+        Path(roster_dir),
+        limit=limit,
+        progress=lambda index, total, key: console.print(
+            f"[dim]{_progress_line(index, total, key)}[/]", end="\r"
+        ),
+    )
+    console.print()
+    if not report.days:
+        console.print(
+            "[yellow]突き合わせられる日が1日も無い。[/]"
+            "[dim] 先に原本を保存し、営業日ごとの名簿を作ること。[/]"
+        )
+        raise typer.Exit(code=1)
+
+    table = Table(title="名簿と四本値（営業日ごと）")
+    table.add_column("見たもの")
+    table.add_column("銘柄日", justify="right")
+    table.add_row("名簿にいて終値もある", f"{report.matched:,}")
+    table.add_row("名簿にいるが売買が無かった", f"{report.quiet:,}")
+    table.add_row(
+        "[red]名簿にいるが四本値の行が無い[/]" if report.no_bar_row else "名簿にいるが行が無い",
+        f"{sum(report.no_bar_row.values()):,}",
+    )
+    table.add_row(
+        "[red]出来高があるのに終値が無い[/]"
+        if report.traded_no_close
+        else "出来高があるのに終値が無い",
+        f"{sum(report.traded_no_close.values()):,}",
+    )
+    table.add_row("終値があるが名簿にいない", f"{report.price_only:,}")
+    console.print(table)
+
+    if report.reasons:
+        reasons = Table(title="名簿にいない理由")
+        reasons.add_column("理由")
+        reasons.add_column("銘柄日", justify="right")
+        for reason, count in report.reasons.most_common():
+            unexplained = reason in (NO_ROSTER_ROW, ROSTER_DISAGREES)
+            reasons.add_row(f"[red]{reason}[/]" if unexplained else reason, f"{count:,}")
+        console.print(reasons)
+
+    for label, counter in (
+        ("四本値の行が無い", report.no_bar_row),
+        ("出来高があるのに終値が無い", report.traded_no_close),
+        ("理由を言えない", report.unexplained),
+    ):
+        if counter:
+            worst = ", ".join(f"{symbol}({days}日)" for symbol, days in counter.most_common(show))
+            console.print(f"[yellow]{label}: {len(counter)} 銘柄[/] [dim]{worst}[/]")
+
+    if report.missing_roster:
+        console.print(
+            f"[yellow]名簿の無い日が {len(report.missing_roster)} 日あり、比べていない。[/]"
+            f"[dim] 例: {report.missing_roster[0]}[/]"
+        )
+    if report.missing_master:
+        console.print(f"[yellow]名簿の原本が覆わない日が {len(report.missing_master)} 日ある。[/]")
+    if report.failed:
+        console.print(f"[yellow]読めなかった原本 {len(report.failed)} 本[/]")
+
+    console.print(report.summary())
+    broken = sum(report.no_bar_row.values()) + sum(report.traded_no_close.values())
+    if broken or report.unexplained:
+        console.print(
+            f"[red]説明の付かないものが残っている[/]（行が無い・終値が無い {broken:,} 銘柄日、"
+            f"理由を言えない {sum(report.unexplained.values()):,} 銘柄日）。"
+            "**片方の絞り込みが、もう片方と食い違っている。** どちらが正しいかを"
+            "決めるまで、この名簿で分位を切らないこと。"
+        )
+    else:
+        console.print(
+            "[green]食い違いは1件も残らなかった。[/]"
+            "[dim] 名簿にいる銘柄は全部その日の行を持ち、名簿にいない終値は"
+            "すべて「投信・ETF」か「買えない市場」で説明が付いた。[/]"
         )
 
 
