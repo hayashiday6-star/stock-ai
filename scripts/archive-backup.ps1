@@ -124,22 +124,53 @@ else {
     Write-Host '  途中で尽きると、写せた本数だけ増えて robocopy が 8 以上を返します。'
 }
 
-# **写し先に既に何があるかを数える。**
+# **写し先に既に何があるかを、置かれている場所で数える。**
 #
-# これが無いと、robocopy が「386本ぜんぶ写る」と言ったときに、意味が2通りに
-# 読めてしまう——写し先が空なのか、既にあるのに毎回写し直しているのか。
-# 前者なら正常で、後者なら 20年ぶんの 1GB 超を毎回上げ直すことになる。
-# **どちらも robocopy の出力は同じ形をしている。**
-$thereFiles = 0
-$thereBytes = 0
+# これが無いと、robocopy が「386本ぜんぶ写る」と言ったときに意味が読めない。
+#
+# **最初は本数だけを数えていて、それでは足りなかった（2026-09-12）。**
+# 写し先に 386本あって元も 386本なので「揃っている」と読んだが、robocopy は
+# 1本も一致していないと言っていた。**再帰で数えると、同じ場所にある386本と、
+# 1段深いところにある別の写し386本が、同じ数に見える。**
+#
+# 件数が合っていることを、同じ場所にあることと読み違えた。数えるべきは件数
+# ではなく、**元から見た相対パスが一致する本数**である。
+$sourceRoot = [System.IO.Path]::GetFullPath($source).TrimEnd('\')
+$sourceRel = @{}
+foreach ($item in $files) {
+    $sourceRel[$item.FullName.Substring($sourceRoot.Length).TrimStart('\')] = $item.Length
+}
+
+$sameFiles = 0
+$sameBytes = 0
+$strayFiles = 0
+$strayShown = @()
 if (Test-Path $full) {
-    $there = @(Get-ChildItem -Path $full -File -Recurse -ErrorAction SilentlyContinue)
-    $thereFiles = $there.Count
-    if ($thereFiles -gt 0) {
-        $thereBytes = ($there | Measure-Object -Property Length -Sum).Sum
+    $destRoot = $full.TrimEnd('\')
+    foreach ($item in @(Get-ChildItem -Path $full -File -Recurse -ErrorAction SilentlyContinue)) {
+        $rel = $item.FullName.Substring($destRoot.Length).TrimStart('\')
+        if ($sourceRel.ContainsKey($rel)) {
+            $sameFiles++
+            $sameBytes += $item.Length
+        }
+        else {
+            $strayFiles++
+            if ($strayShown.Count -lt 3) { $strayShown += $rel }
+        }
     }
 }
-Write-Host ("既にある: {0:N0} 本、{1:N1} MB" -f $thereFiles, ($thereBytes / 1MB))
+$thereFiles = $sameFiles
+Write-Host ("同じ場所: {0:N0} 本、{1:N1} MB" -f $sameFiles, ($sameBytes / 1MB))
+if ($strayFiles -gt 0) {
+    Write-Warn ("写し先に、元に無いファイルが {0:N0} 本あります。" -f $strayFiles)
+    foreach ($rel in $strayShown) { Write-Host ("  {0}" -f $rel) -ForegroundColor DarkGray }
+    if ($sameFiles -eq 0) {
+        Write-Host '  **元の1本も、写し先の同じ場所にありません。**' -ForegroundColor DarkGray
+        Write-Host '  前の写しが1段深いところに入っている可能性があります。' -ForegroundColor DarkGray
+        Write-Host '  そのまま進めると、同じものが2つ置かれて、以後ばらばらに' -ForegroundColor DarkGray
+        Write-Host '  古くなっていきます。写し先を確かめてください。' -ForegroundColor DarkGray
+    }
+}
 
 function Show-CopyReading {
     <#
@@ -149,11 +180,12 @@ function Show-CopyReading {
     param([int]$Already, [int]$Total)
 
     if ($Already -eq 0) {
-        Write-Host '  写し先は空です。ぜんぶ写ると出るのが正しい姿です。' -ForegroundColor DarkGray
+        Write-Host '  元のファイルは、写し先の同じ場所に1本もありません。' -ForegroundColor DarkGray
+        Write-Host '  ぜんぶ写ると出るのが正しい姿です。' -ForegroundColor DarkGray
         return
     }
     if ($Already -ge $Total) {
-        Write-Host '  写し先には既に同じだけのファイルがあります。' -ForegroundColor DarkGray
+        Write-Host '  元のファイルは全部、写し先の同じ場所にあります。' -ForegroundColor DarkGray
         Write-Host '  「スキップ」がその本数なら、正しい姿です。' -ForegroundColor DarkGray
         Write-Host '' -ForegroundColor DarkGray
         Write-Host '  スキップが 0 なら、写し先が元の更新時刻を保てていません。' -ForegroundColor DarkGray
@@ -162,7 +194,7 @@ function Show-CopyReading {
         Write-Host '  20年ぶんでは重くなります。' -ForegroundColor DarkGray
         return
     }
-    Write-Host ('  差は {0:N0} 本です。増えたぶんだけ写るのが正しい姿です。' -f ($Total - $Already)) -ForegroundColor DarkGray
+    Write-Host ('  同じ場所に無いのは {0:N0} 本です。それだけ写るのが正しい姿です。' -f ($Total - $Already)) -ForegroundColor DarkGray
 }
 
 if ($DryRun) {
@@ -188,13 +220,16 @@ Write-Host '増えたぶんだけ写します。写し先のファイルは消�
 # /NFL /NDL  ファイル名・フォルダ名を並べない
 # **/MIR は使わない。** 写し先を打ち間違えたときに、そこにあるものを消す。
 #
-# **/FFT と /DST は実測から足した（2026-09-12）。** pCloud の写し先に 386本・
-# 252.7MB が揃っているのに、robocopy は毎回その 386本すべてを写すと言った
-# （スキップ 0）。本数もバイト数も一致しているので中身は届いていて、**合わない
-# のは更新時刻だけ**である。クラウドや共有ドライブは元の時刻を秒単位までは
-# 保たない。
+# **/FFT と /DST は、まだ効いたことが確かめられていない（2026-09-12）。**
 #
-# 252MB では気付かない。**20年ぶんでは毎回 1GB 超を上げ直す。**
+# 「写し先に 386本あるのに全部写ると出る」のを時刻のずれと読んで足したが、
+# **/FFT を足してもスキップは 0 のままだった。** そのあと、本数を再帰で数えて
+# いたせいで「同じ場所にある」と「どこかにある」を混同していたと分かった。
+#
+# **外れた見立てから足した指定である。** クラウドの写し先に対しては一般に
+# 無害で妥当なので残してあるが、**これが効いたという実測はまだ無い。**
+# 置き場所の話が片付いたあとで、それでもスキップが 0 なら、そのとき初めて
+# 時刻のずれが本当の理由になる。
 robocopy $source $full /E /XO /FFT /DST /R:2 /W:2 /NP /NFL /NDL | Out-Host
 $robo = $LASTEXITCODE
 

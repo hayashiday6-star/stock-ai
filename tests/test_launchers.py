@@ -199,3 +199,31 @@ class TestTheBackupHoldsAtGigabyteScale:
             # 言い当てなくなる。**
             assert "/FFT" in line.split(), line
             assert "/DST" in line.split(), line
+
+    def test_the_destination_is_matched_by_path_not_by_count(self) -> None:
+        """**件数が合っていることは、同じ場所にあることではない。**
+
+        実測（2026-09-12）: 写し先に 386本あり、元も 386本なので「揃って
+        いる」と読んだが、robocopy は1本も一致していないと言っていた。
+        前の写しが1段深いところに入っていたためである。
+
+        **再帰で数えると、同じ場所にある386本と、1段深いところにある別の
+        写し386本が、同じ数に見える。** 数えるべきは件数ではなく、元から見た
+        相対パスが一致する本数である。
+        """
+        body = _text("archive-backup.ps1")
+
+        assert "$sourceRel" in body, "相対パスで突き合わせていない"
+        assert "Substring" in body, "相対パスを作っていない"
+        assert "同じ場所" in body, "見出しが件数のままになっている"
+
+    def test_files_at_the_destination_that_are_not_in_the_source_are_named(self) -> None:
+        """**入れ子の写しは、余りとして現れる。** 数えるだけでなく、名前を出す。
+
+        そのまま進めると同じものが2つ置かれ、以後ばらばらに古くなっていく。
+        `/MIR` を使わないので消えもしない。
+        """
+        body = _text("archive-backup.ps1")
+
+        assert "$strayFiles" in body
+        assert "$strayShown" in body
