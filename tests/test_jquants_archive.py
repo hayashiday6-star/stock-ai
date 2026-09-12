@@ -11,6 +11,8 @@ from __future__ import annotations
 import datetime as dt
 import gzip
 import hashlib
+from pathlib import Path
+from unittest import mock
 
 import pytest
 
@@ -335,3 +337,67 @@ class TestTheRehearsalFindings:
         assert calls == ["3.csv.gz", "4.csv.gz"]  # 続きから
         assert len(report.reused) == 3
         assert not report.refetched
+
+
+class TestVerifyingAtGigabyteScale:
+    """265MB では起きないが、20年ぶんの 1GB 超では起きること。
+
+    **どれも例外は出ない。** 遅いだけ、確かめていないだけ、という形で出る。
+    """
+
+    def test_a_big_file_is_read_in_pieces(self, tmp_path) -> None:
+        """**ファイル1本を丸ごとメモリに載せない。**
+
+        いまの最大は十数MBなので載せても通るが、分足やティックを足すと1本が
+        大きくなる。**そのとき落ちるのではなく、落ちる前に遅くなる。**
+        """
+        from stock_ai.data.jquants_archive import HASH_CHUNK, fingerprint
+
+        payload = b"x" * (HASH_CHUNK * 2 + 7)
+        target = tmp_path / "big.bin"
+        target.write_bytes(payload)
+
+        reads: list[int] = []
+        real = Path.open
+
+        def counting(self, *args, **kwargs):  # type: ignore[no-untyped-def]
+            handle = real(self, *args, **kwargs)
+            if self == target:
+                inner = handle.read
+
+                def read(size=-1):  # type: ignore[no-untyped-def]
+                    chunk = inner(size)
+                    reads.append(len(chunk))
+                    return chunk
+
+                handle.read = read  # type: ignore[method-assign]
+            return handle
+
+        with mock.patch.object(Path, "open", counting):
+            size, digest = fingerprint(target)
+
+        assert size == len(payload)
+        assert digest == hashlib.sha256(payload).hexdigest()
+        assert max(reads) <= HASH_CHUNK, "一度に読みすぎている"
+
+    def test_the_progress_callback_sees_every_entry(self, tmp_path) -> None:
+        """**分単位のあいだ何も出ないと、止まったのか動いているのか分からない。**"""
+        payload = _gz("x")
+        files = [_file(f"{index}.csv.gz", len(payload)) for index in range(3)]
+        archive(files, lambda _k: payload, tmp_path, on=TODAY)
+        seen: list[tuple[int, int, str]] = []
+
+        verify(tmp_path, progress=lambda *args: seen.append(args))
+
+        assert [item[0] for item in seen] == [1, 2, 3]
+        assert {item[1] for item in seen} == {3}
+
+    def test_the_fingerprint_matches_a_whole_file_hash(self, tmp_path) -> None:
+        """少しずつ読んでも、**同じ指紋になること。**"""
+        from stock_ai.data.jquants_archive import fingerprint
+
+        payload = _gz("Code,Value\n13010,1\n")
+        target = tmp_path / "a.csv.gz"
+        target.write_bytes(payload)
+
+        assert fingerprint(target) == (len(payload), hashlib.sha256(payload).hexdigest())

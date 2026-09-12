@@ -353,12 +353,44 @@ def _fetch_with_backoff(
     return None
 
 
-def verify(directory: Path = DEFAULT_ARCHIVE_DIR) -> tuple[list[str], list[str], list[str]]:
+#: 指紋を取るときに一度に読む量。
+#:
+#: **ファイル1本を丸ごとメモリに載せない。** いまの最大は十数MBなので載せても
+#: 通るが、分足やティックを足すと1本が大きくなる。**そのとき落ちるのではなく、
+#: 落ちる前に遅くなって気付けなくなる。**
+HASH_CHUNK = 1024 * 1024
+
+
+def fingerprint(path: Path) -> tuple[int, str]:
+    """ファイルの ``(大きさ, SHA-256)``。**少しずつ読む。**"""
+    digest = hashlib.sha256()
+    size = 0
+    with path.open("rb") as handle:
+        while chunk := handle.read(HASH_CHUNK):
+            size += len(chunk)
+            digest.update(chunk)
+    return size, digest.hexdigest()
+
+
+def verify(
+    directory: Path = DEFAULT_ARCHIVE_DIR,
+    progress: Callable[[int, int, str], None] | None = None,
+) -> tuple[list[str], list[str], list[str]]:
     """保存済みの原本を目録と突き合わせる。**落とすことはしない。**
 
     解約後にも実行できる。**解約後こそ実行する意味がある**——そのとき欠けて
     いると分かっても取り返せないが、欠けているのに揃っていると思って解析する
     よりはよい。
+
+    **全部のファイルを読み直す。** 大きさだけを見ると、途中で切れた転送が
+    たまたま同じ長さになった場合に通ってしまう。5年ぶん（265MB）なら一瞬だが、
+    20年ぶんや同期フォルダ越しでは分単位になる。**そのあいだ何も出ないと、
+    止まったのか動いているのか分からない**ので ``progress`` を受ける。
+
+    Args:
+        directory: 見る場所。写し先を指してもよい——目録も一緒に写るので、
+            **写した先だけを見て確かめられる。**
+        progress: 1本ごとに ``(番号, 総数, key)`` で呼ばれる。
 
     Returns:
         ``(欠けている, 大きさが合わない, 中身が変わった)`` の3つ。
@@ -367,14 +399,17 @@ def verify(directory: Path = DEFAULT_ARCHIVE_DIR) -> tuple[list[str], list[str],
     missing: list[str] = []
     wrong_size: list[str] = []
     changed: list[str] = []
-    for key, item in sorted(manifest.items()):
+    total = len(manifest)
+    for number, (key, item) in enumerate(sorted(manifest.items()), start=1):
+        if progress is not None:
+            progress(number, total, key)
         path = path_for(directory, key)
         if not path.is_file():
             missing.append(key)
             continue
-        payload = path.read_bytes()
-        if len(payload) != item.bytes_written:
+        size, digest = fingerprint(path)
+        if size != item.bytes_written:
             wrong_size.append(key)
-        elif item.sha256 and hashlib.sha256(payload).hexdigest() != item.sha256:
+        elif item.sha256 and digest != item.sha256:
             changed.append(key)
     return missing, wrong_size, changed

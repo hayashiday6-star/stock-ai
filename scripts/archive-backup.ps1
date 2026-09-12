@@ -26,6 +26,10 @@
 .PARAMETER From
     原本の置き場所。既定は data\jquants_bulk。
 
+.PARAMETER DryRun
+    写さずに、**何が写るかだけ**見ます。20年ぶんに伸びたとき、いきなり流す前
+    に本数と大きさを確かめるためです。
+
 .EXAMPLE
     .\scripts\archive-backup.ps1
     .\scripts\archive-backup.ps1 -To D:\backup\jquants_bulk
@@ -33,7 +37,8 @@
 [CmdletBinding()]
 param(
     [string]$To = '',
-    [string]$From = ''
+    [string]$From = '',
+    [switch]$DryRun
 )
 
 $ErrorActionPreference = 'Continue'
@@ -77,18 +82,55 @@ if ($full -eq [System.IO.Path]::GetFullPath($source)) {
 }
 
 Write-Host ("写し先: {0}" -f $full)
+
+# **空きが分からなかったことを、黙って通さない。**
+#
+# 最初は Get-PSDrive だけを見ていて、失敗したら catch {} で握り潰していた。
+# ネットワークパス（\\server\share\...）では GetPathRoot が `\\server\share`
+# を返すので、ドライブ名として引けずに例外になる。**そのまま容量を確かめずに
+# 写し始める。** 265MB なら入るので気付かない。20年ぶんの 1GB 超で、途中で
+# 尽きたときに初めて分かる——それがいちばん困る形である。
 $free = $null
 try {
     $drive = Get-PSDrive -Name ([System.IO.Path]::GetPathRoot($full).TrimEnd(':\')) -ErrorAction Stop
     $free = $drive.Free
 }
 catch { }
+if ($null -eq $free) {
+    # ドライブ名で引けないとき（ネットワークパス等）は、パスそのものに聞く。
+    try {
+        $free = ([wmi]"Win32_Volume.DriveLetter='$([System.IO.Path]::GetPathRoot($full).TrimEnd('\'))'").FreeSpace
+    }
+    catch { }
+}
+if ($null -eq $free) {
+    try {
+        $info = New-Object System.IO.DriveInfo([System.IO.Path]::GetPathRoot($full))
+        if ($info.IsReady) { $free = $info.AvailableFreeSpace }
+    }
+    catch { }
+}
+
 if ($null -ne $free) {
     Write-Host ("空き  : {0:N1} GB" -f ($free / 1GB))
     if ($free -lt $bytes) {
-        Write-Err '空きが足りません。'
+        Write-Err ("空きが足りません（要 {0:N1} GB）。" -f ($bytes / 1GB))
         Exit-WithPause 1
     }
+}
+else {
+    Write-Warn '写し先の空きを調べられませんでした。**確かめずに進みます。**'
+    Write-Host ("  要るのは {0:N1} GB です。足りるか自分で見てください。" -f ($bytes / 1GB))
+    Write-Host '  途中で尽きると、写せた本数だけ増えて robocopy が 8 以上を返します。'
+}
+
+if ($DryRun) {
+    Write-Host ''
+    Write-Host '写さずに、何が写るかだけ見ます（robocopy /L）。' -ForegroundColor DarkGray
+    robocopy $source $full /E /XO /R:0 /W:0 /NP /NFL /NDL /L | Out-Host
+    Write-Host ''
+    Write-Ok '写していません。上の行数と大きさが、次に写るぶんです。'
+    Exit-WithPause 0
 }
 
 Write-Host ''

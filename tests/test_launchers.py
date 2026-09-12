@@ -95,14 +95,17 @@ class TestRobocopyExitCodes:
         「/MIR は使わない」と書いた注釈そのものに引っ掛かった。注釈を消せば
         通るが、それでは検査が理由を消したことになる。
         """
-        (line,) = [
+        lines = [
             line
             for line in _text("archive-backup.ps1").splitlines()
             if line.strip().startswith("robocopy ")
         ]
 
-        assert "/MIR" not in line
-        assert "/E" in line
+        assert lines, "robocopy の行が見当たらない（名前が変わった？）"
+        for line in lines:
+            # **下見の行も見る。** 下見が /MIR で走れば、消えるものは同じである。
+            assert "/MIR" not in line, line
+            assert "/E" in line, line
 
     def test_the_copy_is_verified_against_the_manifest(self) -> None:
         """**写したつもりで写せていないのが、いちばん困る。**"""
@@ -110,3 +113,42 @@ class TestRobocopyExitCodes:
 
         assert "jquants-archive-verify" in body
         assert "--dir" in body
+
+
+class TestTheBackupHoldsAtGigabyteScale:
+    """265MB では起きないが、20年ぶんの 1GB 超では起きること。
+
+    **どれも例外は出ない。** 遅いだけ、確かめていないだけ、という形で出る。
+    """
+
+    def test_the_free_space_check_is_not_swallowed_when_it_fails(self) -> None:
+        """**空きが分からなかったことを、黙って通さない。**
+
+        最初は `Get-PSDrive` だけを見ていて、失敗したら `catch {}` で握り
+        潰していた。ネットワークパスでは `GetPathRoot` が `\\\\server\\share`
+        を返すのでドライブ名として引けず、**そのまま容量を確かめずに写し
+        始める。** 265MB なら入るので気付かない。
+        """
+        body = _text("archive-backup.ps1")
+
+        assert "DriveInfo" in body, "引けなかったときの二の矢が無い"
+        assert "Write-Warn" in body, "分からなかったことを言っていない"
+
+    def test_there_is_a_way_to_look_before_leaping(self) -> None:
+        """**いきなり GB を流す前に、何が写るかを見られること。**"""
+        body = _text("archive-backup.ps1")
+
+        assert "$DryRun" in body
+        assert "/L" in body
+
+    def test_the_dry_run_does_not_copy(self) -> None:
+        """`/L` の付いた行だけが下見である。**本番の行に混ぜない。**"""
+        lines = [
+            line.strip()
+            for line in _text("archive-backup.ps1").splitlines()
+            if line.strip().startswith("robocopy ")
+        ]
+
+        assert len(lines) == 2, lines
+        listing = [line for line in lines if "/L" in line.split()]
+        assert len(listing) == 1, "下見の行が1つではない"

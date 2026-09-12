@@ -4186,13 +4186,46 @@ def jquants_archive_verify(
 
     **解約後こそ実行する意味がある。** そのとき欠けていると分かっても取り返せ
     ないが、**欠けているのに揃っていると思って解析するよりはよい。**
+
+    **全部のファイルを読み直す。** 5年ぶん（265MB）なら一瞬だが、20年ぶんや
+    同期フォルダ越しでは分単位になる。速さも出す——**5年ぶんの実測があれば、
+    20年ぶんに何分かかるかを掛け算で出せる。**
     """
     settings = get_settings()
     configure_logging(settings.log_level)
 
-    missing, wrong_size, changed = verify_archive(Path(directory))
+    target = Path(directory)
+    manifest = read_manifest(target)
+    if not manifest:
+        # **空を「一致した」と言わない。** 写し先を打ち間違えたとき、そこには
+        # 目録も原本も無い。緑の文字が出れば、確かめたつもりになる。
+        console.print(
+            f"[red]目録が無い: {target}[/] **確かめていない。**"
+            "[dim] 写し先を打ち間違えていないか、原本をまだ保存していないかの"
+            "どちらか。[/]"
+        )
+        raise typer.Exit(code=1)
+
+    started = time.monotonic()
+    missing, wrong_size, changed = verify_archive(
+        target,
+        progress=lambda index, total, key: console.print(
+            f"[dim]{_progress_line(index, total, key)}[/]", end="\r"
+        ),
+    )
+    elapsed = max(time.monotonic() - started, 1e-9)
+    console.print()
+
+    read = sum(item.bytes_written for item in manifest.values())
+    if read:
+        console.print(
+            f"[dim]{_bytes_label(read)} を {elapsed:.1f} 秒で読み直した"
+            f"（{_bytes_label(int(read / elapsed))}/秒）。"
+            f"**20年ぶんはこの4倍を見込むこと。**[/]"
+        )
+
     if not (missing or wrong_size or changed):
-        console.print("[green]目録と一致している。[/]")
+        console.print(f"[green]目録の {len(manifest)} 本すべてが一致している。[/]")
         return
 
     for label, keys in (
