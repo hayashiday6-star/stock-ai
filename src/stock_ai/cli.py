@@ -228,9 +228,9 @@ from stock_ai.data.jquants_details import (
     revision_census as count_revisions,
 )
 from stock_ai.data.jquants_exit import CANCELLATION, audit
-from stock_ai.data.jquants_filter import ProductProbe, product_separates
 from stock_ai.data.jquants_filter import baseline as filter_baseline
 from stock_ai.data.jquants_filter import census as filter_census
+from stock_ai.data.jquants_filter import product_separates
 from stock_ai.data.jquants_fundamentals import JQuantsFundamentalsProvider, normalize_statements
 from stock_ai.data.jquants_markets import HOLIDAY_DIVISION, TRADING_DIVISIONS, half_days_by_year
 from stock_ai.data.jquants_markets import agreement as calendar_agreement
@@ -4032,13 +4032,12 @@ def jquants_filter_census(
     settings = get_settings()
     configure_logging(settings.log_level)
 
-    probe = ProductProbe(product=product.strip()) if product else None
+    wanted = product.strip() if product else None
     report = filter_census(
         Path(archive_dir),
         progress=lambda index, total, key: console.print(
             f"[dim]{_progress_line(index, total, key)}[/]", end="\r"
         ),
-        probe=probe,
     )
     console.print()
     if not report.by_year:
@@ -4117,26 +4116,57 @@ def jquants_filter_census(
             "であって分けられない、ではない。**[/]"
         )
 
-    if probe is not None:
-        if not probe.kept and not probe.dropped:
-            console.print(
-                f"[yellow]`ProdCat` = {probe.product} の行が1つも無い。[/]"
-                "[dim] 上の表に出ている値を渡すこと。[/]"
+    if report.product_symbols:
+        split = Table(title="`ProdCat` の値ごとの銘柄")
+        for column, justify in (
+            ("値", "left"),
+            ("銘柄", "right"),
+            ("残した", "right"),
+            ("落とした", "right"),
+        ):
+            split.add_column(column, justify=justify)
+        for value in sorted(report.product_symbols):
+            entry = report.product_symbols[value]
+            label = value or "（空）"
+            split.add_row(
+                f"[yellow]{label}[/]" if entry.splits else label,
+                f"{entry.total:,}",
+                f"{len(entry.kept):,}",
+                f"{len(entry.dropped_symbols):,}",
             )
-        else:
-            named = Table(title=f"`ProdCat` = {probe.product} の中身")
+        console.print(split)
+        console.print(
+            "[dim]黄色は、残した側と落とした側の両方にいる値。**同じ商品区分が"
+            "2通りに扱われている。**[/]"
+        )
+
+        # **名前を見るまで決まらない。** 数の少ない値はその場で出し切る。
+        # 1つずつ聞き直すと、そのたびに原本を1周読み直すことになる。
+        for value in sorted(report.product_symbols):
+            entry = report.product_symbols[value]
+            if wanted is None and entry.total > show:
+                continue
+            if wanted is not None and value != wanted:
+                continue
+            named = Table(title=f"`ProdCat` = {value or '（空）'} の中身")
             for column in ("扱い", "銘柄", "名前"):
                 named.add_column(column)
-            for symbol, name in sorted(probe.kept.items())[:show]:
-                named.add_row("[green]残した[/]", symbol, name or "（名前なし）")
-            for reason, names in sorted(probe.dropped.items()):
-                for symbol, name in sorted(names.items())[:show]:
-                    named.add_row(f"落とした / {reason}", symbol, name or "（名前なし）")
+            for symbol in sorted(entry.kept)[:show]:
+                named.add_row(
+                    "[green]残した[/]", symbol, report.symbol_names.get(symbol) or "（名前なし）"
+                )
+            for reason, symbols in sorted(entry.dropped.items()):
+                for symbol in sorted(symbols)[:show]:
+                    named.add_row(
+                        f"落とした / {reason}",
+                        symbol,
+                        report.symbol_names.get(symbol) or "（名前なし）",
+                    )
             console.print(named)
-            console.print(probe.summary())
+        if wanted is not None and wanted not in report.product_symbols:
             console.print(
-                "[dim]**名前を見て決めること。** 残した側に投信・ETF・REIT が"
-                "並んでいるなら、いま universe に入っている。[/]"
+                f"[yellow]`ProdCat` = {wanted} の行が1つも無い。[/]"
+                "[dim] 上の表に出ている値を渡すこと。[/]"
             )
 
     if report.failed:

@@ -128,6 +128,16 @@ class FilterCensus:
     product_dropped: dict[str, Counter[str]] = dataclasses.field(default_factory=dict)
     """落とした理由 → その行の `ProdCat`。"""
 
+    product_symbols: dict[str, ProductSplit] = dataclasses.field(default_factory=dict)
+    """`ProdCat` の値 → その値を持つ**銘柄**の行き先。
+
+    上の2つは銘柄日で、こちらは銘柄である。**値を1つずつ聞き直さずに済ませる
+    ため**に持つ。
+    """
+
+    symbol_names: dict[str, str] = dataclasses.field(default_factory=dict)
+    """銘柄 → 名前。**名前を見るまで決まらないものがある。**"""
+
     failed: dict[str, str] = dataclasses.field(default_factory=dict)
 
     @property
@@ -173,39 +183,45 @@ def product_separates(census: FilterCensus, reason: str) -> tuple[bool, set[str]
 
 
 @dataclasses.dataclass
-class ProductProbe:
-    """ある `ProdCat` の値を持つ行を、**名指しする。**
+class ProductSplit:
+    """ある `ProdCat` の値を持つ銘柄が、どちらへ行ったか。
 
-    件数では決まらない。`012` が残した側と落とした側の両方に出たとき、分かる
-    のは「分けきれない」ことだけで、**なぜ分かれているかは名前を見るまで
-    決まらない。** 16銘柄のときと同じである——名前・市場まで降りて初めて
-    決まった。
+    **件数では決まらない。** `012` が残した側と落とした側の両方に出たとき、
+    分かるのは「分けきれない」ことだけで、**なぜ分かれているかは名前を見る
+    まで決まらない。** 実際に見たら、日本銀行と信金中央金庫だった——どちらも
+    出資証券で、投信でも ETF でもなかった。
 
     `ProdCat` の意味は、公式の `reference_data.json` に**載っていない。**
     そこにある `ProdCat` は先物・オプションの商品区分で、名簿のものとは別で
     ある。**符号の意味を読める出典が無いので、中身を見るしかない。**
+
+    銘柄日ではなく**銘柄**で持つ。同じ銘柄が営業日の数だけ出ても1つである。
     """
 
-    product: str
-    kept: dict[str, str] = dataclasses.field(default_factory=dict)
-    """残した銘柄 → 名前。"""
+    kept: set[str] = dataclasses.field(default_factory=set)
+    dropped: dict[str, set[str]] = dataclasses.field(default_factory=dict)
 
-    dropped: dict[str, dict[str, str]] = dataclasses.field(default_factory=dict)
-    """落とした理由 → ``{銘柄: 名前}``。"""
+    @property
+    def dropped_symbols(self) -> set[str]:
+        """理由を問わず落とした銘柄。"""
+        return set().union(*self.dropped.values()) if self.dropped else set()
 
-    def summary(self) -> str:
-        """1行のまとめ。"""
-        dropped = sum(len(names) for names in self.dropped.values())
-        return f"`ProdCat` = {self.product}: 残した {len(self.kept)} 銘柄、落とした {dropped} 銘柄"
+    @property
+    def total(self) -> int:
+        """この値を持つ銘柄の数。"""
+        return len(self.kept | self.dropped_symbols)
+
+    @property
+    def splits(self) -> bool:
+        """**残した側と落とした側の両方にいるか。** 分けきれない印である。"""
+        return bool(self.kept) and bool(self.dropped_symbols)
 
 
-def census_payload(payload: bytes, into: FilterCensus, probe: ProductProbe | None = None) -> None:
+def census_payload(payload: bytes, into: FilterCensus) -> None:
     """名簿の原本1本を数え、``into`` に足す。
 
-    Args:
-        payload: 展開済みの名簿。
-        into: 足し込み先。
-        probe: この `ProdCat` の値を持つ行だけ、銘柄と名前を控える。
+    `ProdCat` の値ごとに**銘柄**も控える。**値を1つずつ聞き直さずに済ませる
+    ため**で、件数が少ない値はその場で名前まで出せる。
     """
     for row in records_from_csv(payload):
         date = parse_date(row.get("Date"))
@@ -234,18 +250,18 @@ def census_payload(payload: bytes, into: FilterCensus, probe: ProductProbe | Non
             slice_.reasons[reason] += 1
             into.product_dropped.setdefault(reason, Counter())[product] += 1
 
-        if probe is not None and product == probe.product and code is not None:
-            name = _first(row, ("CoName", "Name", "CompanyName"))
+        if code is not None:
+            split = into.product_symbols.setdefault(product, ProductSplit())
             if reason is None:
-                probe.kept[code] = name
+                split.kept.add(code)
             else:
-                probe.dropped.setdefault(reason, {})[code] = name
+                split.dropped.setdefault(reason, set()).add(code)
+            into.symbol_names.setdefault(code, _first(row, ("CoName", "Name", "CompanyName")))
 
 
 def census(
     archive_dir: Path,
     progress: Callable[[int, int, str], None] | None = None,
-    probe: ProductProbe | None = None,
 ) -> FilterCensus:
     """保存済みの名簿を1周読んで、絞り込みの通り具合を年ごとに数える。
 
@@ -254,8 +270,6 @@ def census(
     Args:
         archive_dir: 原本の置き場所。
         progress: 1本ごとに ``(番号, 総数, key)`` で呼ばれる。
-        probe: ある `ProdCat` の値を持つ行を名指しする。**件数では決まらない
-            ものを見るため。**
 
     Returns:
         :class:`FilterCensus`。
@@ -275,7 +289,7 @@ def census(
         if progress is not None:
             progress(number, total, key)
         try:
-            census_payload(read_archived(path_for(archive_dir, key)), report, probe)
+            census_payload(read_archived(path_for(archive_dir, key)), report)
         except Exception as exc:  # noqa: BLE001 - どこで読めないかが記録に値する
             report.failed[key] = f"{type(exc).__name__}: {exc}"
             logger.warning("名簿の原本を読めなかった: %s: %s", key, exc)

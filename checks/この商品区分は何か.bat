@@ -30,12 +30,13 @@ echo ProdCat in the official reference is the futures and
 echo options product code, which is a different field.
 echo So the contents are all we have to go on.
 echo.
-echo Defaults to 012. Pass another value to look at it
-echo instead. Hits no API.
+echo Every value with few enough symbols is named in the
+echo main census already. Pass a value here only to look
+echo inside a big one, such as ordinary shares. Hits no API.
 echo.
 
 set VALUE=%1
-if "%VALUE%"=="" set VALUE=012
+if "%VALUE%"=="" set VALUE=011
 
 powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0..\scripts\filter-census.ps1" -Product %VALUE%
 set CODE=%ERRORLEVEL%
