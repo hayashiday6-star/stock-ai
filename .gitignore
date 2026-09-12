@@ -63,6 +63,7 @@ edinet_probe/
 # 置くこと。目録（manifest.csv）があるので、写した先でも
 # `原本の照合.bat` で欠けを見つけられる。
 data/jquants_bulk/
+data/backup-destination.txt
 # 営業日ごとの名簿。**原本から何度でも作り直せるので追跡しない。**
 #
 # 日付ごとの名簿（data/universe_snapshots/）とは性質が違う。あちらは JSON

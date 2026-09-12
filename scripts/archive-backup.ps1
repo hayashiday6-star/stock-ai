@@ -63,12 +63,33 @@ $bytes = ($files | Measure-Object -Property Length -Sum).Sum
 Write-Host ("元    : {0}" -f $source)
 Write-Host ("中身  : {0:N0} 本、{1:N1} MB" -f $files.Count, ($bytes / 1MB))
 
+# **前に使った写し先を覚えておく。**
+#
+# 打ち間違えると、1段ずれた場所にもう1つの写しができる。**実際にやった**
+# （2026-09-12、`P:\Backups\stock-ai` と `...\stock-ai\jquants_bulk`）。
+# 下見で止めたので二重にはならなかったが、**本番で打ち間違えれば 1GB が
+# 無駄になり、以後2つがばらばらに古くなる。**
+#
+# 打ち間違えがいちばん起きるのは、急いでいるときである。Premium の週が
+# それにあたる。
+$memo = Join-Path (Get-Location) 'data\backup-destination.txt'
+$remembered = ''
+if (Test-Path $memo) {
+    $remembered = (Get-Content -Path $memo -TotalCount 1 -Encoding UTF8).Trim()
+}
+
 if ($To -eq '') {
     Write-Host ''
     Write-Host '写し先を入れてください（外付けや同期フォルダ）。' -ForegroundColor DarkGray
     Write-Host '例: D:\backup\jquants_bulk' -ForegroundColor DarkGray
     Write-Host '無ければ作ります。写し先のファイルを消すことはしません。' -ForegroundColor DarkGray
+    if ($remembered -ne '') {
+        Write-Host ''
+        Write-Host ('  前に使った先: {0}' -f $remembered) -ForegroundColor Cyan
+        Write-Host '  そのままでよければ、何も入れずに Enter。' -ForegroundColor DarkGray
+    }
     $To = (Read-Host '写し先').Trim('"').Trim()
+    if ($To -eq '' -and $remembered -ne '') { $To = $remembered }
 }
 if ($To -eq '') {
     Write-Host '写し先が空です。何もしていません。' -ForegroundColor DarkGray
@@ -274,6 +295,14 @@ if ($code -ne 0) {
     Write-Host '  もう一度実行すると、足りないぶんを写します。' -ForegroundColor DarkGray
     Exit-WithPause 1
 }
+
+# **一致したときだけ覚える。** 打ち間違えた先を覚えると、次も同じ先に
+# 案内することになる。照合を通った先だけが、覚えるに値する。
+try {
+    New-Item -ItemType Directory -Force -Path (Split-Path -Parent $memo) | Out-Null
+    Set-Content -Path $memo -Value $full -Encoding UTF8
+}
+catch { }
 
 Write-Ok '写し先も目録と一致しています。原本はもう1台のディスクだけの話ではありません。'
 Exit-WithPause 0

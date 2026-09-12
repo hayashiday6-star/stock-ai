@@ -239,3 +239,23 @@ class TestTheBackupHoldsAtGigabyteScale:
 
         assert "$strayFiles" in body
         assert "$strayShown" in body
+
+    def test_the_destination_is_remembered_only_after_it_verified(self) -> None:
+        """**打ち間違えた先を覚えると、次も同じ先に案内することになる。**
+
+        写し先を打ち間違えて1段ずれた場所を指した（2026-09-12）。下見で
+        止めたので二重にはならなかったが、**本番で打ち間違えれば 1GB が
+        無駄になり、以後2つがばらばらに古くなる。**
+
+        覚えるのは照合を通った先だけである。書く場所が、照合の判定より後に
+        あることを当てる。
+        """
+        body = _text("archive-backup.ps1")
+        lines = body.splitlines()
+
+        assert "$memo" in body, "写し先を覚えていない"
+        write = next(index for index, line in enumerate(lines) if "Set-Content -Path $memo" in line)
+        verified = next(
+            index for index, line in enumerate(lines) if "jquants-archive-verify" in line
+        )
+        assert write > verified, "照合より前に覚えている"
