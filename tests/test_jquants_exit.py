@@ -200,3 +200,73 @@ class TestNamingWhatIsMissing:
 
         assert coverage.missing_priced == ()
         assert coverage.roster_without_prices == 0
+
+
+class TestCountingRowsNotJustSymbols:
+    """**銘柄数だけでは、書けたことにならない。**
+
+    一括取り込みは「4,996,413行を書いた」と言うが、それは `upsert` に渡した
+    数である。**渡したことと入ったことは別で、入らなくても例外は出ない。**
+
+    DB には立花の2001年以降も入っているので、全体の行数と取り込みの報告は
+    そもそも一致しない。**期間を切って初めて比べられる。**
+    """
+
+    def _database(self):
+        database = Database("sqlite:///:memory:")
+        database.create_all()
+        return database
+
+    def _frame(self, days: list[str]) -> pd.DataFrame:
+        return pd.DataFrame(
+            {
+                OPEN: [1.0] * len(days),
+                HIGH: [1.0] * len(days),
+                LOW: [1.0] * len(days),
+                CLOSE: [1.0] * len(days),
+                ADJ_CLOSE: [1.0] * len(days),
+                VOLUME: [1] * len(days),
+            },
+            index=pd.DatetimeIndex([pd.Timestamp(day) for day in days], name="date"),
+        )
+
+    def test_the_rows_are_counted_not_only_the_symbols(self) -> None:
+        database = self._database()
+        with database.session() as session:
+            PriceRepository(session).upsert_prices(
+                "1301", self._frame(["2024-01-04", "2024-01-05"]), market="JP"
+            )
+            session.commit()
+
+        coverage = audit(database)
+
+        assert coverage.symbols_with_prices == 1
+        assert coverage.price_rows == 2
+
+    def test_the_window_is_counted_separately(self) -> None:
+        """**期間を切らないと、取り込みの報告と比べられない。**"""
+        database = self._database()
+        with database.session() as session:
+            PriceRepository(session).upsert_prices(
+                "1301",
+                self._frame(["2001-01-04", "2024-01-04", "2024-01-05"]),
+                market="JP",
+            )
+            session.commit()
+
+        coverage = audit(database, window=(dt.date(2024, 1, 1), dt.date(2024, 12, 31)))
+
+        assert coverage.price_rows == 3  # 立花の古い1行を含む
+        assert coverage.price_rows_in_window == 2  # 原本の期間だけ
+
+    def test_no_window_means_no_windowed_count(self) -> None:
+        """**0 を「窓の中に1行も無い」と読ませない。** 渡していないだけである。"""
+        database = self._database()
+        with database.session() as session:
+            PriceRepository(session).upsert_prices("1301", self._frame(["2024-01-04"]), market="JP")
+            session.commit()
+
+        coverage = audit(database)
+
+        assert coverage.price_rows == 1
+        assert coverage.price_rows_in_window == 0

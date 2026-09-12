@@ -3505,6 +3505,24 @@ def jquants_bulk_prices(
         )
 
 
+def _archive_window(directory: Path) -> tuple[dt.date, dt.date] | None:
+    """Return the first and last date the archived bars cover.
+
+    原本が覆う期間。**取り込みの報告と DB を突き合わせる相手**になる。
+    """
+    from stock_ai.data.jquants_prices import BARS_ENDPOINT
+
+    keys = [key for key in sorted(read_manifest(directory)) if endpoint_of(key) == BARS_ENDPOINT]
+    if not keys:
+        return None
+    first = archive_shape(directory, keys[0])
+    last = archive_shape(directory, keys[-1])
+    if first is None or last is None or not first.first_date or not last.last_date:
+        return None
+    start, end = _parse_date(first.first_date), _parse_date(last.last_date)
+    return (start, end) if start and end else None
+
+
 def _archive_first_date(directory: Path) -> dt.date | None:
     """Return the first date the archived bars cover.
 
@@ -4123,7 +4141,11 @@ def jquants_inventory(
     database = Database()
     database.create_all()
     snapshots = membership(Path(directory))
-    coverage = audit(database, snapshots)
+    # **原本が覆う期間を渡す。** DB には立花の2001年以降も入っているので、
+    # 全体の行数と取り込みの報告はそもそも一致しない。期間を切って初めて
+    # 比べられる。
+    window = _archive_window(Path(DEFAULT_ARCHIVE_DIR))
+    coverage = audit(database, snapshots, window=window)
     left = coverage.days_left()
 
     console.print(
@@ -4141,7 +4163,7 @@ def jquants_inventory(
     have.add_row("銘柄の登録", f"{coverage.securities:,} 銘柄", "")
     have.add_row(
         "日足の価格",
-        f"{coverage.symbols_with_prices:,} 銘柄",
+        f"{coverage.symbols_with_prices:,} 銘柄 / {coverage.price_rows:,} 行",
         f"{coverage.price_first} 〜 {coverage.price_last}"
         if coverage.price_first
         else "[yellow]無い[/]",
@@ -4196,6 +4218,16 @@ def jquants_inventory(
         "checks\\開示時刻の取り込み.bat",
     )
     console.print(risk)
+
+    if window:
+        # **銘柄数だけでは、書けたことにならない。** 取り込みは「N 行を
+        # 書いた」と言うが、それは upsert に渡した数である。渡したことと
+        # 入ったことは別で、**入らなくても例外は出ない。**
+        console.print(
+            f"[dim]原本が覆う {window[0]} 〜 {window[1]} の日足は "
+            f"[bold]{coverage.price_rows_in_window:,}[/] 行。"
+            "**一括取り込みが「書いた」と言った行数と突き合わせること。**[/]"
+        )
 
     console.print()
     files, with_lending, lending_rows = lending_coverage(Path(DEFAULT_SNAPSHOT_DIR))
