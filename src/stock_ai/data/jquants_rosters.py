@@ -45,6 +45,7 @@ from stock_ai.core.logging import get_logger
 from stock_ai.data.delisted import stored_dates, write_snapshot
 from stock_ai.data.jquants_bulk import records_from_csv
 from stock_ai.data.jquants_margin import parse_date
+from stock_ai.data.jquants_markets import CalendarDay
 from stock_ai.data.jquants_read import endpoint_of, read_archived
 from stock_ai.data.types import SecurityProfile
 from stock_ai.data.universe import Segment, four_digit_code, normalize_listings
@@ -256,6 +257,35 @@ def compare(first: Path, second: Path, limit: int = 5) -> CompareReport:
 CALENDAR_ENDPOINT = "/markets/calendar"
 
 
+def calendar_from_archive(archive_dir: Path) -> list[CalendarDay] | None:
+    """保存済みの取引カレンダーを、**区分ごと**読む。
+
+    :func:`trading_days_from_archive` は立会日だけを返すので、`1` と `2` の
+    どちらだったかが消える。**区分そのものを数えたいときはこちらを使う。**
+
+    Returns:
+        1日1件。カレンダーの原本が無ければ ``None``——**空リストと区別する。**
+    """
+    from stock_ai.data.jquants_archive import path_for, read_manifest
+    from stock_ai.data.jquants_markets import parse_calendar
+
+    keys = [
+        key for key in sorted(read_manifest(archive_dir)) if endpoint_of(key) == CALENDAR_ENDPOINT
+    ]
+    if not keys:
+        return None
+    # **同じ日が複数の原本に出うる。** 日付で畳んでから数えないと、月ごとの
+    # 原本が重なっている期間だけ件数が増える。
+    found: dict[dt.date, CalendarDay] = {}
+    for key in keys:
+        try:
+            for day in parse_calendar(read_archived(path_for(archive_dir, key))):
+                found[day.date] = day
+        except Exception as exc:  # noqa: BLE001 - 読めない理由が記録に値する
+            logger.warning("取引カレンダーを読めなかった: %s: %s", key, exc)
+    return [found[date] for date in sorted(found)]
+
+
 def trading_days_from_archive(archive_dir: Path) -> set[dt.date] | None:
     """保存済みの取引カレンダーから、立会のある日を読む。
 
@@ -266,21 +296,10 @@ def trading_days_from_archive(archive_dir: Path) -> set[dt.date] | None:
         立会日の集合。カレンダーの原本が無ければ ``None``——**空集合と
         区別する。** 空集合を返すと「1日も立会が無い」と読めてしまう。
     """
-    from stock_ai.data.jquants_archive import path_for, read_manifest
-    from stock_ai.data.jquants_markets import parse_calendar, trading_days
+    from stock_ai.data.jquants_markets import trading_days
 
-    keys = [
-        key for key in sorted(read_manifest(archive_dir)) if endpoint_of(key) == CALENDAR_ENDPOINT
-    ]
-    if not keys:
-        return None
-    found: set[dt.date] = set()
-    for key in keys:
-        try:
-            found.update(trading_days(parse_calendar(read_archived(path_for(archive_dir, key)))))
-        except Exception as exc:  # noqa: BLE001 - 読めない理由が記録に値する
-            logger.warning("取引カレンダーを読めなかった: %s: %s", key, exc)
-    return found
+    days = calendar_from_archive(archive_dir)
+    return None if days is None else set(trading_days(days))
 
 
 def explain_missing(

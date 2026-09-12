@@ -266,3 +266,142 @@ def trading_days(days: list[CalendarDay]) -> list[dt.date]:
     ことに件数からは気付けない。**
     """
     return sorted(day.date for day in days if day.trading)
+
+
+@dataclasses.dataclass
+class CalendarCensus:
+    """取引カレンダーに実際に何が入っていたか。
+
+    **`2`（半日立会）を落とすと年に数日だけ静かに欠ける、と書いてある。**
+    書いてあることと、手元のデータにそれが在ることは別である。**在るかを
+    数える。** 1日も無ければ、備えは正しくても効いていない。
+    """
+
+    first: dt.date | None = None
+    last: dt.date | None = None
+    by_division: dict[str, int] = dataclasses.field(default_factory=dict)
+    half_days: list[dt.date] = dataclasses.field(default_factory=list)
+    unknown: dict[str, int] = dataclasses.field(default_factory=dict)
+    """一覧に無い区分。**0 でないなら、区分が増えている。**"""
+
+    @property
+    def trading(self) -> int:
+        """立会のある日数（半日を含む）。"""
+        return sum(self.by_division.get(code, 0) for code in sorted(TRADING_DIVISIONS))
+
+    @property
+    def lost_if_only_one(self) -> int:
+        """`1` だけで絞ったら落ちる日数。**これが備えの値段である。**"""
+        return len(self.half_days)
+
+    def summary(self) -> str:
+        """1行のまとめ。"""
+        if self.first is None:
+            return "取引カレンダーの原本が無い。"
+        return (
+            f"{self.first} 〜 {self.last} / 立会 {self.trading:,} 日、"
+            f"うち半日立会 {len(self.half_days)} 日"
+            + (f"、知らない区分 {sum(self.unknown.values())} 日" if self.unknown else "")
+        )
+
+
+def census(days: list[CalendarDay]) -> CalendarCensus:
+    """カレンダーの区分を数える。
+
+    **区分ごとの件数を出す。** 「営業日が N 日」だけだと、`1` と `2` の
+    どちらで数えたのかが後から分からない。
+    """
+    report = CalendarCensus()
+    if not days:
+        return report
+    dates = [day.date for day in days]
+    report.first, report.last = min(dates), max(dates)
+    counts: dict[str, int] = {}
+    for day in days:
+        counts[day.division] = counts.get(day.division, 0) + 1
+        if day.division not in HOLIDAY_DIVISION:
+            report.unknown[day.division] = report.unknown.get(day.division, 0) + 1
+    report.by_division = counts
+    report.half_days = sorted(day.date for day in days if day.half_day)
+    return report
+
+
+def half_days_by_year(days: list[CalendarDay]) -> dict[int, list[dt.date]]:
+    """半日立会を年ごとに。**大納会・大発会まわりに寄るはずである。**
+
+    寄っていなければ、区分の意味の読み違いを疑う。
+    """
+    found: dict[int, list[dt.date]] = {}
+    for day in sorted(days, key=lambda item: item.date):
+        if day.half_day:
+            found.setdefault(day.date.year, []).append(day.date)
+    return found
+
+
+@dataclasses.dataclass
+class CalendarAgreement:
+    """カレンダーと、実際に名簿のあった日の突き合わせ。
+
+    **カレンダーは「立会がある」と言っているだけである。** 本当にその日の
+    データが在るかは別の経路で確かめる。名簿は `/equities/master` から出て
+    いて、カレンダーとは別のファイルである。
+    """
+
+    first: dt.date | None = None
+    last: dt.date | None = None
+    days: int = 0
+    agree: int = 0
+    trading_without_roster: list[dt.date] = dataclasses.field(default_factory=list)
+    """立会と言っているのに、名簿が無い日。"""
+
+    roster_without_trading: list[dt.date] = dataclasses.field(default_factory=list)
+    """名簿があるのに、立会と言っていない日。**カレンダーのほうが疑わしい。**"""
+
+    half_days: int = 0
+    half_days_with_roster: int = 0
+
+    def summary(self) -> str:
+        """1行のまとめ。"""
+        if not self.days:
+            return "重なる期間が無い。突き合わせられない。"
+        return (
+            f"{self.first} 〜 {self.last} の {self.days:,} 日のうち "
+            f"{self.agree:,} 日が一致、"
+            f"名簿の無い立会日 {len(self.trading_without_roster)} 日、"
+            f"立会でないのに名簿のある日 {len(self.roster_without_trading)} 日。"
+            f"半日立会 {self.half_days} 日のうち {self.half_days_with_roster} 日に名簿がある"
+        )
+
+
+def agreement(days: list[CalendarDay], roster_dates: set[dt.date]) -> CalendarAgreement:
+    """カレンダーの立会日と、名簿のある日を突き合わせる。
+
+    **重なる期間だけを見る。** カレンダーは名簿よりずっと長い期間を覆って
+    いるので、全期間で取ると「名簿の無い立会日」が数千日出る。それは欠けでは
+    なく、**名簿の原本がそこまで遡っていないだけ**である。
+    """
+    report = CalendarAgreement()
+    if not days or not roster_dates:
+        return report
+    report.first, report.last = min(roster_dates), max(roster_dates)
+    trading = {day.date for day in days if day.trading}
+    listed = {day.date for day in days}
+    window = {
+        date
+        for date in (trading | roster_dates)
+        if report.first <= date <= report.last and (date in roster_dates or date in listed)
+    }
+    report.days = len(window)
+    for date in sorted(window):
+        in_calendar = date in trading
+        in_roster = date in roster_dates
+        if in_calendar and in_roster:
+            report.agree += 1
+        elif in_calendar:
+            report.trading_without_roster.append(date)
+        else:
+            report.roster_without_trading.append(date)
+    half = [day.date for day in days if day.half_day and report.first <= day.date <= report.last]
+    report.half_days = len(half)
+    report.half_days_with_roster = sum(1 for date in half if date in roster_dates)
+    return report

@@ -229,6 +229,9 @@ from stock_ai.data.jquants_details import (
 )
 from stock_ai.data.jquants_exit import CANCELLATION, audit
 from stock_ai.data.jquants_fundamentals import JQuantsFundamentalsProvider, normalize_statements
+from stock_ai.data.jquants_markets import HOLIDAY_DIVISION, TRADING_DIVISIONS, half_days_by_year
+from stock_ai.data.jquants_markets import agreement as calendar_agreement
+from stock_ai.data.jquants_markets import census as calendar_census
 from stock_ai.data.jquants_prices import frames_for as price_frames_for
 from stock_ai.data.jquants_prices import ingest as price_ingest
 from stock_ai.data.jquants_prices import join_returns as price_join_returns
@@ -242,6 +245,7 @@ from stock_ai.data.jquants_read import endpoint_of, read_archived, samples_per_e
 from stock_ai.data.jquants_read import shape_of as archive_shape
 from stock_ai.data.jquants_rosters import (
     DAILY_SNAPSHOT_DIR,
+    calendar_from_archive,
     explain_missing,
     market_on,
     markets_on,
@@ -3892,6 +3896,98 @@ def jquants_roster_prices(
             "[dim] 名簿にいる銘柄は全部その日の行を持ち、名簿にいない終値は"
             "すべて「投信・ETF」か「買えない市場」で説明が付いた。[/]"
         )
+
+
+@app.command(name="jquants-calendar")
+def jquants_calendar(
+    archive_dir: str = typer.Option(
+        str(DEFAULT_ARCHIVE_DIR), "--dir", help="Where the raw files are kept."
+    ),
+    roster_dir: str = typer.Option(
+        str(DAILY_SNAPSHOT_DIR), "--rosters", help="Where the daily rosters are kept."
+    ),
+) -> None:
+    """Count what the archived trading calendar actually contains.
+
+    **半日立会（`HolDiv=2`）が実在するかを数える。** コードには「`1` だけで
+    絞ると年に数日だけ静かに欠ける」と書いてあるが、**書いてあることと、手元
+    のデータにそれが在ることは別である。** 1日も無ければ、備えは正しくても
+    効いていない。
+
+    名簿のある日とも突き合わせる。カレンダーは「立会がある」と言っているだけ
+    で、**本当にその日のデータが在るかは別のファイルが知っている。**
+
+    API を1回も叩かない。
+    """
+    settings = get_settings()
+    configure_logging(settings.log_level)
+
+    days = calendar_from_archive(Path(archive_dir))
+    if days is None:
+        console.print(
+            "[yellow]取引カレンダーの原本が無い。[/]"
+            "[dim] 先に `checks\\原本をまるごと保存.bat` を実行すること。[/]"
+        )
+        raise typer.Exit(code=1)
+    if not days:
+        console.print("[red]カレンダーの原本はあるが、1日も読めなかった。[/]")
+        raise typer.Exit(code=1)
+
+    report = calendar_census(days)
+    table = Table(title="取引カレンダーの区分")
+    for column, justify in (("区分", "left"), ("意味", "left"), ("日数", "right")):
+        table.add_column(column, justify=justify)
+    for code in sorted(report.by_division):
+        label = HOLIDAY_DIVISION.get(code, "[red]一覧に無い[/]")
+        name = f"[green]{code}[/]" if code in TRADING_DIVISIONS else code
+        table.add_row(name, label, f"{report.by_division[code]:,}")
+    console.print(table)
+
+    if not report.half_days:
+        console.print(
+            "[yellow]半日立会が1日も無い。[/] **備えは正しくても効いていない。**"
+            "[dim] 区分の名前が変わったか、この原本が覆う期間に無いかのどちらか。[/]"
+        )
+    else:
+        years = half_days_by_year(days)
+        listing = Table(title=f"半日立会（{len(report.half_days)} 日）")
+        listing.add_column("年")
+        listing.add_column("日付")
+        for year in sorted(years):
+            listing.add_row(str(year), "  ".join(date.isoformat() for date in years[year]))
+        console.print(listing)
+        console.print(
+            f"[green]`1` だけで絞ると {report.lost_if_only_one} 日が落ちる。[/]"
+            "[dim] 年に数日なので、件数からは気付けない種類である。[/]"
+        )
+
+    if report.unknown:
+        console.print(
+            f"[red]一覧に無い区分が {sum(report.unknown.values())} 日ある[/]: "
+            + ", ".join(f"{code}({count})" for code, count in sorted(report.unknown.items()))
+            + "。**区分が増えている。** 立会に数えるかを決めること。"
+        )
+
+    stored = set(stored_dates(Path(roster_dir)))
+    if not stored:
+        console.print("[dim]営業日ごとの名簿が無いので、突き合わせは飛ばした。[/]")
+    else:
+        match = calendar_agreement(days, stored)
+        console.print(match.summary())
+        for label, dates in (
+            ("立会と言っているのに名簿が無い", match.trading_without_roster),
+            ("立会でないのに名簿がある", match.roster_without_trading),
+        ):
+            if dates:
+                shown = "  ".join(date.isoformat() for date in dates[:8])
+                console.print(f"[yellow]{label}: {len(dates)} 日[/] [dim]{shown}[/]")
+        if match.half_days and match.half_days_with_roster == match.half_days:
+            console.print(
+                f"[green]半日立会 {match.half_days} 日は、すべてその日の名簿がある。[/]"
+                "[dim] カレンダーとは別のファイルが、同じ日を立会だと言っている。[/]"
+            )
+
+    console.print(report.summary())
 
 
 @app.command(name="jquants-archive-verify")

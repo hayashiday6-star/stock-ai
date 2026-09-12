@@ -576,3 +576,56 @@ class TestExplainingTheGap:
         from stock_ai.data.jquants_rosters import markets_on
 
         assert markets_on(tmp_path, {"7203"}) == {"7203": {}}
+
+
+class TestReadingTheCalendarWholeRatherThanFiltered:
+    """区分ごとに数えたいなら、**立会日だけに畳む前**を読む必要がある。
+
+    `trading_days_from_archive` は集合を返すので、`1` と `2` のどちらだったか
+    が消える。**消えたあとで「半日立会は何日あったか」は答えられない。**
+    """
+
+    def _calendar(self, tmp_path: Path, body: bytes, month: str = "202612") -> None:
+        payload = gzip.compress(body)
+        key = f"markets/calendar/historical/2026/calendar_{month}.csv.gz"
+        archive(
+            [BulkFile(key=key, last_modified="", size=len(payload))],
+            lambda _k: payload,
+            tmp_path,
+            on=TODAY,
+        )
+
+    def test_the_divisions_survive(self, tmp_path) -> None:
+        from stock_ai.data.jquants_rosters import calendar_from_archive
+
+        self._calendar(tmp_path, b"Date,HolDiv\n2009-12-30,2\n2009-12-31,0\n")
+
+        days = calendar_from_archive(tmp_path)
+
+        assert days is not None
+        assert [day.division for day in days] == ["2", "0"]
+
+    def test_a_date_in_two_files_is_counted_once(self, tmp_path) -> None:
+        """**同じ日が複数の原本に出うる。** 畳まないと、重なる期間だけ増える。"""
+        from stock_ai.data.jquants_rosters import calendar_from_archive
+
+        self._calendar(tmp_path, b"Date,HolDiv\n2026-12-30,1\n", month="202612")
+        self._calendar(tmp_path, b"Date,HolDiv\n2026-12-30,1\n", month="202701")
+
+        days = calendar_from_archive(tmp_path)
+
+        assert days is not None
+        assert len(days) == 1
+
+    def test_no_calendar_at_all_is_none_not_empty(self, tmp_path) -> None:
+        """**空リストと区別する。** 空だと「1日も立会が無い」と読めてしまう。"""
+        from stock_ai.data.jquants_rosters import calendar_from_archive
+
+        assert calendar_from_archive(tmp_path) is None
+
+    def test_the_trading_day_helper_still_works_through_it(self, tmp_path) -> None:
+        from stock_ai.data.jquants_rosters import trading_days_from_archive
+
+        self._calendar(tmp_path, b"Date,HolDiv\n2009-12-30,2\n2009-12-31,0\n")
+
+        assert trading_days_from_archive(tmp_path) == {dt.date(2009, 12, 30)}

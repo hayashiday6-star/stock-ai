@@ -221,3 +221,138 @@ class TestCalendar:
 
         for day in parse_calendar(self.SAMPLE.read_bytes()):
             assert day.division in HOLIDAY_DIVISION
+
+
+class TestCountingWhatTheCalendarActuallyHas:
+    """**書いてあることと、手元のデータにそれが在ることは別である。**
+
+    コードには「`1` だけで絞ると半日立会が落ちる」と書いてある。備えとしては
+    正しいが、**その区分が1日も無ければ効いていない。** 数えて確かめる。
+    """
+
+    def _days(self):
+        from stock_ai.data.jquants_markets import parse_calendar
+
+        return parse_calendar(
+            b"Date,HolDiv\n2009-12-29,1\n2009-12-30,2\n2009-12-31,0\n2010-01-04,1\n2010-01-11,3\n"
+        )
+
+    def test_each_division_is_counted_separately(self) -> None:
+        """**「営業日 N 日」だけにしない。** どちらで数えたか後から分からない。"""
+        from stock_ai.data.jquants_markets import census
+
+        report = census(self._days())
+
+        assert report.by_division == {"1": 2, "2": 1, "0": 1, "3": 1}
+
+    def test_the_span_comes_from_the_data(self) -> None:
+        import datetime as dt
+
+        from stock_ai.data.jquants_markets import census
+
+        report = census(self._days())
+
+        assert (report.first, report.last) == (dt.date(2009, 12, 29), dt.date(2010, 1, 11))
+
+    def test_a_half_day_is_a_trading_day_in_the_count(self) -> None:
+        from stock_ai.data.jquants_markets import census
+
+        report = census(self._days())
+
+        assert report.trading == 3  # `1` が2日 + `2` が1日
+
+    def test_the_price_of_the_guard_is_the_number_of_half_days(self) -> None:
+        """**`1` だけで絞ったら何日落ちるか。** それが備えの値段である。"""
+        from stock_ai.data.jquants_markets import census
+
+        assert census(self._days()).lost_if_only_one == 1
+
+    def test_an_unlisted_division_is_flagged(self) -> None:
+        """区分が増えたら気付けること。**黙って非営業日に落とさない。**"""
+        from stock_ai.data.jquants_markets import census, parse_calendar
+
+        report = census(parse_calendar(b"Date,HolDiv\n2026-01-05,9\n"))
+
+        assert report.unknown == {"9": 1}
+
+    def test_half_days_are_grouped_by_year(self) -> None:
+        import datetime as dt
+
+        from stock_ai.data.jquants_markets import half_days_by_year
+
+        assert half_days_by_year(self._days()) == {2009: [dt.date(2009, 12, 30)]}
+
+    def test_an_empty_calendar_says_so_without_raising(self) -> None:
+        from stock_ai.data.jquants_markets import census
+
+        report = census([])
+
+        assert report.first is None
+        assert "原本が無い" in report.summary()
+
+
+class TestTheCalendarAgainstTheRosters:
+    """カレンダーは「立会がある」と言っているだけである。
+
+    **本当にその日のデータが在るかは、別のファイルが知っている。** 名簿は
+    `/equities/master` から出ていて、カレンダーとは別の原本である。
+    """
+
+    def _days(self):
+        from stock_ai.data.jquants_markets import parse_calendar
+
+        return parse_calendar(
+            b"Date,HolDiv\n"
+            b"2009-12-30,2\n"  # 名簿よりずっと前
+            b"2026-09-01,1\n"
+            b"2026-09-02,1\n"
+            b"2026-09-03,0\n"
+        )
+
+    def test_days_before_the_rosters_begin_are_not_counted_as_missing(self) -> None:
+        """**全期間で取ると数千日出る。** それは欠けではなく、名簿が遡っていない。"""
+        import datetime as dt
+
+        from stock_ai.data.jquants_markets import agreement
+
+        report = agreement(self._days(), {dt.date(2026, 9, 1), dt.date(2026, 9, 2)})
+
+        assert report.trading_without_roster == []
+        assert report.agree == 2
+        assert report.days == 2
+
+    def test_a_trading_day_without_a_roster_inside_the_window_shows_up(self) -> None:
+        import datetime as dt
+
+        from stock_ai.data.jquants_markets import agreement
+
+        report = agreement(self._days(), {dt.date(2026, 9, 1), dt.date(2026, 9, 5)})
+
+        assert report.trading_without_roster == [dt.date(2026, 9, 2)]
+
+    def test_a_roster_on_a_non_trading_day_shows_up(self) -> None:
+        """**カレンダーのほうが疑わしい向きである。** 名簿はその日の実物である。"""
+        import datetime as dt
+
+        from stock_ai.data.jquants_markets import agreement
+
+        report = agreement(
+            self._days(),
+            {dt.date(2026, 9, 1), dt.date(2026, 9, 2), dt.date(2026, 9, 3)},
+        )
+
+        assert report.roster_without_trading == [dt.date(2026, 9, 3)]
+
+    def test_half_days_outside_the_window_are_not_counted(self) -> None:
+        import datetime as dt
+
+        from stock_ai.data.jquants_markets import agreement
+
+        report = agreement(self._days(), {dt.date(2026, 9, 1), dt.date(2026, 9, 2)})
+
+        assert report.half_days == 0  # 2009-12-30 は名簿の期間の外
+
+    def test_nothing_to_compare_says_so(self) -> None:
+        from stock_ai.data.jquants_markets import agreement
+
+        assert "突き合わせられない" in agreement(self._days(), set()).summary()
