@@ -929,3 +929,117 @@ def test_reversal_bias_refuses_to_reach_out_of_sample() -> None:
     result = runner.invoke(app, ["reversal-bias", "--end", "2024-06-01"])
     assert result.exit_code != 0
     assert "2024-01-01" in result.output
+
+
+class TestByteLabel:
+    """下見の大きさ表示。
+
+    **61本あるエンドポイントが「0 MB」と出た。** 四捨五入としては合っている
+    が、「取れなかった」と同じ見た目になる。課金中に手が止まる先を1つ減らす。
+    """
+
+    def test_a_small_but_real_endpoint_does_not_read_as_empty(self) -> None:
+        from stock_ai.cli import _bytes_label
+
+        assert _bytes_label(300_000) != "0 MB"
+        assert _bytes_label(300_000) == "300 KB"
+
+    def test_the_units_change_with_the_size(self) -> None:
+        from stock_ai.cli import _bytes_label
+
+        assert _bytes_label(900) == "900 B"
+        assert _bytes_label(9_000_000) == "9.0 MB"
+        assert _bytes_label(135_000_000) == "135 MB"
+        assert _bytes_label(1_200_000_000) == "1.20 GB"
+
+    def test_nothing_is_still_nothing(self) -> None:
+        """**空を空でなく見せてもいけない。**"""
+        from stock_ai.cli import _bytes_label
+
+        assert _bytes_label(0) == "0 B"
+
+
+class TestProgressLine:
+    """進捗の1行。
+
+    **復帰文字で上書きするので、短い行のあとに長い行の尻尾が残る。** 実際に
+    `fins_summary_20260904.csv.gz08.csv.gz` という表示が出た。ファイル名が
+    2つ繋がったように見え、**どれを読んでいるのか分からなくなる。**
+    """
+
+    def test_a_short_line_is_padded_so_it_clears_the_previous_one(self) -> None:
+        from stock_ai.cli import _progress_line
+
+        assert len(_progress_line(64, 64, "short.gz")) == 100
+        assert _progress_line(64, 64, "short.gz").endswith(" ")
+
+    def test_a_long_line_is_cut_rather_than_wrapping(self) -> None:
+        """**折り返すと1行に収まらない。** 貼ったときに何十行にもなる。"""
+        from stock_ai.cli import _progress_line
+
+        found = _progress_line(1, 2, "x" * 200)
+
+        assert len(found) == 100
+        assert found.endswith("…")
+
+    def test_the_numbers_stay_at_the_front(self) -> None:
+        from stock_ai.cli import _progress_line
+
+        assert _progress_line(3, 64, "a.gz").startswith("3/64 a.gz")
+
+
+class TestDifferingSymbols:
+    """片方の名簿にしか出ない銘柄を、**全部**集める。
+
+    表に出す例は先頭5件に絞ってある。**5件を見て「全部 TOKYO PRO だ」と言う
+    のは、5件を見ただけである。** 説明が付くかを見るには全部が要る。
+    """
+
+    def _write(self, directory, date: str, symbols: list[str]) -> None:
+        from stock_ai.data.delisted import write_snapshot
+        from stock_ai.data.types import SecurityProfile
+
+        write_snapshot(
+            directory,
+            __import__("datetime").date.fromisoformat(date),
+            [SecurityProfile(symbol=s, market="JP", name=s) for s in symbols],
+        )
+
+    def test_symbols_from_every_date_are_collected(self, tmp_path) -> None:
+        import datetime as dt
+
+        from stock_ai.cli import _differing_symbols
+
+        self._write(tmp_path / "a", "2026-08-03", ["1301", "7203"])
+        self._write(tmp_path / "b", "2026-08-03", ["1301"])
+        self._write(tmp_path / "a", "2026-08-04", ["1301", "6758"])
+        self._write(tmp_path / "b", "2026-08-04", ["1301"])
+
+        found = _differing_symbols(
+            tmp_path / "a", tmp_path / "b", [dt.date(2026, 8, 3), dt.date(2026, 8, 4)]
+        )
+
+        assert found == {"7203", "6758"}  # 日付をまたいで集める
+
+    def test_a_difference_in_either_direction_counts(self, tmp_path) -> None:
+        import datetime as dt
+
+        from stock_ai.cli import _differing_symbols
+
+        self._write(tmp_path / "a", "2026-08-03", ["1301"])
+        self._write(tmp_path / "b", "2026-08-03", ["7203"])
+
+        assert _differing_symbols(tmp_path / "a", tmp_path / "b", [dt.date(2026, 8, 3)]) == {
+            "1301",
+            "7203",
+        }
+
+    def test_identical_rosters_give_nothing(self, tmp_path) -> None:
+        import datetime as dt
+
+        from stock_ai.cli import _differing_symbols
+
+        for name in ("a", "b"):
+            self._write(tmp_path / name, "2026-08-03", ["1301"])
+
+        assert _differing_symbols(tmp_path / "a", tmp_path / "b", [dt.date(2026, 8, 3)]) == set()

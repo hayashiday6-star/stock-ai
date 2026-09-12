@@ -15,9 +15,13 @@ echo Company full-year forecasts and disclosure times exist
 echo nowhere else. EDINET annual reports carry neither, so after
 echo 2026-09-22 these stop growing forever.
 echo.
-echo Worth taking even with no use for them yet. Discarding is a
-echo decision you can make later. Taking is a decision with a
-echo deadline.
+echo 2026-09-05: DECIDED NOT TO RUN THIS AGAIN. The per-symbol
+echo route is already exhausted - 4,160 of 4,303 symbols hold
+echo their full five years, and one request returns all of them.
+echo Re-running now would add about two weeks of rows for themes
+echo that are closed. See docs/JQUANTS_EXIT.md.
+echo.
+echo Kept because the decision is reversible until 2026-09-22.
 echo.
 echo Only symbols with no statements at all are requested. The
 echo delisted names just added are among them.

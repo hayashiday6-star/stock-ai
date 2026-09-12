@@ -62,6 +62,28 @@ class Coverage:
     roster_symbols: int
     """名簿に一度でも出た銘柄。"""
     roster_without_prices: int
+    price_rows: int = 0
+    """日足の行数。
+
+    **銘柄数だけでは、書けたことにならない。** 取り込みは「4,996,413行を
+    書いた」と言うが、それは ``upsert`` に渡した数である。渡したことと入った
+    ことは別で、**入らなくても例外は出ない。**
+    """
+
+    price_rows_in_window: int = 0
+    """原本が覆う期間にある行数。**ここが突き合わせる相手である。**
+
+    DB には立花の2001年以降も入っているので、全体の行数と取り込みの報告は
+    そもそも一致しない。期間を切って初めて比べられる。
+    """
+
+    missing_priced: tuple[str, ...] = ()
+    """名簿にあって株価が無い銘柄そのもの。
+
+    **件数だけでは追えない。** 16件という数字は、一括で株価を入れる前も後も
+    16 のままだった。名前が並べば、全部が同じ性質か（同じ日に廃止した、同じ
+    市場、同じ桁数）が一目で分かる。
+    """
     """そのうち株価が手元に無いもの。**ここが生存バイアスの残り。**"""
 
     def days_left(self, today: dt.date | None = None) -> int:
@@ -69,12 +91,18 @@ class Coverage:
         return (CANCELLATION - (today or dt.date.today())).days
 
 
-def audit(database: Database, snapshots: dict[dt.date, set[str]] | None = None) -> Coverage:
+def audit(
+    database: Database,
+    snapshots: dict[dt.date, set[str]] | None = None,
+    window: tuple[dt.date, dt.date] | None = None,
+) -> Coverage:
     """手元にあるものを数える。取りには行かない。
 
     Args:
         database: 数える対象。
         snapshots: 保存済みの名簿。``None`` なら名簿の欄は 0 になる。
+        window: 原本が覆う期間。渡すと、その期間の行数を別に数える
+            ——**取り込みの報告と突き合わせる相手になる。**
     """
     with database.session() as session:
         securities = (
@@ -93,6 +121,28 @@ def audit(database: Database, snapshots: dict[dt.date, set[str]] | None = None) 
             .join(Security, Security.id == PriceBar.security_id)
             .where(Security.market == "JP")
         ).one()
+        price_rows = (
+            session.execute(
+                select(func.count(PriceBar.id))
+                .select_from(PriceBar)
+                .join(Security, Security.id == PriceBar.security_id)
+                .where(Security.market == "JP")
+            ).scalar_one()
+            or 0
+        )
+        in_window = 0
+        if window is not None:
+            in_window = (
+                session.execute(
+                    select(func.count(PriceBar.id))
+                    .select_from(PriceBar)
+                    .join(Security, Security.id == PriceBar.security_id)
+                    .where(Security.market == "JP")
+                    .where(PriceBar.date >= window[0])
+                    .where(PriceBar.date <= window[1])
+                ).scalar_one()
+                or 0
+            )
         statements = session.execute(
             select(
                 func.count(func.distinct(FinancialStatement.security_id)),
@@ -142,6 +192,8 @@ def audit(database: Database, snapshots: dict[dt.date, set[str]] | None = None) 
         symbols_with_prices=priced[0] or 0,
         price_first=priced[1],
         price_last=priced[2],
+        price_rows=price_rows,
+        price_rows_in_window=in_window,
         symbols_with_statements=statements[0] or 0,
         statements=statements[1] or 0,
         with_disclosed_at=statements[2] or 0,
@@ -153,6 +205,7 @@ def audit(database: Database, snapshots: dict[dt.date, set[str]] | None = None) 
         snapshot_last=ordered[-1] if ordered else None,
         roster_symbols=len(union),
         roster_without_prices=len(union - with_bars),
+        missing_priced=tuple(sorted(union - with_bars)),
     )
     logger.info(
         "解約前の棚卸し: 株価 %d 銘柄、財務 %d 行、名簿 %d 件、名簿にあって株価が無い %d 銘柄",

@@ -93,6 +93,17 @@ class SecurityProfile(BaseModel):
     sector: str | None = None  # a canonical stock_ai.data.sectors.Sector value
     industry: str | None = None  # the provider's own finer label, verbatim
 
+    lending: str | None = None
+    """貸借の区分（立花の ``sSinyouC``: 1貸借 / 2制度 / 3一般）。
+
+    **これは「いまの値」であって、過去に当てられる値ではない。** #7 で
+    ``sSinyouC`` が現在値だと分かったときに、その場では使えなかった。月次の
+    名簿に一緒に残しておけば、**1年後には過去に当てられる値になる。**
+
+    空売りできるかを決めるので、ロング・ショートの設計では母集団そのものを
+    左右する。
+    """
+
 
 class HoldingRecord(BaseModel):
     """A position the user owns, with the cost basis it was built at."""

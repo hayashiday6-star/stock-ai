@@ -1,0 +1,23 @@
+# J-Quants 公式クライアント jquants-api-client-python の BulkEndpoint。
+# コミット 4f9e404c4dc9753007343725ddfd93d12d95564f（2026-08-27）。
+# 手で写さず、enums.py から生成した。
+/equities/master
+/equities/bars/daily
+/equities/bars/minute
+/equities/investor-types
+/equities/trades
+/fins/summary
+/fins/details
+/fins/dividend
+/fins/earnings-date
+/markets/short-ratio
+/markets/short-sale-report
+/markets/margin-interest
+/markets/margin-alert
+/markets/breakdown
+/markets/calendar
+/indices/bars/daily
+/indices/bars/daily/topix
+/derivatives/bars/daily/futures
+/derivatives/bars/daily/options
+/derivatives/bars/daily/options/225

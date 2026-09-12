@@ -255,3 +255,219 @@ def test_a_daily_file_is_not_read_as_a_month(tmp_path) -> None:
     monthly_snapshot(tmp_path, [_profile("7203")], on=dt.date(2026, 10, 5))
 
     assert list(monthly_membership(tmp_path)) == ["2026-10"]
+
+
+# --- 貸借の区分（2026-09-06 に足した列） ----------------------------------
+
+
+def test_the_monthly_roster_keeps_the_lending_class(tmp_path) -> None:
+    """**現在値を月次で残すことで、1年後に過去へ当てられる値になる。**
+
+    立花のマスタは「いまどうなっているか」しか返さない。#7 で ``sSinyouC`` が
+    現在値だと分かったとき、その場では使えなかった。
+    """
+    profile = SecurityProfile(symbol="7203", market="JP", name="トヨタ", lending="1")
+
+    path = monthly_snapshot(tmp_path, [profile], on=dt.date(2026, 10, 5))
+
+    assert path is not None
+    (back,) = read_snapshot(path)
+    assert back.lending == "1"
+
+
+def test_a_roster_written_before_the_column_existed_still_reads(tmp_path) -> None:
+    """**古いファイルには列が無い。落ちてはいけない。**
+
+    2026-09 以前の月次の名簿は4列で書かれている。読めなくなると、取り直せない
+    データが読めなくなる。
+    """
+    path = tmp_path / "2026-08.csv"
+    path.write_text(
+        "symbol,name,sector,industry\n7203,トヨタ,Consumer Discretionary,輸送用機器\n",
+        encoding="utf-8",
+    )
+
+    (back,) = read_snapshot(path)
+
+    assert back.symbol == "7203"
+    assert back.lending is None
+
+
+def test_the_jquants_roster_carries_the_lending_class_too(tmp_path) -> None:
+    """**J-Quants の名簿も5列である。**
+
+    最初は「立花の月次だけに足す」と書いた。**前提が間違っていた**——
+    J-Quants の ``equities/master`` は ``Mrgn``/``MrgnNm`` を返しており、
+    しかも日付を取る。**過去のある日にどうだったかを引けるのはこちらだけ**で、
+    立花のマスタは現在値しか返さない。
+
+    2つの名簿を別のフォルダに置くのは、**除外の仕方が違うので差を取ると
+    消えてもいない銘柄が消えたことになる**ためで、列の話ではなかった。
+    """
+    from stock_ai.data.delisted import COLUMNS
+
+    assert COLUMNS == ("symbol", "name", "sector", "industry", "lending")
+
+    profile = SecurityProfile(symbol="7203", market="JP", name="トヨタ", lending="貸借")
+    path = write_snapshot(tmp_path, dt.date(2026, 1, 5), [profile])
+
+    lines = path.read_text(encoding="utf-8").splitlines()
+    assert lines[0] == ",".join(COLUMNS)
+    (back,) = read_snapshot(path)
+    assert back.lending == "貸借"
+
+
+def test_lending_coverage_separates_taken_from_landed(tmp_path) -> None:
+    """**「63件取れた」と「列が入った」は別である。**
+
+    取得が成功していても列が空、という形は例外を出さない。応答の項目名が
+    想定と違えば ``row.get`` が静かに ``None`` を返すだけになる。
+    """
+    from stock_ai.data.delisted import lending_coverage
+
+    # 列を足す前に保存したもの（4列）。
+    (tmp_path / "2026-01-01.csv").write_text(
+        "symbol,name,sector,industry\n7203,トヨタ,Consumer Discretionary,輸送用機器\n",
+        encoding="utf-8",
+    )
+    # 列はあるが空（取得は成功、値は入っていない）。
+    (tmp_path / "2026-02-01.csv").write_text(
+        "symbol,name,sector,industry,lending\n7203,トヨタ,Consumer Discretionary,輸送用機器,\n",
+        encoding="utf-8",
+    )
+    # 入っている。
+    (tmp_path / "2026-03-01.csv").write_text(
+        "symbol,name,sector,industry,lending\n7203,トヨタ,Consumer Discretionary,輸送用機器,貸借\n",
+        encoding="utf-8",
+    )
+
+    assert lending_coverage(tmp_path) == (3, 1, 1)
+
+
+def test_lending_coverage_on_an_empty_directory_is_zero(tmp_path) -> None:
+    """名簿が1件も無くても落ちない。"""
+    from stock_ai.data.delisted import lending_coverage
+
+    assert lending_coverage(tmp_path / "無い") == (0, 0, 0)
+
+
+def test_dates_without_lending_finds_the_ones_the_grid_would_miss(tmp_path) -> None:
+    """**取り直す対象を日付グリッドで決めない。**
+
+    日次で書かれる名簿は30日刻みに乗らないので、グリッドで回すと取り残される。
+    実際、63件を取り直したあとに直近3日ぶんだけが残った。
+    """
+    from stock_ai.data.delisted import dates_without_lending
+
+    (tmp_path / "2026-08-06.csv").write_text(
+        "symbol,name,sector,industry,lending\n7203,トヨタ,Industrials,輸送用機器,貸借\n",
+        encoding="utf-8",
+    )
+    # グリッド（30日刻み）に乗らない、日次で書かれたもの。
+    (tmp_path / "2026-09-05.csv").write_text(
+        "symbol,name,sector,industry\n7203,トヨタ,Industrials,輸送用機器\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "2026-09-06.csv").write_text(
+        "symbol,name,sector,industry,lending\n7203,トヨタ,Industrials,輸送用機器,\n",
+        encoding="utf-8",
+    )
+
+    assert dates_without_lending(tmp_path) == [dt.date(2026, 9, 5), dt.date(2026, 9, 6)]
+
+
+def test_dates_without_lending_ignores_files_that_are_not_dates(tmp_path) -> None:
+    """置き場所にメモ書きが1つあっても、取得を止めない。"""
+    from stock_ai.data.delisted import dates_without_lending
+
+    (tmp_path / "README.csv").write_text("symbol\n7203\n", encoding="utf-8")
+
+    assert dates_without_lending(tmp_path) == []
+
+
+def test_dates_beyond_the_window_can_no_longer_be_refetched() -> None:
+    """**5年窓の前端は毎日後ろへ動く。**
+
+    保存した当時は取れた日付が、今日はもう外にある。ここを見ずに「取り直せる」
+    と案内すると、成功しない .bat を何度も実行させることになる。警告が毎回出て、
+    しかも消えない。
+    """
+    from stock_ai.data.delisted import beyond_the_window
+
+    today = dt.date(2026, 9, 6)
+    dates = [dt.date(2021, 9, 4), dt.date(2021, 10, 1), dt.date(2026, 9, 6)]
+
+    assert beyond_the_window(dates, today) == [dt.date(2021, 9, 4)]
+
+
+def test_the_window_edge_moves_with_the_day() -> None:
+    """同じ日付が、昨日は窓の中で今日は外になる。**それが起きる形を押さえる。**"""
+    from stock_ai.data.delisted import beyond_the_window
+
+    day = dt.date(2021, 9, 4)
+
+    assert beyond_the_window([day], dt.date(2026, 9, 3)) == []
+    assert beyond_the_window([day], dt.date(2026, 9, 6)) == [day]
+
+
+def test_the_reach_follows_the_plan_and_not_a_fixed_five_years() -> None:
+    """**プランを上げた日に、何も起きないのが一番困る。**
+
+    例外も警告も出ないまま、5年より前の日付を「窓の外だから取れない」と判断
+    して要求を出さない。20年ぶん払って5年ぶんだけ落とすことになる。
+    """
+    from stock_ai.data.delisted import window_days
+
+    assert window_days("Light") == 5 * 365
+    assert window_days("Standard") == 10 * 365
+    assert window_days("Premium") == 20 * 365
+
+
+def test_an_unknown_plan_falls_to_the_narrow_side() -> None:
+    """**広いほうに倒さない。**
+
+    広く見積もると、取れない日付を「取れるはず」と案内して、成功しない .bat を
+    何度も実行させることになる。狭く見積もったときの害は、断られ方が1回記録に
+    残るだけである。
+    """
+    from stock_ai.data.delisted import window_days
+
+    assert window_days("Enterprise") == 5 * 365
+    assert window_days(None) == 5 * 365
+    assert window_days("") == 5 * 365
+
+
+def test_the_plan_name_is_read_however_it_was_typed() -> None:
+    """`.env` を手で編集する値である。**大文字小文字で黙って Light に落ちない。**"""
+    from stock_ai.data.delisted import window_days
+
+    assert window_days("premium") == 20 * 365
+    assert window_days(" PREMIUM ") == 20 * 365
+
+
+def test_the_default_start_moves_back_when_the_plan_goes_up() -> None:
+    """既定の開始日は固定値ではなく、プランと今日から引く。
+
+    1年を365日で数えているので、20年では閏日のぶん**5日ほど手前**に出る。
+    直さないのは、ずれが**狭い側**だからである——本当は届く日を届かないと
+    見なすだけで、その害は断られ方が1回記録に残らないことに留まる。逆向きに
+    ずらすと、取れない日付を取れると案内することになる。
+    """
+    from stock_ai.data.delisted import earliest_reachable
+
+    today = dt.date(2026, 9, 15)
+
+    assert earliest_reachable("Light", today) == dt.date(2021, 9, 16)
+    assert earliest_reachable("Premium", today) == dt.date(2006, 9, 20)
+    assert earliest_reachable("Premium", today) > today.replace(year=today.year - 20)
+
+
+def test_a_date_outside_light_is_inside_premium() -> None:
+    """同じ日付が、プランによって「取り直せない」から「取れる」に変わる。"""
+    from stock_ai.data.delisted import beyond_the_window
+
+    day = dt.date(2015, 6, 1)
+    today = dt.date(2026, 9, 15)
+
+    assert beyond_the_window([day], today, plan="Light") == [day]
+    assert beyond_the_window([day], today, plan="Premium") == []

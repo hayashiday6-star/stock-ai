@@ -25,6 +25,7 @@ Two things here were learned the expensive way, from a live run:
 from __future__ import annotations
 
 import datetime as dt
+from collections import Counter
 from collections.abc import Callable
 from enum import StrEnum
 from typing import Any
@@ -71,6 +72,23 @@ _SEGMENT_CODES: dict[Segment, frozenset[str]] = {
     Segment.STANDARD: frozenset({"0112", "0102", "0106"}),  # スタンダード (+ 旧二部/JQS)
     Segment.GROWTH: frozenset({"0113", "0104", "0107"}),  # グロース (+ 旧マザーズ/JQG)
 }
+
+#: 銘柄一覧に載るが、**この universe には入れない市場。**
+#:
+#: `0105` は TOKYO PRO Market。プロ投資家しか売買できず、通常の証券口座から
+#: は買えない。出典は J-Quants 公式 `j-quants-doc-mcp` の `reference_data.json`
+#: （`market_codes`、コミット 4f9e404）。
+#:
+#: **売買できない銘柄を universe に入れるのは、説#1 を閉じた理由の繰り返し
+#: である**——「現象は見つかったが、自分が買える銘柄では起きていなかった」。
+#:
+#: 実測でも裏が取れている（2026-09-08）。名簿に出て株価が1本も無い16銘柄は
+#: **全部が TOKYO PRO Market** で、四本値の行はあるのに**終値が1つも無い。**
+#: 5年ぶんで 1,126行あって0件という銘柄もある。売買が成立していない。
+EXCLUDED_MARKETS: frozenset[str] = frozenset({"0105"})
+
+#: 符号が無いときに市場名で見る語。
+EXCLUDED_MARKET_NAMES: tuple[str, ...] = ("TOKYO PRO",)
 
 #: Substrings matched against the segment *name*, for payloads that carry the
 #: label but not the code.
@@ -145,6 +163,25 @@ def _code_of(record: dict[str, Any]) -> str | None:
     return four_digit_code(_text(record, "Code", "LocalCode", "SecCode"))
 
 
+def _is_tradable_market(record: dict[str, Any]) -> bool:
+    """Whether the listing is on a market this account can actually trade.
+
+    TOKYO PRO Market はプロ投資家向けで、通常の口座からは買えない。**買えない
+    銘柄を universe に入れると、分位も収益率も「実行できない結果」になる。**
+
+    符号（`Mkt`）を優先し、無いときだけ市場名を見る。名前で先に見ると、符号と
+    名前が食い違う行を名前のほうで救ってしまう。
+    """
+    code = _text(record, "Mkt", "MktCd", "MarketCode")
+    if code:
+        return code not in EXCLUDED_MARKETS
+    label = _text(record, "MktNm", "MktCdName", "MarketCodeName", "MarketName")
+    if label:
+        upper = label.upper()
+        return not any(token in upper for token in EXCLUDED_MARKET_NAMES)
+    return True
+
+
 def _is_operating_company(record: dict[str, Any]) -> bool:
     """Whether a listing is an ordinary company rather than a fund.
 
@@ -164,6 +201,37 @@ def _is_operating_company(record: dict[str, Any]) -> bool:
     return from_tse33(code) is not Sector.OTHER
 
 
+#: 名簿から落とす理由。**表示用の文字列を鍵として使う。**
+#: 落とした件数を数えるだけでなく、**どの銘柄がどの理由で落ちたか**を外から
+#: 引けるようにするため。四本値にあって名簿に無い銘柄を突き合わせるとき、
+#: 「理由が言えない」ことだけが本当の食い違いである。
+NO_CODE = "4桁の証券コードにならない"
+UNTRADABLE = "買えない市場"
+FUND = "投信・ETF・REIT など"
+OFF_SEGMENT = "別の区分"
+
+
+def rejection_reason(record: dict[str, Any], segment: Segment = Segment.ALL) -> str | None:
+    """この行が名簿に残らない理由。残るなら ``None``。
+
+    **絞り込みの規則はここ1箇所にしか無い。** :func:`normalize_listings` は
+    これを呼ぶ。2つ持つと、片方だけ直したときに気付けない——このプロジェクトが
+    繰り返し踏んでいる型である。
+
+    順番を変えないこと。符号にならない行を「買えない市場」と呼ぶと、理由の
+    件数が意味を失う。
+    """
+    if not _matches_segment(record, segment):
+        return OFF_SEGMENT
+    if _code_of(record) is None:
+        return NO_CODE
+    if not _is_tradable_market(record):
+        return UNTRADABLE
+    if not _is_operating_company(record):
+        return FUND
+    return None
+
+
 def normalize_listings(
     records: list[dict[str, Any]], segment: Segment = Segment.ALL
 ) -> list[SecurityProfile]:
@@ -173,17 +241,16 @@ def normalize_listings(
     securities code, and funds (see :func:`_is_operating_company`).
     """
     profiles: dict[str, SecurityProfile] = {}
-    funds = 0
+    dropped: Counter[str] = Counter()
     unclassified = 0
 
     for record in records:
-        if not _matches_segment(record, segment):
+        reason = rejection_reason(record, segment)
+        if reason is not None:
+            dropped[reason] += 1
             continue
         code = _code_of(record)
-        if code is None:
-            continue
-        if not _is_operating_company(record):
-            funds += 1
+        if code is None:  # pragma: no cover - rejection_reason が先に弾く
             continue
         if _text(record, "S33", "Sec33Cd", "Sector33Code") is None:
             unclassified += 1
@@ -194,10 +261,19 @@ def normalize_listings(
             name=_text(record, "CoName", "Name", "CompanyName", "CoNameEn", "CompanyNameEnglish"),
             sector=str(_sector_of(record)),
             industry=_text(record, "S33Nm", "Sec33Name", "Sector33CodeName", "S17Nm", "Sec17Name"),
+            # **貸借区分（``Mrgn``/``MrgnNm``）。** 空売りできるかを決める。
+            # J-Quants の ``equities/master`` は日付を取るので、**過去のある日に
+            # どうだったか**が引ける。立花のマスタは現在値しか返さないので、
+            # ここが唯一の遡れる経路である。解約後は増えない。
+            lending=_text(record, "MrgnNm", "MarginCodeName", "Mrgn", "MarginCode"),
         )
 
-    if funds:
-        logger.info("Excluded %d fund/index listing(s) from the universe", funds)
+    if dropped[FUND]:
+        logger.info("Excluded %d fund/index listing(s) from the universe", dropped[FUND])
+    if dropped[UNTRADABLE]:
+        # **落とした数は必ず出す。** 黙って減ると、universe が縮んだことに
+        # 気付けない。
+        logger.info("Excluded %d listing(s) on markets we cannot trade", dropped[UNTRADABLE])
     if unclassified:
         logger.warning(
             "%d listing(s) had no sector code and were kept unfiltered - "

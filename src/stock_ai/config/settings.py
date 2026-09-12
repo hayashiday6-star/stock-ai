@@ -70,6 +70,17 @@ class Settings(BaseSettings):
     # 銘柄一覧の更新だけが黙って止まる。
     jp_universe_source: str = Field(default="jquants", validation_alias="JP_UNIVERSE_SOURCE")
 
+    # J-Quants の契約プラン。**遡れる年数がこれで決まる**（Light 5年 /
+    # Standard 10年 / Premium 20年）。
+    #
+    # 秘密ではないので `APIキー設定.bat` では扱えない。`.env` を直接編集する。
+    #
+    # **プランを上げた日に、ここを直し忘れると何も起きない。** 例外も警告も
+    # 出ないまま、5年より前の日付を「窓の外だから取れない」と判断して要求を
+    # 出さず、20年ぶん払って5年ぶんだけ落とすことになる。`stock-ai info` に
+    # 必ず出すのはそのためである——JP_PRICE_SOURCE で同じ間違いを踏んでいる。
+    jquants_plan: str = Field(default="Light", validation_alias="JQUANTS_PLAN")
+
     # --- AI providers (Phase 6) ---
     #: Which provider the commands use when none is named on the command line.
     #: It defaults to ``dummy`` so a fresh checkout runs without an API key,

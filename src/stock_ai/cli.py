@@ -10,6 +10,7 @@ import contextlib
 import datetime as dt
 import hashlib
 import math
+import shutil
 import sys
 import time
 from collections import Counter
@@ -57,6 +58,12 @@ from stock_ai.backtest.accumulation_signal import (
 )
 from stock_ai.backtest.cross_section import beta_to_benchmark, build_estimators, t_ratio
 from stock_ai.backtest.engine import BacktestEngine
+from stock_ai.backtest.event_census import (
+    count_52w_highs,
+    count_halt_resumptions,
+    count_limit_moves,
+    high_event_returns,
+)
 from stock_ai.backtest.factor_panel import build_panel
 from stock_ai.backtest.factor_test import (
     FactorTestResult,
@@ -92,6 +99,7 @@ from stock_ai.backtest.lowvol_census import VOLATILITY_WINDOWS
 from stock_ai.backtest.lowvol_census import run_census as run_lowvol_census
 from stock_ai.backtest.pead import (
     MIN_TURNOVER,
+    ONE_WAY_COST,
     OOS_FROM,
     SORT_REACTION,
     SORT_SUE,
@@ -107,10 +115,15 @@ from stock_ai.backtest.power import (
     COMPOSITE_PROCEED,
     COMPOSITE_STOP,
     DEFAULT_LAGS,
+    HIGH_HOLDING,
+    HIGH_IS_END,
+    HIGH_SEAL,
+    HIGH_SEAL_FLOOR,
     TARGET_T,
     composite_verdict,
     estimate_power,
     gate,
+    high_verdict,
     judge,
     periods_needed,
     required_improvement,
@@ -163,24 +176,36 @@ from stock_ai.data.bulk import latest_close as bulk_latest_close
 from stock_ai.data.delisted import (
     DEFAULT_SNAPSHOT_DIR,
     DEFAULT_STEP_DAYS,
-    ROLLING_WINDOW_START,
     TACHIBANA_SNAPSHOT_DIR,
     all_profiles,
+    beyond_the_window,
     covered_from,
+    dates_without_lending,
     delistings,
+    earliest_reachable,
     harvest_snapshots,
+    lending_coverage,
     membership,
     monthly_membership,
     monthly_snapshot,
+    read_snapshot,
     snapshot_dates,
+    snapshot_path,
+    stored_dates,
 )
 from stock_ai.data.fx import FxConverter
+from stock_ai.data.jquants_archive import DEFAULT_ARCHIVE_DIR, path_for, read_manifest
+from stock_ai.data.jquants_archive import archive as archive_bulk
+from stock_ai.data.jquants_archive import verify as verify_archive
 from stock_ai.data.jquants_bulk import (
+    ARCHIVE_ENDPOINTS,
     BULK_ENDPOINTS,
     DEADLINE_ENDPOINTS,
+    PLAN_HISTORY_YEARS,
     PLAN_REQUESTS_PER_MINUTE,
     PRESIGNED_URL_TTL,
     BulkFile,
+    download_raw,
     infer_plan,
     recommended_throttle,
 )
@@ -190,10 +215,47 @@ from stock_ai.data.jquants_bulk import group_by_symbol as bulk_group_by_symbol
 from stock_ai.data.jquants_bulk import list_files as bulk_list_files
 from stock_ai.data.jquants_bulk import records_from_csv as bulk_records_from_csv
 from stock_ai.data.jquants_bulk import span_years as bulk_span_years
+from stock_ai.data.jquants_consistency import NO_ROSTER_ROW, ROSTER_DISAGREES
+from stock_ai.data.jquants_consistency import check as consistency_check
+from stock_ai.data.jquants_crosscheck import DailyMatch, compare_daily, summarise
+from stock_ai.data.jquants_details import (
+    RevisionCensus,
+    describe_doc_type,
+    is_known_doc_type,
+    parse_details,
+)
+from stock_ai.data.jquants_details import (
+    revision_census as count_revisions,
+)
 from stock_ai.data.jquants_exit import CANCELLATION, audit
+from stock_ai.data.jquants_filter import baseline as filter_baseline
+from stock_ai.data.jquants_filter import census as filter_census
+from stock_ai.data.jquants_filter import product_separates
 from stock_ai.data.jquants_fundamentals import JQuantsFundamentalsProvider, normalize_statements
+from stock_ai.data.jquants_markets import HOLIDAY_DIVISION, TRADING_DIVISIONS, half_days_by_year
+from stock_ai.data.jquants_markets import agreement as calendar_agreement
+from stock_ai.data.jquants_markets import census as calendar_census
+from stock_ai.data.jquants_prices import frames_for as price_frames_for
+from stock_ai.data.jquants_prices import ingest as price_ingest
+from stock_ai.data.jquants_prices import join_returns as price_join_returns
+from stock_ai.data.jquants_prices import looks_unapplied as price_looks_unapplied
+from stock_ai.data.jquants_prices import probe_symbols
+from stock_ai.data.jquants_prices import split_day_returns as price_split_day_returns
 from stock_ai.data.jquants_profile import JQuantsProfileProvider
 from stock_ai.data.jquants_provider import JQuantsPriceProvider
+from stock_ai.data.jquants_read import census as archive_census
+from stock_ai.data.jquants_read import endpoint_of, read_archived, samples_per_endpoint
+from stock_ai.data.jquants_read import shape_of as archive_shape
+from stock_ai.data.jquants_rosters import (
+    DAILY_SNAPSHOT_DIR,
+    calendar_from_archive,
+    explain_missing,
+    market_on,
+    markets_on,
+    trading_days_from_archive,
+)
+from stock_ai.data.jquants_rosters import compare as roster_compare
+from stock_ai.data.jquants_rosters import extract as roster_extract
 from stock_ai.data.markets import split_by_market, to_yahoo_symbol
 from stock_ai.data.schema import ADJ_CLOSE, CLOSE, OPEN
 from stock_ai.data.service import FundamentalsService, IngestionService, IngestResult
@@ -203,7 +265,7 @@ from stock_ai.data.tachibana import default_version as tachibana_default_version
 from stock_ai.data.tachibana import version_warning as tachibana_version_warning
 from stock_ai.data.tachibana_universe import TachibanaUniverse
 from stock_ai.data.types import FinancialReport, Importance, SecurityProfile
-from stock_ai.data.universe import JQuantsUniverse, Segment
+from stock_ai.data.universe import FUND, JQuantsUniverse, Segment
 from stock_ai.data.yfinance_provider import (
     YFinanceFundamentalsProvider,
     YFinancePriceProvider,
@@ -337,6 +399,18 @@ def info() -> None:
     ):
         note = "" if chosen.strip().lower() in allowed else "  [red](未対応の値)[/]"
         table.add_row(label, f"{chosen or '(未設定)'}{note}")
+    # **遡れる年数はプランで決まる。** 上げた日にここを直し忘れると、例外も
+    # 警告も出ないまま、窓の外だと判断して古い日付を要求しない——20年ぶん
+    # 払って5年ぶんだけ落とす形になる。上の3つと同じ理由でここに出す。
+    plan = (settings.jquants_plan or "").strip().capitalize()
+    known = plan in PLAN_HISTORY_YEARS
+    reach = earliest_reachable(plan)
+    table.add_row(
+        "jquants_plan",
+        f"{settings.jquants_plan or '(未設定)'}"
+        + ("" if known else "  [red](未知の値。5年として扱う)[/]")
+        + f"  遡れる: {reach} まで",
+    )
     if settings.jp_price_source.strip().lower() == "tachibana":
         version = settings.tachibana_api_version or tachibana_default_version()
         warning = tachibana_version_warning(version)
@@ -2375,10 +2449,10 @@ def universe_snapshots(
 
 @app.command(name="delisted-harvest")
 def delisted_harvest(
-    start: str = typer.Option(
-        ROLLING_WINDOW_START.isoformat(),
+    start: str | None = typer.Option(
+        None,
         "--start",
-        help="First snapshot date. J-Quants refuses anything outside its 5-year window.",
+        help="First snapshot date. Defaults to the oldest the plan can reach.",
     ),
     end: str | None = typer.Option(None, "--end", help="Last snapshot date. Defaults to today."),
     step_days: int = typer.Option(
@@ -2389,6 +2463,11 @@ def delisted_harvest(
     ),
     refetch: bool = typer.Option(
         False, "--refetch", help="Re-request dates whose file already exists."
+    ),
+    fill_lending: bool = typer.Option(
+        False,
+        "--fill-lending",
+        help="Re-request only the saved dates that carry no lending class.",
     ),
     prices: bool = typer.Option(
         True, "--prices/--no-prices", help="Also backfill prices for symbols the DB lacks."
@@ -2425,21 +2504,39 @@ def delisted_harvest(
     settings = get_settings()
     configure_logging(settings.log_level)
 
-    first = _parse_date(start)
+    # **既定の開始日をプランから引く。** 固定値にすると、プランを上げた日に
+    # 何も起きない——例外も警告も出ないまま、窓の外だと判断して古い日付を要求
+    # しない。20年ぶん払って5年ぶんだけ落とす形になる。
+    first = earliest_reachable(settings.jquants_plan) if start is None else _parse_date(start)
     if first is None:
         raise typer.BadParameter(f"--start must be YYYY-MM-DD; got {start!r}.")
+    if start is None:
+        console.print(
+            f"[dim]開始日は JQUANTS_PLAN=[bold]{settings.jquants_plan}[/] から "
+            f"{first}。違うなら .env を直すか --start で渡す。[/]"
+        )
     last = dt.date.today() if end is None else _parse_date(end)
     if last is None:
         raise typer.BadParameter(f"--end must be YYYY-MM-DD; got {end!r}.")
-    try:
-        wanted = snapshot_dates(first, last, step_days)
-    except ValueError as exc:
-        raise typer.BadParameter(str(exc)) from exc
-
     target = Path(directory)
-    console.print(
-        f"名簿を [bold]{len(wanted)}[/] 日ぶん集める（{first} 〜 {last}、{step_days}日刻み）。"
-    )
+    if fill_lending:
+        # **取り直す対象を日付グリッドで決めない。** 日次で書かれる名簿は
+        # 30日刻みに乗らないので、グリッドで回すと取り残される。実際、63件を
+        # 取り直したあとに直近3日ぶんだけが残った。
+        wanted = dates_without_lending(target)
+        refetch = True
+        if not wanted:
+            console.print("[green]貸借区分の欠けている名簿は無い。[/] 取りに行かない。")
+            return
+        console.print(f"貸借区分の欠けている名簿だけを取り直す（[bold]{len(wanted)}[/] 日ぶん）。")
+    else:
+        try:
+            wanted = snapshot_dates(first, last, step_days)
+        except ValueError as exc:
+            raise typer.BadParameter(str(exc)) from exc
+        console.print(
+            f"名簿を [bold]{len(wanted)}[/] 日ぶん集める（{first} 〜 {last}、{step_days}日刻み）。"
+        )
     console.print(f"[dim]置き場所: {target}[/dim]")
     console.print(
         "[dim]取得元は J-Quants に固定（JP_PRICE_SOURCE は見ない）。立花のマスタは"
@@ -2702,6 +2799,1445 @@ def _report_plan(found: dict[str, list[BulkFile]]) -> None:
             )
             + "大幅超過が続くと約5分あいだ完全に遮断される。[/dim]"
         )
+
+
+def _differing_symbols(first: Path, second: Path, dates: list[dt.date]) -> set[str]:
+    """Collect every symbol that only one of the two rosters carries.
+
+    ``dates`` で、片方の名簿にしか出ない銘柄をすべて集める。
+
+    表に出す例は先頭5件に絞ってあるが、**説明が付くかを見るには全部が要る。**
+    5件を見て「全部 TOKYO PRO だ」と言うのは、5件を見ただけである。
+    """
+    found: set[str] = set()
+    for date in dates:
+        left = {profile.symbol for profile in read_snapshot(snapshot_path(first, date))}
+        right = {profile.symbol for profile in read_snapshot(snapshot_path(second, date))}
+        found |= (left - right) | (right - left)
+    return found
+
+
+def _roster_span(directory: Path, symbols: tuple[str, ...]) -> dict[str, tuple[dt.date, dt.date]]:
+    """Return the first and last roster date each symbol appears on.
+
+    **いつ名簿に載っていたか**が分かれば、株価が無い理由に見当が付く。全部が
+    同じ日で終わっていれば廃止の取りこぼし、1日しか出ていなければ名簿側の
+    ゆらぎ、といった具合である。
+    """
+    seen: dict[str, list[dt.date]] = {}
+    wanted = set(symbols)
+    for on, codes in membership(directory).items():
+        for symbol in wanted & codes:
+            seen.setdefault(symbol, []).append(on)
+    return {symbol: (min(days), max(days)) for symbol, days in sorted(seen.items())}
+
+
+def _progress_line(index: int, total: int, key: str, width: int = 100) -> str:
+    """One-line progress text, padded so a shorter line clears the last one.
+
+    **進捗は1行に収める。** 復帰文字で上書きするので、短い行のあとに長い行の
+    尻尾が残る。実際に `fins_summary_20260904.csv.gz08.csv.gz` という表示が
+    出た。
+
+    見えている文字だけを詰める。**タグごと詰めると閉じタグを切る。**
+    """
+    text = f"{index}/{total} {key}"
+    return text[: width - 1] + "…" if len(text) > width else text.ljust(width)
+
+
+def _existing_parent(path: Path) -> Path:
+    """Return ``path`` or its nearest existing ancestor.
+
+    ``path`` か、その一番近い既存の親。
+
+    空き容量は**これから作るディレクトリでは測れない。** 測れないまま黙って
+    進むと、容量の話が出力から消える。
+    """
+    current = path.resolve()
+    while not current.exists() and current != current.parent:
+        current = current.parent
+    return current
+
+
+def _bytes_label(total: int) -> str:
+    """Format a byte count without rounding a real endpoint down to zero.
+
+    バイト数を読める単位で。**0 に丸めない。**
+
+    下見で `investor-types` が 61 本あるのに「0 MB」と出た。四捨五入である
+    ことは合っているが、**「取れなかった」と同じ見た目になる。** 数十本の
+    エンドポイントが 0 と並んでいたら、そこで手が止まる——止まる先が課金中
+    だと高い。
+    """
+    if total >= 1_000_000_000:
+        return f"{total / 1_000_000_000:,.2f} GB"
+    if total >= 10_000_000:
+        return f"{total / 1_000_000:,.0f} MB"
+    if total >= 1_000_000:
+        return f"{total / 1_000_000:,.1f} MB"
+    if total >= 1_000:
+        return f"{total / 1_000:,.0f} KB"
+    return f"{total:,} B"
+
+
+@app.command(name="jquants-archive")
+def jquants_archive(
+    endpoints: list[str] = typer.Option(  # noqa: B008 - typer builds the default list
+        list(ARCHIVE_ENDPOINTS), "--endpoint", help="Repeat to pick. Default: everything."
+    ),
+    directory: str = typer.Option(
+        str(DEFAULT_ARCHIVE_DIR), "--dir", help="Where the raw files are kept."
+    ),
+    throttle: float | None = typer.Option(
+        None, "--throttle", help="Seconds between files. Default: from JQUANTS_PLAN."
+    ),
+    dry_run: bool = typer.Option(False, "--dry-run", help="List and size only. Fetch nothing."),
+) -> None:
+    """Save the bulk files as they arrive, before the plan that serves them ends.
+
+    **取得は1回きり、解析は何度でもやり直せる。** 契約は 2026-09-22 で終わるが、
+    パーサの誤りは10月にも11月にも見つかる。**原本が無ければ、そのとき取り返せ
+    ない。**
+
+    展開しない。CSV に直さない。**返ってきたバイト列をそのまま書く。**
+    名簿を CSV で残したのと同じ理屈である。
+
+    途中で止めても安全に再開できる。既にあって大きさの合うファイルは落としに
+    行かない。**大きさが合わないものは落とし直す**——「ファイルがある」と
+    「中身が揃っている」は別で、転送が途中で切れても例外が出ないことがある。
+
+    `--dry-run` は1バイトも落とさずに本数と合計サイズだけを出す。**先に回す
+    こと。** 何本・何MBかを知らずに始めない。
+    """
+    settings = get_settings()
+    configure_logging(settings.log_level)
+
+    target = Path(directory)
+    wanted = [item.strip() for item in endpoints if item.strip()]
+    if not wanted:
+        raise typer.BadParameter("--endpoint に1つ以上要る。")
+
+    # **間隔をプランから引く。** 0.5 秒は 120回/分で、**Light の上限の2倍**
+    # である。2026-09-07 のリハーサルで、384本のうち74本が 429 で落ちた。
+    # `recommended_throttle` は前からあったのに、この口が呼んでいなかった
+    # ——「CLI側が新しい設定を配線し忘れる」型そのものである。
+    plan = (settings.jquants_plan or "").strip().capitalize()
+    if throttle is None:
+        throttle = recommended_throttle(plan) or 1.2
+        console.print(
+            f"[dim]間隔は JQUANTS_PLAN=[bold]{settings.jquants_plan}[/] から "
+            f"{throttle:.2f} 秒（{PLAN_REQUESTS_PER_MINUTE.get(plan, '?')} 回/分の上限に"
+            f"余裕を見た値）。[/]"
+        )
+
+    console.print(f"原本の置き場所: [bold]{target}[/]　／　対象 {len(wanted)} エンドポイント")
+    console.print(
+        "[dim]**展開せずにそのまま保存する。** 解析は後から何度でもやり直せるが、"
+        "取得は 2026-09-22 で終わる。[/]"
+    )
+
+    table = Table(title="一覧（1バイトも落としていない）")
+    for column in ("エンドポイント", "本数", "覆う範囲", "合計"):
+        table.add_column(column, justify="left" if column == "エンドポイント" else "right")
+
+    found: list[BulkFile] = []
+    refused: dict[str, str] = {}
+    for name in wanted:
+        try:
+            files = bulk_list_files(settings.jquants_api_key, endpoint=name)
+        except Exception as exc:  # noqa: BLE001 - 断られ方そのものが記録に値する
+            # **例外の型名だけを出さない。** `DataError` とだけ書くと、
+            # 「プランに入っていない」と「エンドポイント名が違う」が同じに
+            # 見える。2026-09-06 の下見では後者が6本混じっていて、断られ方の
+            # 中身を出していなかったせいで気付くのが1手遅れた。
+            refused[name] = f"{type(exc).__name__}: {exc}"
+            table.add_row(name, "[yellow]—[/]", f"[yellow]{type(exc).__name__}[/]", "")
+            continue
+        span = bulk_coverage(files)
+        table.add_row(
+            name,
+            f"{len(files):,}",
+            f"{span[0]} 〜 {span[1]}" if span else "—",
+            _bytes_label(sum(item.size for item in files)),
+        )
+        found.extend(files)
+    console.print(table)
+
+    total_bytes = sum(item.size for item in found)
+    console.print(f"合計 [bold]{len(found):,}[/] 本、[bold]{_bytes_label(total_bytes)}[/]。")
+
+    if found:
+        # **本数と MB だけでは、何日ぶんの作業かが分からない。** 契約が8日
+        # しかないので、そこがそのまま判断の材料になる。
+        floor_seconds = len(found) * max(throttle, 0.0)
+        console.print(
+            f"[dim]間隔 {throttle:.2f} 秒なら、待ち時間だけで最短 "
+            f"[bold]{floor_seconds / 60:,.0f} 分[/]。**転送の時間は別に乗る。**[/]"
+        )
+        try:
+            free = shutil.disk_usage(_existing_parent(target)).free
+        except OSError:
+            free = None
+        if free is not None:
+            # 展開しないので、必要なのは一覧の合計とほぼ同じ。倍を目安に
+            # するのは、取り直しと、この先エンドポイントが増えるぶんである。
+            enough = free > total_bytes * 2
+            console.print(
+                f"[dim]置き場所の空き [bold]{_bytes_label(free)}[/]。[/]"
+                if enough
+                else f"[yellow]置き場所の空きが {_bytes_label(free)} しかない。[/] "
+                "**途中で書けなくなると、切れたファイルが残る。**"
+            )
+
+    if refused:
+        # **断られ方は判断の材料である。** 定型ではないので削らない。
+        why = Table(title=f"落ちた理由 ({len(refused)})")
+        why.add_column("エンドポイント")
+        why.add_column("断られ方")
+        for name, reason in refused.items():
+            why.add_row(name, reason[:120])
+        console.print(why)
+        console.print(
+            "[dim]**「プランに入っていない」と「名前が違う」を読み分けること。**"
+            "プランで説明が付かない1本が混じっていたら、名前を疑う。[/]"
+        )
+
+    if dry_run:
+        console.print("[dim]--dry-run なので、ここで止める。1バイトも落としていない。[/]")
+        return
+    if not found:
+        console.print("[yellow]落とすものが無い。[/]")
+        return
+
+    def show(index: int, total: int, key: str) -> None:
+        # **進捗は1行に収める。** 途中経過を残す形にすると、貼ったときに
+        # 何百行にもなる。
+        console.print(f"[dim]{_progress_line(index, total, key)}[/]", end="\r")
+        if throttle:
+            time.sleep(throttle)
+
+    report = archive_bulk(
+        found,
+        lambda key: download_raw(settings.jquants_api_key, key),
+        target,
+        progress=show,
+    )
+    console.print()
+    console.print(report.summary())
+
+    if report.truncated:
+        console.print(
+            f"[yellow]大きさが合わないまま残したもの {len(report.truncated)} 本。[/] "
+            "もう一度実行すると落とし直す。"
+        )
+    if report.failed:
+        table = Table(title=f"落とせなかった ({len(report.failed)})")
+        table.add_column("key")
+        table.add_column("断られ方")
+        for key, why in list(report.failed.items())[:20]:
+            table.add_row(key, why)
+        console.print(table)
+        console.print("[dim]再実行すると、落とせたものは飛ばして続きから取る。[/]")
+
+    console.print()
+    console.print(
+        "[dim]原本は git で追跡していない（大きすぎる）。**追跡しない = 消えてよい、"
+        "ではない。** 2026-09-22 を過ぎたら取り直せないので、外付けか同期フォルダに"
+        "写しを1つ置くこと。写した先でも `原本の照合.bat` で欠けを見つけられる。[/]"
+    )
+
+
+@app.command(name="jquants-archive-read")
+def jquants_archive_read(
+    directory: str = typer.Option(
+        str(DEFAULT_ARCHIVE_DIR), "--dir", help="Where the raw files are kept."
+    ),
+    shapes: bool = typer.Option(
+        True, "--shapes/--no-shapes", help="Also show one file's columns per endpoint."
+    ),
+) -> None:
+    """Read every archived original through its parser and count the rows.
+
+    **「落とせた」と「読めた」は別である。** このプロジェクトは2日で2回それを
+    踏んでいる。原本を保存したあとで読み口が繋がっていないと分かるのが、
+    いちばん高い。
+
+    **配布サンプルで通ったことは、実物で通ったことにならない。** サンプルは
+    1〜6行しかなく、月次の全銘柄ファイルとは形が違いうる。文字コードも、
+    サンプルが cp932 だったからといって一括ファイルもそうとは限らない。
+
+    落とすことはしない。**解約後にも実行できる。**
+    """
+    settings = get_settings()
+    configure_logging(settings.log_level)
+
+    target = Path(directory)
+    reports = archive_census(target)
+    if not reports:
+        console.print("[yellow]原本がまだ無い。[/] 先に `原本をまるごと保存.bat`。")
+        return
+
+    table = Table(title="原本を読み口に通す（1バイトも落としていない）")
+    for column, justify in (
+        ("エンドポイント", "left"),
+        ("本", "right"),
+        ("行", "right"),
+        ("状態", "left"),
+    ):
+        table.add_column(column, justify=justify)
+
+    unread = 0
+    for endpoint in sorted(reports):
+        report = reports[endpoint]
+        if report.rows:
+            state = "[green]読めた[/]"
+            if report.empty:
+                state += f"  [yellow]中身なし {len(report.empty)} 本[/]"
+            if report.failed:
+                state += f"  [red]読めず {len(report.failed)} 本[/]"
+        elif report.failed and all(why == "読み口が無い" for why in report.failed.values()):
+            # **消さずに出す。** 読み口が無いことと、読めないことは別である。
+            state = "[dim]読み口を作っていない[/]"
+            unread += report.files
+        else:
+            state = f"[red]読めなかった {len(report.failed)} 本[/]"
+        table.add_row(endpoint, f"{report.files:,}", f"{report.rows:,}", state)
+    console.print(table)
+
+    if unread:
+        console.print(
+            f"[dim]{unread:,} 本は読み口を作っていない（株価・名簿・財務は既存の"
+            "取り込みが読む）。**保存はできている。**[/]"
+        )
+
+    broken = {
+        key: why
+        for report in reports.values()
+        for key, why in report.failed.items()
+        if why != "読み口が無い"
+    }
+    if broken:
+        problems = Table(title=f"読めなかった ({len(broken)})")
+        problems.add_column("key")
+        problems.add_column("理由")
+        for key, why in list(broken.items())[:10]:
+            problems.add_row(key, why[:80])
+        console.print(problems)
+
+    if not shapes:
+        return
+
+    console.print()
+    forms = Table(title="1本ずつ見た形（実物であって、配布サンプルではない）")
+    for column in ("エンドポイント", "行", "文字", "日付の範囲", "列"):
+        forms.add_column(column, justify="right" if column == "行" else "left")
+    for endpoint, keys in sorted(samples_per_endpoint(target).items()):
+        for key in keys:
+            found = archive_shape(target, key)
+            if found is None:
+                continue
+            span = f"{found.first_date} 〜 {found.last_date}" if found.first_date else "—"
+            columns = ", ".join(found.columns[:5]) + ("…" if len(found.columns) > 5 else "")
+            # **月次か日次かを名前で出す。** 1本が何日ぶんかで、20年の本数が
+            # 20倍変わる。
+            kind = next((name for name in ("historical", "live") if f"/{name}/" in key), "—")
+            forms.add_row(
+                f"{endpoint}  [dim]{kind}[/]",
+                f"{found.rows:,}",
+                found.encoding,
+                span,
+                columns,
+            )
+    console.print(forms)
+
+
+@app.command(name="jquants-daily-rosters")
+def jquants_daily_rosters(
+    archive_dir: str = typer.Option(
+        str(DEFAULT_ARCHIVE_DIR), "--dir", help="Where the raw files are kept."
+    ),
+    out_dir: str = typer.Option(
+        str(DAILY_SNAPSHOT_DIR), "--out", help="Where the daily rosters are written."
+    ),
+    refetch: bool = typer.Option(False, "--refetch", help="Rewrite dates that already exist."),
+) -> None:
+    """Turn the archived bulk master into one roster per trading day.
+
+    **一括ファイル1本の中に、その月の全営業日ぶんが入っている。** 2026-08 の
+    1本が 88,870 行で、4,441銘柄 × 20営業日である。
+
+    いまディスクにある名簿は JSON API を30日刻みで叩いた66枚だが、**同じ5年
+    ぶんが一括には約1,220枚（全営業日）入っている。** 廃止が「どの月か」から
+    「どの日か」になる。
+
+    **API を1回も叩かない。** 原本さえあれば、解約後にも実行できる。
+
+    書き出し先は `universe_snapshots/` とは別である。**混ぜない**——絞り込み
+    が食い違ったとき、境目をまたいだ差が「消えてもいない銘柄が消えた」になる。
+    """
+    settings = get_settings()
+    configure_logging(settings.log_level)
+
+    source, target = Path(archive_dir), Path(out_dir)
+    console.print(f"原本: [bold]{source}[/]　／　書き出し先: [bold]{target}[/]")
+    console.print(
+        "[dim]**API を1回も叩かない。** 原本から取り出すだけなので、解約後にも実行できる。[/]"
+    )
+
+    def show(index: int, total: int, key: str) -> None:
+        # **進捗は1行に収める。**
+        console.print(f"[dim]{_progress_line(index, total, key)}[/]", end="\r")
+
+    report = roster_extract(source, target, refetch=refetch, progress=show)
+    console.print()
+    console.print(report.summary())
+
+    if report.written:
+        first, last = min(report.written), max(report.written)
+        console.print(f"覆う範囲: [bold]{first} 〜 {last}[/]")
+    if report.undated:
+        # **列名が変わった疑いである。** 黙って捨てると、その月だけ薄くなる。
+        console.print(
+            f"[yellow]日付を読めない行が {report.undated:,} 行あった。[/] "
+            "**列名が変わった疑いがある。** 原本を1本見ること。"
+        )
+    if report.empty:
+        console.print(
+            f"[yellow]絞り込みのあと1銘柄も残らなかった日が {len(report.empty)} 日。[/] "
+            "書いていない——書くと、その日に全銘柄が廃止したように見える。"
+        )
+    if report.failed:
+        table = Table(title=f"読めなかった ({len(report.failed)})")
+        table.add_column("key")
+        table.add_column("理由")
+        for key, why in list(report.failed.items())[:10]:
+            table.add_row(key, why[:80])
+        console.print(table)
+
+    existing = len(stored_dates(Path(DEFAULT_SNAPSHOT_DIR)))
+    written = len(stored_dates(target))
+    if written:
+        console.print(
+            f"[dim]30日刻みの名簿は {existing} 枚、営業日ごとは [bold]{written}[/] 枚。"
+            "**別のフォルダに置いてある。** 混ぜると、絞り込みの違いが"
+            "「消えてもいない銘柄が消えた」に化ける。[/]"
+        )
+
+    # **別の経路で作った同じものを突き合わせる。** 片方だけを見ているかぎり、
+    # 絞り込みの食い違いは「銘柄数がちょっと違う」としか見えず、それは毎日
+    # 変わる値なので区別が付かない。
+    console.print()
+    check = roster_compare(Path(DEFAULT_SNAPSHOT_DIR), target)
+    console.print(f"[bold]突き合わせ[/]: {check.summary()}")
+    if check.differing:
+        table = Table(title=f"食い違った日 ({len(check.differing)})")
+        for column in ("日付", "30日刻みだけ", "営業日ごとだけ", "例"):
+            table.add_column(column)
+        for date, (left, right) in list(check.differing.items())[:10]:
+            sample = check.examples.get(date, ([], []))
+            table.add_row(
+                str(date),
+                f"{left}",
+                f"{right}",
+                ("−" + "、".join(sample[0]) if sample[0] else "")
+                + ("　+" + "、".join(sample[1]) if sample[1] else ""),
+            )
+        console.print(table)
+        # **「たぶん◯◯だろう」で閉じない。** 片方にしか無い銘柄の市場区分を
+        # 原本から引いて、説明が付くかどうかを数える。1件でも別のものが混じって
+        # いれば、そこは説明できていない。
+        gap = _differing_symbols(Path(DEFAULT_SNAPSHOT_DIR), target, list(check.differing))
+        # **日付ごとの差を1度だけ作る。** 銘柄×日付で引き直すと、同じファイル
+        # を何百回も読むことになる。
+        per_date = {
+            date: _differing_symbols(Path(DEFAULT_SNAPSHOT_DIR), target, [date])
+            for date in sorted(check.differing)
+        }
+        # **市場は移る。** TOKYO PRO Market に上場してから、数年後にスタンダード
+        # やグロースへ変わる銘柄がある。最後に見えた姿で引くと、当時 TOKYO PRO
+        # だった銘柄が「スタンダード」と出て、説明の付くものが付かなくなる。
+        history = markets_on(source, gap) if gap else {}
+        excluded = {
+            symbol
+            for symbol in gap
+            if all(
+                "TOKYO PRO" in (market_on(history.get(symbol, {}), date) or "").upper()
+                for date, gap_on in per_date.items()
+                if symbol in gap_on
+            )
+        }
+        markets = {
+            symbol: market_on(history.get(symbol, {}), max(check.differing)) or "" for symbol in gap
+        }
+        unexplained = sorted(gap - excluded)
+        console.print(
+            f"[dim]片方にしか無い銘柄は {len(gap)} 種類。"
+            f"うち買えない市場（TOKYO PRO Market）が {len(excluded)}。[/]"
+        )
+        if unexplained:
+            console.print(
+                f"[yellow]説明の付かない銘柄が {len(unexplained)} ある。[/] "
+                "**生存バイアスの計算に使う前に、ここを説明できるようにすること。**"
+            )
+            # **「6件ある」で止めない。** いつ食い違い、一括の名簿にそもそも
+            # 出るのかまで出せば、上場直後のずれか、出所そのものの違いかが
+            # 分かれる。前者は端の1日、後者は全期間である。
+            detail = Table(title="説明の付かない銘柄")
+            for column in ("銘柄", "いまの市場", "食い違った日の市場", "食い違った日"):
+                detail.add_column(column)
+            for symbol in unexplained[:10]:
+                days = [str(date) for date, gap_on in per_date.items() if symbol in gap_on]
+                # **その日の市場**を出す。いまの市場だけでは、移った銘柄が
+                # 説明の付かないものに見える。
+                when = [
+                    market_on(history.get(symbol, {}), date) or "不明"
+                    for date, gap_on in per_date.items()
+                    if symbol in gap_on
+                ]
+                detail.add_row(
+                    symbol,
+                    markets.get(symbol) or "市場不明",
+                    "、".join(sorted(set(when))),
+                    "、".join(days[:3]) + ("…" if len(days) > 3 else ""),
+                )
+            console.print(detail)
+        else:
+            console.print(
+                "[green]食い違いは、買えない市場を universe から外したぶんで"
+                "全部説明が付く。[/] [dim]git にある名簿は、外す前の規則で"
+                "作られている。[/]"
+            )
+    elif check.common:
+        console.print(
+            "[green]重なる日付では、2つの経路が同じ名簿を出している。[/] "
+            "[dim]片方だけを見ていては確かめられないことである。[/]"
+        )
+
+    # **重ならなかった日付を「たぶん休日」で済ませない。** 30日刻みの日付は
+    # 休日にも当たり、一括には立会日しか無いので重ならない。それは欠けでは
+    # ない。だが立会日なのに名簿が無い日が混じっていたら、それは本当の欠けで
+    # ある。**件数では区別が付かないので、カレンダーに当てる。**
+    grid_only = sorted(set(stored_dates(Path(DEFAULT_SNAPSHOT_DIR))) - set(stored_dates(target)))
+    if grid_only:
+        holidays, gaps = explain_missing(grid_only, trading_days_from_archive(source))
+        if holidays and not gaps:
+            console.print(
+                f"[dim]重ならなかった {len(grid_only)} 日は、**全部が非立会日**だった"
+                "（取引カレンダーで確認）。欠けではない。[/]"
+            )
+        elif gaps:
+            console.print(
+                f"[yellow]立会日なのに営業日ごとの名簿が無い日が {len(gaps)} 日ある。[/] "
+                + "、".join(str(day) for day in gaps[:10])
+                + "。**これは本当の欠けである。**"
+            )
+        else:
+            console.print(
+                f"[dim]重ならなかった {len(grid_only)} 日は、取引カレンダーの原本が"
+                "無いので説明できない。[/]"
+            )
+
+
+@app.command(name="jquants-bulk-prices")
+def jquants_bulk_prices(
+    archive_dir: str = typer.Option(
+        str(DEFAULT_ARCHIVE_DIR), "--dir", help="Where the raw files are kept."
+    ),
+    limit: int | None = typer.Option(None, "--limit", help="Read only this many files. Try small."),
+) -> None:
+    """Load prices for every symbol from the archived bulk bars.
+
+    **銘柄ごとに叩かない。** `BulkIngester` は1銘柄1リクエストで、この経路は
+    2回止まっている——84銘柄で1回、3,700銘柄で1回、どちらも 429 である。
+    20年 × 約4,400銘柄は1週間に収まらない。
+
+    一括ファイルには**全銘柄の四本値が日付ごとに**入っている。**API を1回も
+    叩かない**ので、解約後にも実行できる。
+
+    保存するのは**生値**である。`get_prices` が読み出しのときに
+    `adj_close / close` を掛けるので、ここで調整すると二重に掛かる。
+
+    何度実行しても同じ結果になる。**DB は作り直せる**——原本と違って、ここでの
+    失敗は安い。
+    """
+    settings = get_settings()
+    configure_logging(settings.log_level)
+
+    source = Path(archive_dir)
+    database = Database()
+    database.create_all()
+
+    console.print(f"原本: [bold]{source}[/]")
+    console.print(
+        "[dim]**API を1回も叩かない。** 一括ファイルから読むだけなので、解約後にも実行できる。[/]"
+    )
+    if limit:
+        console.print(f"[yellow]{limit} 本だけ読む。[/] まず少数で試す形。")
+
+    def show(index: int, total: int, key: str) -> None:
+        # **進捗は1行に収める。**
+        console.print(f"[dim]{_progress_line(index, total, key)}[/]", end="\r")
+
+    with database.session() as session:
+        repository = PriceRepository(session)
+        report = price_ingest(
+            source,
+            lambda symbol, frame: repository.upsert_prices(symbol, frame, market="JP"),
+            limit=limit,
+            progress=show,
+        )
+        session.commit()
+
+    console.print()
+    console.print(report.summary())
+
+    if report.skipped_no_close:
+        # **売買が無かった日と、値が欠けた日は別である。** 数えて出す。
+        console.print(
+            f"[dim]終値の無い行 {report.skipped_no_close:,} を落とした。"
+            "`0` を入れると「値がゼロになった日」として並ぶ。[/]"
+        )
+        if report.no_close_but_traded:
+            # **もっともらしい数では足りない。** 売買が無ければ終値も出来高も
+            # 無い。出来高だけあるなら、読み方か列の意味のどちらかが違う。
+            console.print(
+                f"[red]うち {report.no_close_but_traded:,} 行は出来高がある。[/] "
+                "**「取引が無かった日」では説明が付かない。** 読み方か、向こうの"
+                "列の意味が変わった疑いがある。原本を1本見ること。"
+            )
+        else:
+            console.print(
+                "[dim]どれも出来高が無い。**「その日は取引が無かった」で説明が付いている。**[/]"
+            )
+    if report.undated:
+        console.print(
+            f"[yellow]日付を読めない行が {report.undated:,} 行あった。[/] "
+            "**列名が変わった疑いがある。**"
+        )
+    console.print(
+        f"[dim]調整値は `AdjFactor` から組み立てた（分割の当たった行 {report.splits:,}）。[/]"
+    )
+    if not report.adj_c_rows:
+        # **「一致した」と「比べていない」を混ぜない。**
+        console.print(
+            "[dim]ファイルに `AdjC` の列は無い（配布サンプルには有る）。"
+            "**突き合わせる相手がいないので、組み立てが唯一の調整である。**[/]"
+        )
+    elif report.adj_mismatch:
+        console.print(
+            f"[yellow]`AdjC` のある {report.adj_c_rows:,} 行のうち "
+            f"{report.adj_mismatch:,} 行が組み立てと違う。[/] どちらが正しいか"
+            "を決めるまで、分割をまたぐ期間を分析に使わないこと。"
+        )
+    else:
+        console.print(f"[green]`AdjC` のある {report.adj_c_rows:,} 行と、組み立てが一致した。[/]")
+    if report.failed:
+        table = Table(title=f"読めなかった ({len(report.failed)})")
+        table.add_column("key")
+        table.add_column("理由")
+        for key, why in list(report.failed.items())[:10]:
+            table.add_row(key, why[:80])
+        console.print(table)
+
+    if not report.symbols:
+        return
+
+    # **継ぎ目の検査は1日しか見ていない。** 期間の内側で起きた分割は、そこでは
+    # 確かめられない。組み立てを `j >= d` で書いていたら、継ぎ目は綺麗なまま
+    # 分割日だけが1日ずつずれる——どちらも例外は出ない。
+    if report.split_table:
+        with database.session() as session:
+            repository = PriceRepository(session)
+            on_split = price_split_day_returns(repository.get_prices, report.split_table)
+        if on_split:
+            # **「大きく動いた」だけでは判定にならない。** 権利落ち日に本当に
+            # 25% 動く銘柄はあるし、分割以外の事由（併合・無償割当・合併）でも
+            # 係数は立つ。規約を間違えていれば、動きは**ちょうど係数 - 1**に
+            # なり、しかも**全件がそうなる。** 見るべきはそこである。
+            unapplied = [item for item in on_split if price_looks_unapplied(item[2], item[3])]
+            loud = [item for item in on_split if abs(item[2]) > 0.2]
+            middle = sorted(abs(item[2]) for item in on_split)[len(on_split) // 2]
+            if unapplied:
+                console.print(
+                    f"[red]権利落ち日の動きが係数そのものになっている例が "
+                    f"{len(unapplied)}/{len(on_split)}。[/] "
+                    "**調整の組み立てがずれている。** "
+                    + "、".join(f"{a} {b} {c:+.0%}(係数 {d})" for a, b, c, d in unapplied[:5])
+                )
+            else:
+                console.print(
+                    f"[green]権利落ち日 {len(on_split):,} 件は、どれも係数どおりの"
+                    f"ずれ方をしていない[/]（値動きの中央値 {middle:.1%}）。"
+                    "[dim] 組み立ては効いている。[/]"
+                )
+                if loud:
+                    console.print(
+                        f"[dim]うち {len(loud)} 件は 20% 以上動いているが、**どの係数とも"
+                        "合わない**——本当に動いた日か、分割以外の事由である。[/]"
+                    )
+
+    boundary = _archive_first_date(source)
+    if boundary is None:
+        return
+    console.print()
+    console.print(f"[dim]継ぎ目（原本が覆い始める日）: {boundary}[/]")
+
+    sample = sorted(report.symbols)[:: max(1, len(report.symbols) // 100)][:100]
+    with database.session() as session:
+        repository = PriceRepository(session)
+        jumps = price_join_returns(repository.get_prices, sample, boundary)
+
+    if not jumps:
+        console.print(
+            "[dim]継ぎ目をまたぐ銘柄が無い。**確かめられない**——DB に原本より"
+            "前の株価が入っていないだけかもしれない。[/]"
+        )
+        return
+
+    big = [(symbol, value) for symbol, value in jumps if abs(value) > 0.2]
+    typical = sorted(abs(value) for _symbol, value in jumps)[len(jumps) // 2]
+    if big:
+        console.print(
+            f"[red]継ぎ目の日に 20% 以上動いた銘柄が {len(big)}/{len(jumps)}。[/] "
+            "**分割調整の基準が出所で違う疑いがある。** "
+            + "、".join(f"{symbol} {value:+.0%}" for symbol, value in big[:5])
+        )
+        console.print(
+            "[yellow]このまま分析に使わないこと。[/] 立花と J-Quants のどちらか"
+            "1つに揃えるか、継ぎ目より前を使わないかを決める。"
+        )
+    else:
+        console.print(
+            f"[green]継ぎ目の日は普通の1日に見える[/]（{len(jumps)} 銘柄、"
+            f"値動きの中央値 {typical:.1%}）。"
+            "[dim] 分割調整の基準は、出所をまたいでも揃っている。[/]"
+        )
+
+
+def _archive_window(directory: Path) -> tuple[dt.date, dt.date] | None:
+    """Return the first and last date the archived bars cover.
+
+    原本が覆う期間。**取り込みの報告と DB を突き合わせる相手**になる。
+    """
+    from stock_ai.data.jquants_prices import BARS_ENDPOINT
+
+    keys = [key for key in sorted(read_manifest(directory)) if endpoint_of(key) == BARS_ENDPOINT]
+    if not keys:
+        return None
+    first = archive_shape(directory, keys[0])
+    last = archive_shape(directory, keys[-1])
+    if first is None or last is None or not first.first_date or not last.last_date:
+        return None
+    start, end = _parse_date(first.first_date), _parse_date(last.last_date)
+    return (start, end) if start and end else None
+
+
+def _archive_first_date(directory: Path) -> dt.date | None:
+    """Return the first date the archived bars cover.
+
+    原本が覆い始める日。**継ぎ目はここである。**
+    """
+    from stock_ai.data.jquants_prices import BARS_ENDPOINT
+    from stock_ai.data.jquants_read import endpoint_of
+
+    manifest = read_manifest(directory)
+    keys = [key for key in sorted(manifest) if endpoint_of(key) == BARS_ENDPOINT]
+    if not keys:
+        return None
+    found = archive_shape(directory, keys[0])
+    if found is None or not found.first_date:
+        return None
+    return _parse_date(found.first_date)
+
+
+@app.command(name="jquants-revision-census")
+def jquants_revision_census(
+    archive_dir: str = typer.Option(
+        str(DEFAULT_ARCHIVE_DIR), "--dir", help="Where the raw files are kept."
+    ),
+    show: int = typer.Option(12, "--show", help="How many document types to list."),
+) -> None:
+    """Count whether forecast revisions arrive on their own day.
+
+    **説#5 を閉じた理由そのものを測る。** 記録にはこうある。
+
+        予想修正は**独立した開示として取得できない**。イベント日が決算発表日
+        と重なる。「決算とは独立」という前提が崩れる。
+
+    公式の書類種別一覧には `EarnForecastRevision`（業績予想の修正）が**独立
+    した種別として載っている。** 載っていることと、別の日に出ることは別で
+    ある——**後者を数える。**
+
+    落とすことはしない。保存済みの `fins/summary` を読むだけである。
+    """
+    settings = get_settings()
+    configure_logging(settings.log_level)
+
+    source = Path(archive_dir)
+    keys = [key for key in sorted(read_manifest(source)) if endpoint_of(key) == "/fins/summary"]
+    if not keys:
+        console.print("[yellow]`/fins/summary` の原本が無い。[/]")
+        return
+
+    census = RevisionCensus()
+    for index, key in enumerate(keys, start=1):
+        console.print(f"[dim]{_progress_line(index, len(keys), key)}[/]", end="\r")
+        try:
+            count_revisions(parse_details(read_archived(path_for(source, key))), census)
+        except Exception as exc:  # noqa: BLE001 - どこで読めないかが記録に値する
+            console.print(f"[yellow]{key}: {type(exc).__name__}[/]")
+
+    console.print()
+    table = Table(title=f"書類種別（{len(keys)} 本ぶん）")
+    table.add_column("書類種別")
+    table.add_column("件数", justify="right")
+    table.add_column("説明")
+    ordered = sorted(census.doc_types.items(), key=lambda pair: -pair[1])
+    for doc_type, count in ordered[:show]:
+        table.add_row(doc_type or "(空)", f"{count:,}", describe_doc_type(doc_type) or "")
+    console.print(table)
+    if len(ordered) > show:
+        console.print(f"[dim]他 {len(ordered) - show} 種別。[/]")
+
+    unknown = [name for name in census.doc_types if name and not is_known_doc_type(name)]
+    if unknown:
+        # **公式の一覧に無い種別は、読み取りが推測になっている。**
+        console.print(
+            f"[yellow]公式の一覧に無い書類種別が {len(unknown)} 種類。[/] " + "、".join(unknown[:5])
+        )
+
+    console.print()
+    console.print(f"[bold]{census.summary()}[/]")
+    if not census.revisions:
+        console.print(
+            "[dim]**#5 を閉じた理由は、この範囲では覆らない。**予想修正の開示が1件も出ていない。[/]"
+        )
+        return
+
+    share = census.standalone / census.revisions
+    if share >= 0.5:
+        console.print(
+            "[green]予想修正の過半が、決算と別の日に出ている。[/] "
+            "**#5 を閉じた理由（「独立した開示として取得できない」）は、"
+            "事実として誤りである。** 記録を直すこと。"
+        )
+    elif census.standalone:
+        console.print(
+            f"[yellow]単独で出た修正が {census.standalone:,} 件ある。[/] "
+            "**「取得できない」は言い過ぎだが、大半は決算と同じ日である。** "
+            "独立イベントとして使うなら、単独のぶんだけを数えることになる。"
+        )
+    else:
+        console.print(
+            "[dim]どの修正も決算と同じ日に出ている。**#5 を閉じた理由はそのまま正しい。**[/]"
+        )
+
+
+@app.command(name="jquants-symbol-probe")
+def jquants_symbol_probe(
+    symbols: list[str] | None = typer.Argument(None, help="JP codes; omit to use the gap."),
+    archive_dir: str = typer.Option(
+        str(DEFAULT_ARCHIVE_DIR), "--dir", help="Where the raw files are kept."
+    ),
+) -> None:
+    """Say why a symbol in the roster has no prices, from the originals.
+
+    **「株価が無い」には、少なくとも3つの理由がありうる。**
+
+    | 見え方 | 意味 |
+    |---|---|
+    | 四本値に行が無い | 一括の株価に載っていない銘柄である |
+    | 行はあるが終値が無い | 上場しているが売買が成立していない |
+    | 終値もある | こちらの取り込みが落としている——**不具合** |
+
+    **件数だけでは、この3つが区別できない。** 原本まで降りて決める。
+
+    銘柄を渡さなければ、棚卸しが数えている「名簿にあって株価が無い」銘柄を
+    そのまま調べる。**引数を打たずに済むようにしてある。**
+    """
+    settings = get_settings()
+    configure_logging(settings.log_level)
+
+    database = Database()
+    database.create_all()
+    wanted = {code.strip() for code in (symbols or []) if code.strip()}
+    if not wanted:
+        coverage = audit(database, snapshots=membership(Path(DEFAULT_SNAPSHOT_DIR)))
+        wanted = set(coverage.missing_priced)
+        console.print(f"[dim]棚卸しの「名簿にあって株価が無い」{len(wanted)} 銘柄を調べる。[/]")
+    if not wanted:
+        console.print("[green]株価の無い銘柄は無い。[/]")
+        return
+
+    console.print("[dim]原本を読むだけ。**取得はしない。**[/]")
+    found = probe_symbols(Path(archive_dir), wanted)
+
+    table = Table(title="株価が無い理由（原本から）")
+    for column in ("銘柄", "名前", "市場", "四本値の行", "終値のある行", "見え方"):
+        table.add_column(column, justify="right" if "行" in column else "left")
+    for symbol in sorted(found):
+        probe = found[symbol]
+        table.add_row(
+            symbol,
+            probe.name[:16],
+            probe.market[:10],
+            f"{probe.bar_rows:,}",
+            f"{probe.priced_rows:,}",
+            probe.verdict,
+        )
+    console.print(table)
+
+    broken = [p for p in found.values() if p.priced_rows]
+    if broken:
+        console.print(
+            f"[red]{len(broken)} 銘柄は原本に終値がある。[/] "
+            "**取り込みが落としている——不具合である。**"
+        )
+    elif all(p.bar_rows == 0 for p in found.values()):
+        console.print(
+            "[dim]どれも四本値に1行も無い。**一括の株価に載っていない銘柄である。**"
+            "取り直しても埋まらないので、生存バイアスの残りとして数えること。[/]"
+        )
+    else:
+        console.print(
+            "[dim]行はあるが終値が無い。**上場しているが売買が成立していない。**"
+            "取り直しても埋まらない。[/]"
+        )
+
+
+@app.command(name="jquants-crosscheck")
+def jquants_crosscheck(
+    symbols: list[str] | None = typer.Argument(None, help="JP codes; omit to sample."),
+    archive_dir: str = typer.Option(
+        str(DEFAULT_ARCHIVE_DIR), "--dir", help="Where the raw files are kept."
+    ),
+    sample: int = typer.Option(12, "--sample", help="How many symbols to draw when none given."),
+) -> None:
+    """Compare Tachibana and the archived J-Quants bars, day by day.
+
+    **継ぎ目の検査は1日しか見ていない。** 2021-09-01 が普通の1日に見えたこと
+    は、その日に段差が無いことしか言っていない。**5年ぶんの毎日が合っているか
+    は、別の話である。**
+
+    **いましかできない。** 2026-09-22 に解約すると片方が更新されなくなる。
+    原本は残るが、**2つの生きた経路が同じことを言うかを確かめる機会は無くなる。**
+
+    生の終値から比べる。両者が同じ公式の値を見ているはずの、いちばん素の
+    ところである。**ここが合わないなら、調整の話をしても意味がない。**
+    """
+    settings = get_settings()
+    configure_logging(settings.log_level)
+
+    source = Path(archive_dir)
+    wanted = {code.strip() for code in (symbols or []) if code.strip()}
+    if not wanted:
+        # **立花にあるのは現存銘柄だけ。** 廃止銘柄を混ぜても比べられない。
+        latest = stored_dates(DAILY_SNAPSHOT_DIR)
+        if not latest:
+            raise typer.BadParameter("銘柄を渡すか、先に営業日ごとの名簿を作ること。")
+
+        living = sorted(membership(DAILY_SNAPSHOT_DIR)[latest[-1]])
+        step = max(1, len(living) // max(sample, 1))
+        wanted = set(living[::step][:sample])
+        console.print(f"[dim]最新の名簿から {len(wanted)} 銘柄を等間隔で抜いた。[/]")
+
+    console.print(f"[dim]原本から {len(wanted)} 銘柄ぶんを組み立てる（1周だけ読む）…[/]")
+    archived = price_frames_for(source, wanted)
+    if not archived:
+        console.print("[yellow]原本にその銘柄が無い。[/]")
+        return
+
+    provider, _market = _price_source("tachibana", settings)
+    today = dt.date.today()
+    matches: list[DailyMatch] = []
+    for index, symbol in enumerate(sorted(archived), start=1):
+        console.print(f"[dim]{_progress_line(index, len(archived), symbol)}[/]", end="\r")
+        try:
+            theirs = provider.fetch_prices(symbol, dt.date(2001, 1, 1), today)
+        except Exception as exc:  # noqa: BLE001 - 断られ方そのものが記録に値する
+            console.print(f"[yellow]{symbol}: {type(exc).__name__}[/]")
+            continue
+        matches.append(compare_daily(theirs, archived[symbol], symbol))
+
+    console.print()
+    if not matches:
+        console.print("[yellow]立花から1銘柄も取れなかった。[/]")
+        return
+
+    table = Table(title="立花 と J-Quants（重なる日だけ）")
+    for column in ("銘柄", "比べた日", "終値が違う", "調整後が違う", "いちばん悪い日"):
+        table.add_column(column, justify="left" if column == "銘柄" else "right")
+    for match in matches:
+        table.add_row(
+            match.symbol,
+            f"{match.days:,}",
+            f"{match.close_differs:,}",
+            f"{match.adjusted_differs:,}",
+            f"{match.worst:.2%} ({match.worst_on})" if match.worst else "—",
+        )
+    console.print(table)
+    console.print(summarise(matches))
+
+    off = [m for m in matches if not m.agrees]
+    if off:
+        console.print(
+            f"[red]{len(off)}/{len(matches)} 銘柄で生の終値が食い違う。[/] "
+            "**同じ公式の値を見ているはずのところで合わない。** どちらが正しいか"
+            "を決めるまで、継ぎ目をまたぐ期間を分析に使わないこと。"
+        )
+    else:
+        adjusted = [m for m in matches if m.adjusted_differs]
+        console.print(
+            "[green]生の終値は、比べたすべての日で一致している。[/]"
+            + (
+                f"[yellow] ただし調整後は {len(adjusted)} 銘柄で違う。[/]"
+                "[dim] 分割調整の基準が出所で違う——継ぎ目1日では見えなかったもの。[/]"
+                if adjusted
+                else "[dim] 調整後も一致している。[/]"
+            )
+        )
+
+
+@app.command(name="jquants-roster-prices")
+def jquants_roster_prices(
+    archive_dir: str = typer.Option(
+        str(DEFAULT_ARCHIVE_DIR), "--dir", help="Where the raw files are kept."
+    ),
+    roster_dir: str = typer.Option(
+        str(DAILY_SNAPSHOT_DIR), "--rosters", help="Where the daily rosters are kept."
+    ),
+    limit: int | None = typer.Option(None, "--limit", help="Read only this many bars files."),
+    show: int = typer.Option(10, "--show", help="How many symbols to list per warning."),
+) -> None:
+    """Check the roster and the bars against each other, day by day.
+
+    **同じ原本から出た2本が、互いに整合しているか。** 名簿は
+    `normalize_listings`（ETF・REIT・TOKYO PRO を落とす）を通り、四本値は
+    証券コードの変換しか通らない。**だから差が出るのが普通で、件数からは何も
+    分からない。** 分かるのは理由が言えるかどうかである。
+
+    API を1回も叩かない。解約後にも実行できる。
+    """
+    settings = get_settings()
+    configure_logging(settings.log_level)
+
+    source = Path(archive_dir)
+    report = consistency_check(
+        source,
+        Path(roster_dir),
+        limit=limit,
+        progress=lambda index, total, key: console.print(
+            f"[dim]{_progress_line(index, total, key)}[/]", end="\r"
+        ),
+    )
+    console.print()
+    if not report.days:
+        console.print(
+            "[yellow]突き合わせられる日が1日も無い。[/]"
+            "[dim] 先に原本を保存し、営業日ごとの名簿を作ること。[/]"
+        )
+        raise typer.Exit(code=1)
+
+    table = Table(title="名簿と四本値（営業日ごと）")
+    table.add_column("見たもの")
+    table.add_column("銘柄日", justify="right")
+    table.add_row("名簿にいて終値もある", f"{report.matched:,}")
+    table.add_row("名簿にいるが売買が無かった", f"{report.quiet:,}")
+    table.add_row(
+        "[red]名簿にいるが四本値の行が無い[/]" if report.no_bar_row else "名簿にいるが行が無い",
+        f"{sum(report.no_bar_row.values()):,}",
+    )
+    table.add_row(
+        "[red]出来高があるのに終値が無い[/]"
+        if report.traded_no_close
+        else "出来高があるのに終値が無い",
+        f"{sum(report.traded_no_close.values()):,}",
+    )
+    table.add_row("終値があるが名簿にいない", f"{report.price_only:,}")
+    console.print(table)
+
+    if report.reasons:
+        reasons = Table(title="名簿にいない理由")
+        reasons.add_column("理由")
+        reasons.add_column("銘柄日", justify="right")
+        for reason, count in report.reasons.most_common():
+            unexplained = reason in (NO_ROSTER_ROW, ROSTER_DISAGREES)
+            reasons.add_row(f"[red]{reason}[/]" if unexplained else reason, f"{count:,}")
+        console.print(reasons)
+
+    for label, counter in (
+        ("四本値の行が無い", report.no_bar_row),
+        ("出来高があるのに終値が無い", report.traded_no_close),
+        ("理由を言えない", report.unexplained),
+    ):
+        if counter:
+            worst = ", ".join(f"{symbol}({days}日)" for symbol, days in counter.most_common(show))
+            console.print(f"[yellow]{label}: {len(counter)} 銘柄[/] [dim]{worst}[/]")
+
+    if report.missing_roster:
+        console.print(
+            f"[yellow]名簿の無い日が {len(report.missing_roster)} 日あり、比べていない。[/]"
+            f"[dim] 例: {report.missing_roster[0]}[/]"
+        )
+    if report.missing_master:
+        console.print(f"[yellow]名簿の原本が覆わない日が {len(report.missing_master)} 日ある。[/]")
+    if report.failed:
+        console.print(f"[yellow]読めなかった原本 {len(report.failed)} 本[/]")
+
+    console.print(report.summary())
+    broken = sum(report.no_bar_row.values()) + sum(report.traded_no_close.values())
+    if broken or report.unexplained:
+        console.print(
+            f"[red]説明の付かないものが残っている[/]（行が無い・終値が無い {broken:,} 銘柄日、"
+            f"理由を言えない {sum(report.unexplained.values()):,} 銘柄日）。"
+            "**片方の絞り込みが、もう片方と食い違っている。** どちらが正しいかを"
+            "決めるまで、この名簿で分位を切らないこと。"
+        )
+    else:
+        console.print(
+            "[green]食い違いは1件も残らなかった。[/]"
+            "[dim] 名簿にいる銘柄は全部その日の行を持ち、名簿にいない終値は"
+            "すべて「投信・ETF」か「買えない市場」で説明が付いた。[/]"
+        )
+
+
+@app.command(name="jquants-calendar")
+def jquants_calendar(
+    archive_dir: str = typer.Option(
+        str(DEFAULT_ARCHIVE_DIR), "--dir", help="Where the raw files are kept."
+    ),
+    roster_dir: str = typer.Option(
+        str(DAILY_SNAPSHOT_DIR), "--rosters", help="Where the daily rosters are kept."
+    ),
+) -> None:
+    """Count what the archived trading calendar actually contains.
+
+    **半日立会（`HolDiv=2`）が実在するかを数える。** コードには「`1` だけで
+    絞ると年に数日だけ静かに欠ける」と書いてあるが、**書いてあることと、手元
+    のデータにそれが在ることは別である。** 1日も無ければ、備えは正しくても
+    効いていない。
+
+    名簿のある日とも突き合わせる。カレンダーは「立会がある」と言っているだけ
+    で、**本当にその日のデータが在るかは別のファイルが知っている。**
+
+    API を1回も叩かない。
+    """
+    settings = get_settings()
+    configure_logging(settings.log_level)
+
+    days = calendar_from_archive(Path(archive_dir))
+    if days is None:
+        console.print(
+            "[yellow]取引カレンダーの原本が無い。[/]"
+            "[dim] 先に `checks\\原本をまるごと保存.bat` を実行すること。[/]"
+        )
+        raise typer.Exit(code=1)
+    if not days:
+        console.print("[red]カレンダーの原本はあるが、1日も読めなかった。[/]")
+        raise typer.Exit(code=1)
+
+    report = calendar_census(days)
+    table = Table(title="取引カレンダーの区分")
+    for column, justify in (("区分", "left"), ("意味", "left"), ("日数", "right")):
+        table.add_column(column, justify=justify)
+    for code in sorted(report.by_division):
+        label = HOLIDAY_DIVISION.get(code, "[red]一覧に無い[/]")
+        name = f"[green]{code}[/]" if code in TRADING_DIVISIONS else code
+        table.add_row(name, label, f"{report.by_division[code]:,}")
+    console.print(table)
+
+    if not report.half_days:
+        console.print(
+            "[yellow]半日立会が1日も無い。[/] **備えは正しくても効いていない。**"
+            "[dim] 区分の名前が変わったか、この原本が覆う期間に無いかのどちらか。[/]"
+        )
+    else:
+        years = half_days_by_year(days)
+        listing = Table(title=f"半日立会（{len(report.half_days)} 日）")
+        listing.add_column("年")
+        listing.add_column("日付")
+        for year in sorted(years):
+            listing.add_row(str(year), "  ".join(date.isoformat() for date in years[year]))
+        console.print(listing)
+        console.print(
+            f"[green]`1` だけで絞ると {report.lost_if_only_one} 日が落ちる。[/]"
+            "[dim] 年に数日なので、件数からは気付けない種類である。[/]"
+        )
+
+    if report.unknown:
+        console.print(
+            f"[red]一覧に無い区分が {sum(report.unknown.values())} 日ある[/]: "
+            + ", ".join(f"{code}({count})" for code, count in sorted(report.unknown.items()))
+            + "。**区分が増えている。** 立会に数えるかを決めること。"
+        )
+
+    stored = set(stored_dates(Path(roster_dir)))
+    if not stored:
+        console.print("[dim]営業日ごとの名簿が無いので、突き合わせは飛ばした。[/]")
+    else:
+        match = calendar_agreement(days, stored)
+        console.print(match.summary())
+        for label, dates in (
+            ("立会と言っているのに名簿が無い", match.trading_without_roster),
+            ("立会でないのに名簿がある", match.roster_without_trading),
+        ):
+            if dates:
+                shown = "  ".join(date.isoformat() for date in dates[:8])
+                console.print(f"[yellow]{label}: {len(dates)} 日[/] [dim]{shown}[/]")
+        if match.half_days and match.half_days_with_roster == match.half_days:
+            console.print(
+                f"[green]半日立会 {match.half_days} 日は、すべてその日の名簿がある。[/]"
+                "[dim] カレンダーとは別のファイルが、同じ日を立会だと言っている。[/]"
+            )
+
+    console.print(report.summary())
+
+
+@app.command(name="jquants-filter-census")
+def jquants_filter_census(
+    archive_dir: str = typer.Option(
+        str(DEFAULT_ARCHIVE_DIR), "--dir", help="Where the raw files are kept."
+    ),
+    show: int = typer.Option(12, "--show", help="How many codes to list."),
+    product: str | None = typer.Option(
+        None, "--product", help="Name the symbols carrying this ProdCat value."
+    ),
+) -> None:
+    """Count whether the roster filter still holds when the history gets longer.
+
+    絞り込みは `S33`（33業種）に寄りかかっている。**無ければ無条件に「会社」と
+    みなす。** 符号の名前が変わったときに universe が空になるより、ETF が1つ
+    紛れるほうが安いからで、そこは意図した設計である。
+
+    **ただしそれは、`S33` がほぼ全部の行に在ることを前提にしている。** いま
+    手元にあるのは5年ぶんで、そこで揃っていることは 2006年にも揃っていること
+    を意味しない。
+
+    起きうることは2つあり、**向きが逆である。**
+
+    | 形 | 何が起きる |
+    |---|---|
+    | `S33` が空 | ETF・REIT が「会社」として universe に入る |
+    | 表に無い符号 | 普通の会社が投信とみなされて**落ちる** |
+
+    **後者のほうが重い。** 符号の体系が変われば、落ちるのは1社ではなく全部に
+    なりうる。どちらも例外は出ない。
+
+    ここで出すのは**基準線**である。20年ぶんを取った日に、同じ数字を出して
+    比べる。**基準線が無ければ、20年ぶんの数字を見ても多いのか少ないのかが
+    言えない。**
+
+    API を1回も叩かない。
+    """
+    settings = get_settings()
+    configure_logging(settings.log_level)
+
+    wanted = product.strip() if product else None
+    report = filter_census(
+        Path(archive_dir),
+        progress=lambda index, total, key: console.print(
+            f"[dim]{_progress_line(index, total, key)}[/]", end="\r"
+        ),
+    )
+    console.print()
+    if not report.by_year:
+        console.print(
+            "[yellow]名簿の原本が無い。[/]"
+            "[dim] 先に `checks\\原本をまるごと保存.bat` を実行すること。[/]"
+        )
+        raise typer.Exit(code=1)
+
+    table = Table(title="年ごとの通り具合（銘柄日）")
+    for column in ("年", "行", "残した", "`S33` が空", "表に無い符号"):
+        table.add_column(column, justify="left" if column == "年" else "right")
+    for year in sorted(report.by_year):
+        year_slice = report.by_year[year]
+        table.add_row(
+            str(year),
+            f"{year_slice.rows:,}",
+            f"{year_slice.kept:,}",
+            f"{year_slice.no_sector:,}"
+            + (f" ({year_slice.no_sector_share:.2%})" if year_slice.no_sector else ""),
+            f"[red]{year_slice.unknown_sector:,}[/]"
+            if year_slice.unknown_sector
+            else f"{year_slice.unknown_sector:,}",
+        )
+    console.print(table)
+
+    if report.unknown_sector_codes:
+        console.print(
+            f"[red]表に無い `S33` の符号が {len(report.unknown_sector_codes)} 種類[/]"
+            "[dim] これらは「その他」と同じ扱いで落ちている。**普通の会社なら、"
+            "黙って universe から消えている。**[/]"
+        )
+        for code, count in report.unknown_sector_codes.most_common(show):
+            name = report.unknown_sector_names.get(code) or "（名前も無い）"
+            console.print(f"  [yellow]{code}[/] {name} — {count:,} 銘柄日")
+    else:
+        console.print(
+            "[green]表に無い `S33` の符号は1つも無い。[/]"
+            "[dim] この期間では、符号の体系はこちらの表と揃っている。[/]"
+        )
+
+    if report.no_sector_symbols:
+        listed = "  ".join(sorted(report.no_sector_symbols)[:show])
+        console.print(
+            f"[yellow]`S33` が空の銘柄が {len(report.no_sector_symbols)} 件[/]"
+            f"[dim] これらは無条件に「会社」として universe に入っている: {listed}[/]"
+        )
+    else:
+        console.print(
+            "[green]`S33` が空の行は1つも無い。[/]"
+            "[dim] 受け皿の規則は、この期間では一度も使われていない。[/]"
+        )
+
+    products = Table(title="`ProdCat` は二の矢になるか")
+    for column in ("行", "`ProdCat` の値"):
+        products.add_column(column)
+    products.add_row("残した", "  ".join(sorted(report.product_kept)) or "（空）")
+    for reason, counter in sorted(report.product_dropped.items()):
+        products.add_row(f"落とした / {reason}", "  ".join(sorted(counter)) or "（空）")
+    console.print(products)
+
+    separates, overlap = product_separates(report, FUND)
+    if separates:
+        console.print(
+            "[green]`ProdCat` は、投信・ETF と会社を分けきっている。[/]"
+            "**`S33` が空のときの受け皿にできる。**"
+        )
+    elif overlap:
+        console.print(
+            f"[yellow]`ProdCat` は分けきれない。[/] 両方に出る値: {'  '.join(sorted(overlap))}。"
+            "**重なった値の行は、どちらとも言えない。** 受け皿にはできない。"
+        )
+    else:
+        console.print(
+            "[dim]`ProdCat` の比較はできなかった（片方が空）。**比べていない、"
+            "であって分けられない、ではない。**[/]"
+        )
+
+    if report.product_symbols:
+        split = Table(title="`ProdCat` の値ごとの銘柄")
+        for column, justify in (
+            ("値", "left"),
+            ("銘柄", "right"),
+            ("残した", "right"),
+            ("落とした", "right"),
+        ):
+            split.add_column(column, justify=justify)
+        for value in sorted(report.product_symbols):
+            entry = report.product_symbols[value]
+            label = value or "（空）"
+            split.add_row(
+                f"[yellow]{label}[/]" if entry.splits else label,
+                f"{entry.total:,}",
+                f"{len(entry.kept):,}",
+                f"{len(entry.dropped_symbols):,}",
+            )
+        console.print(split)
+        console.print(
+            "[dim]黄色は、残した側と落とした側の両方にいる値。**同じ商品区分が"
+            "2通りに扱われている。**[/]"
+        )
+
+        # **名前を見るまで決まらない。** 数の少ない値はその場で出し切る。
+        # 1つずつ聞き直すと、そのたびに原本を1周読み直すことになる。
+        for value in sorted(report.product_symbols):
+            entry = report.product_symbols[value]
+            if wanted is None and entry.total > show:
+                continue
+            if wanted is not None and value != wanted:
+                continue
+            named = Table(title=f"`ProdCat` = {value or '（空）'} の中身")
+            for column in ("扱い", "銘柄", "名前"):
+                named.add_column(column)
+            for symbol in sorted(entry.kept)[:show]:
+                named.add_row(
+                    "[green]残した[/]", symbol, report.symbol_names.get(symbol) or "（名前なし）"
+                )
+            for reason, symbols in sorted(entry.dropped.items()):
+                for symbol in sorted(symbols)[:show]:
+                    named.add_row(
+                        f"落とした / {reason}",
+                        symbol,
+                        report.symbol_names.get(symbol) or "（名前なし）",
+                    )
+            console.print(named)
+        if wanted is not None and wanted not in report.product_symbols:
+            console.print(
+                f"[yellow]`ProdCat` = {wanted} の行が1つも無い。[/]"
+                "[dim] 上の表に出ている値を渡すこと。[/]"
+            )
+
+    if report.failed:
+        console.print(f"[yellow]読めなかった原本 {len(report.failed)} 本[/]")
+    console.print(report.summary())
+    console.print(f"[bold]{filter_baseline(report)}[/]")
+    console.print("[dim]20年ぶんを取った日に、同じコマンドを実行してこの行と比べること。[/]")
+
+
+@app.command(name="jquants-archive-verify")
+def jquants_archive_verify(
+    directory: str = typer.Option(
+        str(DEFAULT_ARCHIVE_DIR), "--dir", help="Where the raw files are kept."
+    ),
+) -> None:
+    """Check the archived originals against the manifest. Fetches nothing.
+
+    **解約後こそ実行する意味がある。** そのとき欠けていると分かっても取り返せ
+    ないが、**欠けているのに揃っていると思って解析するよりはよい。**
+
+    **全部のファイルを読み直す。** 5年ぶん（265MB）なら一瞬だが、20年ぶんや
+    同期フォルダ越しでは分単位になる。速さも出す——**5年ぶんの実測があれば、
+    20年ぶんに何分かかるかを掛け算で出せる。**
+    """
+    settings = get_settings()
+    configure_logging(settings.log_level)
+
+    target = Path(directory)
+    manifest = read_manifest(target)
+    if not manifest:
+        # **空を「一致した」と言わない。** 写し先を打ち間違えたとき、そこには
+        # 目録も原本も無い。緑の文字が出れば、確かめたつもりになる。
+        console.print(
+            f"[red]目録が無い: {target}[/] **確かめていない。**"
+            "[dim] 写し先を打ち間違えていないか、原本をまだ保存していないかの"
+            "どちらか。[/]"
+        )
+        raise typer.Exit(code=1)
+
+    started = time.monotonic()
+    missing, wrong_size, changed = verify_archive(
+        target,
+        progress=lambda index, total, key: console.print(
+            f"[dim]{_progress_line(index, total, key)}[/]", end="\r"
+        ),
+    )
+    elapsed = max(time.monotonic() - started, 1e-9)
+    console.print()
+
+    read = sum(item.bytes_written for item in manifest.values())
+    if read:
+        console.print(
+            f"[dim]{_bytes_label(read)} を {elapsed:.1f} 秒で読み直した"
+            f"（{_bytes_label(int(read / elapsed))}/秒）。"
+            f"**20年ぶんはこの4倍を見込むこと。**[/]"
+        )
+
+    if not (missing or wrong_size or changed):
+        console.print(f"[green]目録の {len(manifest)} 本すべてが一致している。[/]")
+        return
+
+    for label, keys in (
+        ("消えている", missing),
+        ("大きさが合わない", wrong_size),
+        ("中身が変わった", changed),
+    ):
+        if keys:
+            console.print(f"[red]{label}: {len(keys)} 本[/]")
+            for key in keys[:10]:
+                console.print(f"  [dim]{key}[/]")
+    raise typer.Exit(code=1)
 
 
 @app.command(name="jquants-bulk-list")
@@ -3025,7 +4561,11 @@ def jquants_inventory(
     database = Database()
     database.create_all()
     snapshots = membership(Path(directory))
-    coverage = audit(database, snapshots)
+    # **原本が覆う期間を渡す。** DB には立花の2001年以降も入っているので、
+    # 全体の行数と取り込みの報告はそもそも一致しない。期間を切って初めて
+    # 比べられる。
+    window = _archive_window(Path(DEFAULT_ARCHIVE_DIR))
+    coverage = audit(database, snapshots, window=window)
     left = coverage.days_left()
 
     console.print(
@@ -3043,7 +4583,7 @@ def jquants_inventory(
     have.add_row("銘柄の登録", f"{coverage.securities:,} 銘柄", "")
     have.add_row(
         "日足の価格",
-        f"{coverage.symbols_with_prices:,} 銘柄",
+        f"{coverage.symbols_with_prices:,} 銘柄 / {coverage.price_rows:,} 行",
         f"{coverage.price_first} 〜 {coverage.price_last}"
         if coverage.price_first
         else "[yellow]無い[/]",
@@ -3099,7 +4639,53 @@ def jquants_inventory(
     )
     console.print(risk)
 
+    if window:
+        # **銘柄数だけでは、書けたことにならない。** 取り込みは「N 行を
+        # 書いた」と言うが、それは upsert に渡した数である。渡したことと
+        # 入ったことは別で、**入らなくても例外は出ない。**
+        console.print(
+            f"[dim]原本が覆う {window[0]} 〜 {window[1]} の日足は "
+            f"[bold]{coverage.price_rows_in_window:,}[/] 行。"
+            "**一括取り込みが「書いた」と言った行数と突き合わせること。**[/]"
+        )
+
     console.print()
+    files, with_lending, lending_rows = lending_coverage(Path(DEFAULT_SNAPSHOT_DIR))
+    if files and with_lending == files:
+        console.print(
+            f"[dim]名簿 {files} 件すべてに貸借区分が入っている（延べ {lending_rows:,} 行）。[/]"
+        )
+    elif files and with_lending:
+        missing = dates_without_lending(Path(DEFAULT_SNAPSHOT_DIR))
+        console.print(
+            f"[yellow]名簿 {files} 件のうち、貸借区分が入っているのは {with_lending} 件だけ"
+            f"（延べ {lending_rows:,} 行）。[/] 欠けているのは "
+            + "、".join(str(day) for day in missing)
+            + "。"
+        )
+        # **5年ローリング窓の前端は毎日後ろへ動く。** 保存した当時は取れた日付が、
+        # 今日はもう窓の外にある。そこを「取り直せる」と案内すると、成功しない
+        # .bat を何度も実行させることになる。
+        stale = beyond_the_window(missing, plan=settings.jquants_plan)
+        if stale:
+            console.print(
+                "[dim]このうち "
+                + "、".join(str(day) for day in stale)
+                + " は**窓の外**なので、もう取り直せない。"
+                "保存した当時は窓の中だった。窓の前端は毎日後ろへ動く。[/]"
+            )
+        if set(missing) - set(stale):
+            console.print(
+                "[dim]残りは `checks\\貸借区分を取り直す.bat` で取り直せる"
+                "（2026-09-22 まで）。当日ぶんは、その日の名簿が出てから。[/]"
+            )
+    elif files:
+        console.print(
+            f"[red]名簿 {files} 件のどれにも貸借区分が入っていない。[/] "
+            "**取得が成功していても列が空という形は例外を出さない。** "
+            "応答の項目名が想定と違う可能性がある。"
+        )
+
     console.print(
         "[dim]5年ローリング窓は解約より先に効く。いま取れるのは 2021-09 以降で、"
         "その端は**毎日後ろへ動く**。「解約日まで待てる」ものは1つも無い。[/]"
@@ -3109,6 +4695,43 @@ def jquants_inventory(
             f"[yellow]名簿にあって株価が無い {coverage.roster_without_prices:,} 銘柄が"
             "残っている。[/] これがそのまま生存バイアスの残りである。"
         )
+        # **件数だけでは追えない。** 一括で株価を入れる前も後も 16 のままだった。
+        # 名前が並べば、全部が同じ性質か（同じ日に廃止した、同じ市場、同じ桁数）
+        # が一目で分かる。
+        if coverage.missing_priced:
+            console.print(
+                "[dim]"
+                + "、".join(coverage.missing_priced[:40])
+                + "[/]"
+                + ("" if len(coverage.missing_priced) <= 40 else " …")
+            )
+            when = _roster_span(Path(DEFAULT_SNAPSHOT_DIR), coverage.missing_priced)
+            if when:
+                console.print("[dim]名簿に出ていた期間:[/]")
+                for symbol, (first, last) in list(when.items())[:10]:
+                    console.print(f"  [dim]{symbol}  {first} 〜 {last}[/]")
+
+            # **この比較は JSON 経路の名簿に対して行っている。** 一括の名簿とは
+            # 出所が違うので、片方にしか無い銘柄がありうる。そこを先に切り分け
+            # ないと、「株価が取れなかった」と「そもそも一括に載っていない」を
+            # 取り違える。
+            daily = set(stored_dates(DAILY_SNAPSHOT_DIR))
+            if daily:
+                in_bulk = set()
+                for on, codes in membership(DAILY_SNAPSHOT_DIR).items():
+                    if on in daily:
+                        in_bulk |= codes & set(coverage.missing_priced)
+                only_json = [s_ for s_ in coverage.missing_priced if s_ not in in_bulk]
+                console.print(
+                    f"[dim]このうち一括の名簿にも出るのは {len(in_bulk)} 銘柄、"
+                    f"**JSON 経路の名簿にしか出ないのは {len(only_json)} 銘柄。**[/]"
+                )
+                if only_json:
+                    console.print(
+                        "[dim]" + "、".join(only_json[:40]) + "[/]  "
+                        "[dim]一括に載っていない銘柄は、株価も来ない。"
+                        "**取りこぼしではなく、出所の違いである。**[/]"
+                    )
     console.print(
         "[dim]会社予想と開示時刻は決算ドリフトのテーマ用で、そのテーマは"
         "2026-09-03 に閉じた（docs/HYPOTHESES.md）。**再開する予定が無いなら"
@@ -5024,6 +6647,322 @@ def reversal_bias(
         "[dim]これは IS の数字である。判定には使わない。"
         "**プロジェクト全体で使い回せる数字**として登録に書く。[/]"
     )
+
+
+@app.command(name="high-screen")
+def high_screen(
+    is_end: str = typer.Option(
+        HIGH_IS_END.isoformat(), "--is-end", help="Last day of IS. Cannot go past the sealed date."
+    ),
+    min_turnover: float = typer.Option(
+        MIN_TURNOVER, "--min-turnover", help="Liquidity floor in yen."
+    ),
+) -> None:
+    """Estimate the 52-week-high effect on IS only, and apply the sealed line.
+
+    **§0 の段2 である。** 同じ設計の文献値が無いので、見込みの下限を自分の IS
+    から推定する。封印しない線は**推定を1つも見ないうちに置いてある**
+    （`HIGH_SEAL_FLOOR` = 1.26%、`docs/NEXT_CANDIDATES.md`「決定3」）。
+
+    **OOS には触れない。** IS の終わりより後を渡すと終了コード2で止まる。
+    渡し間違えたときに黙って OOS を混ぜないための関門で、**混ざったことは
+    数字を見ても分からない。**
+    """
+    settings = get_settings()
+    configure_logging(settings.log_level)
+
+    try:
+        cutoff = dt.date.fromisoformat(is_end.strip())
+    except ValueError as exc:
+        raise typer.BadParameter(f"--is-end must be YYYY-MM-DD; got {is_end!r}.") from exc
+
+    if cutoff > HIGH_IS_END:
+        console.print(
+            f"[red]--is-end {cutoff} は封印済みの IS の終わり {HIGH_IS_END} より後です。[/]\n"
+            "  **OOS を混ぜることになります。** 混ざったことは数字を見ても分かりません。"
+        )
+        raise typer.Exit(code=2)
+
+    database = Database()
+    database.create_all()
+    floor = min_turnover or MIN_TURNOVER
+
+    console.print(
+        f"§0 の段2。**IS（{cutoff} まで）だけで推定する。** "
+        f"窓 {HIGH_HOLDING}営業日、売買代金 {floor / 1e8:.0f}億円以上。"
+    )
+    console.print(
+        f"[bold]封印しない線は {HIGH_SEAL_FLOOR * 100:.2f}%[/]"
+        "（推定を見る前に置いた。測定後に変更しない）。"
+    )
+
+    values = high_event_returns(database, holding=HIGH_HOLDING, min_turnover=floor, until=cutoff)
+    if len(values) < 2:
+        console.print(f"[red]IS のイベント日が足りません（{len(values)}）。[/]")
+        raise typer.Exit(code=1)
+
+    estimate = sum(values) / len(values)
+    result = judge(values, lags=HIGH_HOLDING)
+
+    table = Table(title=f"IS の推定（{cutoff} まで）")
+    for column in ("イベント日", "1イベントあたり", "標準誤差(NW)", "t"):
+        table.add_column(column, justify="right")
+    table.add_row(
+        f"{len(values):,}",
+        f"[bold]{estimate * 100:+.2f}%[/]",
+        f"{result.standard_error * 100:.2f}%",
+        f"{result.t_statistic:+.2f}",
+    )
+    console.print(table)
+    console.print(
+        "[dim]**この t は合否ではない。** IS は選別に使う期間で、判定は OOS で"
+        "一度だけ行う。ここでの t は推定の精度を読むためだけにある。[/]"
+    )
+
+    verdict, reading = high_verdict(estimate)
+    colour = "green" if verdict == HIGH_SEAL else "yellow"
+    console.print()
+    console.print(f"[{colour}][bold]{verdict}[/][/] {reading}")
+    console.print(
+        f"[dim]当てはめた線は推定前に確定させたものである"
+        f"（{HIGH_SEAL_FLOOR * 100:.2f}% ＝ OOS 1,197日での検出できる差 0.86% ＋ 費用 0.40%）。"
+        "結果を見てから引き直していない。[/]"
+    )
+
+
+@app.command(name="high-power")
+def high_power(
+    holdings: list[int] = typer.Option(  # noqa: B008 - typer builds the default list
+        [1, 5, 20], "--holding", help="Sessions held. Repeat to compare windows."
+    ),
+    min_turnover: float = typer.Option(
+        MIN_TURNOVER, "--min-turnover", help="Liquidity floor in yen."
+    ),
+) -> None:
+    """Measure the spread of the 52-week-high basket, printing no mean.
+
+    §0 に入れる「検出できる差」は実測から取る、と `docs/NEXT_CANDIDATES.md` に
+    書いてある。その実測がこれである。
+
+    **分散を測ることは判定を消費しない。** 効果の大きさではなく散らばりを測って
+    いるからで、#6・#7 と同じ手順・同じ理由による。**平均は表示しない。**
+    表示すれば、封印の前に答えを見たことになる。
+
+    保有日数を複数出すのは、**窓を選ぶのは分散を見てからでよい**ためである。
+    分散は効果ではないので、ここで比べても多重検定にはならない。**封印する
+    のは1本だけ**で、それを選ぶ根拠がこの表になる。
+    """
+    settings = get_settings()
+    configure_logging(settings.log_level)
+
+    windows = sorted({holding for holding in holdings if holding >= 1})
+    if not windows:
+        raise typer.BadParameter("--holding must be at least 1.")
+
+    database = Database()
+    database.create_all()
+    floor = min_turnover or MIN_TURNOVER
+
+    console.print(
+        f"52週高値更新の等加重バスケット。更新日の翌日の寄付きで買い、"
+        f"保有日数ぶん後の終値で降りる。ベンチマーク控除。売買代金 {floor / 1e8:.0f}億円以上。"
+    )
+    console.print("[dim]**平均は出さない。** 分散と重なりの膨張だけを測る。[/]")
+
+    table = Table(title="重なりを織り込んだ検出力（平均は含まない）")
+    table.add_column("保有", justify="right")
+    for column in ("イベント日", "日次SD", "上位1%を除いたSD", "重なりの膨張", "標準誤差"):
+        table.add_column(column, justify="right")
+    table.add_column(f"t≥{TARGET_T} に必要な差", justify="right")
+    table.add_column("費用", justify="right")
+
+    rows: list[tuple[int, float, float]] = []
+    for holding in windows:
+        values = high_event_returns(database, holding=holding, min_turnover=floor)
+        if len(values) < 2:
+            console.print(f"[yellow]保有{holding}日: イベント日が足りない（{len(values)}）。[/]")
+            continue
+        estimate = estimate_power(values, lags=holding)
+        needed = estimate.detectable(len(values))
+        trimmed, _dropped = trimmed_variance(values, fraction=0.01)
+        # 毎日入って holding 日持つので、1日あたり 1/holding だけ入れ替わる。
+        # 1イベントあたりの費用はロングオンリーの往復。
+        cost = COST_ROUND_TRIP
+        rows.append((holding, needed, cost))
+        table.add_row(
+            f"{holding}日",
+            f"{len(values):,}",
+            f"{estimate.daily_sd * 100:.2f}%",
+            f"{trimmed**0.5 * 100:.2f}%",
+            f"{estimate.inflation:.2f}x",
+            f"{estimate.standard_error(len(values)) * 100:.3f}%",
+            f"[bold]{needed * 100:.2f}%[/]",
+            f"{cost * 100:.2f}%",
+        )
+    console.print(table)
+
+    if not rows:
+        return
+
+    console.print(
+        "[dim]「必要な差」は**1イベントあたり**である。費用を引いた残りが、"
+        "文献の報告する効果量に届くかを見る。[/]"
+    )
+    for holding, needed, cost in rows:
+        if needed + cost > 0.02:
+            console.print(
+                f"[yellow]保有{holding}日: 必要な差 {needed * 100:.2f}% ＋ 費用 "
+                f"{cost * 100:.2f}% ＝ [bold]{(needed + cost) * 100:.2f}%[/]。[/] "
+                "イベント型の報告値としては大きい。"
+            )
+        else:
+            console.print(
+                f"保有{holding}日: 必要な差 {needed * 100:.2f}% ＋ 費用 "
+                f"{cost * 100:.2f}% ＝ [bold]{(needed + cost) * 100:.2f}%[/]。"
+            )
+
+    console.print()
+    console.print(
+        "[dim]この表は §0 の入力である。**封印するのは1本だけ。** どの窓にするかを"
+        "決めてから、`stock-ai power-gate` に見込みの下限と一緒に掛ける。[/]"
+    )
+
+
+@app.command(name="event-census")
+def event_census(
+    what: str = typer.Option("all", "--what", help="limit | halt | high | all."),
+    min_turnover: float = typer.Option(
+        MIN_TURNOVER, "--min-turnover", help="Liquidity floor in yen. Same as the other censuses."
+    ),
+) -> None:
+    """Count event populations without computing any returns.
+
+    7本すべてが、検出力の最も不利な角にいた——長い保有窓と少ない独立観測。
+    ここで数えるのはどれも保有1〜5営業日で、価格だけから検出できる。
+
+    **数えるのが先である。** #1 では条件を満たす銘柄の 97.5% が流動性フィルタで
+    消え、それが分かったのは検証を組んだあとだった。ここでは順序を逆にする。
+    判定は消費しない。
+    """
+    settings = get_settings()
+    configure_logging(settings.log_level)
+
+    chosen = what.strip().lower()
+    if chosen not in {"limit", "halt", "high", "all"}:
+        raise typer.BadParameter(f"--what must be limit, halt, high or all; got {what!r}.")
+
+    database = Database()
+    database.create_all()
+    floor = min_turnover or MIN_TURNOVER
+
+    console.print(
+        f"売買代金 {floor / 1e8:.0f}億円以上。**リターンは計算しない。**判定は消費しない。"
+    )
+
+    results = []
+    if chosen in {"limit", "all"}:
+        results.append(count_limit_moves(database, min_turnover=floor))
+    if chosen in {"halt", "all"}:
+        results.append(count_halt_resumptions(database, min_turnover=floor))
+    if chosen in {"high", "all"}:
+        results.append(count_52w_highs(database, min_turnover=floor))
+
+    summary = Table(title="母集団")
+    for column in ("イベント", "フィルタ前", "フィルタ後", "通過率", "日数", "上位1割の日の占有"):
+        summary.add_column(column, justify="right")
+    for census in results:
+        summary.add_row(
+            census.kind,
+            f"{census.raw_events:,}",
+            f"{census.events:,}",
+            f"{census.survival:.1%}",
+            f"{census.trading_days:,}",
+            f"{census.concentration():.0%}" if census.events else "—",
+        )
+    console.print(summary)
+    console.print(
+        "[dim]**日数が独立観測である。** 同じ日の銘柄は同じ市場の動きを共有するので、"
+        "件数をそのまま独立観測に数えると検出できる差を小さく見積もる。[/]"
+    )
+
+    for census in results:
+        if census.events == 0:
+            console.print(f"[yellow]{census.kind}: 1件も残らなかった。[/]")
+            continue
+
+        table = Table(title=f"{census.kind}／年別")
+        for column in ("年", "件数", "日数", "1日あたり"):
+            table.add_column(column, justify="right")
+        for year, count, day_count in census.by_year():
+            table.add_row(str(year), f"{count:,}", f"{day_count:,}", f"{count / day_count:,.1f}")
+        console.print(table)
+        console.print(
+            "1日あたり: "
+            + "、".join(f"{name} {value:,}" for name, value in census.breadth())
+            + "　／　売買代金（億円）: "
+            + "、".join(f"{name} {value:,.1f}" for name, value in census.turnover_quantiles())
+        )
+
+        if census.fillable or census.unfillable:
+            console.print(
+                f"[bold]執行[/]: 翌日に買えたのは {census.fillable:,} 件。"
+                f"翌日も張り付いて買えなかった [bold]{census.unfillable:,}[/] 件"
+                f"（{census.unfillable / census.events:.1%}）、翌日の足が無い "
+                f"{census.no_next_bar:,} 件。"
+            )
+            gaps = census.gap_quantiles()
+            if gaps:
+                console.print(
+                    "翌日始値のギャップ: "
+                    + "、".join(f"{name} {value:+.2%}" for name, value in gaps)
+                    + "　／　当日の高安での位置: "
+                    + "、".join(
+                        f"{name} {value:.2f}" for name, value in census.open_position_quantiles()
+                    )
+                )
+                median = dict(gaps).get("p50", 0.0)
+                if median > ONE_WAY_COST * 2:
+                    console.print(
+                        f"[yellow]中央値のギャップ {median:.2%} が、他の説で使っている往復費用 "
+                        f"{ONE_WAY_COST * 2:.2%} を超えている。[/] "
+                        "この前提のまま封印すると、**実行できない合格が出る。**"
+                    )
+                else:
+                    console.print(
+                        f"[dim]中央値のギャップは往復費用 {ONE_WAY_COST * 2:.2%} に"
+                        "収まっている。[/]"
+                    )
+
+    limits = next((c for c in results if c.kind == "値幅制限"), None)
+    if limits is not None and limits.events:
+        histogram = limits.move_histogram()
+        if histogram:
+            table = Table(title="値幅制限／前日比の分布")
+            table.add_column("前日比")
+            table.add_column("件数", justify="right")
+            for label, count in histogram:
+                table.add_row(label, f"{count:,}")
+            console.print(table)
+            console.print(
+                "[dim]**近似の当たり具合はこの表では判定できない。** 制限幅は円建て"
+                "なので、正しく拾えていてもパーセントでは連続的に散る。[/]"
+            )
+
+    halts = next((c for c in results if c.kind == "売買停止明け"), None)
+    if halts is not None:
+        lengths = halts.length_histogram()
+        if lengths:
+            console.print(
+                "売買停止の長さ: " + "、".join(f"{label} {count:,}" for label, count in lengths)
+            )
+        if halts.crossed_discontinuity:
+            console.print(
+                f"[yellow]うち {halts.crossed_discontinuity:,} 件は再開日が不連続だった[/]"
+                "（分割・併合による停止）。除外はしていない。"
+            )
+
+    console.print()
+    console.print("[dim]件数と分布のみ。リターンは計算していない。[/]")
 
 
 @app.command(name="reversal-census")

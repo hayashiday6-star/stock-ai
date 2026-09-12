@@ -11,6 +11,9 @@
 
 from __future__ import annotations
 
+import logging
+from pathlib import Path
+
 import pytest
 from pydantic import SecretStr
 
@@ -489,3 +492,200 @@ def test_the_snapshot_walks_back_for_equity_but_still_prefers_shareholders_equit
     snapshot = normalize_statement("7203", records, dt.date(2026, 9, 5), price=500.0)
 
     assert snapshot.pbr == pytest.approx(500.0 * 1000 / 262460)
+
+
+class TestBulkCsvEncoding:
+    """一括 CSV の文字コード。**UTF-8 とは限らない。**
+
+    配布サンプル（`sample_data_v2`）を実測すると、日本語を含むファイルは
+    cp932 だった。日本語を含まないファイルだけが UTF-8 に見えている——
+    **ASCII はどちらでも同じバイト列だからで、UTF-8 だと確かめられたわけでは
+    ない。**
+
+    いままで当たらなかったのは、一括で読んでいたのが `fins/summary` と
+    `equities/bars/daily` の2つだけで、どちらにも日本語が無いためである。
+    """
+
+    SAMPLE = Path(__file__).parent / "fixtures" / "jquants_master_sample.csv"
+
+    def test_the_distributed_master_is_cp932(self) -> None:
+        """**配り方で文字コードが違う。**
+
+        配布サンプルは cp932。**一括ファイルのほうは UTF-8 である**
+        （2026-09-07 に実測。保存した385本の7エンドポイントすべてが
+        `utf-8-sig` で、会社名の入る `/equities/master` も含む）。
+
+        片方だけを見て決め打ちすると、もう片方で落ちる。**両方を固定する。**
+        """
+        raw = self.SAMPLE.read_bytes()
+
+        with pytest.raises(UnicodeDecodeError):
+            raw.decode("utf-8")
+        assert "日本取引所グループ" in raw.decode("cp932")
+
+    def test_a_cp932_company_name_comes_back_unmangled(self) -> None:
+        """`utf-8-sig` 決め打ちだと、ここで例外が出て取り込みが止まる。"""
+        from stock_ai.data.jquants_bulk import records_from_csv
+
+        (row,) = records_from_csv(self.SAMPLE.read_bytes())
+
+        assert row["CoName"] == "日本取引所グループ"
+        assert row["MrgnNm"] == "貸借"
+
+    def test_the_encoding_that_worked_is_reported(self) -> None:
+        """何で読めたかを捨てない。**表に出せないと、化けても気付けない。**"""
+        from stock_ai.data.jquants_bulk import decode_csv
+
+        _text, encoding = decode_csv(self.SAMPLE.read_bytes())
+
+        assert encoding == "cp932"
+
+    def test_the_real_bulk_file_is_utf8(self) -> None:
+        """実測（2026-09-07）を固定する。**サンプルとは違う。**
+
+        `/equities/master` の一括ファイルには会社名が入っているのに
+        `utf-8-sig` で読めた。cp932 だと決め打ちしていたら、ここで落ちていた。
+        """
+        from stock_ai.data.jquants_bulk import decode_csv
+
+        payload = "Date,Code,CoName\n2026-09-07,86970,日本取引所グループ\n".encode()
+
+        text, encoding = decode_csv(payload)
+
+        assert encoding == "utf-8-sig"
+        assert "日本取引所グループ" in text
+
+    def test_utf8_is_tried_first(self) -> None:
+        """cp932 はほぼ何でも読めてしまう。**先に試す順序に意味がある。**
+
+        UTF-8 の日本語を cp932 として読むと、例外を出さずに化ける。順序を
+        入れ替えると、いま通っている `fins/summary` まで静かに壊れる。
+        """
+        from stock_ai.data.jquants_bulk import decode_csv
+
+        payload = "Code,CoName\n86970,日本取引所グループ\n".encode()
+        text, encoding = decode_csv(payload)
+
+        assert encoding == "utf-8-sig"
+        assert "日本取引所グループ" in text
+
+    def test_a_byte_order_mark_is_not_left_in_the_first_column_name(self) -> None:
+        """BOM が残ると列名が `\\ufeffCode` になり、`row["Code"]` が空になる。"""
+        from stock_ai.data.jquants_bulk import records_from_csv
+
+        (row,) = records_from_csv("Code,Value\n86970,1\n".encode("utf-8-sig"))
+
+        assert row["Code"] == "86970"
+
+    def test_unreadable_bytes_are_read_but_warned_about(self, caplog) -> None:
+        """最後の手段は置換だが、**黙って置換しない。**
+
+        置換して黙ると、化けた会社名が表に並ぶ。例外は出ないし行数も合うので、
+        気付く手掛かりが無くなる。
+        """
+        from stock_ai.data.jquants_bulk import decode_csv
+
+        payload = b"Code,CoName\n86970," + bytes([0x81, 0x20, 0xFF, 0xFE]) + b"\n"
+        with caplog.at_level(logging.WARNING):
+            _text, encoding = decode_csv(payload)
+
+        assert encoding == "utf-8/replace"
+        assert caplog.records
+
+
+class TestArchiveEndpointNames:
+    """原本に残すエンドポイントの綴り。
+
+    **綴りが違うと `DataError` が返る。それは「プランに入っていない」ときと
+    見分けが付かない。** 最初は手で写して6本間違えており、2026-09-06 の下見で
+    Light でも取れるはずの取引カレンダーと TOPIX が落ちて初めて分かった。
+
+    Premium の週に同じことが起きれば、「Premium にも無いのだ」と読んで取らずに
+    終わる。**そのときは契約が終わっていて、確かめ直せない。**
+    """
+
+    def test_the_archive_list_is_taken_from_the_bulk_list(self) -> None:
+        """**2つ持たない。** 片方だけ直したときに気付けない。"""
+        from stock_ai.data.jquants_bulk import ARCHIVE_ENDPOINTS, BULK_ENDPOINTS
+
+        assert set(ARCHIVE_ENDPOINTS) <= set(BULK_ENDPOINTS)
+
+    def test_only_the_add_ons_are_left_out(self) -> None:
+        """分足とティックは通常プランとは別契約。他を落とすなら理由が要る。"""
+        from stock_ai.data.jquants_bulk import (
+            ARCHIVE_ADDONS,
+            ARCHIVE_ENDPOINTS,
+            BULK_ENDPOINTS,
+        )
+
+        assert set(BULK_ENDPOINTS) - set(ARCHIVE_ENDPOINTS) == set(ARCHIVE_ADDONS)
+
+    @pytest.mark.parametrize(
+        "wrong",
+        [
+            "/indices/topix",
+            "/indices/daily",
+            "/markets/trading-calendar",
+            "/derivatives/futures",
+            "/derivatives/options",
+            "/derivatives/options-225",
+        ],
+    )
+    def test_the_names_that_were_actually_wrong_stay_out(self, wrong: str) -> None:
+        """実際に間違えた6本。**もっともらしく見えるから間違えた。**
+
+        `jquants` CLI の短い名前（`idx daily` / `deriv futures`）に引きずられて
+        いる。API のパスは `/indices/bars/daily` のように `bars/daily` が入る。
+        """
+        from stock_ai.data.jquants_bulk import ARCHIVE_ENDPOINTS
+
+        assert wrong not in ARCHIVE_ENDPOINTS
+
+    def test_every_endpoint_the_deadline_work_needs_is_in_the_archive(self) -> None:
+        """期限ものが漏れていないこと。"""
+        from stock_ai.data.jquants_bulk import ARCHIVE_ENDPOINTS, DEADLINE_ENDPOINTS
+
+        assert set(DEADLINE_ENDPOINTS) <= set(ARCHIVE_ENDPOINTS)
+
+
+class TestAgainstTheOfficialClient:
+    """一括対応エンドポイントを、公式クライアントの一覧と突き合わせる。
+
+    固定データ（`tests/fixtures/jquants_bulk_endpoints.txt`）は
+    `jquants-api-client-python` の `BulkEndpoint`（コミット 4f9e404）から
+    **生成した**もので、手で写していない。
+
+    この突き合わせで `/fins/earnings-date` が1本抜けているのが見つかった
+    （2026-09-06）。**抜けていても `DataError` は出ない。一覧に無いものは
+    そもそも聞きに行かないので、出力に何も現れない。**
+    """
+
+    OFFICIAL = Path(__file__).parent / "fixtures" / "jquants_bulk_endpoints.txt"
+
+    def _official(self) -> set[str]:
+        lines = self.OFFICIAL.read_text(encoding="utf-8").splitlines()
+        return {line.strip() for line in lines if line.strip() and not line.startswith("#")}
+
+    def test_nothing_the_official_client_knows_is_missing(self) -> None:
+        """**取り逃すのは、聞かないからである。**"""
+        from stock_ai.data.jquants_bulk import BULK_ENDPOINTS
+
+        assert not self._official() - set(BULK_ENDPOINTS)
+
+    def test_the_endpoint_that_was_actually_missing(self) -> None:
+        """実際に抜けていた1本。決算発表**予定日**である。"""
+        from stock_ai.data.jquants_bulk import BULK_ENDPOINTS
+
+        assert "/fins/earnings-date" in BULK_ENDPOINTS
+
+    def test_the_calendar_is_kept_even_though_the_reference_data_omits_it(self) -> None:
+        """**実測が一覧に勝つ。**
+
+        J-Quants の `reference_data.json` の一括一覧（18本）には
+        `/markets/calendar` が載っていない。しかし 2026-09-06 の下見で
+        **1本返ってきている。** 向こうの表を信じて外すと、取れるものを取り
+        逃す。
+        """
+        from stock_ai.data.jquants_bulk import ARCHIVE_ENDPOINTS
+
+        assert "/markets/calendar" in ARCHIVE_ENDPOINTS

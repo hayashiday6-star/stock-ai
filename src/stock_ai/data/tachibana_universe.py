@@ -143,6 +143,9 @@ def normalize_masters(
             name=_text(detail, "sIssueName") or _text(detail, "sIssueNameRyaku"),
             sector=str(sector),
             industry=industry,
+            # **現在値である。** 月次の名簿に残すことで、1年後に過去へ当てられる
+            # 値になる。いま遡って使うことはできない。
+            lending=_text(detail, "sSinyouC"),
         )
 
     if unlisted:

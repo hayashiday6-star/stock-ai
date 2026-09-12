@@ -42,15 +42,32 @@ logger = get_logger(__name__)
 DEFAULT_SNAPSHOT_DIR: Path = DATA_DIR / "universe_snapshots"
 
 #: CSV の列。順序ごと固定する（後から足すなら末尾に足す）。
-COLUMNS = ("symbol", "name", "sector", "industry")
+#:
+#: **``lending``（貸借区分）は 2026-09-06 に足した。** それまで、J-Quants の
+#: ``equities/master`` が返していた ``Mrgn``/``MrgnNm`` を読み捨てていた。
+#:
+#: 空売りできるかを決める項目なので、ロング・ショートの設計では母集団そのものを
+#: 左右する。**そして日付ごとに引ける**——立花のマスタは現在値しか返さないので、
+#: 過去のある日にどうだったかを知る経路はここしかない。
+#:
+#: **2026-09-22 を過ぎると取り戻せない。** 既に保存済みの63枚はこの列を持って
+#: いないので、``delisted-harvest --refetch`` で取り直す必要がある。
+#:
+#: 古いファイルにはこの列が無い。``read_snapshot`` は ``row.get`` で読むので、
+#: 欠けていても落ちない。
+COLUMNS = ("symbol", "name", "sector", "industry", "lending")
 
 #: 名簿を取りに行く間隔の既定値。月1回。廃止は年 50〜106 件なので、
 #: 1ヶ月刻みなら「いつ消えたか」は月単位まで分かる。
 DEFAULT_STEP_DAYS = 30
 
-#: この日以降しか返らない、と実測で分かっている境界（2026-09 時点）。
+#: この日以降しか返らない、と実測で分かっている境界（2026-09 時点、Light）。
 #: 既定の開始日に使うだけで、これより前を禁止はしない——境界は時間とともに
 #: 前に進むのではなく**後ろに動く**ので、断られ方そのものが記録に値する。
+#:
+#: **プランを上げると後ろへ広がる。** 固定値のまま使うと、20年ぶん払って5年
+#: ぶんだけ落とすことになる。既定の開始日は :func:`earliest_reachable` から
+#: 取ること。
 ROLLING_WINDOW_START = dt.date(2021, 9, 1)
 
 #: 立花のマスタから毎月1枚ずつ残す名簿の置き場所。
@@ -151,7 +168,13 @@ def write_snapshot(directory: Path, on: dt.date, profiles: Iterable[SecurityProf
         writer.writerow(COLUMNS)
         for profile in rows:
             writer.writerow(
-                [profile.symbol, profile.name or "", profile.sector or "", profile.industry or ""]
+                [
+                    profile.symbol,
+                    profile.name or "",
+                    profile.sector or "",
+                    profile.industry or "",
+                    profile.lending or "",
+                ]
             )
     logger.info("Wrote %d listing(s) for %s to %s", len(rows), on, path.name)
     return path
@@ -168,10 +191,105 @@ def read_snapshot(path: Path) -> list[SecurityProfile]:
                 name=row.get("name") or None,
                 sector=row.get("sector") or None,
                 industry=row.get("industry") or None,
+                # 2026-09 以前のファイルには無い列。**欠けていても落ちない。**
+                lending=row.get("lending") or None,
             )
             for row in reader
             if row.get("symbol")
         ]
+
+
+#: Light のローリング窓のおおよその幅（日）。**プランで変わる。**
+#:
+#: J-Quants は窓の外を必ず断る。**前端は毎日後ろへ動く**ので、保存した当時は
+#: 取れた日付が、今日はもう取れない。厳密な境界は応答が持っている——ここは
+#: 「取り直せる」と案内してよいかどうかの目安にだけ使う。
+ROLLING_WINDOW_DAYS = 5 * 365
+
+
+def window_days(plan: str | None = None) -> int:
+    """そのプランで遡れるおおよその日数。
+
+    知らないプラン名は Light 相当に倒す。**広いほうに倒さない**——広く見積
+    もると、取れない日付を「取れるはず」と案内して、成功しない `.bat` を何度
+    も実行させることになる。狭く見積もったときの害は、断られ方が1回記録に
+    残るだけである。
+    """
+    from stock_ai.data.jquants_bulk import PLAN_HISTORY_YEARS
+
+    years = PLAN_HISTORY_YEARS.get((plan or "").strip().capitalize(), 5)
+    return years * 365
+
+
+def earliest_reachable(plan: str | None = None, today: dt.date | None = None) -> dt.date:
+    """そのプランで**いま**遡れる最も古い日付。
+
+    既定の開始日をここから取る。固定値にすると、プランを上げた日に何も起きない
+    ——例外も警告も出ないまま、窓の外だと判断して要求を出さない。
+    """
+    return (today or dt.date.today()) - dt.timedelta(days=window_days(plan))
+
+
+def beyond_the_window(
+    dates: Iterable[dt.date],
+    today: dt.date | None = None,
+    plan: str | None = None,
+) -> list[dt.date]:
+    """ローリング窓の外に出てしまった日付を返す。**もう取り直せないもの。**
+
+    保存した当時は窓の中だった日付が、今日は外にある。ここを見ずに
+    「取り直せる」と案内すると、**成功しない .bat を何度も実行させることに
+    なる。** 警告が毎回出て、しかも消えない。
+
+    ``plan`` を渡さないと Light（5年）で見る。**プランを上げたら渡すこと。**
+    """
+    edge = (today or dt.date.today()) - dt.timedelta(days=window_days(plan))
+    return [day for day in dates if day < edge]
+
+
+def dates_without_lending(directory: Path) -> list[dt.date]:
+    """保存済みの名簿のうち、貸借区分が1件も入っていない日付を返す。
+
+    **取り直す対象を日付グリッドで決めない。** 日次で書かれる名簿は30日刻みの
+    グリッドに乗らないので、グリッドで回すと取り残される。実際、63件を取り直した
+    あとに直近3日ぶんだけが残った。
+
+    **「何が欠けているか」を数えて、それだけを取りに行く。** 余計な要求を出さず、
+    取り残しも出ない。
+    """
+    if not directory.is_dir():
+        return []
+    missing = []
+    for path in sorted(directory.glob("*.csv")):
+        try:
+            on = dt.date.fromisoformat(path.stem)
+        except ValueError:
+            continue
+        if not any(profile.lending for profile in read_snapshot(path)):
+            missing.append(on)
+    return missing
+
+
+def lending_coverage(directory: Path) -> tuple[int, int, int]:
+    """名簿に貸借区分がどれだけ入っているかを数える。
+
+    **「63件取れた」と「列が入った」は別である。** 取得は成功したのに列が
+    空、という形は例外を出さない——応答の項目名が想定と違えば、``row.get``
+    が静かに ``None`` を返すだけである。**それを数えるための関数。**
+
+    Returns:
+        ``(ファイル数, 貸借区分が1件でも入っているファイル数, 値のある行の数)``。
+    """
+    if not directory.is_dir():
+        return (0, 0, 0)
+    files = with_lending = rows = 0
+    for path in sorted(directory.glob("*.csv")):
+        files += 1
+        here = sum(1 for profile in read_snapshot(path) if profile.lending)
+        if here:
+            with_lending += 1
+        rows += here
+    return (files, with_lending, rows)
 
 
 def stored_dates(directory: Path) -> list[dt.date]:
@@ -360,7 +478,13 @@ def monthly_snapshot(
         writer.writerow(COLUMNS)
         for profile in rows:
             writer.writerow(
-                [profile.symbol, profile.name or "", profile.sector or "", profile.industry or ""]
+                [
+                    profile.symbol,
+                    profile.name or "",
+                    profile.sector or "",
+                    profile.industry or "",
+                    profile.lending or "",
+                ]
             )
     logger.info("%s に %d 銘柄を保存した（月次の名簿）。", path.name, len(rows))
     return path

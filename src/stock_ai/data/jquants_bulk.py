@@ -50,6 +50,7 @@ BULK_ENDPOINTS: tuple[str, ...] = (
     "/fins/summary",
     "/fins/details",
     "/fins/dividend",
+    "/fins/earnings-date",
     "/indices/bars/daily/topix",
     "/indices/bars/daily",
     "/derivatives/bars/daily/options/225",
@@ -65,6 +66,35 @@ BULK_ENDPOINTS: tuple[str, ...] = (
 
 #: 解約前に取り切りたいもの。`docs/JQUANTS_EXIT.md` の期限作業に対応する。
 DEADLINE_ENDPOINTS: tuple[str, ...] = ("/fins/summary", "/equities/bars/daily")
+
+#: 原本として残すもの。**解約すると、どれも二度と取れない。**
+#:
+#: 「いま使う説がある」ではなく「**取り直せない**」で選んである。解析は後から
+#: 何度でもやり直せるが、取得は 2026-09-22 で終わる。**使い道が決まってから
+#: 取りに行くことはできない。**
+#:
+#: 株価（`/equities/bars/daily`）も入れてある。立花から 2001年以降が取れるので
+#: 現存銘柄には要らないが、**廃止銘柄は立花に無い。** そちらは J-Quants にしか
+#: 無く、生存バイアスを直す材料そのものである。
+#:
+#: プランで取れないものが混じっていてもよい。一覧が空で返るだけで、そのことは
+#: 数として出る。**こちらの表を信じて取り逃すより、聞いて空が返るほうがよい。**
+#:
+#: **`BULK_ENDPOINTS` から引く。手で写さない。** 最初は写して作り、6本を綴り
+#: 間違えた（`/indices/topix` / `/markets/trading-calendar` /
+#: `/derivatives/futures` …）。綴りが違うと `DataError` が返るが、**それは
+#: 「プランに入っていない」ときと見分けが付かない。** 2026-09-06 の下見で
+#: Light でも取れるはずの取引カレンダーと TOPIX が落ちて初めて分かった。
+#: Premium の週に同じことが起きれば、「Premium にも無いのだ」と読んで取らずに
+#: 終わる。
+#:
+#: 除くのはアドオン契約の2本だけである。分足とティックは通常プランとは別契約で、
+#: 契約していないものを一覧に出すと、落ちた理由が毎回1行増える。
+ARCHIVE_ADDONS: tuple[str, ...] = ("/equities/bars/minute", "/equities/trades")
+
+ARCHIVE_ENDPOINTS: tuple[str, ...] = tuple(
+    endpoint for endpoint in BULK_ENDPOINTS if endpoint not in ARCHIVE_ADDONS
+)
 
 #: プラン別の1分あたりリクエスト上限。出典は J-Quants 同梱の
 #: `.claude/skills/jquants-cli-usage/SKILL.md`（Rate Limits）。
@@ -325,6 +355,25 @@ def span_years(files: list[BulkFile]) -> float | None:
     return months / 12
 
 
+def download_raw(api_key: SecretStr | None, key: str, *, timeout: float = 300.0) -> bytes:
+    """1本を落として、**展開せずに**返す。原本を残すための口。
+
+    `download` との違いは gzip を展開しないことだけである。**原本は展開して
+    保存しない**——展開すると、gzip の中身が壊れていたときに区別が付かなく
+    なるし、こちらの読み方が入る。読み方は後から変えたい側である。
+
+    取得は 2026-09-22 で終わるが、パーサの誤りは10月にも見つかる。
+    `jquants_archive` を参照。
+    """
+    import httpx
+
+    url = presigned_url(api_key, key=key)
+    with httpx.Client(timeout=timeout, follow_redirects=True) as client:
+        response = client.get(url)
+        raise_for_status(response, f"bulk download for {key}")
+        return response.content
+
+
 def download(api_key: SecretStr | None, key: str, *, timeout: float = 300.0) -> bytes:
     """1本を落として、展開した中身を返す。
 
@@ -345,17 +394,54 @@ def download(api_key: SecretStr | None, key: str, *, timeout: float = 300.0) -> 
     """
     import gzip
 
-    import httpx
-
-    url = presigned_url(api_key, key=key)
-    with httpx.Client(timeout=timeout, follow_redirects=True) as client:
-        response = client.get(url)
-        raise_for_status(response, f"bulk download for {key}")
-        payload = response.content
-
+    payload = download_raw(api_key, key, timeout=timeout)
     if key.endswith(".gz"):
         payload = gzip.decompress(payload)
     return payload
+
+
+#: 一括 CSV を読むときに試す文字コード。**順序に意味がある。**
+#:
+#: **一括ファイルは UTF-8 である**（2026-09-07 に実測。保存した385本のうち
+#: 7エンドポイントすべてが `utf-8-sig`。会社名の入る `/equities/master` も
+#: 含む）。
+#:
+#: **配布サンプル（`sample_data_v2`）のほうは cp932 だった**（`Listed Issue
+#: Master.csv` / `Financial Statement Data(BSPLCF).csv` / 空売り残高報告）。
+#: 同じデータでも、配り方で文字コードが違う。
+#:
+#: つまり片方だけを見て決め打ちすると、**もう片方で落ちる。** 順序は UTF-8
+#: が先——cp932 はほぼ何でも読めてしまうので、先に試すと UTF-8 の日本語が
+#: 例外なしで化ける。
+CSV_ENCODINGS: tuple[str, ...] = ("utf-8-sig", "cp932")
+
+
+def decode_csv(payload: bytes) -> tuple[str, str]:
+    """一括 CSV のバイト列を文字列にする。**使った文字コードも返す。**
+
+    **`errors="replace"` を最初から使わない。** 使うと、会社名が化けたまま
+    表に並ぶ。例外は出ないし行数も合うので、化けていることに気付く手掛かりが
+    無くなる——このプロジェクトで繰り返し起きている「もっともらしいが違う値が
+    黙って出る」型そのものである。
+
+    どれでも読めなかったときだけ、最後に置換して読む。**そのときは警告を出す**
+    ——読めた文字だけを見て「取れた」と判断させない。
+
+    Returns:
+        ``(中身, 使った文字コード)``。呼ぶ側が何で読めたかを表に出せるように、
+        推測した結果を捨てない。
+    """
+    for encoding in CSV_ENCODINGS:
+        try:
+            return payload.decode(encoding), encoding
+        except UnicodeDecodeError:
+            continue
+    logger.warning(
+        "文字コードを決められなかった（%d バイト）。置換して読む——**表に出る値は"
+        "化けている可能性がある。**",
+        len(payload),
+    )
+    return payload.decode("utf-8", errors="replace"), "utf-8/replace"
 
 
 def records_from_csv(payload: bytes) -> list[dict[str, str]]:
@@ -368,11 +454,14 @@ def records_from_csv(payload: bytes) -> list[dict[str, str]]:
     空文字は ``None`` ではなく空文字のまま返す。既存の ``_text`` /
     ``_first`` が空文字を「無い」として扱うので、ここで変換すると
     二重に判断することになる。
+
+    **文字コードは UTF-8 とは限らない。** 配布サンプルでは日本語を含む
+    ファイルが cp932 だった。:func:`decode_csv` を見ること。
     """
     import csv
     import io
 
-    text = payload.decode("utf-8-sig")
+    text, _encoding = decode_csv(payload)
     return list(csv.DictReader(io.StringIO(text)))
 
 

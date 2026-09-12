@@ -408,3 +408,44 @@ def test_the_tse33_table_covers_the_whole_canonical_set() -> None:
     mapped = set(_TSE33_SECTORS.values())
     assert Sector.OTHER not in mapped  # OTHER means "unknown", never a target
     assert len(mapped) >= 8
+
+
+def test_the_listing_carries_the_margin_class_from_the_master() -> None:
+    """**貸借区分を読み捨てない。** 空売りできるかを決める。
+
+    列名は J-Quants の配布サンプル（``Listed Issue Master.csv``）の実物から
+    取った——``Date,Code,CoName,...,Mkt,MktNm,Mrgn,MrgnNm,ProdCat``。
+
+    **この経路が唯一、過去のある日にどうだったかを引ける。** 立花のマスタは
+    現在値しか返さない。2026-09-22 を過ぎると増えない。
+    """
+    listing = normalize_listing(
+        "8697",
+        [
+            {
+                "Code": "86970",
+                "CoName": "日本取引所グループ",
+                "S33": "7200",
+                "Mrgn": "2",
+                "MrgnNm": "貸借",
+            }
+        ],
+    )
+
+    assert listing.lending == "貸借"
+
+
+def test_the_margin_class_falls_back_to_the_code_when_the_name_is_absent() -> None:
+    """名前が無ければコードで残す。**読み捨てるよりよい。**"""
+    listing = normalize_listing(
+        "8697", [{"Code": "86970", "CoName": "テスト", "S33": "7200", "Mrgn": "2"}]
+    )
+
+    assert listing.lending == "2"
+
+
+def test_a_master_without_a_margin_class_is_not_an_error() -> None:
+    """古い応答や別経路には無い。**欠けていても落ちない。**"""
+    listing = normalize_listing("8697", [{"Code": "86970", "CoName": "テスト", "S33": "7200"}])
+
+    assert listing.lending is None

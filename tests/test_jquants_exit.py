@@ -155,3 +155,118 @@ def test_days_left_counts_down_to_the_cancellation() -> None:
     coverage = audit(_database())
     assert coverage.days_left(CANCELLATION - dt.timedelta(days=19)) == 19
     assert coverage.days_left(CANCELLATION + dt.timedelta(days=1)) == -1
+
+
+class TestNamingWhatIsMissing:
+    """**件数だけでは追えない。**
+
+    「名簿にあって株価が無い16銘柄」は、一括で株価を入れる前も後も 16 のまま
+    だった。+438銘柄ぶん増えたのに、その16件だけ動かない。**数字が動かない
+    ことは分かっても、なぜ動かないかは分からない。**
+
+    名前が並べば、全部が同じ性質か（同じ日に廃止した、同じ市場、同じ桁数）が
+    一目で分かる。
+    """
+
+    def test_the_missing_symbols_are_listed_not_just_counted(self, tmp_path) -> None:
+        database = Database("sqlite:///:memory:")
+        database.create_all()
+        frame = pd.DataFrame(
+            {
+                "open": [1.0],
+                "high": [1.0],
+                "low": [1.0],
+                "close": [1.0],
+                "adj_close": [1.0],
+                "volume": [1],
+            },
+            index=pd.DatetimeIndex([pd.Timestamp("2024-01-04")], name="date"),
+        )
+        with database.session() as session:
+            PriceRepository(session).upsert_prices("1301", frame, market="JP")
+            session.commit()
+
+        coverage = audit(database, snapshots={dt.date(2024, 1, 4): {"1301", "7203", "6758"}})
+
+        assert coverage.roster_without_prices == 2
+        assert coverage.missing_priced == ("6758", "7203")
+
+    def test_nothing_missing_gives_an_empty_list_not_a_placeholder(self, tmp_path) -> None:
+        """**空を「まだ数えていない」と読ませない。**"""
+        database = Database("sqlite:///:memory:")
+        database.create_all()
+
+        coverage = audit(database, snapshots={})
+
+        assert coverage.missing_priced == ()
+        assert coverage.roster_without_prices == 0
+
+
+class TestCountingRowsNotJustSymbols:
+    """**銘柄数だけでは、書けたことにならない。**
+
+    一括取り込みは「4,996,413行を書いた」と言うが、それは `upsert` に渡した
+    数である。**渡したことと入ったことは別で、入らなくても例外は出ない。**
+
+    DB には立花の2001年以降も入っているので、全体の行数と取り込みの報告は
+    そもそも一致しない。**期間を切って初めて比べられる。**
+    """
+
+    def _database(self):
+        database = Database("sqlite:///:memory:")
+        database.create_all()
+        return database
+
+    def _frame(self, days: list[str]) -> pd.DataFrame:
+        return pd.DataFrame(
+            {
+                OPEN: [1.0] * len(days),
+                HIGH: [1.0] * len(days),
+                LOW: [1.0] * len(days),
+                CLOSE: [1.0] * len(days),
+                ADJ_CLOSE: [1.0] * len(days),
+                VOLUME: [1] * len(days),
+            },
+            index=pd.DatetimeIndex([pd.Timestamp(day) for day in days], name="date"),
+        )
+
+    def test_the_rows_are_counted_not_only_the_symbols(self) -> None:
+        database = self._database()
+        with database.session() as session:
+            PriceRepository(session).upsert_prices(
+                "1301", self._frame(["2024-01-04", "2024-01-05"]), market="JP"
+            )
+            session.commit()
+
+        coverage = audit(database)
+
+        assert coverage.symbols_with_prices == 1
+        assert coverage.price_rows == 2
+
+    def test_the_window_is_counted_separately(self) -> None:
+        """**期間を切らないと、取り込みの報告と比べられない。**"""
+        database = self._database()
+        with database.session() as session:
+            PriceRepository(session).upsert_prices(
+                "1301",
+                self._frame(["2001-01-04", "2024-01-04", "2024-01-05"]),
+                market="JP",
+            )
+            session.commit()
+
+        coverage = audit(database, window=(dt.date(2024, 1, 1), dt.date(2024, 12, 31)))
+
+        assert coverage.price_rows == 3  # 立花の古い1行を含む
+        assert coverage.price_rows_in_window == 2  # 原本の期間だけ
+
+    def test_no_window_means_no_windowed_count(self) -> None:
+        """**0 を「窓の中に1行も無い」と読ませない。** 渡していないだけである。"""
+        database = self._database()
+        with database.session() as session:
+            PriceRepository(session).upsert_prices("1301", self._frame(["2024-01-04"]), market="JP")
+            session.commit()
+
+        coverage = audit(database)
+
+        assert coverage.price_rows == 1
+        assert coverage.price_rows_in_window == 0
