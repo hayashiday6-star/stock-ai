@@ -176,3 +176,26 @@ class TestTheBackupHoldsAtGigabyteScale:
         )
 
         assert any("Show-CopyReading" in line for line in lines[real : real + 8])
+
+    def test_the_copy_tolerates_a_coarse_clock_at_the_destination(self) -> None:
+        """**クラウドの写し先は、元の更新時刻を秒単位までは保たない。**
+
+        実測（2026-09-12）: pCloud の写し先に 386本・252.7MB が揃っているのに、
+        robocopy は毎回その 386本すべてを写すと言った（スキップ 0）。本数も
+        バイト数も一致しているので中身は届いていて、**合わないのは更新時刻
+        だけ**である。
+
+        252MB では気付かない。**20年ぶんでは毎回 1GB 超を上げ直す。**
+        """
+        lines = [
+            line
+            for line in _text("archive-backup.ps1").splitlines()
+            if line.strip().startswith("robocopy ")
+        ]
+
+        assert lines
+        for line in lines:
+            # 下見と本番で揃っていること。**片方だけだと、下見の結果が本番を
+            # 言い当てなくなる。**
+            assert "/FFT" in line.split(), line
+            assert "/DST" in line.split(), line

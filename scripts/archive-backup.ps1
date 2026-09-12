@@ -153,11 +153,13 @@ function Show-CopyReading {
         return
     }
     if ($Already -ge $Total) {
-        Write-Warn '写し先には既に同じだけのファイルがあります。'
-        Write-Host '  それでも「ぜんぶ写る」と出るなら、写し先が元の更新時刻を' -ForegroundColor DarkGray
-        Write-Host '  保てていません（クラウドドライブでよくあります）。毎回ぜんぶ' -ForegroundColor DarkGray
-        Write-Host '  上げ直すことになるので、20年ぶんでは重くなります。' -ForegroundColor DarkGray
-        Write-Host '  「スキップ」の本数を見てください。0 なら、それが起きています。' -ForegroundColor DarkGray
+        Write-Host '  写し先には既に同じだけのファイルがあります。' -ForegroundColor DarkGray
+        Write-Host '  「スキップ」がその本数なら、正しい姿です。' -ForegroundColor DarkGray
+        Write-Host '' -ForegroundColor DarkGray
+        Write-Host '  スキップが 0 なら、写し先が元の更新時刻を保てていません。' -ForegroundColor DarkGray
+        Write-Host '  /FFT（2秒単位）と /DST（1時間のずれ）を渡してもなお 0 なら、' -ForegroundColor DarkGray
+        Write-Host '  ずれはそれより大きいということです。毎回ぜんぶ上げ直すので、' -ForegroundColor DarkGray
+        Write-Host '  20年ぶんでは重くなります。' -ForegroundColor DarkGray
         return
     }
     Write-Host ('  差は {0:N0} 本です。増えたぶんだけ写るのが正しい姿です。' -f ($Total - $Already)) -ForegroundColor DarkGray
@@ -166,7 +168,7 @@ function Show-CopyReading {
 if ($DryRun) {
     Write-Host ''
     Write-Host '写さずに、何が写るかだけ見ます（robocopy /L）。' -ForegroundColor DarkGray
-    robocopy $source $full /E /XO /R:0 /W:0 /NP /NFL /NDL /L | Out-Host
+    robocopy $source $full /E /XO /FFT /DST /R:0 /W:0 /NP /NFL /NDL /L | Out-Host
     Write-Host ''
     Show-CopyReading -Already $thereFiles -Total $files.Count
     Write-Host ''
@@ -179,11 +181,21 @@ Write-Host '増えたぶんだけ写します。写し先のファイルは消�
 
 # /E    空のフォルダも含めて再帰
 # /XO   写し先のほうが新しければ飛ばす（＝増えたぶんだけ）
+# /FFT  更新時刻を2秒単位で見る
+# /DST  1時間のずれを吸収する
 # /R:2  読めないファイルは2回まで試す
 # /NP   進捗のパーセントを出さない（1行に収めるため）
 # /NFL /NDL  ファイル名・フォルダ名を並べない
 # **/MIR は使わない。** 写し先を打ち間違えたときに、そこにあるものを消す。
-robocopy $source $full /E /XO /R:2 /W:2 /NP /NFL /NDL | Out-Host
+#
+# **/FFT と /DST は実測から足した（2026-09-12）。** pCloud の写し先に 386本・
+# 252.7MB が揃っているのに、robocopy は毎回その 386本すべてを写すと言った
+# （スキップ 0）。本数もバイト数も一致しているので中身は届いていて、**合わない
+# のは更新時刻だけ**である。クラウドや共有ドライブは元の時刻を秒単位までは
+# 保たない。
+#
+# 252MB では気付かない。**20年ぶんでは毎回 1GB 超を上げ直す。**
+robocopy $source $full /E /XO /FFT /DST /R:2 /W:2 /NP /NFL /NDL | Out-Host
 $robo = $LASTEXITCODE
 
 Show-CopyReading -Already $thereFiles -Total $files.Count
