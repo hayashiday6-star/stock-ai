@@ -290,3 +290,100 @@ class TestTheOfficialTableDecidesWhatCountsAsKnown:
 
         assert report.by_year[2026].unknown_sector == 1
         assert report.unknown_sector_codes == {"8888": 1}
+
+
+class TestNamingTheSymbolsBehindAValue:
+    """**件数では決まらない。**
+
+    `012` が残した側と落とした側の両方に出たとき、分かるのは「分けきれない」
+    ことだけである。**なぜ分かれているかは、名前を見るまで決まらない。**
+
+    `ProdCat` の意味は公式の `reference_data.json` に載っていない（そこにある
+    `ProdCat` は先物・オプションのもので、名簿のものとは別である）。**符号の
+    意味を読める出典が無いので、中身を見るしかない。**
+    """
+
+    def _probe(self, rows: list[dict[str, str]], product: str):
+        from stock_ai.data.jquants_filter import ProductProbe
+
+        report = FilterCensus()
+        probe = ProductProbe(product=product)
+        census_payload(_csv(rows), report, probe)
+        return probe
+
+    def test_both_sides_are_named(self) -> None:
+        probe = self._probe(
+            [
+                _row("2026-08-03", "13010", product="012"),
+                _row("2026-08-03", "99990", s33="9999", product="012"),
+            ],
+            "012",
+        )
+
+        assert probe.kept == {"1301": "会社13010"}
+        assert probe.dropped[FUND] == {"9999": "会社99990"}
+
+    def test_other_values_are_left_out(self) -> None:
+        probe = self._probe(
+            [
+                _row("2026-08-03", "13010", product="011"),
+                _row("2026-08-03", "13020", product="012"),
+            ],
+            "012",
+        )
+
+        assert set(probe.kept) == {"1302"}
+
+    def test_asking_for_a_value_that_is_not_there_stays_empty(self) -> None:
+        """**空を「分けられた」と読ませない。** 何も無かっただけである。"""
+        probe = self._probe([_row("2026-08-03", "13010", product="011")], "099")
+
+        assert not probe.kept
+        assert not probe.dropped
+
+    def test_the_same_symbol_on_many_days_is_named_once(self) -> None:
+        """名簿は営業日ごとに同じ銘柄を載せる。**日数ぶん並べない。**"""
+        probe = self._probe(
+            [
+                _row("2026-08-03", "13010", product="012"),
+                _row("2026-08-04", "13010", product="012"),
+                _row("2026-08-05", "13010", product="012"),
+            ],
+            "012",
+        )
+
+        assert probe.kept == {"1301": "会社13010"}
+
+    def test_the_census_still_counts_everything_while_probing(self) -> None:
+        """名指しは**足すだけ。** 数えるほうを変えない。"""
+        from stock_ai.data.jquants_filter import ProductProbe
+
+        rows = [_row("2026-08-03", "13010", product="011")]
+        plain = FilterCensus()
+        census_payload(_csv(rows), plain)
+        probed = FilterCensus()
+        census_payload(_csv(rows), probed, ProductProbe(product="012"))
+
+        assert plain.by_year[2026] == probed.by_year[2026]
+
+    def test_it_runs_through_the_archive(self, tmp_path: Path) -> None:
+        from stock_ai.data.jquants_filter import ProductProbe
+
+        payload = gzip.compress(_csv([_row("2026-08-03", "13010", product="012")]))
+        archive(
+            [
+                BulkFile(
+                    key="equities/master/historical/2026/eq_master_202608.csv.gz",
+                    last_modified="",
+                    size=len(payload),
+                )
+            ],
+            lambda _k: payload,
+            tmp_path,
+            on=TODAY,
+        )
+        probe = ProductProbe(product="012")
+
+        census(tmp_path, probe=probe)
+
+        assert probe.kept == {"1301": "会社13010"}

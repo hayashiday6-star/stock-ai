@@ -36,12 +36,19 @@
 .PARAMETER Show
     符号や銘柄を何件まで並べるか。
 
+.PARAMETER Product
+    その `ProdCat` の値を持つ銘柄を、名前つきで並べます。**件数では決まらない
+    ものを見るためです。** 残した側と落とした側の両方に出る値があったとき、
+    なぜ分かれているかは名前を見るまで決まりません。
+
 .EXAMPLE
     .\scripts\filter-census.ps1
+    .\scripts\filter-census.ps1 -Product 012
 #>
 [CmdletBinding()]
 param(
     [int]$Show = 0,
+    [string]$Product = '',
     [string]$Dir = ''
 )
 
@@ -62,6 +69,7 @@ Write-Host ''
 
 $arguments = @('run', 'stock-ai', 'jquants-filter-census')
 if ($Show -gt 0) { $arguments += @('--show', "$Show") }
+if ($Product -ne '') { $arguments += @('--product', $Product) }
 if ($Dir -ne '') { $arguments += @('--dir', $Dir) }
 
 uv @arguments

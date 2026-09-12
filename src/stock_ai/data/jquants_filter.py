@@ -172,8 +172,41 @@ def product_separates(census: FilterCensus, reason: str) -> tuple[bool, set[str]
     return not overlap, overlap
 
 
-def census_payload(payload: bytes, into: FilterCensus) -> None:
-    """名簿の原本1本を数え、``into`` に足す。"""
+@dataclasses.dataclass
+class ProductProbe:
+    """ある `ProdCat` の値を持つ行を、**名指しする。**
+
+    件数では決まらない。`012` が残した側と落とした側の両方に出たとき、分かる
+    のは「分けきれない」ことだけで、**なぜ分かれているかは名前を見るまで
+    決まらない。** 16銘柄のときと同じである——名前・市場まで降りて初めて
+    決まった。
+
+    `ProdCat` の意味は、公式の `reference_data.json` に**載っていない。**
+    そこにある `ProdCat` は先物・オプションの商品区分で、名簿のものとは別で
+    ある。**符号の意味を読める出典が無いので、中身を見るしかない。**
+    """
+
+    product: str
+    kept: dict[str, str] = dataclasses.field(default_factory=dict)
+    """残した銘柄 → 名前。"""
+
+    dropped: dict[str, dict[str, str]] = dataclasses.field(default_factory=dict)
+    """落とした理由 → ``{銘柄: 名前}``。"""
+
+    def summary(self) -> str:
+        """1行のまとめ。"""
+        dropped = sum(len(names) for names in self.dropped.values())
+        return f"`ProdCat` = {self.product}: 残した {len(self.kept)} 銘柄、落とした {dropped} 銘柄"
+
+
+def census_payload(payload: bytes, into: FilterCensus, probe: ProductProbe | None = None) -> None:
+    """名簿の原本1本を数え、``into`` に足す。
+
+    Args:
+        payload: 展開済みの名簿。
+        into: 足し込み先。
+        probe: この `ProdCat` の値を持つ行だけ、銘柄と名前を控える。
+    """
     for row in records_from_csv(payload):
         date = parse_date(row.get("Date"))
         if date is None:
@@ -201,10 +234,18 @@ def census_payload(payload: bytes, into: FilterCensus) -> None:
             slice_.reasons[reason] += 1
             into.product_dropped.setdefault(reason, Counter())[product] += 1
 
+        if probe is not None and product == probe.product and code is not None:
+            name = _first(row, ("CoName", "Name", "CompanyName"))
+            if reason is None:
+                probe.kept[code] = name
+            else:
+                probe.dropped.setdefault(reason, {})[code] = name
+
 
 def census(
     archive_dir: Path,
     progress: Callable[[int, int, str], None] | None = None,
+    probe: ProductProbe | None = None,
 ) -> FilterCensus:
     """保存済みの名簿を1周読んで、絞り込みの通り具合を年ごとに数える。
 
@@ -213,6 +254,8 @@ def census(
     Args:
         archive_dir: 原本の置き場所。
         progress: 1本ごとに ``(番号, 総数, key)`` で呼ばれる。
+        probe: ある `ProdCat` の値を持つ行を名指しする。**件数では決まらない
+            ものを見るため。**
 
     Returns:
         :class:`FilterCensus`。
@@ -232,7 +275,7 @@ def census(
         if progress is not None:
             progress(number, total, key)
         try:
-            census_payload(read_archived(path_for(archive_dir, key)), report)
+            census_payload(read_archived(path_for(archive_dir, key)), report, probe)
         except Exception as exc:  # noqa: BLE001 - どこで読めないかが記録に値する
             report.failed[key] = f"{type(exc).__name__}: {exc}"
             logger.warning("名簿の原本を読めなかった: %s: %s", key, exc)

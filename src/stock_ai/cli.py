@@ -228,9 +228,9 @@ from stock_ai.data.jquants_details import (
     revision_census as count_revisions,
 )
 from stock_ai.data.jquants_exit import CANCELLATION, audit
+from stock_ai.data.jquants_filter import ProductProbe, product_separates
 from stock_ai.data.jquants_filter import baseline as filter_baseline
 from stock_ai.data.jquants_filter import census as filter_census
-from stock_ai.data.jquants_filter import product_separates
 from stock_ai.data.jquants_fundamentals import JQuantsFundamentalsProvider, normalize_statements
 from stock_ai.data.jquants_markets import HOLIDAY_DIVISION, TRADING_DIVISIONS, half_days_by_year
 from stock_ai.data.jquants_markets import agreement as calendar_agreement
@@ -3999,6 +3999,9 @@ def jquants_filter_census(
         str(DEFAULT_ARCHIVE_DIR), "--dir", help="Where the raw files are kept."
     ),
     show: int = typer.Option(12, "--show", help="How many codes to list."),
+    product: str | None = typer.Option(
+        None, "--product", help="Name the symbols carrying this ProdCat value."
+    ),
 ) -> None:
     """Count whether the roster filter still holds when the history gets longer.
 
@@ -4029,11 +4032,13 @@ def jquants_filter_census(
     settings = get_settings()
     configure_logging(settings.log_level)
 
+    probe = ProductProbe(product=product.strip()) if product else None
     report = filter_census(
         Path(archive_dir),
         progress=lambda index, total, key: console.print(
             f"[dim]{_progress_line(index, total, key)}[/]", end="\r"
         ),
+        probe=probe,
     )
     console.print()
     if not report.by_year:
@@ -4111,6 +4116,28 @@ def jquants_filter_census(
             "[dim]`ProdCat` の比較はできなかった（片方が空）。**比べていない、"
             "であって分けられない、ではない。**[/]"
         )
+
+    if probe is not None:
+        if not probe.kept and not probe.dropped:
+            console.print(
+                f"[yellow]`ProdCat` = {probe.product} の行が1つも無い。[/]"
+                "[dim] 上の表に出ている値を渡すこと。[/]"
+            )
+        else:
+            named = Table(title=f"`ProdCat` = {probe.product} の中身")
+            for column in ("扱い", "銘柄", "名前"):
+                named.add_column(column)
+            for symbol, name in sorted(probe.kept.items())[:show]:
+                named.add_row("[green]残した[/]", symbol, name or "（名前なし）")
+            for reason, names in sorted(probe.dropped.items()):
+                for symbol, name in sorted(names.items())[:show]:
+                    named.add_row(f"落とした / {reason}", symbol, name or "（名前なし）")
+            console.print(named)
+            console.print(probe.summary())
+            console.print(
+                "[dim]**名前を見て決めること。** 残した側に投信・ETF・REIT が"
+                "並んでいるなら、いま universe に入っている。[/]"
+            )
 
     if report.failed:
         console.print(f"[yellow]読めなかった原本 {len(report.failed)} 本[/]")
