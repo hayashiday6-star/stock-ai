@@ -215,6 +215,7 @@ from stock_ai.data.jquants_bulk import group_by_symbol as bulk_group_by_symbol
 from stock_ai.data.jquants_bulk import list_files as bulk_list_files
 from stock_ai.data.jquants_bulk import records_from_csv as bulk_records_from_csv
 from stock_ai.data.jquants_bulk import span_years as bulk_span_years
+from stock_ai.data.jquants_crosscheck import DailyMatch, compare_daily, summarise
 from stock_ai.data.jquants_details import (
     RevisionCensus,
     describe_doc_type,
@@ -226,6 +227,7 @@ from stock_ai.data.jquants_details import (
 )
 from stock_ai.data.jquants_exit import CANCELLATION, audit
 from stock_ai.data.jquants_fundamentals import JQuantsFundamentalsProvider, normalize_statements
+from stock_ai.data.jquants_prices import frames_for as price_frames_for
 from stock_ai.data.jquants_prices import ingest as price_ingest
 from stock_ai.data.jquants_prices import join_returns as price_join_returns
 from stock_ai.data.jquants_prices import looks_unapplied as price_looks_unapplied
@@ -3673,6 +3675,99 @@ def jquants_symbol_probe(
         console.print(
             "[dim]行はあるが終値が無い。**上場しているが売買が成立していない。**"
             "取り直しても埋まらない。[/]"
+        )
+
+
+@app.command(name="jquants-crosscheck")
+def jquants_crosscheck(
+    symbols: list[str] | None = typer.Argument(None, help="JP codes; omit to sample."),
+    archive_dir: str = typer.Option(
+        str(DEFAULT_ARCHIVE_DIR), "--dir", help="Where the raw files are kept."
+    ),
+    sample: int = typer.Option(12, "--sample", help="How many symbols to draw when none given."),
+) -> None:
+    """Compare Tachibana and the archived J-Quants bars, day by day.
+
+    **継ぎ目の検査は1日しか見ていない。** 2021-09-01 が普通の1日に見えたこと
+    は、その日に段差が無いことしか言っていない。**5年ぶんの毎日が合っているか
+    は、別の話である。**
+
+    **いましかできない。** 2026-09-22 に解約すると片方が更新されなくなる。
+    原本は残るが、**2つの生きた経路が同じことを言うかを確かめる機会は無くなる。**
+
+    生の終値から比べる。両者が同じ公式の値を見ているはずの、いちばん素の
+    ところである。**ここが合わないなら、調整の話をしても意味がない。**
+    """
+    settings = get_settings()
+    configure_logging(settings.log_level)
+
+    source = Path(archive_dir)
+    wanted = {code.strip() for code in (symbols or []) if code.strip()}
+    if not wanted:
+        # **立花にあるのは現存銘柄だけ。** 廃止銘柄を混ぜても比べられない。
+        latest = stored_dates(DAILY_SNAPSHOT_DIR)
+        if not latest:
+            raise typer.BadParameter("銘柄を渡すか、先に営業日ごとの名簿を作ること。")
+
+        living = sorted(membership(DAILY_SNAPSHOT_DIR)[latest[-1]])
+        step = max(1, len(living) // max(sample, 1))
+        wanted = set(living[::step][:sample])
+        console.print(f"[dim]最新の名簿から {len(wanted)} 銘柄を等間隔で抜いた。[/]")
+
+    console.print(f"[dim]原本から {len(wanted)} 銘柄ぶんを組み立てる（1周だけ読む）…[/]")
+    archived = price_frames_for(source, wanted)
+    if not archived:
+        console.print("[yellow]原本にその銘柄が無い。[/]")
+        return
+
+    provider, _market = _price_source("tachibana", settings)
+    today = dt.date.today()
+    matches: list[DailyMatch] = []
+    for index, symbol in enumerate(sorted(archived), start=1):
+        console.print(f"[dim]{_progress_line(index, len(archived), symbol)}[/]", end="\r")
+        try:
+            theirs = provider.fetch_prices(symbol, dt.date(2001, 1, 1), today)
+        except Exception as exc:  # noqa: BLE001 - 断られ方そのものが記録に値する
+            console.print(f"[yellow]{symbol}: {type(exc).__name__}[/]")
+            continue
+        matches.append(compare_daily(theirs, archived[symbol], symbol))
+
+    console.print()
+    if not matches:
+        console.print("[yellow]立花から1銘柄も取れなかった。[/]")
+        return
+
+    table = Table(title="立花 と J-Quants（重なる日だけ）")
+    for column in ("銘柄", "比べた日", "終値が違う", "調整後が違う", "いちばん悪い日"):
+        table.add_column(column, justify="left" if column == "銘柄" else "right")
+    for match in matches:
+        table.add_row(
+            match.symbol,
+            f"{match.days:,}",
+            f"{match.close_differs:,}",
+            f"{match.adjusted_differs:,}",
+            f"{match.worst:.2%} ({match.worst_on})" if match.worst else "—",
+        )
+    console.print(table)
+    console.print(summarise(matches))
+
+    off = [m for m in matches if not m.agrees]
+    if off:
+        console.print(
+            f"[red]{len(off)}/{len(matches)} 銘柄で生の終値が食い違う。[/] "
+            "**同じ公式の値を見ているはずのところで合わない。** どちらが正しいか"
+            "を決めるまで、継ぎ目をまたぐ期間を分析に使わないこと。"
+        )
+    else:
+        adjusted = [m for m in matches if m.adjusted_differs]
+        console.print(
+            "[green]生の終値は、比べたすべての日で一致している。[/]"
+            + (
+                f"[yellow] ただし調整後は {len(adjusted)} 銘柄で違う。[/]"
+                "[dim] 分割調整の基準が出所で違う——継ぎ目1日では見えなかったもの。[/]"
+                if adjusted
+                else "[dim] 調整後も一致している。[/]"
+            )
         )
 
 

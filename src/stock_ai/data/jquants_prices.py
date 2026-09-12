@@ -534,3 +534,35 @@ def probe_symbols(archive_dir: Path, symbols: set[str]) -> dict[str, SymbolProbe
             if close is not None and close > 0:
                 probe.priced_rows += 1
     return found
+
+
+def frames_for(archive_dir: Path, symbols: set[str]) -> dict[str, pd.DataFrame]:
+    """保存済みの四本値から、指定した銘柄ぶんだけを組み立てる。
+
+    **原本を1周しか読まない。** 銘柄ごとに読み直すと、65本を銘柄の数だけ
+    開くことになる。
+
+    調整値は :func:`ingest` と同じ作り方をする——`AdjFactor` の積である。
+    **ここだけ別の作り方にすると、突き合わせが「作り方の違い」を測ることに
+    なる。**
+    """
+    from stock_ai.data.jquants_archive import path_for, read_manifest
+
+    keys = [key for key in sorted(read_manifest(archive_dir)) if endpoint_of(key) == BARS_ENDPOINT]
+    splits: SplitTable = {}
+    for key in keys:
+        try:
+            split_factors_from_payload(read_archived(path_for(archive_dir, key)), splits)
+        except Exception as exc:  # noqa: BLE001 - どこで読めないかが記録に値する
+            logger.warning("原本を読めなかった: %s: %s", key, exc)
+
+    collected: dict[str, list[pd.DataFrame]] = {}
+    for key in keys:
+        try:
+            frames, _report = frames_from_payload(read_archived(path_for(archive_dir, key)), splits)
+        except Exception:  # noqa: BLE001 - 上で警告済み
+            continue
+        for symbol in symbols & set(frames):
+            collected.setdefault(symbol, []).append(frames[symbol])
+
+    return {symbol: pd.concat(parts).sort_index() for symbol, parts in collected.items() if parts}
