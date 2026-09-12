@@ -124,12 +124,53 @@ else {
     Write-Host '  途中で尽きると、写せた本数だけ増えて robocopy が 8 以上を返します。'
 }
 
+# **写し先に既に何があるかを数える。**
+#
+# これが無いと、robocopy が「386本ぜんぶ写る」と言ったときに、意味が2通りに
+# 読めてしまう——写し先が空なのか、既にあるのに毎回写し直しているのか。
+# 前者なら正常で、後者なら 20年ぶんの 1GB 超を毎回上げ直すことになる。
+# **どちらも robocopy の出力は同じ形をしている。**
+$thereFiles = 0
+$thereBytes = 0
+if (Test-Path $full) {
+    $there = @(Get-ChildItem -Path $full -File -Recurse -ErrorAction SilentlyContinue)
+    $thereFiles = $there.Count
+    if ($thereFiles -gt 0) {
+        $thereBytes = ($there | Measure-Object -Property Length -Sum).Sum
+    }
+}
+Write-Host ("既にある: {0:N0} 本、{1:N1} MB" -f $thereFiles, ($thereBytes / 1MB))
+
+function Show-CopyReading {
+    <#
+        .SYNOPSIS
+            写し先の中身と、robocopy が写すと言った量を読み解く。
+    #>
+    param([int]$Already, [int]$Total)
+
+    if ($Already -eq 0) {
+        Write-Host '  写し先は空です。ぜんぶ写ると出るのが正しい姿です。' -ForegroundColor DarkGray
+        return
+    }
+    if ($Already -ge $Total) {
+        Write-Warn '写し先には既に同じだけのファイルがあります。'
+        Write-Host '  それでも「ぜんぶ写る」と出るなら、写し先が元の更新時刻を' -ForegroundColor DarkGray
+        Write-Host '  保てていません（クラウドドライブでよくあります）。毎回ぜんぶ' -ForegroundColor DarkGray
+        Write-Host '  上げ直すことになるので、20年ぶんでは重くなります。' -ForegroundColor DarkGray
+        Write-Host '  「スキップ」の本数を見てください。0 なら、それが起きています。' -ForegroundColor DarkGray
+        return
+    }
+    Write-Host ('  差は {0:N0} 本です。増えたぶんだけ写るのが正しい姿です。' -f ($Total - $Already)) -ForegroundColor DarkGray
+}
+
 if ($DryRun) {
     Write-Host ''
     Write-Host '写さずに、何が写るかだけ見ます（robocopy /L）。' -ForegroundColor DarkGray
     robocopy $source $full /E /XO /R:0 /W:0 /NP /NFL /NDL /L | Out-Host
     Write-Host ''
-    Write-Ok '写していません。上の行数と大きさが、次に写るぶんです。'
+    Show-CopyReading -Already $thereFiles -Total $files.Count
+    Write-Host ''
+    Write-Ok '写していません。上の「コピー済み」が、次に写るぶんです。'
     Exit-WithPause 0
 }
 
@@ -144,6 +185,8 @@ Write-Host '増えたぶんだけ写します。写し先のファイルは消�
 # **/MIR は使わない。** 写し先を打ち間違えたときに、そこにあるものを消す。
 robocopy $source $full /E /XO /R:2 /W:2 /NP /NFL /NDL | Out-Host
 $robo = $LASTEXITCODE
+
+Show-CopyReading -Already $thereFiles -Total $files.Count
 
 # **robocopy は成功でも 0 を返さない。**
 #   0 = 写すものが無かった  1 = 写した  2 = 余分があった  4 = 食い違い

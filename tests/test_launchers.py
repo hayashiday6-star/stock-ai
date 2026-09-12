@@ -152,3 +152,27 @@ class TestTheBackupHoldsAtGigabyteScale:
         assert len(lines) == 2, lines
         listing = [line for line in lines if "/L" in line.split()]
         assert len(listing) == 1, "下見の行が1つではない"
+
+    def test_the_destination_is_counted_before_copying(self) -> None:
+        """**「ぜんぶ写る」の意味が2通りに読めてしまうのを防ぐ。**
+
+        写し先が空なら、ぜんぶ写ると出るのが正しい姿である。既に同じだけ
+        あるのにぜんぶ写ると出るなら、写し先が元の更新時刻を保てていない
+        ——毎回ぜんぶ上げ直すことになる。**robocopy の出力は、どちらも
+        同じ形をしている。**
+        """
+        body = _text("archive-backup.ps1")
+
+        assert "Show-CopyReading" in body
+        assert body.count("Show-CopyReading") >= 3, "下見と本番の両方で読み解いていない"
+
+    def test_the_reading_is_shown_on_the_real_copy_too(self) -> None:
+        """下見でしか出ないと、**普段の実行では気付けない。**"""
+        lines = _text("archive-backup.ps1").splitlines()
+        real = next(
+            index
+            for index, line in enumerate(lines)
+            if line.strip().startswith("robocopy ") and "/L" not in line.split()
+        )
+
+        assert any("Show-CopyReading" in line for line in lines[real : real + 8])
