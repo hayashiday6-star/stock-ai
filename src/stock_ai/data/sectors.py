@@ -158,6 +158,37 @@ def from_tse33(code: str | int | None) -> Sector:
     return _TSE33_SECTORS.get(str(code).strip(), Sector.OTHER)
 
 
+#: 公式の33業種表に載る「その他」。**業種ではないが、正式な符号である。**
+#:
+#: 出典: J-Quants 公式 `j-quants-doc-mcp` の `reference_data.json`
+#: （`sector33_codes`、34件＝33業種 + これ）。
+#:
+#: :data:`_TSE33_SECTORS` には**入れない。** 入れると業種として扱えてしまう。
+#: ここに別に置くのは、**「公式に載っている」と「業種である」を分けるため**で
+#: ある。
+TSE33_OTHER = "9999"
+
+
+def known_tse33(code: str | int | None) -> bool:
+    """Whether the TSE-33 code appears in the official table at all.
+
+    **「公式の表に無い符号」と「その他（`9999`）」は別である。**
+    :func:`from_tse33` はどちらも :data:`Sector.OTHER` にするので、区別がそこで
+    消える。
+
+    universe はその他を投信・ETF とみなして落とす。**公式にも無い符号を持った
+    普通の会社も、同じ扱いで黙って落ちる。** 古い年のデータで符号の体系が違え
+    ば、落ちるのは1社ではなく全部になりうる——**例外は出ない。**
+
+    だから `9999` はここでは「知っている」と答える。落とす扱いは変わらないが、
+    **落としてよいものと、落ちては困るものを、同じ数に混ぜない。**
+    """
+    if code in (None, ""):
+        return False
+    text = str(code).strip()
+    return text in _TSE33_SECTORS or text == TSE33_OTHER
+
+
 def parse(value: str | None) -> Sector:
     """Parse a stored canonical sector name back into a :class:`Sector`."""
     if not value:

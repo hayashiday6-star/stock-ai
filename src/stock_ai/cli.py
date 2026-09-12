@@ -228,6 +228,9 @@ from stock_ai.data.jquants_details import (
     revision_census as count_revisions,
 )
 from stock_ai.data.jquants_exit import CANCELLATION, audit
+from stock_ai.data.jquants_filter import baseline as filter_baseline
+from stock_ai.data.jquants_filter import census as filter_census
+from stock_ai.data.jquants_filter import product_separates
 from stock_ai.data.jquants_fundamentals import JQuantsFundamentalsProvider, normalize_statements
 from stock_ai.data.jquants_markets import HOLIDAY_DIVISION, TRADING_DIVISIONS, half_days_by_year
 from stock_ai.data.jquants_markets import agreement as calendar_agreement
@@ -262,7 +265,7 @@ from stock_ai.data.tachibana import default_version as tachibana_default_version
 from stock_ai.data.tachibana import version_warning as tachibana_version_warning
 from stock_ai.data.tachibana_universe import TachibanaUniverse
 from stock_ai.data.types import FinancialReport, Importance, SecurityProfile
-from stock_ai.data.universe import JQuantsUniverse, Segment
+from stock_ai.data.universe import FUND, JQuantsUniverse, Segment
 from stock_ai.data.yfinance_provider import (
     YFinanceFundamentalsProvider,
     YFinancePriceProvider,
@@ -3988,6 +3991,132 @@ def jquants_calendar(
             )
 
     console.print(report.summary())
+
+
+@app.command(name="jquants-filter-census")
+def jquants_filter_census(
+    archive_dir: str = typer.Option(
+        str(DEFAULT_ARCHIVE_DIR), "--dir", help="Where the raw files are kept."
+    ),
+    show: int = typer.Option(12, "--show", help="How many codes to list."),
+) -> None:
+    """Count whether the roster filter still holds when the history gets longer.
+
+    絞り込みは `S33`（33業種）に寄りかかっている。**無ければ無条件に「会社」と
+    みなす。** 符号の名前が変わったときに universe が空になるより、ETF が1つ
+    紛れるほうが安いからで、そこは意図した設計である。
+
+    **ただしそれは、`S33` がほぼ全部の行に在ることを前提にしている。** いま
+    手元にあるのは5年ぶんで、そこで揃っていることは 2006年にも揃っていること
+    を意味しない。
+
+    起きうることは2つあり、**向きが逆である。**
+
+    | 形 | 何が起きる |
+    |---|---|
+    | `S33` が空 | ETF・REIT が「会社」として universe に入る |
+    | 表に無い符号 | 普通の会社が投信とみなされて**落ちる** |
+
+    **後者のほうが重い。** 符号の体系が変われば、落ちるのは1社ではなく全部に
+    なりうる。どちらも例外は出ない。
+
+    ここで出すのは**基準線**である。20年ぶんを取った日に、同じ数字を出して
+    比べる。**基準線が無ければ、20年ぶんの数字を見ても多いのか少ないのかが
+    言えない。**
+
+    API を1回も叩かない。
+    """
+    settings = get_settings()
+    configure_logging(settings.log_level)
+
+    report = filter_census(
+        Path(archive_dir),
+        progress=lambda index, total, key: console.print(
+            f"[dim]{_progress_line(index, total, key)}[/]", end="\r"
+        ),
+    )
+    console.print()
+    if not report.by_year:
+        console.print(
+            "[yellow]名簿の原本が無い。[/]"
+            "[dim] 先に `checks\\原本をまるごと保存.bat` を実行すること。[/]"
+        )
+        raise typer.Exit(code=1)
+
+    table = Table(title="年ごとの通り具合（銘柄日）")
+    for column in ("年", "行", "残した", "`S33` が空", "表に無い符号"):
+        table.add_column(column, justify="left" if column == "年" else "right")
+    for year in sorted(report.by_year):
+        year_slice = report.by_year[year]
+        table.add_row(
+            str(year),
+            f"{year_slice.rows:,}",
+            f"{year_slice.kept:,}",
+            f"{year_slice.no_sector:,}"
+            + (f" ({year_slice.no_sector_share:.2%})" if year_slice.no_sector else ""),
+            f"[red]{year_slice.unknown_sector:,}[/]"
+            if year_slice.unknown_sector
+            else f"{year_slice.unknown_sector:,}",
+        )
+    console.print(table)
+
+    if report.unknown_sector_codes:
+        console.print(
+            f"[red]表に無い `S33` の符号が {len(report.unknown_sector_codes)} 種類[/]"
+            "[dim] これらは「その他」と同じ扱いで落ちている。**普通の会社なら、"
+            "黙って universe から消えている。**[/]"
+        )
+        for code, count in report.unknown_sector_codes.most_common(show):
+            name = report.unknown_sector_names.get(code) or "（名前も無い）"
+            console.print(f"  [yellow]{code}[/] {name} — {count:,} 銘柄日")
+    else:
+        console.print(
+            "[green]表に無い `S33` の符号は1つも無い。[/]"
+            "[dim] この期間では、符号の体系はこちらの表と揃っている。[/]"
+        )
+
+    if report.no_sector_symbols:
+        listed = "  ".join(sorted(report.no_sector_symbols)[:show])
+        console.print(
+            f"[yellow]`S33` が空の銘柄が {len(report.no_sector_symbols)} 件[/]"
+            f"[dim] これらは無条件に「会社」として universe に入っている: {listed}[/]"
+        )
+    else:
+        console.print(
+            "[green]`S33` が空の行は1つも無い。[/]"
+            "[dim] 受け皿の規則は、この期間では一度も使われていない。[/]"
+        )
+
+    products = Table(title="`ProdCat` は二の矢になるか")
+    for column in ("行", "`ProdCat` の値"):
+        products.add_column(column)
+    products.add_row("残した", "  ".join(sorted(report.product_kept)) or "（空）")
+    for reason, counter in sorted(report.product_dropped.items()):
+        products.add_row(f"落とした / {reason}", "  ".join(sorted(counter)) or "（空）")
+    console.print(products)
+
+    separates, overlap = product_separates(report, FUND)
+    if separates:
+        console.print(
+            "[green]`ProdCat` は、投信・ETF と会社を分けきっている。[/]"
+            "**`S33` が空のときの受け皿にできる。**"
+        )
+    elif overlap:
+        console.print(
+            f"[yellow]`ProdCat` は分けきれない。[/] 両方に出る値: {'  '.join(sorted(overlap))}。"
+            "**重なった値の行は、どちらとも言えない。** 受け皿にはできない。"
+        )
+    else:
+        console.print(
+            "[dim]`ProdCat` の比較はできなかった（片方が空）。**比べていない、"
+            "であって分けられない、ではない。**[/]"
+        )
+
+    if report.failed:
+        console.print(f"[yellow]読めなかった原本 {len(report.failed)} 本[/]")
+    console.print(report.summary())
+    console.print(f"[bold]{filter_baseline(report)}[/]")
+    console.print("[dim]20年ぶんを取った日に、同じコマンドを実行してこの行と比べること。[/]")
 
 
 @app.command(name="jquants-archive-verify")
