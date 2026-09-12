@@ -177,15 +177,16 @@ class TestTheBackupHoldsAtGigabyteScale:
 
         assert any("Show-CopyReading" in line for line in lines[real : real + 8])
 
-    def test_the_copy_tolerates_a_coarse_clock_at_the_destination(self) -> None:
-        """**クラウドの写し先は、元の更新時刻を秒単位までは保たない。**
+    def test_no_flag_is_carried_that_was_never_shown_to_help(self) -> None:
+        """**外れた見立てから足した指定を残さない。**
 
-        実測（2026-09-12）: pCloud の写し先に 386本・252.7MB が揃っているのに、
-        robocopy は毎回その 386本すべてを写すと言った（スキップ 0）。本数も
-        バイト数も一致しているので中身は届いていて、**合わないのは更新時刻
-        だけ**である。
+        「写し先に 386本あるのに全部写ると出る」のを更新時刻のずれと読んで
+        `/FFT` と `/DST` を足したが、**足してもスキップは 0 のままだった。**
+        実際には前の写しが1段深いところに入っていただけで、**時刻は一度も
+        問題になっていない。**
 
-        252MB では気付かない。**20年ぶんでは毎回 1GB 超を上げ直す。**
+        根拠の無い指定を残すと、次に「スキップ」が出たときに、直ったのが
+        置き場所なのか `/FFT` なのかが分からなくなる。**外せば1回で分かる。**
         """
         lines = [
             line
@@ -195,10 +196,21 @@ class TestTheBackupHoldsAtGigabyteScale:
 
         assert lines
         for line in lines:
-            # 下見と本番で揃っていること。**片方だけだと、下見の結果が本番を
-            # 言い当てなくなる。**
-            assert "/FFT" in line.split(), line
-            assert "/DST" in line.split(), line
+            assert "/FFT" not in line.split(), line
+            assert "/DST" not in line.split(), line
+
+    def test_the_likely_destination_is_named_when_it_can_be(self) -> None:
+        """**言い当てられるなら言い当てる。**
+
+        「写し先を確かめてください」で止めると、打ち直す先を人が探すことに
+        なり、また別の場所に入りうる。余りが1つのフォルダにまとまっていて、
+        そこに目録があるなら、そこが前の写しである。
+        """
+        body = _text("archive-backup.ps1")
+
+        assert "$nested" in body
+        assert "manifest.csv" in body, "目録の有無で確かめていない"
+        assert "$strayRoots.Count -eq 1" in body, "候補が複数でも言い当てている"
 
     def test_the_destination_is_matched_by_path_not_by_count(self) -> None:
         """**件数が合っていることは、同じ場所にあることではない。**

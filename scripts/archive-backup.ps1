@@ -145,6 +145,7 @@ $sameFiles = 0
 $sameBytes = 0
 $strayFiles = 0
 $strayShown = @()
+$strayRoots = @{}
 if (Test-Path $full) {
     $destRoot = $full.TrimEnd('\')
     foreach ($item in @(Get-ChildItem -Path $full -File -Recurse -ErrorAction SilentlyContinue)) {
@@ -156,9 +157,22 @@ if (Test-Path $full) {
         else {
             $strayFiles++
             if ($strayShown.Count -lt 3) { $strayShown += $rel }
+            # 余りが1つのフォルダにまとまっていれば、そこが前の写しである。
+            $head = ($rel -split '\')[0]
+            if ($rel -ne $head) { $strayRoots[$head] = $true }
         }
     }
 }
+
+# **1つに決まるときだけ言い当てる。** 候補が複数あるなら、選ぶのは人である。
+$nested = ''
+if ($strayRoots.Count -eq 1) {
+    $candidate = @($strayRoots.Keys)[0]
+    if (Test-Path (Join-Path (Join-Path $full $candidate) 'manifest.csv')) {
+        $nested = $candidate
+    }
+}
+
 $thereFiles = $sameFiles
 Write-Host ("同じ場所: {0:N0} 本、{1:N1} MB" -f $sameFiles, ($sameBytes / 1MB))
 if ($strayFiles -gt 0) {
@@ -166,9 +180,18 @@ if ($strayFiles -gt 0) {
     foreach ($rel in $strayShown) { Write-Host ("  {0}" -f $rel) -ForegroundColor DarkGray }
     if ($sameFiles -eq 0) {
         Write-Host '  **元の1本も、写し先の同じ場所にありません。**' -ForegroundColor DarkGray
-        Write-Host '  前の写しが1段深いところに入っている可能性があります。' -ForegroundColor DarkGray
         Write-Host '  そのまま進めると、同じものが2つ置かれて、以後ばらばらに' -ForegroundColor DarkGray
-        Write-Host '  古くなっていきます。写し先を確かめてください。' -ForegroundColor DarkGray
+        Write-Host '  古くなっていきます。' -ForegroundColor DarkGray
+        if ($nested -ne '') {
+            # **言い当てられるなら言い当てる。** 「確かめてください」で止めると、
+            # 打ち直す先を人が探すことになり、また別の場所に入りうる。
+            Write-Host ''
+            Write-Host '  前の写しは1段深いところにあります。写し先はこちらです:' -ForegroundColor DarkGray
+            Write-Host ('    {0}' -f (Join-Path $full $nested)) -ForegroundColor Cyan
+        }
+        else {
+            Write-Host '  写し先を確かめてください。' -ForegroundColor DarkGray
+        }
     }
 }
 
@@ -189,9 +212,8 @@ function Show-CopyReading {
         Write-Host '  「スキップ」がその本数なら、正しい姿です。' -ForegroundColor DarkGray
         Write-Host '' -ForegroundColor DarkGray
         Write-Host '  スキップが 0 なら、写し先が元の更新時刻を保てていません。' -ForegroundColor DarkGray
-        Write-Host '  /FFT（2秒単位）と /DST（1時間のずれ）を渡してもなお 0 なら、' -ForegroundColor DarkGray
-        Write-Host '  ずれはそれより大きいということです。毎回ぜんぶ上げ直すので、' -ForegroundColor DarkGray
-        Write-Host '  20年ぶんでは重くなります。' -ForegroundColor DarkGray
+        Write-Host '  毎回ぜんぶ上げ直すので、20年ぶんでは重くなります。' -ForegroundColor DarkGray
+        Write-Host '  そのときは robocopy に /FFT を足します（2秒単位で見る）。' -ForegroundColor DarkGray
         return
     }
     Write-Host ('  同じ場所に無いのは {0:N0} 本です。それだけ写るのが正しい姿です。' -f ($Total - $Already)) -ForegroundColor DarkGray
@@ -200,7 +222,7 @@ function Show-CopyReading {
 if ($DryRun) {
     Write-Host ''
     Write-Host '写さずに、何が写るかだけ見ます（robocopy /L）。' -ForegroundColor DarkGray
-    robocopy $source $full /E /XO /FFT /DST /R:0 /W:0 /NP /NFL /NDL /L | Out-Host
+    robocopy $source $full /E /XO /R:0 /W:0 /NP /NFL /NDL /L | Out-Host
     Write-Host ''
     Show-CopyReading -Already $thereFiles -Total $files.Count
     Write-Host ''
@@ -213,24 +235,20 @@ Write-Host '増えたぶんだけ写します。写し先のファイルは消�
 
 # /E    空のフォルダも含めて再帰
 # /XO   写し先のほうが新しければ飛ばす（＝増えたぶんだけ）
-# /FFT  更新時刻を2秒単位で見る
-# /DST  1時間のずれを吸収する
 # /R:2  読めないファイルは2回まで試す
 # /NP   進捗のパーセントを出さない（1行に収めるため）
 # /NFL /NDL  ファイル名・フォルダ名を並べない
 # **/MIR は使わない。** 写し先を打ち間違えたときに、そこにあるものを消す。
 #
-# **/FFT と /DST は、まだ効いたことが確かめられていない（2026-09-12）。**
+# **一度 /FFT と /DST を足して、外した（2026-09-12）。**
 #
-# 「写し先に 386本あるのに全部写ると出る」のを時刻のずれと読んで足したが、
-# **/FFT を足してもスキップは 0 のままだった。** そのあと、本数を再帰で数えて
-# いたせいで「同じ場所にある」と「どこかにある」を混同していたと分かった。
+# 「写し先に 386本あるのに全部写ると出る」のを更新時刻のずれと読んだ。足しても
+# スキップは 0 のままで、実際には前の写しが1段深いところに入っていただけだった。
+# **時刻は一度も問題になっていない。**
 #
-# **外れた見立てから足した指定である。** クラウドの写し先に対しては一般に
-# 無害で妥当なので残してあるが、**これが効いたという実測はまだ無い。**
-# 置き場所の話が片付いたあとで、それでもスキップが 0 なら、そのとき初めて
-# 時刻のずれが本当の理由になる。
-robocopy $source $full /E /XO /FFT /DST /R:2 /W:2 /NP /NFL /NDL | Out-Host
+# 根拠の無い指定を残すと、次に「スキップ」が出たときに、直ったのが置き場所
+# なのか /FFT なのかが分からなくなる。**外せば1回で分かる。**
+robocopy $source $full /E /XO /R:2 /W:2 /NP /NFL /NDL | Out-Host
 $robo = $LASTEXITCODE
 
 Show-CopyReading -Already $thereFiles -Total $files.Count
