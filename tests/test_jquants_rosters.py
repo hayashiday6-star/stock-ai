@@ -497,43 +497,82 @@ class TestUntradableMarkets:
 class TestExplainingTheGap:
     """食い違いを「たぶん◯◯だろう」で閉じない。
 
-    2つの経路の名簿が食い違うとき、片方にしか無い銘柄が全部 TOKYO PRO Market
-    なら説明が付く。**付くかどうかは、数えるまで分からない。** 1件でも別の
-    ものが混じっていれば、そこは説明できていない。
+    **市場は移る。** TOKYO PRO Market に上場してから、数年後にスタンダードや
+    グロースへ変わる銘柄がある。
+
+    最初は「最後に見えた姿」を1つだけ持っていた。**それだと、当時 TOKYO PRO
+    だった銘柄が「スタンダード」と出る。** 実際にそうなり、説明の付く食い違い
+    6件を「説明が付かない」と読んだ（2026-09-08）。
+
+    **その日の値と最新の値を取り違える**——このプロジェクトが繰り返し踏んで
+    いる型である。例外は出ない。もっともらしい市場名が出るだけである。
     """
 
-    def test_the_market_comes_from_the_archived_master(self, tmp_path) -> None:
-        from stock_ai.data.jquants_rosters import markets_from_archive
+    def test_the_market_is_kept_per_date(self, tmp_path) -> None:
+        from stock_ai.data.jquants_rosters import markets_on
 
-        rows = [
-            dict(_row("2026-08-03", "72030"), MktNm="TOKYO PRO MARKET"),
-            dict(_row("2026-08-03", "13010"), MktNm="プライム"),
-        ]
-        _archive(tmp_path, rows)
+        _archive(
+            tmp_path,
+            [dict(_row("2021-09-06", "72030"), MktNm="TOKYO PRO MARKET")],
+            month="202109",
+        )
+        _archive(tmp_path, [dict(_row("2024-03-21", "72030"), MktNm="グロース")], month="202403")
 
-        found = markets_from_archive(tmp_path, {"7203", "1301"})
+        found = markets_on(tmp_path, {"7203"})
 
-        assert found["7203"] == "TOKYO PRO MARKET"
-        assert found["1301"] == "プライム"
+        assert found["7203"][dt.date(2021, 9, 6)] == "TOKYO PRO MARKET"
+        assert found["7203"][dt.date(2024, 3, 21)] == "グロース"
 
-    def test_the_last_seen_market_wins(self, tmp_path) -> None:
-        """**廃止直前の姿が知りたい。** 市場は移ることがある。"""
-        from stock_ai.data.jquants_rosters import markets_from_archive
+    def test_a_symbol_that_moved_markets_reads_correctly_on_the_old_date(self) -> None:
+        """**ここで実際に間違えた。**
 
-        _archive(tmp_path, [dict(_row("2026-07-03", "72030"), MktNm="グロース")], month="202607")
-        _archive(tmp_path, [dict(_row("2026-08-03", "72030"), MktNm="プライム")], month="202608")
+        いまはグロースでも、2021年には TOKYO PRO だった。最後の姿で引くと、
+        買えない市場を外したことによる食い違いが「説明が付かない」になる。
+        """
+        from stock_ai.data.jquants_rosters import market_on
 
-        assert markets_from_archive(tmp_path, {"7203"})["7203"] == "プライム"
+        history = {
+            dt.date(2021, 9, 6): "TOKYO PRO MARKET",
+            dt.date(2024, 3, 21): "グロース",
+        }
 
-    def test_a_symbol_not_in_the_master_is_simply_absent(self, tmp_path) -> None:
+        assert market_on(history, dt.date(2021, 9, 6)) == "TOKYO PRO MARKET"
+        assert market_on(history, dt.date(2026, 9, 7)) == "グロース"
+
+    def test_a_date_with_no_roster_falls_back_to_the_one_before(self) -> None:
+        """**名簿は立会日にしかない。**
+
+        30日刻みの日付は休日にも当たる。その日ちょうどを探して見つからない
+        ことを「市場が分からない」と読むと、説明の付くものが付かなくなる。
+        """
+        from stock_ai.data.jquants_rosters import market_on
+
+        history = {dt.date(2021, 9, 3): "TOKYO PRO MARKET"}
+
+        assert market_on(history, dt.date(2021, 9, 6)) == "TOKYO PRO MARKET"
+
+    def test_a_date_before_the_first_roster_is_unknown(self) -> None:
+        """**前が無ければ分からない。** 後ろの値で埋めない。"""
+        from stock_ai.data.jquants_rosters import market_on
+
+        history = {dt.date(2024, 3, 21): "グロース"}
+
+        assert market_on(history, dt.date(2021, 9, 6)) is None
+
+    def test_no_history_at_all_is_unknown(self) -> None:
+        from stock_ai.data.jquants_rosters import market_on
+
+        assert market_on({}, dt.date(2021, 9, 6)) is None
+
+    def test_a_symbol_not_in_the_master_gets_an_empty_history(self, tmp_path) -> None:
         """**「市場不明」を勝手に埋めない。**"""
-        from stock_ai.data.jquants_rosters import markets_from_archive
+        from stock_ai.data.jquants_rosters import markets_on
 
         _archive(tmp_path, [_row("2026-08-03", "13010")])
 
-        assert markets_from_archive(tmp_path, {"7203"}) == {}
+        assert markets_on(tmp_path, {"7203"}) == {"7203": {}}
 
-    def test_nothing_archived_gives_nothing(self, tmp_path) -> None:
-        from stock_ai.data.jquants_rosters import markets_from_archive
+    def test_nothing_archived_gives_empty_histories(self, tmp_path) -> None:
+        from stock_ai.data.jquants_rosters import markets_on
 
-        assert markets_from_archive(tmp_path, {"7203"}) == {}
+        assert markets_on(tmp_path, {"7203"}) == {"7203": {}}

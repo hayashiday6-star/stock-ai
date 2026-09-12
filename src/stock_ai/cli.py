@@ -239,7 +239,8 @@ from stock_ai.data.jquants_read import shape_of as archive_shape
 from stock_ai.data.jquants_rosters import (
     DAILY_SNAPSHOT_DIR,
     explain_missing,
-    markets_from_archive,
+    market_on,
+    markets_on,
     trading_days_from_archive,
 )
 from stock_ai.data.jquants_rosters import compare as roster_compare
@@ -3235,8 +3236,28 @@ def jquants_daily_rosters(
         # 原本から引いて、説明が付くかどうかを数える。1件でも別のものが混じって
         # いれば、そこは説明できていない。
         gap = _differing_symbols(Path(DEFAULT_SNAPSHOT_DIR), target, list(check.differing))
-        markets = markets_from_archive(source, gap) if gap else {}
-        excluded = {s_ for s_, name in markets.items() if "TOKYO PRO" in name.upper()}
+        # **日付ごとの差を1度だけ作る。** 銘柄×日付で引き直すと、同じファイル
+        # を何百回も読むことになる。
+        per_date = {
+            date: _differing_symbols(Path(DEFAULT_SNAPSHOT_DIR), target, [date])
+            for date in sorted(check.differing)
+        }
+        # **市場は移る。** TOKYO PRO Market に上場してから、数年後にスタンダード
+        # やグロースへ変わる銘柄がある。最後に見えた姿で引くと、当時 TOKYO PRO
+        # だった銘柄が「スタンダード」と出て、説明の付くものが付かなくなる。
+        history = markets_on(source, gap) if gap else {}
+        excluded = {
+            symbol
+            for symbol in gap
+            if all(
+                "TOKYO PRO" in (market_on(history.get(symbol, {}), date) or "").upper()
+                for date, gap_on in per_date.items()
+                if symbol in gap_on
+            )
+        }
+        markets = {
+            symbol: market_on(history.get(symbol, {}), max(check.differing)) or "" for symbol in gap
+        }
         unexplained = sorted(gap - excluded)
         console.print(
             f"[dim]片方にしか無い銘柄は {len(gap)} 種類。"
@@ -3251,23 +3272,22 @@ def jquants_daily_rosters(
             # 出るのかまで出せば、上場直後のずれか、出所そのものの違いかが
             # 分かれる。前者は端の1日、後者は全期間である。
             detail = Table(title="説明の付かない銘柄")
-            for column in ("銘柄", "市場", "食い違った日", "一括の名簿に出る期間"):
+            for column in ("銘柄", "いまの市場", "食い違った日の市場", "食い違った日"):
                 detail.add_column(column)
-            daily_span = _roster_span(target, tuple(unexplained))
-            # **日付ごとの差を1度だけ作る。** 銘柄×日付で引き直すと、同じ
-            # ファイルを何百回も読むことになる。
-            per_date = {
-                date: _differing_symbols(Path(DEFAULT_SNAPSHOT_DIR), target, [date])
-                for date in sorted(check.differing)
-            }
             for symbol in unexplained[:10]:
                 days = [str(date) for date, gap_on in per_date.items() if symbol in gap_on]
-                span = daily_span.get(symbol)
+                # **その日の市場**を出す。いまの市場だけでは、移った銘柄が
+                # 説明の付かないものに見える。
+                when = [
+                    market_on(history.get(symbol, {}), date) or "不明"
+                    for date, gap_on in per_date.items()
+                    if symbol in gap_on
+                ]
                 detail.add_row(
                     symbol,
                     markets.get(symbol) or "市場不明",
+                    "、".join(sorted(set(when))),
                     "、".join(days[:3]) + ("…" if len(days) > 3 else ""),
-                    f"{span[0]} 〜 {span[1]}" if span else "[red]一度も出ない[/]",
                 )
             console.print(detail)
         else:

@@ -305,19 +305,24 @@ def explain_missing(
     )
 
 
-def markets_from_archive(archive_dir: Path, symbols: set[str]) -> dict[str, str]:
-    """保存済みの名簿から、その銘柄の市場区分（`MktNm`）を引く。
+def markets_on(archive_dir: Path, symbols: set[str]) -> dict[str, dict[dt.date, str]]:
+    """保存済みの名簿から、銘柄の市場区分を**日付ごとに**引く。
 
-    **食い違いを「たぶん◯◯だろう」で閉じない。** 2つの経路の名簿が食い違う
-    とき、片方にしか無い銘柄が全部 TOKYO PRO Market なら説明が付くが、
-    **付くかどうかは数えるまで分からない。** 1件でも別のものが混じっていれば、
-    そこは説明できていない。
+    **市場は移る。** TOKYO PRO Market に上場してから、数年後にスタンダードや
+    グロースへ変わる銘柄がある。
+
+    最初は「最後に見えた姿」を1つだけ持っていた。**それだと、当時 TOKYO PRO
+    だった銘柄が「スタンダード」と出る。** 実際にそうなり、説明の付く食い違い
+    6件を「説明が付かない」と読んだ（2026-09-08）。
+
+    **その日の値と最新の値を取り違える**——このプロジェクトが繰り返し踏んで
+    いる型である。例外は出ない。もっともらしい市場名が出るだけである。
 
     四本値は読まない。名簿だけなので速い。
     """
     from stock_ai.data.jquants_archive import path_for, read_manifest
 
-    found: dict[str, str] = {}
+    found: dict[str, dict[dt.date, str]] = {symbol: {} for symbol in symbols}
     wanted = set(symbols)
     for key in sorted(read_manifest(archive_dir)):
         if endpoint_of(key) != MASTER_ENDPOINT:
@@ -329,7 +334,25 @@ def markets_from_archive(archive_dir: Path, symbols: set[str]) -> dict[str, str]
             continue
         for row in rows:
             symbol = four_digit_code((row.get("Code") or "").strip())
-            if symbol in wanted:
-                # **最後に見えた姿を残す。** 廃止直前の市場区分が知りたい。
-                found[symbol] = (row.get("MktNm") or "").strip()
+            if symbol not in wanted:
+                continue
+            date = parse_date(row.get("Date"))
+            if date is not None:
+                found[symbol][date] = (row.get("MktNm") or "").strip()
     return found
+
+
+def market_on(history: dict[dt.date, str], on: dt.date) -> str | None:
+    """``on`` 時点の市場区分。**その日が無ければ、直前の営業日を使う。**
+
+    名簿は立会日にしかない。30日刻みの日付は休日にも当たるので、その日ちょうど
+    を探すと見つからない。**見つからないことを「市場が分からない」と読むと、
+    説明の付くものが説明の付かないものになる。**
+    """
+    if not history:
+        return None
+    exact = history.get(on)
+    if exact is not None:
+        return exact
+    earlier = [date for date in history if date <= on]
+    return history[max(earlier)] if earlier else None
