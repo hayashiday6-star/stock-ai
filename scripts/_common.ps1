@@ -93,10 +93,10 @@ function Show-Version {
     }
 }
 
-function Invoke-Git {
+function Use-Utf8Git {
     <#
         .SYNOPSIS
-            git を呼び、その出力を UTF-8 として読む。
+            git を UTF-8 で読める状態にして、渡された処理を実行する。
 
         .DESCRIPTION
             **PowerShell は外部プログラムの出力を [Console]::OutputEncoding で
@@ -105,28 +105,48 @@ function Invoke-Git {
 
               20蟷ｴ縺ｶ繧薙・蜷咲ｰｿ縺後〒縺阪◆
 
-            のように化ける（2026-09-15 に報告）。**スクリプト自身の日本語は
-            化けない**ので、化けているのは git が返した文字列だけだと分かる。
+            のように化ける（2026-09-15 に報告）。
 
-            読むときだけ UTF-8 に切り替えて、すぐ戻す。**戻すのが要点である**
+            読むあいだだけ UTF-8 に切り替えて、すぐ戻す。**戻すのが要点である**
             ——切り替えたままにすると、こちらが書く日本語のほうが化ける。
-            復号さえ正しければ、あとは .NET の文字列なので、表示は元の
-            エンコーディングで問題なく通る。
 
-            `core.quotepath=false` も渡す。**既定では非 ASCII のファイル名が
-            `\346\226\207` のような8進に化ける。** このプロジェクトは
+            `core.quotepath=false` も効かせる。**既定では非 ASCII のファイル名
+            が `\346\226\207` のような8進に化ける。** このプロジェクトは
             `.bat` の名前が日本語なので、毎回それに当たる。
+
+            **git の呼び出しそのものには触らない。** 最初は引数を受け取って
+            渡し直す関数にしたが、**Windows PowerShell 5.1 の
+            `ValueFromRemainingArguments` は配列を1つの文字列に潰す。**
+            `git add -- $targets` が
+
+              fatal: pathspec 'data/universe_snapshots data/tachibana_snapshots'
+
+            で落ちた（2026-09-15）。**引数に触らなければ、その種の壊れ方は
+            起きない。**
+
+        .EXAMPLE
+            Use-Utf8Git { git log --oneline -5 }
+            Use-Utf8Git { git add -- $targets }
     #>
     [CmdletBinding()]
-    param([Parameter(ValueFromRemainingArguments = $true)][string[]]$Arguments)
+    param([Parameter(Mandatory = $true, Position = 0)][scriptblock]$Body)
 
-    $previous = [Console]::OutputEncoding
+    $previousEncoding = [Console]::OutputEncoding
+    $previousCount = $env:GIT_CONFIG_COUNT
+    $previousKey = $env:GIT_CONFIG_KEY_0
+    $previousValue = $env:GIT_CONFIG_VALUE_0
     try {
         [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding $false
-        & git -c core.quotepath=false @Arguments
+        $env:GIT_CONFIG_COUNT = '1'
+        $env:GIT_CONFIG_KEY_0 = 'core.quotepath'
+        $env:GIT_CONFIG_VALUE_0 = 'false'
+        & $Body
     }
     finally {
-        [Console]::OutputEncoding = $previous
+        [Console]::OutputEncoding = $previousEncoding
+        $env:GIT_CONFIG_COUNT = $previousCount
+        $env:GIT_CONFIG_KEY_0 = $previousKey
+        $env:GIT_CONFIG_VALUE_0 = $previousValue
     }
 }
 

@@ -44,6 +44,18 @@ BULK_GET_URL = f"{_BASE}/bulk/get"
 BULK_ENDPOINTS: tuple[str, ...] = (
     "/equities/master",
     "/equities/bars/daily",
+    # **2026-09-15 に足した。取り逃していた。**
+    #
+    # 公式の「契約ごとに利用可能なAPIとデータ格納期間」に一括の口（`CSV`）が
+    # あり、Light 以上で取れる。**それなのに、こちらの一覧に無かった。**
+    #
+    # 同梱の参照データ（`reference_data.json` の `bulk_endpoints`）にも載って
+    # いない。だが取引カレンダーと決算発表予定日も載っていないのに取れたので、
+    # **あの一覧は完全ではない。** 公式の表のほうが広い。
+    #
+    # 格納期間は 2008/7/8〜。**2008〜2010年頃は、算出に使う株式数や財務情報が
+    # 揃っていないので Null の多い銘柄・項目がある**（公式の注記）。
+    "/equities/valuation",
     "/equities/bars/minute",
     "/equities/trades",
     "/equities/investor-types",

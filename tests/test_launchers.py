@@ -337,10 +337,32 @@ class TestGitOutputIsReadAsUtf8:
         """**戻すのが要点である。** 切り替えたままだと、こちらの日本語が化ける。"""
         body = _text("_common.ps1")
 
-        assert "function Invoke-Git" in body
+        assert "function Use-Utf8Git" in body
         assert "UTF8Encoding" in body
-        assert "$previous" in body
+        assert "$previousEncoding" in body
         assert "finally" in body
+
+    def test_the_helper_does_not_pass_arguments_through(self) -> None:
+        """**引数を受け取って渡し直さない。**
+
+        最初は `Invoke-Git add -- $targets` の形にしたが、**Windows
+        PowerShell 5.1 の `ValueFromRemainingArguments` は配列を1つの文字列に
+        潰す。** 実際に落ちた（2026-09-15）。
+
+            fatal: pathspec 'data/universe_snapshots data/tachibana_snapshots'
+
+        **git の呼び出しそのものに触らなければ、その種の壊れ方は起きない。**
+        """
+        body = _text("_common.ps1")
+
+        # **見るのは `param` の行だけである。** 「使わない」と書いた説明文に
+        # 引っ掛かっては、検査が理由を消したことになる——`/MIR` のときと同じ。
+        declarations = [line for line in body.splitlines() if "[Parameter(" in line]
+
+        assert declarations
+        for line in declarations:
+            assert "ValueFromRemainingArguments" not in line, line
+        assert "[scriptblock]$Body" in body
 
     def test_paths_are_not_octal_escaped(self) -> None:
         """既定では非 ASCII のファイル名が 8進に化ける。**`.bat` が日本語である。**"""
@@ -353,7 +375,7 @@ class TestGitOutputIsReadAsUtf8:
         shown = [line for line in lines if "log --oneline" in line]
         assert shown, "件名を出す行が見当たらない（名前が変わった？）"
         for line in shown:
-            assert "Invoke-Git" in line, line
+            assert "Use-Utf8Git" in line, line
 
     def test_the_merge_output_goes_through_it_too(self) -> None:
         """変わったファイルの名前も日本語でありうる（`checks\\*.bat`）。"""
@@ -361,7 +383,7 @@ class TestGitOutputIsReadAsUtf8:
 
         assert lines
         for line in lines:
-            assert "Invoke-Git" in line, line
+            assert "Use-Utf8Git" in line, line
 
     def test_the_snapshot_script_uses_it_as_well(self) -> None:
         body = _text("commit-snapshots.ps1")
