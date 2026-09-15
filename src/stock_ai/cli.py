@@ -259,6 +259,7 @@ from stock_ai.data.jquants_rosters import (
     trading_days_from_archive,
 )
 from stock_ai.data.jquants_rosters import compare as roster_compare
+from stock_ai.data.jquants_rosters import day_detail as roster_day_detail
 from stock_ai.data.jquants_rosters import extract as roster_extract
 from stock_ai.data.markets import split_by_market, to_yahoo_symbol
 from stock_ai.data.schema import ADJ_CLOSE, CLOSE, OPEN
@@ -4296,6 +4297,68 @@ def jquants_topix(
         )
 
     console.print(report.summary())
+
+
+@app.command(name="jquants-roster-day")
+def jquants_roster_day(
+    dates: list[str] = typer.Argument(None, help="YYYY-MM-DD. Repeat for several."),
+    archive_dir: str = typer.Option(
+        str(DEFAULT_ARCHIVE_DIR), "--dir", help="Where the raw files are kept."
+    ),
+) -> None:
+    """Say why a given day has no roster: no rows, or every row filtered out.
+
+    **「原本に行が無い」と「行はあったが絞り込みが全部落とした」を分ける。**
+    どちらも結果は「名簿の無い日」で、**直す場所が違う。**
+
+    2026-09-15 に、立会日なのに名簿の無い日が2日見つかった（2008-12-30、
+    2009-01-05 で、**範囲内の半日立会2日とぴったり同じ**）。まとめの件数だけ
+    ではどちらか決まらず、**1日ぶんを名指しで見るしかなかった。**
+
+    API を1回も叩かない。
+    """
+    settings = get_settings()
+    configure_logging(settings.log_level)
+
+    wanted = [_parse_date(text.strip()) for text in (dates or []) if text.strip()]
+    if not wanted or any(day is None for day in wanted):
+        raise typer.BadParameter("YYYY-MM-DD で日付を渡すこと。")
+
+    console.print(f"[dim]名簿の原本を1周読む（{len(wanted)} 日ぶんを探す）…[/]")
+    for day in wanted:
+        assert day is not None
+        found = roster_day_detail(Path(archive_dir), day)
+
+        table = Table(title=f"{day} の名簿の原本")
+        table.add_column("見たもの")
+        table.add_column("値", justify="right")
+        table.add_row("その日を持つ原本", f"{len(found.files):,}")
+        table.add_row("行", f"{found.rows:,}")
+        table.add_row("絞り込みを通った", f"{found.kept:,}")
+        for reason, count in sorted(found.reasons.items()):
+            table.add_row(f"[dim]落ちた / {reason}[/]", f"{count:,}")
+        console.print(table)
+
+        if found.examples:
+            listed = "  ".join(f"{code}({name})" if name else code for code, name in found.examples)
+            console.print(f"[dim]例: {listed}[/]")
+
+        if not found.files:
+            console.print(
+                f"[yellow]{day}: 原本にその日の行が無い。[/]"
+                "**こちらでは直せない。** 名簿の無い日として記録する。"
+            )
+        elif found.kept:
+            console.print(
+                f"[green]{day}: 名簿が作れる。[/]"
+                "[dim] 既に作られているはず。無いなら取り出しを疑う。[/]"
+            )
+        else:
+            console.print(
+                f"[red]{day}: 行はあるが、絞り込みが全部落とした。[/]"
+                "**こちら側の問題である。** 上の理由の内訳を見ること。"
+            )
+        console.print()
 
 
 @app.command(name="jquants-archive-verify")
