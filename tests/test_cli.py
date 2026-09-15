@@ -15,15 +15,39 @@ def test_version_command_exits_cleanly() -> None:
     assert result.exit_code == 0
 
 
+def declared_options(command: str) -> set[str]:
+    """そのコマンドが**宣言している**引数。
+
+    **描画した `--help` を読まない。** `--help` は端末の幅で折り返す。幅が
+    足りないと `--existing` のような綴りが途中で割れ、**手元で緑・CI で赤**に
+    なる。実際そうなった（2026-09-15、PR #100）。幅40で再現する。
+
+    引数が在るかどうかは、描画の結果ではなく定義に聞けば分かる。
+    """
+    import typer.main
+
+    from stock_ai.cli import app
+
+    command_object = typer.main.get_command(app).commands[command]
+    return {option for parameter in command_object.params for option in parameter.opts}
+
+
+def declared_commands() -> set[str]:
+    """`app` が持っているコマンド名。**同じ理由で `--help` を読まない。**"""
+    import typer.main
+
+    from stock_ai.cli import app
+
+    return set(typer.main.get_command(app).commands)
+
+
 def test_version_command_reports_current_version() -> None:
     result = runner.invoke(app, ["version"])
     assert __version__ in result.stdout
 
 
 def test_help_lists_version_command() -> None:
-    result = runner.invoke(app, ["--help"])
-    assert result.exit_code == 0
-    assert "version" in result.stdout
+    assert "version" in declared_commands()
 
 
 def test_info_command_runs_and_masks_secrets() -> None:
@@ -1115,13 +1139,7 @@ class TestRefetchingExactlyWhatIsOnDisk:
     """
 
     def test_the_cli_offers_a_mode_for_it(self) -> None:
-        from typer.testing import CliRunner
-
-        from stock_ai.cli import app
-
-        result = CliRunner().invoke(app, ["delisted-harvest", "--help"])
-
-        assert "--existing" in result.output
+        assert "--existing" in declared_options("delisted-harvest")
 
     def test_the_launcher_uses_that_mode_not_bare_refetch(self) -> None:
         """**`.bat` に `-Refetch` を書かない。** それは日付を増やす側である。"""
@@ -1512,3 +1530,37 @@ class TestRunningPeadWithASurpriseMeasure:
         result = self._run("oos", "--surprise", "sue")
 
         assert result.exit_code != 0
+
+
+class TestNoTestBetsOnRenderedHelp:
+    """**`--help` の描画結果に賭けない。** 端末の幅で折り返す。
+
+    2026-09-15、`--existing` を `--help` の出力から探すテストが**手元で緑・
+    CI で赤**になった（幅40で再現する）。引数が在るかどうかは、描画ではなく
+    定義に聞けば分かる——:func:`declared_options` がそれである。
+
+    **手元の3つを通したことは、CI を通したことではない。** 端末の幅は、
+    こちらの手元にしかない条件だった。
+    """
+
+    def test_no_test_file_asserts_on_help_output(self) -> None:
+        import pathlib
+        import re
+
+        offenders = []
+        here = pathlib.Path(__file__).resolve().parent
+        for path in sorted(here.glob("test_*.py")):
+            for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+                stripped = line.strip()
+                # 実行している行だけを見る。**この検査を説明した文そのものに
+                # 引っ掛からないようにする**——同じ形で2度やっている。
+                if not stripped.startswith("assert "):
+                    continue
+                if re.search(r'"--help"|\[.*--help.*\]', line):
+                    offenders.append(f"{path.name}:{number}")
+        assert not offenders, offenders
+
+    def test_the_replacement_actually_finds_options(self) -> None:
+        """**検査が空を通していないこと。** 通る理由が「何も見ていない」では困る。"""
+        assert "--existing" in declared_options("delisted-harvest")
+        assert "--nonexistent" not in declared_options("delisted-harvest")
