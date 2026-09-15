@@ -20,6 +20,8 @@ import pandas as pd
 from stock_ai.data.jquants_archive import archive
 from stock_ai.data.jquants_bulk import BulkFile
 from stock_ai.data.jquants_indices import (
+    GapTrail,
+    TrackingGap,
     census,
     from_archive,
     gap_trail,
@@ -358,3 +360,118 @@ class TestWhenTheGapAppeared:
 
     def test_an_empty_side_does_not_raise(self) -> None:
         assert gap_trail(pd.DataFrame({CLOSE: []}), pd.Series(dtype=float)).by_year == {}
+
+
+class TestReturnsAreNotSubtracted:
+    """**収益率どうしを引き算しない。**
+
+    指数 +191.3% / ETF +197.1% を引くと +5.8% になる。だが水準は 2.913倍と
+    2.971倍で、**比は +2.0% である。差を 2.9倍に水増ししていた**
+    （2026-09-16）。
+
+    引き算が合うのは収益率が小さいときだけで、18年ぶんはそうではない。
+    """
+
+    def _gap(self, index_return: float, etf_return: float) -> TrackingGap:
+        return TrackingGap(
+            days=4491,
+            first=dt.date(2008, 5, 7),
+            last=dt.date(2026, 9, 14),
+            index_return=index_return,
+            etf_return=etf_return,
+        )
+
+    def test_the_real_pair_comes_out_at_two_percent(self) -> None:
+        assert abs(self._gap(1.913, 1.971).total - 0.0199) < 0.0005
+
+    def test_subtracting_would_have_said_five_point_eight(self) -> None:
+        """**踏んだ間違いを固定しておく。** 戻ったら、この差で気付ける。"""
+        naive = 1.971 - 1.913
+
+        assert abs(naive - 0.058) < 0.0005
+        assert self._gap(1.913, 1.971).total < naive / 2
+
+    def test_small_returns_make_the_two_nearly_agree(self) -> None:
+        """引き算が合うのは、収益率が小さいときだけである。"""
+        gap = self._gap(0.01, 0.02)
+
+        assert abs(gap.total - 0.01) < 0.0002
+
+    def test_the_annual_figure_follows_the_corrected_total(self) -> None:
+        assert abs(self._gap(1.913, 1.971).annual - 0.0011) < 0.0003
+
+    def test_an_index_that_lost_everything_does_not_divide_by_zero(self) -> None:
+        assert self._gap(-1.0, 0.5).total == 0.0
+
+
+class TestSayingWhenTheYearlyMeanCannotBeTold:
+    """**散らばりを見ずに平均だけ出さない。**
+
+    年ごとの差は −1.38% から +0.62% まで振れている。平均 +0.045% はその中に
+    埋もれており、**0 も、信託報酬ぶんの負の値も、95% の幅の中にある。**
+    """
+
+    REAL = [
+        0.0024,
+        -0.0138,
+        0.0011,
+        -0.0015,
+        0.0024,
+        0.0025,
+        0.0043,
+        0.0025,
+        -0.0023,
+        0.0041,
+        0.0062,
+        0.0007,
+        0.0022,
+        0.0015,
+        0.0023,
+        0.0020,
+        -0.0027,
+        0.0013,
+        -0.0067,
+    ]
+
+    def _trail(self, values: list[float]) -> GapTrail:
+        return GapTrail(
+            by_year={2008 + index: value for index, value in enumerate(values)},
+            worst=[],
+            daily_median=0.0008,
+        )
+
+    def test_the_measured_years_cannot_be_told_from_zero(self) -> None:
+        trail = self._trail(self.REAL)
+
+        assert not trail.distinguishable
+        low, high = trail.interval
+        assert low < 0.0 < high
+
+    def test_the_mean_is_much_smaller_than_the_headline_suggested(self) -> None:
+        assert abs(self._trail(self.REAL).mean_year) < 0.001
+
+    def test_a_steady_one_sided_drift_is_distinguishable(self) -> None:
+        """**幅が狭ければ、小さな差でも言える。** 区別できないのは散らばりのせい。
+
+        毎年ぴったり同じ値にはしない。**散らばりが 0 だと、何年ぶんでも幅が
+        点になる**——それは現実のデータには無い形である。実測と同じくらいの
+        揺れを乗せたうえで、向きが揃っていれば言えることを見る。
+        """
+        drift = [0.003 + (0.0004 if index % 2 else -0.0004) for index in range(19)]
+        trail = self._trail(drift)
+
+        assert trail.distinguishable
+        low, _high = trail.interval
+        assert low > 0.0
+
+    def test_one_year_cannot_have_a_spread(self) -> None:
+        trail = self._trail([0.003])
+
+        assert trail.stderr_year == 0.0
+        assert not trail.distinguishable
+
+    def test_no_years_at_all(self) -> None:
+        trail = GapTrail({}, [], 0.0)
+
+        assert trail.mean_year == 0.0
+        assert not trail.distinguishable

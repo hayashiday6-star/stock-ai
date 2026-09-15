@@ -218,8 +218,20 @@ class TrackingGap:
 
     @property
     def total(self) -> float:
-        """期間全体の差（ETF − 指数）。"""
-        return self.etf_return - self.index_return
+        """18年ぶんの、ETF と指数の**比**。
+
+        **収益率どうしを引き算しない。** 一度そうして、差を 2.9倍に水増しした
+        （2026-09-16）。指数 +191.3% / ETF +197.1% を引くと +5.8% になるが、
+        水準は 2.913倍と 2.971倍で、**比は +2.0% である。**
+
+        引き算が合うのは収益率が小さいときだけで、18年ぶんはそうではない。
+        **このプロジェクトが繰り返している「尺度の違う値を組み合わせる」形で
+        ある。**
+        """
+        base = 1.0 + self.index_return
+        if base <= 0:
+            return 0.0
+        return (1.0 + self.etf_return) / base - 1.0
 
     @property
     def annual(self) -> float:
@@ -295,6 +307,51 @@ class GapTrail:
 
     daily_median: float
     """1日あたりの差の中央値。**なだらかさの目安。**"""
+
+    @property
+    def mean_year(self) -> float:
+        """年ごとの差の平均。"""
+        values = list(self.by_year.values())
+        return sum(values) / len(values) if values else 0.0
+
+    @property
+    def stderr_year(self) -> float:
+        """年ごとの差の、**平均の標準誤差**。
+
+        **年ごとにこれだけ散らばっている**ということが、平均の確からしさを
+        決める。散らばりを見ずに平均だけ出すと、雑音を発見として読む。
+        """
+        values = list(self.by_year.values())
+        if len(values) < 2:
+            return 0.0
+        mean = self.mean_year
+        variance = sum((value - mean) ** 2 for value in values) / (len(values) - 1)
+        return (variance / len(values)) ** 0.5
+
+    @property
+    def interval(self) -> tuple[float, float]:
+        """年あたりの差の、おおよその 95% の幅。"""
+        half = 1.96 * self.stderr_year
+        return (self.mean_year - half, self.mean_year + half)
+
+    @property
+    def distinguishable(self) -> bool:
+        """年あたりの差が、**0 と区別できる**か。
+
+        幅が 0 をまたぐなら区別できない。**「差がある」と言えない**という
+        ことであって、「差が無い」ということではない。**両者は別である。**
+
+        2026-09-16 の実測では、年ごとの差の平均が +0.045%、幅が
+        −0.16% 〜 +0.25% だった。**0 も、信託報酬ぶんの負の値も、どちらも
+        この幅の中にある。**
+        """
+        # **1点から確かさを名乗らない。** 年が1つだと散らばりが測れず、幅が
+        # 0 になる。すると「0 をまたがない」が必ず成り立ち、**どんな値でも
+        # 区別できることになる**——落ちようのない検査そのものである。
+        if len(self.by_year) < 2:
+            return False
+        low, high = self.interval
+        return not (low <= 0.0 <= high)
 
     @property
     def largest_day(self) -> float:

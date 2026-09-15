@@ -4489,9 +4489,28 @@ def jquants_topix(
         console.print(
             f"[yellow]ETF が指数を {gap.total:+.1%} 上回っている[/]"
             f"（年あたり {gap.annual:+.2%}）。"
-            "**信託報酬は ETF を削る側なので、この向きは説明が付かない。**"
-            "[dim] 片方が配当込みでないか、分割の調整がどちらかで抜けている疑い。[/]"
+            "[dim] 信託報酬は ETF を削る側なので、この向きは向かい風である。[/]"
         )
+
+    # **散らばりを見ずに平均だけ出さない。** 年ごとの差は −1.38% から +0.62%
+    # まで振れている。平均が小さくても、散らばりがそれより大きければ
+    # **雑音を発見として読むことになる**（2026-09-16）。
+    if len(trail.by_year) >= 2:
+        low, high = trail.interval
+        console.print(
+            f"[dim]年ごとの差は平均 {trail.mean_year:+.3%}、"
+            f"95% の幅 {low:+.2%} 〜 {high:+.2%}（{len(trail.by_year)} 年）。[/]"
+        )
+        if trail.distinguishable:
+            console.print(
+                "[yellow]年あたりの差は 0 と区別できる。[/] **毎年同じ向きに効く要因がある。**"
+            )
+        else:
+            console.print(
+                "[green]年あたりの差は 0 と区別できない。[/] "
+                "[dim]**「差が無い」ではなく「差があるとは言えない」である。** "
+                "信託報酬ぶんの負の値も、この幅の中にある。18年でも足りない。[/]"
+            )
 
     console.print(report.summary())
 
