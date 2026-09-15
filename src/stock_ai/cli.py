@@ -5125,6 +5125,99 @@ def jquants_inventory(
     )
 
 
+@app.command(name="jquants-valuation")
+def jquants_valuation(
+    directory: str = typer.Option(
+        str(DEFAULT_ARCHIVE_DIR), "--dir", help="Where the archived originals live."
+    ),
+    limit: int | None = typer.Option(None, "--limit", help="Read only the first N files."),
+) -> None:
+    """Read the archived valuation originals and check them against themselves.
+
+    **時価総額を自前で組み立てないための読み口。** 株価 × 発行済株式数 は分割
+    を跨ぐと尺度が変わる——このプロジェクトが繰り返し踏んでいる形である。
+
+    別の原本を持ち出す前に、このファイルだけで確かめる。``PER × EPS`` と
+    ``PBR × BPS`` はどちらも終値を指すので、**合わなければ列の意味がこちらの
+    想像と違う。**
+
+    取りには行かない。読むだけ。
+    """
+    from stock_ai.data.jquants_valuation import (
+        ACTUAL_COLUMNS,
+        identity_check,
+    )
+    from stock_ai.data.jquants_valuation import (
+        census as valuation_census,
+    )
+    from stock_ai.data.jquants_valuation import (
+        from_archive as valuation_from_archive,
+    )
+
+    settings = get_settings()
+    configure_logging(settings.log_level)
+
+    # **進捗は1行に収める。** 途中経過を残す形にすると、貼ったときに何十行にもなる。
+    def progress(index: int, total: int, _key: str) -> None:
+        console.print(f"読んでいる… {index}/{total}", end="\r")
+
+    frame = valuation_from_archive(Path(directory), limit=limit, progress=progress)
+    console.print(" " * 40, end="\r")
+    if frame.empty:
+        console.print("[red]原本が1本も無い。[/] `checks\\原本をまるごと保存.bat` が先。")
+        return
+
+    found = valuation_census(frame)
+    console.print(f"{len(frame):,} 銘柄日、{found.symbols:,} 銘柄、{found.first} 〜 {found.last}")
+
+    table = Table(title="年ごとに、実績の列がどれだけ埋まっているか")
+    table.add_column("年")
+    table.add_column("銘柄日", justify="right")
+    for name in ACTUAL_COLUMNS.values():
+        table.add_column(name, justify="right")
+    for year, rows in found.rows_by_year.items():
+        table.add_row(
+            str(year),
+            f"{rows:,}",
+            *(
+                f"{found.share(year, name):.0%}"
+                if found.share(year, name) >= 0.5
+                else f"[yellow]{found.share(year, name):.0%}[/]"
+                for name in ACTUAL_COLUMNS.values()
+            ),
+        )
+    console.print(table)
+
+    # **公式の注意書きを引き写さない。** 「2008〜2010 は Null が多い」と書いて
+    # あるが、どの列がどれだけ空なのかは書いていない。手元のファイルが答える。
+    thin = found.thin_years("market_cap")
+    if thin:
+        console.print(
+            "[yellow]時価総額が半分も埋まっていない年: [/]"
+            + "、".join(str(year) for year in thin)
+            + " [dim]サイズで並べる前に、ここを外すか埋めるかを決めること。[/]"
+        )
+
+    report = identity_check(frame)
+    console.print(report.summary())
+    if report.rate >= 0.99:
+        console.print(
+            "[green]PER × EPS と PBR × BPS が同じ終値を指している。[/] "
+            "[dim]列の意味は想像どおりである。**別の原本を持ち出さずに言えた。**[/]"
+        )
+    elif report.checked:
+        console.print(
+            "[red]2つの掛け算が別の終値を指している。[/] "
+            "**列の意味がこちらの想像と違う。使う前にここを説明すること。**"
+        )
+        detail = Table(title="ずれの大きいもの")
+        for column in ("日付", "銘柄", "PER × EPS", "PBR × BPS"):
+            detail.add_column(column, justify="right" if "×" in column else "left")
+        for date, symbol, left, right in report.worst:
+            detail.add_row(str(date), symbol, f"{left:,.1f}", f"{right:,.1f}")
+        console.print(detail)
+
+
 @app.command(name="jquants-plan-coverage")
 def jquants_plan_coverage(
     to_plan: str = typer.Option("Free", "--to", help="Plan to downgrade to."),
