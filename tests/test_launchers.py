@@ -259,3 +259,63 @@ class TestTheBackupHoldsAtGigabyteScale:
             index for index, line in enumerate(lines) if "jquants-archive-verify" in line
         )
         assert write > verified, "照合より前に覚えている"
+
+
+class TestTakingTheIrreplaceableOnesFirst:
+    """**途中で止まったとき、何が手元にあるか。**
+
+    2026-09-15 の下見で、Premium では 3,556本・3.65GB と分かった。そのうち
+    **1.74GB（48%）がデリバティブで、読み口も説も無い。** そして取得順では
+    `/markets/margin-alert`（説#8 が要る唯一の経路）がその後ろにある。
+
+    途中で止まれば、**重いだけで使わないものを取り終えて、軽くて使うものが
+    無い**状態になる。回線が切れても電源が落ちても、そうなる。
+    """
+
+    def test_the_critical_set_is_a_subset_of_what_is_archived(self) -> None:
+        """**取らないものを「先に取る」に入れない。**"""
+        from stock_ai.data.jquants_bulk import ARCHIVE_ENDPOINTS, CRITICAL_ENDPOINTS
+
+        assert set(CRITICAL_ENDPOINTS) <= set(ARCHIVE_ENDPOINTS)
+
+    def test_the_one_path_hypothesis_8_needs_is_in_it(self) -> None:
+        """`margin-alert` が無ければ、説#8 は封印すらできない。"""
+        from stock_ai.data.jquants_bulk import CRITICAL_ENDPOINTS
+
+        assert "/markets/margin-alert" in CRITICAL_ENDPOINTS
+
+    def test_the_roster_comes_first(self) -> None:
+        """**生存バイアスを直せる唯一のもの。** 欠ければ他が全部「生存者のみ」になる。"""
+        from stock_ai.data.jquants_bulk import CRITICAL_ENDPOINTS
+
+        assert CRITICAL_ENDPOINTS[0] == "/equities/master"
+
+    def test_the_heavy_unused_ones_are_left_for_the_second_pass(self) -> None:
+        """デリバティブは 1.74GB あって、読み口も説も無い。**先に取らない。**"""
+        from stock_ai.data.jquants_bulk import CRITICAL_ENDPOINTS
+
+        assert not [name for name in CRITICAL_ENDPOINTS if name.startswith("/derivatives/")]
+
+    def test_the_launcher_runs_two_passes(self) -> None:
+        body = _text("jquants-archive.ps1")
+
+        assert "CRITICAL_ENDPOINTS" in body, "先に取る一覧を読んでいない"
+        assert "$passes" in body
+
+    def test_a_failed_first_pass_does_not_start_the_second(self) -> None:
+        """**進むと、失敗の理由が2回ぶん混ざる。** どちらの話か分からなくなる。"""
+        body = _text("jquants-archive.ps1")
+        lines = body.splitlines()
+        check = next(
+            index
+            for index, line in enumerate(lines)
+            if line.strip() == "if ($code -ne 0) {" and "break" in "".join(lines[index : index + 6])
+        )
+
+        assert any("break" in line for line in lines[check : check + 6])
+
+    def test_a_dry_run_is_not_split(self) -> None:
+        """下見は1バイトも落とさない。**2周に分ける意味が無い。**"""
+        body = _text("jquants-archive.ps1")
+
+        assert "if ($DryRun -or $Endpoint -ne '')" in body

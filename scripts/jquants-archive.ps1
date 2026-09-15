@@ -73,18 +73,71 @@ else {
 }
 Write-Host ''
 
-$arguments = @('run', 'stock-ai', 'jquants-archive')
-if ($DryRun) { $arguments += '--dry-run' }
-if ($Endpoint -ne '') { $arguments += @('--endpoint', $Endpoint) }
-if ($Dir -ne '') { $arguments += @('--dir', $Dir) }
-# **指定が無ければ渡さない。** CLI が JQUANTS_PLAN から引きます。
-# ここに既定値を置いて常に渡すと、CLI 側を直しても上書きされます——
-# delisted-harvest.ps1 の -Start で同じことをして、2026-09-07 に直した
-# ばかりでした。
-if ($Throttle -gt 0) { $arguments += @('--throttle', ([string]$Throttle)) }
+# **先に、取り直せなくて使うものだけを1周する。**
+#
+# 2026-09-15 の下見で、Premium では 3,556本・3.65GB になると分かりました。
+# **そのうち 1.74GB（48%）がデリバティブで、読み口も説もありません。** そして
+# 取得順では `/markets/margin-alert`（説#8 が要る唯一の経路）がその後ろです。
+#
+# 途中で止まれば、**重いだけで使わないものを取り終えて、軽くて使うものが無い**
+# 状態になります。回線が切れても電源が落ちても、そうなります。
+#
+# 既に取れたファイルは取りに行かないので、2周目に無駄は出ません。
+$passes = @()
+if ($DryRun -or $Endpoint -ne '') {
+    # 下見と、エンドポイントを名指しされたときは分けません。
+    $passes += , @()
+}
+else {
+    $critical = @(
+        uv run python -c "from stock_ai.data.jquants_bulk import CRITICAL_ENDPOINTS; print('\n'.join(CRITICAL_ENDPOINTS))"
+    ) | Where-Object { $_ -ne '' }
+    if ($critical.Count -gt 0) {
+        $passes += , $critical
+        $passes += , @()
+    }
+    else {
+        Write-Warn '先に取る一覧を読めませんでした。1周で取ります。'
+        $passes += , @()
+    }
+}
 
-uv @arguments
-$code = $LASTEXITCODE
+$code = 0
+$pass = 0
+foreach ($only in $passes) {
+    $pass++
+    if ($passes.Count -gt 1) {
+        Write-Host ''
+        if ($only.Count -gt 0) {
+            Write-Host ("[{0}/{1}] 取り直せなくて使うものを先に（{2} エンドポイント）" -f $pass, $passes.Count, $only.Count) -ForegroundColor Cyan
+        }
+        else {
+            Write-Host ("[{0}/{1}] 残り全部（取れているものは飛ばします）" -f $pass, $passes.Count) -ForegroundColor Cyan
+        }
+        Write-Host ''
+    }
+
+    $arguments = @('run', 'stock-ai', 'jquants-archive')
+    if ($DryRun) { $arguments += '--dry-run' }
+    if ($Endpoint -ne '') { $arguments += @('--endpoint', $Endpoint) }
+    foreach ($name in $only) { $arguments += @('--endpoint', $name) }
+    if ($Dir -ne '') { $arguments += @('--dir', $Dir) }
+    # **指定が無ければ渡さない。** CLI が JQUANTS_PLAN から引きます。
+    # ここに既定値を置いて常に渡すと、CLI 側を直しても上書きされます——
+    # delisted-harvest.ps1 の -Start で同じことをして、2026-09-07 に直した
+    # ばかりでした。
+    if ($Throttle -gt 0) { $arguments += @('--throttle', ([string]$Throttle)) }
+
+    uv @arguments
+    $code = $LASTEXITCODE
+    if ($code -ne 0) {
+        # **1周目で落ちたら2周目に進まない。** 進むと、失敗の理由が2回ぶん
+        # 混ざって、どちらの話か分からなくなります。
+        Write-Host ''
+        Write-Err ('{0} 周目で止まりました。ここで終わります。' -f $pass)
+        break
+    }
+}
 
 Write-Host ''
 if ($code -ne 0) {
