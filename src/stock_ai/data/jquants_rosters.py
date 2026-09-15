@@ -73,7 +73,17 @@ class ExtractReport:
     """日付を読めなかった行。**0 でないなら、列名が変わった疑いがある。**"""
 
     empty: list[dt.date] = dataclasses.field(default_factory=list)
-    """絞り込みのあと1銘柄も残らなかった日付。**書かない。**"""
+    """絞り込みのあと1銘柄も残らなかった日付。**書かないが、黙らない。**
+
+    **集めていたのに、まとめに出していなかった**（2026-09-15 に気付いた）。
+    出さないと、「原本に行が無い日」と「行はあったが全部落ちた日」が、
+    どちらも同じ「名簿の無い日」に見える。**直す場所が違う。**
+
+    | | 何が起きている |
+    |---|---|
+    | ここに出る | 原本に行はある。**こちらの絞り込みが全部落とした** |
+    | ここにも出ない | 原本にその日の行が無い |
+    """
 
     failed: dict[str, str] = dataclasses.field(default_factory=dict)
 
@@ -83,6 +93,7 @@ class ExtractReport:
             f"{self.files} 本から {len(self.written)} 日ぶんを書き出し、"
             f"{len(self.skipped)} 日は既存、{self.rows:,} 行を読んだ"
             + (f"、日付を読めない行 {self.undated:,}" if self.undated else "")
+            + (f"、**1銘柄も残らなかった日 {len(self.empty)}**" if self.empty else "")
             + (f"、{len(self.failed)} 本が読めず" if self.failed else "")
         )
 
@@ -169,7 +180,12 @@ def extract(
             if not profiles:
                 # **空の名簿を書かない。** 書くと、その日に全銘柄が上場廃止
                 # したように見える。例外は出ない。
+                #
+                # **ただし黙らない。** 書かないだけにすると、「原本に行が無い
+                # 日」と区別が付かなくなる——直す場所が違うのに、どちらも
+                # 「名簿の無い日」に見える。
                 report.empty.append(date)
+                logger.warning("絞り込みのあと1銘柄も残らなかった: %s（%s）", date, key)
                 continue
             write_snapshot(out_dir, date, profiles)
             report.written.append(date)
