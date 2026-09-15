@@ -960,3 +960,53 @@ class TestDropCountersReachAHuman:
 
         assert report.skipped_code == 1
         assert "4桁にならないコード 1" in report.summary()
+
+
+class TestTellingAConventionErrorFromOneOddSymbol:
+    """**規約の間違いなら、全部の権利落ち日がずれる。**
+
+    `j >= d` と `j > d` を取り違えれば一部だけということはない。だから
+    「少数が一致する」のは規約の話ではなく、その銘柄の事情である。
+
+    それなのに `if unapplied:` で1件でも「組み立てがずれている」と言っていた
+    （2026-09-15）。**3行上のコメントに「全件がそうなる。見るべきはそこで
+    ある」と自分で書いてあった。書いた理屈と、当てはめが食い違っていた。**
+    """
+
+    def test_a_factor_too_close_to_one_cannot_be_judged(self) -> None:
+        """実測で挙がった 2588 は係数 0.99706、その日の動き 0% だった。
+
+        **動かなかった日が引っかかっているだけ**で、掛け忘れの証拠ではない。
+        """
+        from stock_ai.data.jquants_prices import comparable
+
+        assert not comparable(0.9970588235294118)
+
+    def test_a_real_split_factor_can_be_judged(self) -> None:
+        from stock_ai.data.jquants_prices import comparable
+
+        assert comparable(0.9090909090909092)  # 10:11
+        assert comparable(0.5)  # 1:2
+
+    def test_all_of_them_matching_is_a_convention_error(self) -> None:
+        from stock_ai.data.jquants_prices import split_verdict
+
+        assert split_verdict(3656, 3656) == "規約"
+
+    def test_a_handful_is_not(self) -> None:
+        """**実測はここだった。** 3/3,656 は 0.08% である。"""
+        from stock_ai.data.jquants_prices import split_verdict
+
+        assert split_verdict(3, 3656) == "個別"
+
+    def test_none_matching_says_nothing_is_wrong(self) -> None:
+        from stock_ai.data.jquants_prices import split_verdict
+
+        assert split_verdict(0, 3656) == "なし"
+
+    def test_the_line_is_at_half_not_at_one(self) -> None:
+        """**規約の間違いなら 100% に寄る。** 半分を割っていれば「全部」ではない。"""
+        from stock_ai.data.jquants_prices import split_verdict
+
+        assert split_verdict(50, 100) == "規約"
+        assert split_verdict(49, 100) == "個別"

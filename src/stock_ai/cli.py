@@ -239,12 +239,14 @@ from stock_ai.data.jquants_indices import tracking_gap as topix_tracking_gap
 from stock_ai.data.jquants_markets import HOLIDAY_DIVISION, TRADING_DIVISIONS, half_days_by_year
 from stock_ai.data.jquants_markets import agreement as calendar_agreement
 from stock_ai.data.jquants_markets import census as calendar_census
+from stock_ai.data.jquants_prices import comparable as price_comparable
 from stock_ai.data.jquants_prices import frames_for as price_frames_for
 from stock_ai.data.jquants_prices import ingest as price_ingest
 from stock_ai.data.jquants_prices import join_returns as price_join_returns
 from stock_ai.data.jquants_prices import looks_unapplied as price_looks_unapplied
 from stock_ai.data.jquants_prices import probe_symbols
 from stock_ai.data.jquants_prices import split_day_returns as price_split_day_returns
+from stock_ai.data.jquants_prices import split_verdict as price_split_verdict
 from stock_ai.data.jquants_profile import JQuantsProfileProvider
 from stock_ai.data.jquants_provider import JQuantsPriceProvider
 from stock_ai.data.jquants_read import census as archive_census
@@ -3459,19 +3461,46 @@ def jquants_bulk_prices(
             # 25% 動く銘柄はあるし、分割以外の事由（併合・無償割当・合併）でも
             # 係数は立つ。規約を間違えていれば、動きは**ちょうど係数 - 1**に
             # なり、しかも**全件がそうなる。** 見るべきはそこである。
-            unapplied = [item for item in on_split if price_looks_unapplied(item[2], item[3])]
+            # **係数が1に近すぎると、判定そのものができない。** 係数 0.997 なら
+            # その日の動きが ±2% の中にありさえすれば「係数そのもの」に見える
+            # ——動かなかった日が全部引っかかる。比べられない件は別に数える。
+            checkable = [item for item in on_split if price_comparable(item[3])]
+            skipped = len(on_split) - len(checkable)
+            unapplied = [item for item in checkable if price_looks_unapplied(item[2], item[3])]
             loud = [item for item in on_split if abs(item[2]) > 0.2]
             middle = sorted(abs(item[2]) for item in on_split)[len(on_split) // 2]
-            if unapplied:
+            verdict = price_split_verdict(len(unapplied), len(checkable))
+
+            if skipped:
+                console.print(
+                    f"[dim]係数が1に近すぎて比べられない権利落ち日が {skipped:,} 件"
+                    f"（全 {len(on_split):,} 件のうち）。**一致しない、ではなく"
+                    "比べていない。**[/]"
+                )
+
+            if verdict == "規約":
+                # **全部の権利落ち日がずれる形。** `j >= d` と `j > d` の取り違え
+                # なら、一部だけということはない。
                 console.print(
                     f"[red]権利落ち日の動きが係数そのものになっている例が "
-                    f"{len(unapplied)}/{len(on_split)}。[/] "
+                    f"{len(unapplied)}/{len(checkable)}。[/] "
                     "**調整の組み立てがずれている。** "
                     + "、".join(f"{a} {b} {c:+.0%}(係数 {d})" for a, b, c, d in unapplied[:5])
                 )
+            elif verdict == "個別":
+                # **規約の間違いなら全件がそうなる。** 少数なら、その銘柄の事情
+                # である（係数の立つ日と値の付く日がずれている、など）。
+                console.print(
+                    f"[yellow]権利落ち日 {len(unapplied)}/{len(checkable):,} 件で、"
+                    f"動きが係数そのものになっている。[/]"
+                    "[dim] **全件ではないので、組み立ての規約ではない。** "
+                    "銘柄ごとの事情として1件ずつ見ること。[/]"
+                )
+                for symbol, day, change, factor in unapplied[:5]:
+                    console.print(f"  [dim]{symbol} {day} {change:+.1%}（係数 {factor:.6f}）[/]")
             else:
                 console.print(
-                    f"[green]権利落ち日 {len(on_split):,} 件は、どれも係数どおりの"
+                    f"[green]権利落ち日 {len(checkable):,} 件は、どれも係数どおりの"
                     f"ずれ方をしていない[/]（値動きの中央値 {middle:.1%}）。"
                     "[dim] 組み立ては効いている。[/]"
                 )
@@ -3481,7 +3510,13 @@ def jquants_bulk_prices(
                         "合わない**——本当に動いた日か、分割以外の事由である。[/]"
                     )
 
-    boundary = _archive_first_date(source)
+    # **取り込んだ日付そのものから取る。** ファイル名の並び順から引いていた
+    # ときは、20年ぶんを入れたのに「継ぎ目 2021-09-01」と出た（2026-09-15）。
+    # 原本は 2008-05 から覆っているので、そこが継ぎ目のはずである。
+    #
+    # 並び順は名前で決まる。向こうがファイル名の付け方を変えれば、いちばん古い
+    # ファイルがいちばん前に来なくなる。**読んだ日付を使えば、名前に依らない。**
+    boundary = min(report.dates) if report.dates else _archive_first_date(source)
     if boundary is None:
         return
     console.print()
@@ -3541,6 +3576,14 @@ def _archive_first_date(directory: Path) -> dt.date | None:
     """Return the first date the archived bars cover.
 
     原本が覆い始める日。**継ぎ目はここである。**
+
+    **並び順は名前で決まる。** 向こうがファイル名の付け方を変えると、いちばん
+    古いファイルがいちばん前に来なくなる。実際そうなった——20年ぶんを入れた
+    のに「継ぎ目 2021-09-01」と出た（2026-09-15）。原本は 2008-05 から覆って
+    いる。
+
+    **取り込んだ日付が手元にあるなら、そちらを使うこと。** 名前に依らない。
+    ここは、取り込みを回さずに聞きたいときの控えである。
     """
     from stock_ai.data.jquants_prices import BARS_ENDPOINT
     from stock_ai.data.jquants_read import endpoint_of
