@@ -131,29 +131,60 @@ class Census:
     first: dt.date | None = None
     last: dt.date | None = None
     duplicates: int = 0
-    gaps: list[tuple[dt.date, int]] = dataclasses.field(default_factory=list)
-    """``(日付, 直前の営業日から空いた暦日数)``。**5日を超える穴だけ。**"""
+
+    missing: list[dt.date] = dataclasses.field(default_factory=list)
+    """カレンダーが立会と言っているのに、指数の無い日。"""
+
+    checked: bool = False
+    """カレンダーと突き合わせたか。**`False` は「穴が無い」ではなく「見て
+    いない」である。** 区別しないと、カレンダーを渡し忘れた実行が「穴なし」に
+    見える。
+    """
+
+    extra: list[dt.date] = dataclasses.field(default_factory=list)
+    """指数はあるのに、カレンダーが立会と言っていない日。**カレンダーのほうが
+    疑わしい向きである。**
+    """
 
     def summary(self) -> str:
         """1行のまとめ。"""
         if not self.rows:
             return "TOPIX の原本が無い。"
+        tail = (
+            f"、立会なのに指数の無い日 {len(self.missing)}"
+            if self.checked
+            else "、カレンダーが無いので穴は見ていない"
+        )
         return (
             f"{self.first} 〜 {self.last} / {self.rows:,} 日"
             + (f"、重複 {self.duplicates}" if self.duplicates else "")
-            + (f"、5日を超える穴 {len(self.gaps)}" if self.gaps else "、穴なし")
+            + tail
+            + (f"、立会でないのに指数のある日 {len(self.extra)}" if self.extra else "")
         )
 
 
-#: これを超えて空いたら穴として数える暦日数。
-#:
-#: 金曜から月曜で3日、連休をはさむと5日まで開く。**それを穴と呼ぶと、毎年の
-#: 連休が全部並んで、本当の欠けが埋もれる。**
-GAP_DAYS = 5
+def census(
+    frame: pd.DataFrame,
+    raw_rows: int | None = None,
+    trading: set[dt.date] | None = None,
+) -> Census:
+    """組み立てた表を数える。**穴はカレンダーと突き合わせて決める。**
 
+    最初は「暦で5日を超えて空いたら穴」と数えていた。**2026-09-15 の実測で
+    21件出て、21件とも年末年始・ゴールデンウィーク・シルバーウィークだった。**
 
-def census(frame: pd.DataFrame, raw_rows: int | None = None) -> Census:
-    """組み立てた表を数える。**穴を数えるのは、欠けを件数から見つけるため。**"""
+    「連休は5日まで」は当て推量で、日本の休場を調べずに書いたものである。
+    **しかも取引カレンダーは手元にあった。** 持っている答えを使わずに、経験則で
+    代用していた。
+
+    カレンダーを渡さなければ**穴を数えない。** 0 と報告すると、渡し忘れた実行が
+    「穴なし」に見える——**「見ていない」と「無い」は別である。**
+
+    Args:
+        frame: :func:`from_archive` が返す表。
+        raw_rows: 畳む前の行数。重複の数を出すのに使う。
+        trading: 立会日の集合。省略すると穴を数えない。
+    """
     report = Census(rows=len(frame))
     if frame.empty:
         return report
@@ -161,10 +192,17 @@ def census(frame: pd.DataFrame, raw_rows: int | None = None) -> Census:
     report.first, report.last = dates[0], dates[-1]
     if raw_rows is not None:
         report.duplicates = max(raw_rows - len(frame), 0)
-    for earlier, later in zip(dates, dates[1:], strict=False):
-        span = (later - earlier).days
-        if span > GAP_DAYS:
-            report.gaps.append((later, span))
+    if trading is None:
+        return report
+
+    report.checked = True
+    have = set(dates)
+    # **重なる期間だけ見る。** カレンダーは指数より長い期間を覆っているので、
+    # 全期間で取ると「指数の無い立会日」が何千日も出る。それは欠けではなく、
+    # 指数がそこまで遡っていないだけである。
+    window = {day for day in trading if report.first <= day <= report.last}
+    report.missing = sorted(window - have)
+    report.extra = sorted(day for day in have if day not in trading)
     return report
 
 

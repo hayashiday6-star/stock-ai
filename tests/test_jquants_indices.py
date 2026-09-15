@@ -141,6 +141,15 @@ class TestReadingTheArchive:
 
 
 class TestCountingTheShape:
+    """**穴は当て推量で数えない。**
+
+    最初は「暦で5日を超えて空いたら穴」と数えていた。2026-09-15 の実測で21件
+    出て、**21件とも年末年始・ゴールデンウィーク・シルバーウィークだった。**
+
+    「連休は5日まで」は日本の休場を調べずに書いたもので、**しかも取引カレン
+    ダーは手元にあった。** 持っている答えを使わずに経験則で代用していた。
+    """
+
     def test_the_span_comes_from_the_data(self) -> None:
         report = census(parse_topix(SAMPLE.read_bytes()))
 
@@ -148,19 +157,48 @@ class TestCountingTheShape:
         assert report.last == dt.date(2022, 1, 7)
         assert report.rows == 4
 
-    def test_a_long_weekend_is_not_a_gap(self) -> None:
-        """**連休を穴と呼ぶと、毎年の連休が並んで本当の欠けが埋もれる。**"""
-        payload = b"Date,O,H,L,C\n2022-01-04,1,2,3,100\n2022-01-09,1,2,3,100\n"
+    def test_without_a_calendar_no_hole_is_claimed(self) -> None:
+        """**0 と報告しない。** 渡し忘れた実行が「穴なし」に見える。"""
+        report = census(parse_topix(SAMPLE.read_bytes()))
 
-        assert census(parse_topix(payload)).gaps == []
+        assert report.checked is False
+        assert "見ていない" in report.summary()
 
-    def test_a_real_hole_shows_up(self) -> None:
-        payload = b"Date,O,H,L,C\n2022-01-04,1,2,3,100\n2022-03-04,1,2,3,100\n"
+    def test_a_new_year_break_is_not_a_hole(self) -> None:
+        """大納会から大発会まで6日空く。**暦の日数で数えると毎年ここが並ぶ。**"""
+        payload = b"Date,O,H,L,C\n2008-12-30,1,2,3,100\n2009-01-05,1,2,3,100\n"
+        trading = {dt.date(2008, 12, 30), dt.date(2009, 1, 5)}
 
-        ((when, span),) = census(parse_topix(payload)).gaps
+        report = census(parse_topix(payload), trading=trading)
 
-        assert when == dt.date(2022, 3, 4)
-        assert span == 59
+        assert report.missing == []
+        assert report.checked is True
+
+    def test_a_trading_day_with_no_index_is_a_hole(self) -> None:
+        payload = b"Date,O,H,L,C\n2022-01-04,1,2,3,100\n2022-01-06,1,2,3,100\n"
+        trading = {dt.date(2022, 1, 4), dt.date(2022, 1, 5), dt.date(2022, 1, 6)}
+
+        report = census(parse_topix(payload), trading=trading)
+
+        assert report.missing == [dt.date(2022, 1, 5)]
+
+    def test_an_index_day_the_calendar_denies_is_reported(self) -> None:
+        """**カレンダーのほうが疑わしい向きである。** 指数はその日の実物。"""
+        payload = b"Date,O,H,L,C\n2022-01-04,1,2,3,100\n2022-01-05,1,2,3,100\n"
+        trading = {dt.date(2022, 1, 4)}
+
+        report = census(parse_topix(payload), trading=trading)
+
+        assert report.extra == [dt.date(2022, 1, 5)]
+
+    def test_calendar_days_outside_the_span_are_not_holes(self) -> None:
+        """**カレンダーは指数より長い。** 全期間で取ると何千日も出る。"""
+        payload = b"Date,O,H,L,C\n2022-01-04,1,2,3,100\n2022-01-05,1,2,3,100\n"
+        trading = {dt.date(2008, 5, 7), dt.date(2022, 1, 4), dt.date(2022, 1, 5)}
+
+        report = census(parse_topix(payload), trading=trading)
+
+        assert report.missing == []
 
     def test_duplicates_are_reported_not_hidden(self) -> None:
         frame = parse_topix(SAMPLE.read_bytes())

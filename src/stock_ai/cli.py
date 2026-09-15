@@ -196,6 +196,7 @@ from stock_ai.data.delisted import (
 from stock_ai.data.fx import FxConverter
 from stock_ai.data.jquants_archive import DEFAULT_ARCHIVE_DIR, path_for, read_manifest
 from stock_ai.data.jquants_archive import archive as archive_bulk
+from stock_ai.data.jquants_archive import orphans as archive_orphans
 from stock_ai.data.jquants_archive import verify as verify_archive
 from stock_ai.data.jquants_bulk import (
     ARCHIVE_ENDPOINTS,
@@ -4220,7 +4221,11 @@ def jquants_topix(
         )
         raise typer.Exit(code=1)
 
-    report = topix_census(frame)
+    # **穴は取引カレンダーと突き合わせて決める。** 暦の空き日数で数えていた
+    # ときは 21件出て、21件とも年末年始・GW・シルバーウィークだった。
+    trading = trading_days_from_archive(Path(archive_dir))
+    report = topix_census(frame, trading=trading)
+
     table = Table(title="TOPIX（指数そのもの）")
     table.add_column("見たもの")
     table.add_column("値", justify="right")
@@ -4228,19 +4233,35 @@ def jquants_topix(
     table.add_row("期間", f"{report.first} 〜 {report.last}")
     table.add_row("始まりの水準", f"{frame[CLOSE].iloc[0]:,.2f}")
     table.add_row("終わりの水準", f"{frame[CLOSE].iloc[-1]:,.2f}")
-    table.add_row(
-        "[red]5日を超える穴[/]" if report.gaps else "5日を超える穴", f"{len(report.gaps):,}"
-    )
+    if report.checked:
+        table.add_row(
+            "[red]立会なのに指数が無い日[/]" if report.missing else "立会なのに指数が無い日",
+            f"{len(report.missing):,}",
+        )
+        label = "立会でないのに指数がある日"
+        table.add_row(
+            f"[yellow]{label}[/]" if report.extra else label,
+            f"{len(report.extra):,}",
+        )
+    else:
+        table.add_row("[dim]穴[/]", "[dim]カレンダーが無いので見ていない[/]")
     console.print(table)
 
-    if report.gaps:
-        listed = "  ".join(f"{when}({span}日)" for when, span in report.gaps[:show])
+    for label, days in (
+        ("立会なのに指数が無い", report.missing),
+        ("立会でないのに指数がある", report.extra),
+    ):
+        if days:
+            listed = "  ".join(day.isoformat() for day in days[:show])
+            console.print(f"[yellow]{label}: {len(days)} 日[/] [dim]{listed}[/]")
+    if report.checked and not report.missing and not report.extra:
         console.print(
-            f"[yellow]穴が {len(report.gaps)} 件[/] [dim]{listed}[/]"
-            "[dim]  連休は5日までなので、これらは連休では説明が付かない。[/]"
+            "[green]立会日と1日も食い違わない。[/]"
+            "[dim] カレンダーと指数は別の原本なので、別々のファイルが同じ日を"
+            "立会だと言っている。[/]"
         )
 
-    database = Database(settings.database_url)
+    database = Database()
     with database.session() as session:
         prices = PriceRepository(session).get_prices(etf)
     if prices.empty:
@@ -4324,6 +4345,18 @@ def jquants_archive_verify(
             f"（{_bytes_label(int(read / elapsed))}/秒）。"
             f"**20年ぶんはこの4倍を見込むこと。**[/]"
         )
+
+    # **目録に無いファイルは、verify が一度も見ない。** 「消えている」は
+    # 見つかるが「余っている」は見つからない。写しは運ぶのに照合は見ない。
+    extra = archive_orphans(target)
+    if extra:
+        console.print(
+            f"[yellow]目録に無いファイルが {len(extra)} 本ある。[/]"
+            "[dim] 照合の対象外で、写しには運ばれる。**消していない**——"
+            "向こうのファイル名が変わったときに、古いほうが残る。[/]"
+        )
+        for name in extra[:5]:
+            console.print(f"  [dim]{name}[/]")
 
     if not (missing or wrong_size or changed):
         console.print(f"[green]目録の {len(manifest)} 本すべてが一致している。[/]")

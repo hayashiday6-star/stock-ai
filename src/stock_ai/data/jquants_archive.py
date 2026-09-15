@@ -372,6 +372,36 @@ def fingerprint(path: Path) -> tuple[int, str]:
     return size, digest.hexdigest()
 
 
+def orphans(directory: Path = DEFAULT_ARCHIVE_DIR) -> list[str]:
+    """置いてあるのに**目録に無い**ファイル。
+
+    :func:`verify` は目録を辿るので、**目録に無いファイルを一度も見ない。**
+    「消えている」は見つかるが、「余っている」は見つからない。写しは運ぶのに
+    照合は見ない、という状態になる。
+
+    余りが出るのは、向こうのファイル名が変わったときである。実測（2026-09-15）:
+    Light で取った 385本のうち 320本しか Premium の一覧に再掲されず、**65本が
+    目録から外れた。** 当月ぶんの `live` が、翌週には `historical` の別名に
+    なっていたためと見られる。
+
+    **消さない。** 古いほうが正しいことも、両方要ることもある。**数えて名指し
+    するところまでにする。**
+
+    目録そのもの（`manifest.csv`）は余りに数えない。
+    """
+    manifest = read_manifest(directory)
+    if not directory.is_dir():
+        return []
+    known = {path_for(directory, key).resolve() for key in manifest}
+    found: list[str] = []
+    for path in sorted(directory.rglob("*")):
+        if not path.is_file() or path.name == MANIFEST:
+            continue
+        if path.resolve() not in known:
+            found.append(str(path.relative_to(directory)).replace("\\", "/"))
+    return found
+
+
 def verify(
     directory: Path = DEFAULT_ARCHIVE_DIR,
     progress: Callable[[int, int, str], None] | None = None,
