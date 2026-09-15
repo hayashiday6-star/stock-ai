@@ -5152,6 +5152,7 @@ def jquants_valuation(
         half_widths,
         identity_check,
         resolve,
+        share_stability,
     )
     from stock_ai.data.jquants_valuation import (
         census as valuation_census,
@@ -5261,6 +5262,28 @@ def jquants_valuation(
             console.print(
                 "[green]判定できた行では、食い違いが1件も無い。[/] "
                 "[dim]**列の意味は想像どおりで、残りは丸めである。**[/]"
+            )
+
+    # **時価総額は、上の突き合わせに1度も出てこない列である。**
+    # `PER × EPS` と `PBR × BPS` が見ているのは4列だけで、時価総額はそこに
+    # 入っていない。**確かめていないものを、確かめたつもりにしない。**
+    if widths:
+        held = share_stability(frame, widths)
+        console.print()
+        console.print(f"[bold]時価総額[/] {held.summary()}")
+        if not held.steps:
+            console.print("[yellow]株式数を割り出せる行が足りない。**確かめていない。**[/]")
+        elif held.level_holds:
+            console.print(
+                "[green]割り出した株式数は、丸めで説明の付く範囲に収まっている。[/] "
+                "[dim]**時価総額は終値と同じ尺度で作られている。** "
+                f"動いた {held.moved:,} 回は分割・増資とみられる。[/]"
+            )
+        else:
+            console.print(
+                f"[red]株式数の散らばり {held.spread_median:.2%} が、丸めで説明の付く "
+                f"{held.spread_slack:.2%} を超えている。[/] "
+                "**時価総額が終値と同じ尺度で動いていない。使う前にここを説明すること。**"
             )
 
         detail = Table(title="ずれの大きいもの")

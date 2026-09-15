@@ -32,6 +32,7 @@ from stock_ai.data.jquants_valuation import (
     parse_valuation,
     resolve,
     rounding_bound,
+    share_stability,
     unknown_columns,
 )
 from stock_ai.data.schema import DATE
@@ -713,3 +714,71 @@ class TestTellingApartCannotSayFromAgrees:
 
     def test_an_empty_frame_does_not_raise(self) -> None:
         assert resolve(parse_valuation(_csv()), {"pbr": 0.005}).judged == 0
+
+
+class TestCheckingTheMarketCapItself:
+    """**時価総額は、掛け算の突き合わせに1度も出てこない列である。**
+
+    `PER × EPS` と `PBR × BPS` が見ているのは4列だけ。時価総額はそこに入って
+    いない。**確かめていないものを、確かめたつもりにしない。**
+
+    株式数は原本に無いので `時価総額 ÷ 終値` で割り出す。分割や増資では本当に
+    動くが、それ以外では動かないはずである。
+    """
+
+    def _build(self, cap_of, days: int = 20):
+        rows = []
+        for day in range(1, days + 1):
+            close, bps = 2500.0 + day * 10, 2000.0
+            rows.append(
+                f"2024-06-{day:02d},13010,100.00,,{bps:.2f},8.0000,,"
+                f"{close / 100:.2f},,{close / bps:.2f},{cap_of(close, day):.1f}"
+            )
+        payload = _csv(*rows)
+        return parse_valuation(payload), half_widths(decimals_seen(payload))
+
+    def test_a_steady_share_count_moves_on_no_day(self) -> None:
+        """**閾値を決め打たない。**
+
+        最初は「1日で 0.1% 以上動いたら分割」とした。`PBR` の2桁丸めが作る
+        ゆらぎは ±0.4% で、**閾値がノイズより下だった。** 正しいデータで
+        「毎日動いている」と出た（2026-09-15）。
+        """
+        frame, widths = self._build(lambda close, _day: close * 1e8)
+
+        held = share_stability(frame, widths)
+
+        assert held.moved == 0, held.summary()
+        assert held.level_holds
+
+    def test_a_split_shows_up_as_one_step(self) -> None:
+        frame, widths = self._build(lambda close, day: close * (1e8 if day < 10 else 2e8))
+
+        assert share_stability(frame, widths).moved == 1
+
+    def test_a_market_cap_that_does_not_track_the_close_is_caught_by_the_level(self) -> None:
+        """**段差だけでは足りない。**
+
+        時価総額が終値に連動していないと、株式数は1日あたり丸めより小さい幅で
+        じわじわ動く。段差では捕まらないが、1ヶ月ぶん貯まれば散らばりとして
+        出る。**その形を作って、一度素通りさせた。**
+        """
+        frame, widths = self._build(lambda _close, _day: 2500.0 * 1e8)
+
+        held = share_stability(frame, widths)
+
+        assert held.moved == 0
+        assert not held.level_holds
+
+    def test_the_magnitude_is_reported_so_the_units_can_be_checked(self) -> None:
+        frame, widths = self._build(lambda close, _day: close * 1e8)
+
+        assert abs(share_stability(frame, widths).median_shares - 1e8) < 1e6
+
+    def test_no_widths_means_nothing_checked(self) -> None:
+        frame, _ = self._build(lambda close, _day: close * 1e8)
+
+        assert share_stability(frame, {}).steps == 0
+
+    def test_an_empty_frame_does_not_raise(self) -> None:
+        assert share_stability(parse_valuation(_csv()), {"pbr": 0.005}).steps == 0

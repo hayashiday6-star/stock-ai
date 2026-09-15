@@ -45,6 +45,7 @@ import datetime as dt
 from collections import Counter
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 
 from stock_ai.core.logging import get_logger
@@ -676,4 +677,138 @@ def resolve(frame: pd.DataFrame, widths: dict[str, float]) -> Resolution:
         unresolvable=int(vague.sum()),
         bound_median=float(bound.median()),
         gap_median=float(gap.median()),
+    )
+
+
+def close_bound(frame: pd.DataFrame, widths: dict[str, float]) -> pd.Series:
+    """``PBR × BPS`` で復元した終値の、**丸めによる相対的な不確かさ**。
+
+    株式数は ``時価総額 ÷ 終値`` で割り出すので、終値のゆらぎがそのまま
+    株式数のゆらぎになる。
+
+    **ここを決め打ちにして失敗した**（2026-09-15）。「1日で 0.1% 以上動いたら
+    分割」としたが、`PBR` の2桁丸めが作るゆらぎは ±0.4% で、**閾値がノイズ
+    より下だった。** 正しいデータで「毎日動いている」と出た。
+    """
+    pbr_h = widths.get("pbr", 0.0)
+    bps_h = widths.get("bps", 0.0)
+    close = (frame["pbr"] * frame["bps"]).abs()
+    slack = frame["bps"].abs() * pbr_h + frame["pbr"].abs() * bps_h
+    return slack / close.where(close >= IDENTITY_FLOOR)
+
+
+@dataclasses.dataclass
+class ShareStability:
+    """``時価総額 ÷ 終値`` で出る株式数が、日をまたいで落ち着いているか。
+
+    **時価総額は、この検査に1度も出てこない列だった。** `PER × EPS` と
+    `PBR × BPS` の突き合わせが見ているのは4列だけで、時価総額はそこに入って
+    いない。**確かめていないものを、確かめたつもりにしない。**
+
+    株式数は原本に入っていないので、割り出すしかない。分割や増資では本当に
+    動くが、それ以外の日は動かないはずである。**毎日動くなら、時価総額は
+    終値と同じ尺度で作られていない。**
+    """
+
+    steps: int
+    """日をまたいだ比較の回数。"""
+
+    moved: int
+    """丸めでは説明の付かない大きさで動いた回数。**分割・増資はここに入る。**"""
+
+    symbols: int
+    median_shares: float
+    """割り出した株式数の中央値。**桁が妥当かを見る。**"""
+
+    spread_median: float
+    """銘柄×月ごとの、株式数の散らばり（相対）の中央値。
+
+    **段差だけでは足りない。** 時価総額が終値に連動していないと、株式数は
+    1日あたりの丸めより小さい幅でじわじわ動く。段差では捕まらないが、1ヶ月
+    ぶん貯まれば散らばりとして出る（2026-09-15 に、その形を作って素通りした）。
+    """
+
+    spread_slack: float
+    """丸めだけで説明の付く散らばり。:attr:`spread_median` の比べ相手。"""
+
+    @property
+    def level_holds(self) -> bool:
+        """水準が、丸めで説明の付く範囲に収まっているか。"""
+        return self.spread_slack > 0 and self.spread_median <= self.spread_slack * 2
+
+    @property
+    def steady(self) -> float:
+        """動かなかった割合。"""
+        return 1.0 - (self.moved / self.steps) if self.steps else 0.0
+
+    def summary(self) -> str:
+        """1行のまとめ。"""
+        if not self.steps:
+            return "株式数を割り出せる行が足りない。**確かめていない。**"
+        return (
+            f"{self.symbols:,} 銘柄・{self.steps:,} 回の日またぎのうち、"
+            f"{self.moved:,} 回が動いた（落ち着いているのは {self.steady:.2%}）。"
+            f"株式数の中央値は {self.median_shares:,.0f} 株。"
+            f"月ごとの散らばりは {self.spread_median:.2%}"
+            f"（丸めで説明の付く幅は {self.spread_slack:.2%}）。"
+        )
+
+
+def share_stability(frame: pd.DataFrame, widths: dict[str, float]) -> ShareStability:
+    """割り出した株式数が、日をまたいで落ち着いているかを数える。
+
+    **「銘柄ごとに一定か」では見ない。** 18年のあいだに分割も増資も起きる。
+    見るのは**隣り合う日の変化**で、分割の日だけが動き、他は動かないはずで
+    ある。
+
+    Args:
+        frame: :func:`parse_valuation` が返す表。
+        widths: :func:`half_widths` が返す、列ごとの丸めの片側の幅。
+
+    Returns:
+        :class:`ShareStability`。割り出せる行が足りなければ全部 0。
+    """
+    shares = implied_shares(frame)
+    if shares.empty or not widths:
+        return ShareStability(0, 0, 0, 0.0, 0.0, 0.0)
+
+    bound = close_bound(frame, widths)
+    ordered = frame.loc[shares.index, [DATE, SYMBOL]].assign(
+        shares=shares, slack=bound.loc[shares.index]
+    )
+    ordered = ordered.sort_values([SYMBOL, DATE])
+    grouped = ordered.groupby(SYMBOL, sort=False)
+    previous = grouped["shares"].shift(1)
+    previous_slack = grouped["slack"].shift(1)
+    change = (ordered["shares"] - previous).abs() / previous.abs()
+
+    # **閾値を決め打たない。** 両日それぞれに丸めのゆらぎが乗るので、足す。
+    allowed = ordered["slack"] + previous_slack
+    # **水準も見る。** 段差では捕まらないゆっくりしたズレが、1ヶ月ぶん貯まれば
+    # 散らばりとして出る。分割は月に何度も起きないので、月で切れば混ざらない。
+    month = pd.to_datetime(ordered[DATE]).dt.to_period("M")
+    by_month = ordered.groupby([ordered[SYMBOL], month], sort=False)["shares"]
+    spread = (by_month.max() - by_month.min()) / by_month.median().abs()
+    spread = spread[np.isfinite(spread)]
+    spread_median = float(spread.median()) if not spread.empty else 0.0
+    spread_slack = float(ordered["slack"].median() * 2) if ordered["slack"].notna().any() else 0.0
+
+    usable = change.notna() & allowed.notna() & np.isfinite(change) & np.isfinite(allowed)
+    if not usable.any():
+        return ShareStability(
+            0,
+            0,
+            int(ordered[SYMBOL].nunique()),
+            float(shares.median()),
+            spread_median,
+            spread_slack,
+        )
+
+    return ShareStability(
+        steps=int(usable.sum()),
+        moved=int((change[usable] > allowed[usable]).sum()),
+        symbols=int(ordered[SYMBOL].nunique()),
+        median_shares=float(shares.median()),
+        spread_median=spread_median,
+        spread_slack=spread_slack,
     )
