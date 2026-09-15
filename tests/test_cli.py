@@ -1145,3 +1145,70 @@ class TestRefetchingExactlyWhatIsOnDisk:
 
         assert "'--existing'" in body
         assert "[switch]$Existing" in body
+
+
+class TestAskingForColumnsIsNotSilencedByNoShapes:
+    """**出力を小さくする指定が、目的そのものを潰していた。**
+
+    `checks\\この原本の列を全部見る.bat` は `-NoShapes` を渡す（形の表は要らない
+    ので）。ところが `--columns` の処理がその早期 return の**後ろ**にあり、
+    **列が1行も出なかった**（2026-09-15）。
+
+    出力を小さく保つのはこのプロジェクトの方針だが、**頼まれたものまで消しては
+    いけない。**
+    """
+
+    def _archive(self, tmp_path):
+        import datetime as dt
+        import gzip
+
+        from stock_ai.data.jquants_archive import archive
+        from stock_ai.data.jquants_bulk import BulkFile
+
+        payload = gzip.compress(b"Date,Code,EPS,FwdEPS,BPS\n2026-08-03,13010,1,2,3\n")
+        archive(
+            [
+                BulkFile(
+                    key="equities/valuation/historical/2026/eq_valuation_202608.csv.gz",
+                    last_modified="",
+                    size=len(payload),
+                )
+            ],
+            lambda _k: payload,
+            tmp_path,
+            on=dt.date(2026, 9, 15),
+        )
+
+    def test_columns_are_printed_even_with_no_shapes(self, tmp_path) -> None:
+        from typer.testing import CliRunner
+
+        from stock_ai.cli import app
+
+        self._archive(tmp_path)
+
+        result = CliRunner().invoke(
+            app,
+            [
+                "jquants-archive-read",
+                "--dir",
+                str(tmp_path),
+                "--no-shapes",
+                "--columns",
+                "/equities/valuation",
+            ],
+        )
+
+        assert "FwdEPS" in result.output, result.output
+        assert "BPS" in result.output
+
+    def test_the_launcher_asks_for_both(self) -> None:
+        """`.bat` が `-NoShapes` と `-Columns` を同時に渡している。"""
+        import pathlib
+
+        body = (
+            pathlib.Path(__file__).resolve().parent.parent / "checks" / "この原本の列を全部見る.bat"
+        ).read_text(encoding="ascii")
+        invocation = next(line for line in body.splitlines() if "archive-read.ps1" in line)
+
+        assert "-NoShapes" in invocation
+        assert "-Columns" in invocation

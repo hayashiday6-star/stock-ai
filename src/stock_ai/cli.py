@@ -3159,6 +3159,24 @@ def jquants_archive_read(
             problems.add_row(key, why[:80])
         console.print(problems)
 
+    if columns_of:
+        # **切らずに出す。** 読み口を作るには全部の列が要る。配布サンプルの
+        # 無いエンドポイント（`/equities/valuation`）は、ここでしか列を知れない。
+        wanted = "/" + columns_of.strip().lstrip("/")
+        keys = samples_per_endpoint(target).get(wanted, ())
+        if not keys:
+            console.print(f"[yellow]{wanted} の原本が無い。[/]")
+            console.print("[dim]  上の表に出ている名前をそのまま渡すこと。[/]")
+            return
+        found = archive_shape(target, keys[0])
+        if found is None:
+            console.print(f"[yellow]{wanted} を読めなかった。[/]")
+            return
+        console.print()
+        console.print(f"[bold]{wanted} の列（全 {len(found.columns)}）[/] [dim]{keys[0]}[/]")
+        for index, name in enumerate(found.columns, start=1):
+            console.print(f"  {index:2}. {name}")
+
     if not shapes:
         return
 
@@ -3188,24 +3206,6 @@ def jquants_archive_read(
                 columns,
             )
     console.print(forms)
-
-    if columns_of:
-        # **切らずに出す。** 読み口を作るには全部の列が要る。配布サンプルの
-        # 無いエンドポイント（`/equities/valuation`）は、ここでしか列を知れない。
-        wanted = "/" + columns_of.strip().lstrip("/")
-        keys = samples_per_endpoint(target).get(wanted, ())
-        if not keys:
-            console.print(f"[yellow]{wanted} の原本が無い。[/]")
-            console.print("[dim]  上の表に出ている名前をそのまま渡すこと。[/]")
-            return
-        found = archive_shape(target, keys[0])
-        if found is None:
-            console.print(f"[yellow]{wanted} を読めなかった。[/]")
-            return
-        console.print()
-        console.print(f"[bold]{wanted} の列（全 {len(found.columns)}）[/] [dim]{keys[0]}[/]")
-        for index, name in enumerate(found.columns, start=1):
-            console.print(f"  {index:2}. {name}")
 
 
 @app.command(name="jquants-daily-rosters")
