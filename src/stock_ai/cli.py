@@ -3087,6 +3087,9 @@ def jquants_archive_read(
     shapes: bool = typer.Option(
         True, "--shapes/--no-shapes", help="Also show one file's columns per endpoint."
     ),
+    columns_of: str | None = typer.Option(
+        None, "--columns", help="Print every column of this endpoint, one per line."
+    ),
 ) -> None:
     """Read every archived original through its parser and count the rows.
 
@@ -3169,7 +3172,11 @@ def jquants_archive_read(
             if found is None:
                 continue
             span = f"{found.first_date} 〜 {found.last_date}" if found.first_date else "—"
-            columns = ", ".join(found.columns[:5]) + ("…" if len(found.columns) > 5 else "")
+            # **表では5列で切る。** 20列を横に並べると表が壊れる。全部見たい
+            # ときは `--columns` を渡す——**読み口を作るには全部要る。**
+            columns = ", ".join(found.columns[:5]) + (
+                f"… (全 {len(found.columns)} 列)" if len(found.columns) > 5 else ""
+            )
             # **月次か日次かを名前で出す。** 1本が何日ぶんかで、20年の本数が
             # 20倍変わる。
             kind = next((name for name in ("historical", "live") if f"/{name}/" in key), "—")
@@ -3181,6 +3188,24 @@ def jquants_archive_read(
                 columns,
             )
     console.print(forms)
+
+    if columns_of:
+        # **切らずに出す。** 読み口を作るには全部の列が要る。配布サンプルの
+        # 無いエンドポイント（`/equities/valuation`）は、ここでしか列を知れない。
+        wanted = "/" + columns_of.strip().lstrip("/")
+        keys = samples_per_endpoint(target).get(wanted, ())
+        if not keys:
+            console.print(f"[yellow]{wanted} の原本が無い。[/]")
+            console.print("[dim]  上の表に出ている名前をそのまま渡すこと。[/]")
+            return
+        found = archive_shape(target, keys[0])
+        if found is None:
+            console.print(f"[yellow]{wanted} を読めなかった。[/]")
+            return
+        console.print()
+        console.print(f"[bold]{wanted} の列（全 {len(found.columns)}）[/] [dim]{keys[0]}[/]")
+        for index, name in enumerate(found.columns, start=1):
+            console.print(f"  {index:2}. {name}")
 
 
 @app.command(name="jquants-daily-rosters")
