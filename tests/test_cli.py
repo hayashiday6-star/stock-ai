@@ -1056,24 +1056,24 @@ class TestPickingTheOldestArchivedFile:
     """
 
     def test_a_month_becomes_the_first_of_that_month(self) -> None:
-        from stock_ai.cli import _key_period
+        from stock_ai.data.jquants_archive import key_period
 
-        assert _key_period("equities/bars/daily/historical/eq_bars_200805.csv.gz") == "20080501"
+        assert key_period("equities/bars/daily/historical/eq_bars_200805.csv.gz") == "20080501"
 
     def test_a_day_stays_as_it_is(self) -> None:
-        from stock_ai.cli import _key_period
+        from stock_ai.data.jquants_archive import key_period
 
-        assert _key_period("equities/bars/daily/live/eq_bars_20260914.csv.gz") == "20260914"
+        assert key_period("equities/bars/daily/live/eq_bars_20260914.csv.gz") == "20260914"
 
     def test_a_year_folder_does_not_win_over_the_filename(self) -> None:
         """**ここが本番。** `2021/` の `2` が `equities...` の `e` より前に来る。"""
-        from stock_ai.cli import _key_period
+        from stock_ai.data.jquants_archive import key_period
 
         old = "equities/bars/daily/historical/2021/equities_bars_daily_202109.csv.gz"
         new = "equities/bars/daily/historical/equities_bars_daily_200805.csv.gz"
 
         assert sorted([old, new])[0] == old, "文字列の並びでは新しいほうが前に来る"
-        assert _key_period(new) < _key_period(old)
+        assert key_period(new) < key_period(old)
 
     def test_six_and_eight_digits_compare_correctly(self) -> None:
         """**6桁と8桁を、数のまま比べない。** 桁が違うと大小が逆になる。
@@ -1081,25 +1081,25 @@ class TestPickingTheOldestArchivedFile:
         `202612`（2026年12月）と `20080501`（2008-05-01）を数として比べると
         前者のほうが小さく、**2026年が2008年より前**になる。
         """
-        from stock_ai.cli import _key_period
+        from stock_ai.data.jquants_archive import key_period
 
         assert int("202612") < int("20080501")  # 素朴に比べると逆になる
 
-        later = _key_period("x_202612.csv.gz")
-        earlier = _key_period("x_20080501.csv.gz")
+        later = key_period("x_202612.csv.gz")
+        earlier = key_period("x_20080501.csv.gz")
 
         assert earlier < later
 
     def test_a_key_without_digits_does_not_raise(self) -> None:
-        from stock_ai.cli import _key_period
+        from stock_ai.data.jquants_archive import key_period
 
-        assert _key_period("equities/bars/daily/live/latest.csv.gz") == ""
+        assert key_period("equities/bars/daily/live/latest.csv.gz") == ""
 
     def test_the_last_run_of_digits_wins(self) -> None:
         """年フォルダではなく、**ファイル名側の日付**を採る。"""
-        from stock_ai.cli import _key_period
+        from stock_ai.data.jquants_archive import key_period
 
-        assert _key_period("a/2021/b_200805.csv.gz") == "20080501"
+        assert key_period("a/2021/b_200805.csv.gz") == "20080501"
 
 
 class TestRefetchingExactlyWhatIsOnDisk:
@@ -1290,3 +1290,225 @@ class TestSayingWhetherItIsSafeToDowngrade:
         from stock_ai.data.jquants_plan import MINIMUM_PLAN
 
         assert set(ARCHIVE_ENDPOINTS) <= set(MINIMUM_PLAN)
+
+
+class _RecordingUniverse:
+    """`JQuantsUniverse` の代わり。**どの日付で作られたかだけを覚える。**"""
+
+    asked: list = []
+
+    def __init__(self, api_key=None, as_of=None) -> None:
+        type(self).asked.append(as_of)
+
+    def profiles(self, _segment):
+        from stock_ai.data.universe import SecurityProfile
+
+        return [SecurityProfile(symbol="1301", market="JP", name="A", lending="貸借")]
+
+
+class _HarvestFixture:
+    """名簿を置いた場所と、取りに行かせない仕掛けを作る。"""
+
+    def _prepare(self, tmp_path, monkeypatch, saved):
+        from stock_ai.data.delisted import write_snapshot
+        from stock_ai.data.universe import SecurityProfile
+
+        for on, lending in saved.items():
+            write_snapshot(
+                tmp_path,
+                on,
+                [SecurityProfile(symbol="1301", market="JP", name="A", lending=lending)],
+            )
+        _RecordingUniverse.asked = []
+        monkeypatch.setattr("stock_ai.cli.JQuantsUniverse", _RecordingUniverse)
+        monkeypatch.setenv("JQUANTS_PLAN", "Premium")
+
+    def _run(self, tmp_path, *flags):
+        from typer.testing import CliRunner
+
+        from stock_ai.cli import app
+
+        return CliRunner().invoke(app, ["delisted-harvest", "--dir", str(tmp_path), *flags])
+
+
+class TestRefetchingExactlyWhatIsStored(_HarvestFixture):
+    """`checks\\名簿を同じ規則で揃える.bat` が渡す `-Existing -NoPrices`。
+
+    **`--refetch` だけでは、日付がプランから引き直される。** Premium に上げた
+    日にそれをやって、66枚を揃えるつもりが 2006-09-20 からの245枚を新しく
+    作った（2026-09-15）。揃えるどころか、規則の混ざり方が増えた。
+
+    `--existing` は**保存済みの日付だけ**を見る。グリッドを回さない。
+    """
+
+    def test_only_the_saved_dates_are_requested(self, tmp_path, monkeypatch) -> None:
+        import datetime as dt
+
+        saved = {dt.date(2021, 9, 6): "貸借", dt.date(2026, 9, 3): "貸借"}
+        self._prepare(tmp_path, monkeypatch, saved)
+
+        result = self._run(tmp_path, "--existing", "--no-prices")
+
+        assert result.exit_code == 0, result.output
+        assert set(_RecordingUniverse.asked) == set(saved), _RecordingUniverse.asked
+
+    def test_the_plan_window_does_not_add_dates(self, tmp_path, monkeypatch) -> None:
+        """**日付は増えない。** ここが `--refetch` との違いそのものである。"""
+        import datetime as dt
+
+        self._prepare(tmp_path, monkeypatch, {dt.date(2021, 9, 6): "貸借"})
+
+        self._run(tmp_path, "--existing", "--no-prices")
+
+        assert len(_RecordingUniverse.asked) == 1, _RecordingUniverse.asked
+
+    def test_nothing_stored_means_nothing_requested(self, tmp_path, monkeypatch) -> None:
+        self._prepare(tmp_path, monkeypatch, {})
+
+        result = self._run(tmp_path, "--existing", "--no-prices")
+
+        assert _RecordingUniverse.asked == []
+        assert "取り直す相手がいない" in result.output
+
+
+class TestRefetchingOnlyTheRostersMissingLending(_HarvestFixture):
+    """`checks\\貸借区分を取り直す.bat` が渡す `-FillLending -NoPrices`。
+
+    **取り直す対象を日付グリッドで決めない。** 日次で書かれる名簿は30日刻みに
+    乗らないので、グリッドで回すと取り残される。実際、63件を取り直したあとに
+    直近3日ぶんだけが残った。
+    """
+
+    def test_only_the_dates_without_lending_are_requested(self, tmp_path, monkeypatch) -> None:
+        import datetime as dt
+
+        missing, present = dt.date(2026, 9, 3), dt.date(2026, 9, 4)
+        self._prepare(tmp_path, monkeypatch, {missing: None, present: "貸借"})
+
+        result = self._run(tmp_path, "--fill-lending", "--no-prices")
+
+        assert result.exit_code == 0, result.output
+        assert _RecordingUniverse.asked == [missing], _RecordingUniverse.asked
+
+    def test_a_date_off_the_thirty_day_grid_is_still_picked_up(self, tmp_path, monkeypatch) -> None:
+        """**グリッドに乗らない日付こそが、取り残された3日ぶんだった。**"""
+        import datetime as dt
+
+        odd = dt.date(2026, 9, 11)
+        self._prepare(tmp_path, monkeypatch, {odd: None})
+
+        self._run(tmp_path, "--fill-lending", "--no-prices")
+
+        assert _RecordingUniverse.asked == [odd]
+
+    def test_nothing_missing_means_nothing_requested(self, tmp_path, monkeypatch) -> None:
+        import datetime as dt
+
+        self._prepare(tmp_path, monkeypatch, {dt.date(2026, 9, 4): "貸借"})
+
+        result = self._run(tmp_path, "--fill-lending", "--no-prices")
+
+        assert _RecordingUniverse.asked == []
+        assert "取りに行かない" in result.output
+
+
+class TestLoadingASegmentWithALimit:
+    """`3-データ取得.bat` が渡す `-Segment growth -Limit 20`。
+
+    `.ps1` はこれを `universe --segment growth --limit 20` に組み立てる。
+    **片方がもう片方を消してはいけない。** 消えても例外は出ず、prime を取り
+    込んだのに growth のつもりでいる、という形になる。
+    """
+
+    class _Recording:
+        name = "test"
+        asked: list = []
+
+        def profiles(self, segment, limit=None):
+            from stock_ai.data.universe import SecurityProfile
+
+            type(self).asked.append((segment, limit))
+            return [SecurityProfile(symbol="1301", market="JP", name="A")]
+
+    def _run(self, monkeypatch, *flags):
+        from typer.testing import CliRunner
+
+        from stock_ai.cli import app
+
+        self._Recording.asked = []
+        monkeypatch.setattr("stock_ai.cli._universe_source", lambda *_a, **_k: self._Recording())
+        return CliRunner().invoke(app, ["universe", "--no-store", *flags])
+
+    def test_both_the_segment_and_the_limit_arrive(self, monkeypatch) -> None:
+        from stock_ai.data.universe import Segment
+
+        result = self._run(monkeypatch, "--segment", "growth", "--limit", "20")
+
+        assert result.exit_code == 0, result.output
+        assert self._Recording.asked == [(Segment.GROWTH, 20)]
+
+    def test_the_limit_does_not_fall_back_to_the_default_segment(self, monkeypatch) -> None:
+        """**ここが消えると、prime を取り込んで growth のつもりになる。**"""
+        from stock_ai.data.universe import Segment
+
+        self._run(monkeypatch, "--segment", "growth", "--limit", "20")
+
+        assert self._Recording.asked[0][0] is not Segment.PRIME
+
+    def test_the_segment_does_not_drop_the_limit(self, monkeypatch) -> None:
+        self._run(monkeypatch, "--segment", "growth", "--limit", "20")
+
+        assert self._Recording.asked[0][1] == 20
+
+
+class TestRunningPeadWithASurpriseMeasure:
+    """`research\\SUE検証(IS).bat` が渡す `-Period is -Surprise sue`。
+
+    **この2つが揃って効かないと、別の事前登録を回したことになる。**
+    `docs/PREREG_SUE_JP.md` と `docs/PREREG_PEAD_JP.md` は、並べ替えに使う
+    変数**だけ**が違う。`--surprise` が黙って既定に落ちれば、SUE のつもりで
+    reaction を回し、**その判定を SUE の判定として記録する。**
+
+    判定は一度きりの資源である。取り違えは取り返しが付かない。
+
+    **モックではなく出力を見る。** 最初は `build_events` を差し替えたが、
+    関数の中で import されているので差し替わらず、**空の辞書を素通しして
+    通っていた。** 通ったこと自体が嘘だった。出力の1行目は、どちらの登録を
+    回したかをそのまま言っている。
+    """
+
+    def _run(self, *args):
+        from typer.testing import CliRunner
+
+        from stock_ai.cli import app
+
+        return CliRunner().invoke(app, ["pead-run", *args])
+
+    def test_the_surprise_picks_the_registration_it_names(self) -> None:
+        result = self._run("is", "--surprise", "sue")
+
+        assert result.exit_code == 0, result.output
+        assert "PREREG_SUE_JP.md" in result.output, result.output
+
+    def test_the_default_names_the_other_registration(self) -> None:
+        """**既定は reaction である。** 上のテストが何を示すかは、この対比で決まる。"""
+        result = self._run("is")
+
+        assert "PREREG_PEAD_JP.md" in result.output, result.output
+
+    def test_the_period_is_echoed_so_a_silent_switch_would_show(self) -> None:
+        result = self._run("is", "--surprise", "sue")
+
+        assert "期間: is" in result.output, result.output
+
+    def test_an_unknown_surprise_is_refused_rather_than_defaulted(self) -> None:
+        """**知らない綴りを既定に倒さない。** 倒すと、打ち間違いが黙って通る。"""
+        result = self._run("is", "--surprise", "suee")
+
+        assert result.exit_code != 0
+
+    def test_the_oos_period_needs_the_extra_flag(self) -> None:
+        """判定は一度きり。**うっかり回せないこと。**"""
+        result = self._run("oos", "--surprise", "sue")
+
+        assert result.exit_code != 0

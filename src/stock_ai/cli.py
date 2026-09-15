@@ -10,7 +10,6 @@ import contextlib
 import datetime as dt
 import hashlib
 import math
-import re
 import shutil
 import sys
 import time
@@ -195,7 +194,12 @@ from stock_ai.data.delisted import (
     stored_dates,
 )
 from stock_ai.data.fx import FxConverter
-from stock_ai.data.jquants_archive import DEFAULT_ARCHIVE_DIR, path_for, read_manifest
+from stock_ai.data.jquants_archive import (
+    DEFAULT_ARCHIVE_DIR,
+    key_period,
+    path_for,
+    read_manifest,
+)
 from stock_ai.data.jquants_archive import archive as archive_bulk
 from stock_ai.data.jquants_archive import orphans as archive_orphans
 from stock_ai.data.jquants_archive import verify as verify_archive
@@ -3659,28 +3663,6 @@ def jquants_bulk_prices(
         )
 
 
-def _key_period(key: str) -> str:
-    """Return a sortable YYYYMMDD taken from the digits in an archive key.
-
-    **名前の並び順で「いちばん古いファイル」を決めてはいけない。**
-
-    2026-09-15 に実際にずれた。20年ぶんを入れたのに、原本の覆う期間が
-    `2021-09-01 〜` と出た。Light の頃に取ったファイルと、Premium で取った
-    ファイルで**鍵の形が違う**ためで、文字列で並べると新しいほうが前に来た。
-
-    **向こうの名前の付け方は、こちらの都合では決まらない。** 数字を拾って
-    並べれば、区切りの位置が変わっても順番は変わらない。
-
-    6桁は `YYYYMM` として月初に寄せる。**8桁と6桁をそのまま比べない**——
-    `202109` と `20260914` を数として比べると、前者のほうが小さくなる。
-    """
-    runs = re.findall(r"\d{6,8}", key)
-    if not runs:
-        return ""
-    period = runs[-1]
-    return period if len(period) == 8 else f"{period[:6]}01"
-
-
 def _archive_window(directory: Path) -> tuple[dt.date, dt.date, str, str] | None:
     """Return the first and last date the archived bars cover, with the keys used.
 
@@ -3694,7 +3676,7 @@ def _archive_window(directory: Path) -> tuple[dt.date, dt.date, str, str] | None
     keys = [key for key in read_manifest(directory) if endpoint_of(key) == BARS_ENDPOINT]
     if not keys:
         return None
-    ordered = sorted(keys, key=lambda key: (_key_period(key), key))
+    ordered = sorted(keys, key=lambda key: (key_period(key), key))
     first = archive_shape(directory, ordered[0])
     last = archive_shape(directory, ordered[-1])
     if first is None or last is None or not first.first_date or not last.last_date:

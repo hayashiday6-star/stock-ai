@@ -19,10 +19,9 @@
 from __future__ import annotations
 
 import dataclasses
-import re
 from pathlib import Path
 
-from stock_ai.data.jquants_archive import DEFAULT_ARCHIVE_DIR, read_manifest
+from stock_ai.data.jquants_archive import DEFAULT_ARCHIVE_DIR, key_period, read_manifest
 from stock_ai.data.jquants_bulk import ARCHIVE_ENDPOINTS
 from stock_ai.data.jquants_read import endpoint_of
 
@@ -117,26 +116,6 @@ def archivable(plan: str, endpoint: str) -> bool:
     if plan == "Free":
         return endpoint in FREE_BULK_ALLOWED
     return True
-
-
-_PERIOD = re.compile(r"\d{6,8}")
-
-
-def key_period(key: str) -> str:
-    """原本の鍵から、並べ替えに使える ``YYYYMMDD`` を取る。無ければ空文字。
-
-    **名前の並び順で「いちばん古いファイル」を決めない。** 鍵の形はプランで
-    変わる（Light の `.../historical/2021/...` と Premium の
-    `.../premium/historical/2008/...`）ので、文字列で並べると新しいほうが前に
-    来る。実際そうなった（2026-09-15）。
-
-    6桁は ``YYYYMM`` として月初に寄せる。**8桁と6桁をそのまま比べない。**
-    """
-    runs = _PERIOD.findall(key)
-    if not runs:
-        return ""
-    period = runs[-1]
-    return period if len(period) == 8 else f"{period[:6]}01"
 
 
 @dataclasses.dataclass

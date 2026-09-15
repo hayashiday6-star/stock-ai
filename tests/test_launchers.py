@@ -30,6 +30,18 @@ DERIVED_FROM_SETTINGS = [
 ]
 
 
+#:  の中で、実際に PowerShell を起動している行。**echo の中は拾わない。**
+_INVOCATION = re.compile(r'^\s*powershell\b.*?-File\s+"([^"]+)"(.*)$', re.IGNORECASE)
+
+#: その行で固定している引数（`-Foo`）。`%*` や `%VAR%` は引数ではない。
+_SWITCH = re.compile(r'(?<![\w"])-([A-Za-z][A-Za-z0-9]*)')
+
+#: `.ps1` の param() が宣言している引数名。
+_PARAMETER = re.compile(
+    r"^\s*\[?[A-Za-z\[\]]*\]?\s*\$([A-Za-z][A-Za-z0-9]*)\s*(?:=|,|\))", re.MULTILINE
+)
+
+
 def _scripts_dir() -> pathlib.Path:
     return pathlib.Path(__file__).resolve().parent.parent / "scripts"
 
@@ -407,3 +419,133 @@ class TestGitOutputIsReadAsUtf8:
 
         assert len(sections) >= 2, f"見出しが1つしかない: {sections}"
         assert any("商品区分" in line for line in sections)
+
+
+# ---------------------------------------------------------------------------
+# .bat が固定している引数を、機械に数えさせる
+# ---------------------------------------------------------------------------
+#
+# **上の検査は、こちらが名前を書いたスクリプトしか見ていない。** 書き忘れた
+# ものは、検査があること自体が理由になって「見たつもり」になる。
+#
+# 2026-09-15 にそれが出た。`checks\この原本の列を全部見る.bat` は
+# `-NoShapes -Columns` を渡すが、CLI 側の `--columns` の処理が `-NoShapes` の
+# 早期 return の**後ろ**にあり、**列が1行も出なかった。** `.bat` を書いたのも
+# CLI を書いたのも同じ側（こちら）なのに、**その組み合わせを一度も実行して
+# いなかった。**
+#
+# 一覧を手で持つのをやめる。`.bat` を全部読んで、固定している引数を数える。
+
+
+def _invocation(body: str) -> tuple[str, list[str]] | None:
+    """`.bat` が呼んでいる `.ps1` と、固定している引数。呼んでいなければ None。
+
+    **`echo` の中の行を拾わない。** `.bat` は使い方の説明として同じ形の行を
+    印字することがある。実行しているのは行頭から始まる行だけである。
+    """
+    for line in body.splitlines():
+        found = _INVOCATION.match(line)
+        if found:
+            script = pathlib.PurePath(found.group(1).replace("\\", "/")).name
+            switches = _SWITCH.findall(found.group(2))
+            return script, switches
+    return None
+
+
+def _launchers() -> dict[str, tuple[str, list[str]]]:
+    """`.bat` の名前 → (呼んでいる `.ps1`, 固定している引数)。
+
+    **再帰的に見る。** 直下だけを見る glob に戻すと、`checks/` と `research/`
+    の `.bat` が黙って検査対象から外れる。
+    """
+    root = pathlib.Path(__file__).resolve().parent.parent
+    found = {}
+    for path in sorted(root.glob("*.bat")) + sorted(root.glob("*/*.bat")):
+        invocation = _invocation(path.read_text(encoding="ascii", errors="replace"))
+        if invocation is not None:
+            found[path.relative_to(root).as_posix()] = invocation
+    return found
+
+
+#: 引数を2つ以上固定している `.bat` と、その**組み合わせを実際に動かしている**
+#: テストの名前。
+#:
+#: **ここが仕組みの本体である。** 引数を2つ以上固定した `.bat` を足すと、この
+#: 表に書くまでテストが落ちる。書くには、動かすテストを先に用意することになる。
+#:
+#: 引数が1つなら要らない。**効き目が消えるのは、片方がもう片方を打ち消すとき
+#: だけ**だからである。
+COMBINATIONS_EXERCISED: dict[str, str] = {
+    "3-データ取得.bat": "TestLoadingASegmentWithALimit",
+    "checks/この原本の列を全部見る.bat": "TestAskingForColumnsIsNotSilencedByNoShapes",
+    "checks/名簿を同じ規則で揃える.bat": "TestRefetchingExactlyWhatIsStored",
+    "checks/貸借区分を取り直す.bat": "TestRefetchingOnlyTheRostersMissingLending",
+    "research/SUE検証(IS).bat": "TestRunningPeadWithASurpriseMeasure",
+}
+
+
+class TestEveryLauncherIsWiredToSomethingThatExists:
+    """**呼び先が無い `.bat` は、押した人にしか分からない。**"""
+
+    def test_every_bat_names_a_script_that_is_there(self) -> None:
+        missing = {
+            bat: script
+            for bat, (script, _) in _launchers().items()
+            if not (_scripts_dir() / script).is_file()
+        }
+        assert not missing, missing
+
+    def test_a_bat_in_a_subfolder_climbs_out_first(self) -> None:
+        """直下用のパスのまま移すと動かない。**押すまで分からない。**"""
+        root = pathlib.Path(__file__).resolve().parent.parent
+        for bat in _launchers():
+            if "/" not in bat:
+                continue
+            body = (root / bat).read_text(encoding="ascii", errors="replace")
+            assert 'cd /d "%~dp0.."' in body, f"{bat} が親へ移っていない"
+            assert "%~dp0..\\scripts\\" in body, f"{bat} のパスが直下用のまま"
+
+    def test_every_pinned_switch_is_a_real_parameter(self) -> None:
+        """`.ps1` が受け取らない引数を渡していないこと。
+
+        PowerShell は知らない引数で止まるので**これは大声で落ちる**側だが、
+        引数の綴りを変えたときに `.bat` を直し忘れるのは静かに起きる。
+        """
+        wrong = {}
+        for bat, (script, switches) in _launchers().items():
+            declared = {name.lower() for name in _PARAMETER.findall(_text(script))}
+            for switch in switches:
+                if switch.lower() not in declared:
+                    wrong[f"{bat} -> {script}"] = switch
+        assert not wrong, wrong
+
+
+class TestACombinationIsNeverShippedUnexercised:
+    """**引数を2つ固定したなら、その2つを一緒に動かしたテストが要る。**
+
+    `-NoShapes` と `-Columns` は、片方ずつなら両方とも正しく動いていた。
+    **一緒に渡したときだけ、後から来たほうが消えた。**
+    """
+
+    def _multi(self) -> set[str]:
+        return {bat for bat, (_, switches) in _launchers().items() if len(switches) >= 2}
+
+    def test_the_registry_matches_what_the_bats_actually_pin(self) -> None:
+        """一覧と実物がずれていないこと。**ずれたら、どちらかが嘘である。**"""
+        assert self._multi() == set(COMBINATIONS_EXERCISED), {
+            "登録が無い": sorted(self._multi() - set(COMBINATIONS_EXERCISED)),
+            "実物が無い": sorted(set(COMBINATIONS_EXERCISED) - self._multi()),
+        }
+
+    def test_each_named_test_exists(self) -> None:
+        """名前を書くだけでは足りない。**そのテストが在ること。**"""
+        bodies = "\n".join(
+            path.read_text(encoding="utf-8")
+            for path in sorted(pathlib.Path(__file__).resolve().parent.glob("test_*.py"))
+        )
+        missing = [
+            f"{bat} -> {name}"
+            for bat, name in COMBINATIONS_EXERCISED.items()
+            if f"class {name}" not in bodies
+        ]
+        assert not missing, missing

@@ -51,6 +51,7 @@ import csv
 import dataclasses
 import datetime as dt
 import hashlib
+import re
 import time
 from collections.abc import Callable
 from pathlib import Path
@@ -358,6 +359,36 @@ def _fetch_with_backoff(
 #: **ファイル1本を丸ごとメモリに載せない。** いまの最大は十数MBなので載せても
 #: 通るが、分足やティックを足すと1本が大きくなる。**そのとき落ちるのではなく、
 #: 落ちる前に遅くなって気付けなくなる。**
+_PERIOD = re.compile(r"\d{6,8}")
+
+
+def key_period(key: str) -> str:
+    """鍵から、並べ替えに使える ``YYYYMMDD`` を取る。無ければ空文字。
+
+    **名前の並び順で「いちばん古いファイル」を決めてはいけない。**
+
+    2026-09-15 に実際にずれた。20年ぶんを入れたのに、原本の覆う期間が
+    `2021-09-01 〜` と出た。Light の頃に取ったファイルと、Premium で取った
+    ファイルで**鍵の形が違う**（`historical/2021` と `premium/historical/2008`）
+    ためで、文字列で並べると新しいほうが前に来た。
+
+    **向こうの名前の付け方は、こちらの都合では決まらない。** 数字を拾って
+    並べれば、区切りの位置が変わっても順番は変わらない。
+
+    6桁は ``YYYYMM`` として月初に寄せる。**8桁と6桁をそのまま比べない**——
+    ``202109`` と ``20260914`` を数として比べると、前者のほうが小さくなる。
+
+    **ここが正本である。** 同じ処理を呼ぶ側で書き直さないこと。一度2つに
+    なったことがあり（`cli._key_period` と `jquants_plan.key_period`）、
+    片方だけ直したときに気付ける手立てが無かった。
+    """
+    runs = _PERIOD.findall(key)
+    if not runs:
+        return ""
+    period = runs[-1]
+    return period if len(period) == 8 else f"{period[:6]}01"
+
+
 HASH_CHUNK = 1024 * 1024
 
 

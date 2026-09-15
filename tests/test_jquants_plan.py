@@ -24,7 +24,6 @@ from stock_ai.data.jquants_plan import (
     archivable,
     coverage,
     covers,
-    key_period,
 )
 
 ENDPOINTS = ("/equities/master", "/fins/details", "/markets/calendar")
@@ -82,29 +81,6 @@ class TestFreeIsNotJustTheBottomOfTheOrder:
     def test_light_can_archive_what_it_can_reach(self) -> None:
         assert archivable("Light", "/equities/master")
         assert not archivable("Light", "/fins/details")
-
-
-class TestOrderingKeysByTheDigitsInThem:
-    """鍵の形はプランで変わる。**文字列で並べない。**"""
-
-    def test_a_six_digit_month_is_pushed_to_the_first_of_the_month(self) -> None:
-        assert key_period("fins/summary/historical/2021/fins_summary_202109.csv.gz") == "20210901"
-
-    def test_an_eight_digit_day_is_kept(self) -> None:
-        assert key_period("equities/bars/daily/live/equities_bars_daily_20260914.csv.gz") == (
-            "20260914"
-        )
-
-    def test_the_premium_path_segment_does_not_reorder_the_oldest_file(self) -> None:
-        # 2026-09-15 に実際にずれた。`premium/historical/2008` と
-        # `historical/2021` を文字列で並べると、新しいほうが前に来る。
-        old = "equities/bars/daily/premium/historical/2008/equities_bars_daily_200805.csv.gz"
-        new = "equities/bars/daily/historical/2021/equities_bars_daily_202109.csv.gz"
-        assert sorted([new, old])[0] == new
-        assert min(key_period(old), key_period(new)) == key_period(old)
-
-    def test_a_key_with_no_digits_sorts_first_rather_than_crashing(self) -> None:
-        assert key_period("markets/calendar/calendar.csv.gz") == ""
 
 
 class TestCountingWhatIsActuallyOnDisk:
