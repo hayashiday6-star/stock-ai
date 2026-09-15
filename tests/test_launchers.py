@@ -372,3 +372,16 @@ class TestGitOutputIsReadAsUtf8:
         ]
 
         assert bare == [], f"素の git 呼び出しが残っている: {bare}"
+
+    def test_a_shared_script_says_which_job_it_is_doing(self) -> None:
+        """**同じ .ps1 を2つの .bat から使い回している。**
+
+        切り替えないと、`この商品区分は何か` を回したのに「絞り込みは20年でも
+        持つか」と出る（2026-09-15 に報告）。**名前と見出しが食い違うと、
+        違うものを実行したかと思う。**
+        """
+        body = _text("filter-census.ps1")
+        sections = [line for line in body.splitlines() if "Write-Section" in line]
+
+        assert len(sections) >= 2, f"見出しが1つしかない: {sections}"
+        assert any("商品区分" in line for line in sections)

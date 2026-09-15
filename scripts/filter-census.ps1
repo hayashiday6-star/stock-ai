@@ -63,10 +63,21 @@ Show-Version
 
 if (-not (Test-UvInstalled)) { Exit-WithPause 1 }
 
-Write-Section '絞り込みは20年でも持つか'
-Write-Host '`S33` が空の行と、公式にも無い符号を、年ごとに数えます。' -ForegroundColor DarkGray
-Write-Host '向きが逆の2つなので、同じ数に混ぜません。' -ForegroundColor DarkGray
-Write-Host '20年ぶんを取った日に比べるための基準線です。API は叩きません。' -ForegroundColor DarkGray
+# **見出しは、やっていることに合わせる。** 同じ .ps1 を2つの .bat から使い
+# 回しているので、切り替えないと「この商品区分は何か」を回したのに
+# 「絞り込みは20年でも持つか」と出る（2026-09-15 に報告）。
+if ($Product -ne '') {
+    Write-Section ('商品区分 {0} の中身' -f $Product)
+    Write-Host 'その値を持つ銘柄を、名前つきで並べます。' -ForegroundColor DarkGray
+    Write-Host '絞り込みの基準線も同じ実行で出ます（原本を1周読むので）。' -ForegroundColor DarkGray
+}
+else {
+    Write-Section '絞り込みは20年でも持つか'
+    Write-Host '`S33` が空の行と、公式にも無い符号を、年ごとに数えます。' -ForegroundColor DarkGray
+    Write-Host '向きが逆の2つなので、同じ数に混ぜません。' -ForegroundColor DarkGray
+    Write-Host '20年ぶんを取った日に比べるための基準線です。' -ForegroundColor DarkGray
+}
+Write-Host 'API は叩きません。' -ForegroundColor DarkGray
 Write-Host ''
 
 $arguments = @('run', 'stock-ai', 'jquants-filter-census')
