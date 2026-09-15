@@ -1,0 +1,2330 @@
+symbol,name,sector,industry,lending
+1301,極洋,Materials,水産・農林業,貸借
+1332,日本水産,Materials,水産・農林業,貸借
+1334,マルハニチロホールディングス,Materials,水産・農林業,貸借
+1352,ホウスイ,Industrials,卸売業,信用
+1377,サカタのタネ,Materials,水産・農林業,貸借
+1378,雪国まいたけ,Materials,水産・農林業,貸借
+1379,ホクト,Materials,水産・農林業,貸借
+1405,サーラ住宅,Industrials,建設業,信用
+1412,チャイナ・ボーチー・エンバイロメンタル・ソリューションズ・テクノロジー（ホールディング）カンパニー・リミテッド,Industrials,建設業,貸借
+1414,ショーボンドホールディングス,Industrials,建設業,貸借
+1491,中外鉱業,Materials,非鉄金属,信用
+1514,住石ホールディングス,Energy,鉱業,貸借
+1515,日鉄鉱業,Energy,鉱業,貸借
+1518,三井松島産業,Energy,鉱業,貸借
+1605,国際石油開発帝石,Energy,鉱業,貸借
+1606,日本海洋掘削,Energy,鉱業,信用
+1661,関東天然瓦斯開発,Energy,鉱業,貸借
+1662,石油資源開発,Energy,鉱業,貸借
+1701,昭和ＫＤＥ,Technology,電気機器,貸借
+1711,省電舎,Industrials,建設業,その他
+1712,ダイセキ環境ソリューション,Industrials,建設業,貸借
+1719,間組,Industrials,建設業,貸借
+1720,東急建設,Industrials,建設業,貸借
+1721,コムシスホールディングス,Industrials,建設業,貸借
+1722,ミサワホーム,Industrials,建設業,貸借
+1726,ビーアールホールディングス,Industrials,建設業,その他
+1737,三井金属エンジニアリング,Industrials,建設業,その他
+1742,セコムテクノサービス,Industrials,建設業,信用
+1762,高松コンストラクショングループ,Industrials,建設業,信用
+1764,工藤建設,Industrials,建設業,その他
+1766,東建コーポレーション,Industrials,建設業,貸借
+1767,沖ウィンテック,Industrials,建設業,信用
+1773,ワイ・ティー・エル・コーポレーション・バーハッド,Industrials,建設業,その他
+1775,富士古河Ｅ＆Ｃ,Industrials,建設業,信用
+1776,三井住建道路,Industrials,建設業,信用
+1780,ヤマウラ,Industrials,建設業,貸借
+1801,大成建設,Industrials,建設業,貸借
+1802,大林組,Industrials,建設業,貸借
+1803,清水建設,Industrials,建設業,貸借
+1805,飛島建設,Industrials,建設業,貸借
+1808,長谷工コーポレーション,Industrials,建設業,貸借
+1810,松井建設,Industrials,建設業,貸借
+1812,鹿島建設,Industrials,建設業,貸借
+1813,不動テトラ,Industrials,建設業,貸借
+1814,大末建設,Industrials,建設業,貸借
+1815,鉄建建設,Industrials,建設業,貸借
+1816,安藤建設,Industrials,建設業,貸借
+1819,太平工業,Industrials,建設業,貸借
+1820,西松建設,Industrials,建設業,貸借
+1821,三井住友建設,Industrials,建設業,貸借
+1822,大豊建設,Industrials,建設業,貸借
+1824,前田建設工業,Industrials,建設業,貸借
+1826,佐田建設,Industrials,建設業,貸借
+1827,ナカノフドー建設,Industrials,建設業,貸借
+1828,田辺工業,Industrials,建設業,信用
+1833,奥村組,Industrials,建設業,貸借
+1834,大和小田急建設,Industrials,建設業,信用
+1835,東鉄工業,Industrials,建設業,貸借
+1840,土屋ホールディングス,Industrials,建設業,貸借
+1844,大盛工業,Industrials,建設業,その他
+1846,鈴縫工業,Industrials,建設業,その他
+1847,イチケン,Industrials,建設業,信用
+1852,淺沼組,Industrials,建設業,貸借
+1860,戸田建設,Industrials,建設業,貸借
+1861,熊谷組,Industrials,建設業,貸借
+1865,青木あすなろ建設,Industrials,建設業,信用
+1866,北野建設,Industrials,建設業,貸借
+1867,植木組,Industrials,建設業,貸借
+1868,三井ホーム,Industrials,建設業,貸借
+1870,矢作建設工業,Industrials,建設業,貸借
+1871,ピーエス三菱,Industrials,建設業,信用
+1878,大東建託,Industrials,建設業,貸借
+1879,新日本建設,Industrials,建設業,貸借
+1881,ＮＩＰＰＯ,Industrials,建設業,貸借
+1882,東亜道路工業,Industrials,建設業,貸借
+1883,前田道路,Industrials,建設業,貸借
+1884,日本道路,Industrials,建設業,貸借
+1885,東亜建設工業,Industrials,建設業,貸借
+1888,若築建設,Industrials,建設業,貸借
+1890,東洋建設,Industrials,建設業,貸借
+1893,五洋建設,Industrials,建設業,貸借
+1896,大林道路,Industrials,建設業,貸借
+1898,世紀東急工業,Industrials,建設業,信用
+1899,福田組,Industrials,建設業,貸借
+1907,東北ミサワホーム,Industrials,建設業,貸借
+1911,住友林業,Industrials,建設業,貸借
+1914,日本基礎技術,Industrials,建設業,貸借
+1916,日成ビルド工業,Industrials,建設業,貸借
+1919,エス・バイ・エル,Industrials,建設業,貸借
+1921,巴コーポレーション,Industrials,建設業,貸借
+1924,パナホーム,Industrials,建設業,貸借
+1925,大和ハウス工業,Industrials,建設業,貸借
+1926,ライト工業,Industrials,建設業,貸借
+1928,積水ハウス,Industrials,建設業,貸借
+1929,日特建設,Industrials,建設業,貸借
+1930,北陸電気工事,Industrials,建設業,貸借
+1932,コミューチュア,Industrials,建設業,貸借
+1934,ユアテック,Industrials,建設業,貸借
+1935,ＴＴＫ,Industrials,建設業,信用
+1937,西部電気工業,Industrials,建設業,貸借
+1938,日本リーテック,Industrials,建設業,信用
+1939,四電工,Industrials,建設業,貸借
+1940,つうけん,Industrials,建設業,信用
+1941,中電工,Industrials,建設業,貸借
+1942,関電工,Industrials,建設業,貸借
+1943,大明,Industrials,建設業,貸借
+1944,きんでん,Industrials,建設業,貸借
+1945,東京エネシス,Industrials,建設業,貸借
+1946,トーエネック,Industrials,建設業,貸借
+1948,弘電社,Industrials,建設業,信用
+1949,住友電設,Industrials,建設業,貸借
+1950,日本電設工業,Industrials,建設業,貸借
+1951,協和エクシオ,Industrials,建設業,貸借
+1952,新日本空調,Industrials,建設業,貸借
+1954,日本工営,Industrials,サービス業,貸借
+1955,東電通,Industrials,建設業,貸借
+1956,日本電話施設,Industrials,建設業,貸借
+1959,九電工,Industrials,建設業,貸借
+1960,サンテック,Industrials,建設業,信用
+1961,三機工業,Industrials,建設業,貸借
+1963,日揮,Industrials,建設業,貸借
+1964,中外炉工業,Industrials,建設業,貸借
+1965,テクノ菱和,Industrials,建設業,貸借
+1967,ヤマト,Industrials,建設業,貸借
+1968,太平電業,Industrials,建設業,貸借
+1969,高砂熱学工業,Industrials,建設業,貸借
+1970,日立プラントテクノロジー,Industrials,建設業,貸借
+1971,中央ビルト工業,Materials,金属製品,信用
+1972,三晃金属工業,Industrials,建設業,信用
+1973,ＮＥＣネッツエスアイ,Industrials,建設業,貸借
+1975,朝日工業社,Industrials,建設業,貸借
+1978,アタカ大機,Industrials,機械,貸借
+1979,大氣社,Industrials,建設業,貸借
+1980,ダイダン,Industrials,建設業,貸借
+1982,日比谷総合設備,Industrials,建設業,貸借
+1983,東芝プラントシステム,Industrials,建設業,貸借
+1987,ソルコム,Industrials,建設業,信用
+2001,日本製粉,Consumer Defensive,食料品,貸借
+2002,日清製粉グループ本社,Consumer Defensive,食料品,貸借
+2003,日東富士製粉,Consumer Defensive,食料品,信用
+2004,昭和産業,Consumer Defensive,食料品,貸借
+2006,東福製粉,Consumer Defensive,食料品,その他
+2009,鳥越製粉,Consumer Defensive,食料品,信用
+2052,協同飼料,Consumer Defensive,食料品,貸借
+2053,中部飼料,Consumer Defensive,食料品,貸借
+2056,日本配合飼料,Consumer Defensive,食料品,貸借
+2059,ユニ・チャーム　ペットケア,Consumer Defensive,食料品,信用
+2107,東洋精糖,Consumer Defensive,食料品,信用
+2108,日本甜菜製糖,Consumer Defensive,食料品,貸借
+2109,三井製糖,Consumer Defensive,食料品,貸借
+2112,塩水港精糖,Consumer Defensive,食料品,貸借
+2114,フジ日本精糖,Consumer Defensive,食料品,信用
+2116,日新製糖,Consumer Defensive,食料品,貸借
+2120,ネクスト,Industrials,サービス業,信用
+2121,ミクシィ,Industrials,サービス業,信用
+2122,インタースペース,Industrials,サービス業,信用
+2123,応用医学研究所,Industrials,サービス業,信用
+2127,日本Ｍ＆Ａセンター,Industrials,サービス業,信用
+2128,ノバレーゼ,Industrials,サービス業,その他
+2131,アコーディア・ゴルフ,Industrials,サービス業,貸借
+2133,ＧＡＢＡ,Industrials,サービス業,信用
+2148,アイティメディア,Industrials,サービス業,信用
+2150,ケアネット,Industrials,サービス業,信用
+2151,タケエイ,Industrials,サービス業,信用
+2153,Ｅ・Ｊホールディングス,Industrials,サービス業,その他
+2155,カービュー,Industrials,サービス業,信用
+2158,ＵＢＩＣ,Industrials,サービス業,信用
+2159,フルスピード,Industrials,サービス業,信用
+2160,ジーエヌアイ,Industrials,サービス業,その他
+2168,パソナグループ,Industrials,サービス業,貸借
+2170,リンクアンドモチベーション,Industrials,サービス業,信用
+2174,ＧＣＡサヴィアングループ,Industrials,サービス業,信用
+2175,エス・エム・エス,Industrials,サービス業,その他
+2178,トライステージ,Industrials,サービス業,その他
+2181,テンプホールディングス,Industrials,サービス業,信用
+2183,リニカル,Industrials,サービス業,信用
+2193,クックパッド,Industrials,サービス業,その他
+2201,森永製菓,Consumer Defensive,食料品,貸借
+2204,中村屋,Consumer Defensive,食料品,貸借
+2206,江崎グリコ,Consumer Defensive,食料品,貸借
+2207,名糖産業,Consumer Defensive,食料品,信用
+2208,ブルボン,Consumer Defensive,食料品,その他
+2209,井村屋製菓,Consumer Defensive,食料品,信用
+2211,不二家,Consumer Defensive,食料品,貸借
+2212,山崎製パン,Consumer Defensive,食料品,貸借
+2215,第一屋製パン,Consumer Defensive,食料品,貸借
+2216,カンロ,Consumer Defensive,食料品,信用
+2217,モロゾフ,Consumer Defensive,食料品,貸借
+2220,亀田製菓,Consumer Defensive,食料品,貸借
+2264,森永乳業,Consumer Defensive,食料品,貸借
+2267,ヤクルト本社,Consumer Defensive,食料品,貸借
+2269,明治ホールディングス,Consumer Defensive,食料品,貸借
+2270,雪印メグミルク,Consumer Defensive,食料品,貸借
+2281,プリマハム,Consumer Defensive,食料品,貸借
+2282,日本ハム,Consumer Defensive,食料品,貸借
+2284,伊藤ハム,Consumer Defensive,食料品,貸借
+2286,林兼産業,Consumer Defensive,食料品,貸借
+2288,丸大食品,Consumer Defensive,食料品,貸借
+2290,米久,Consumer Defensive,食料品,貸借
+2291,福留ハム,Consumer Defensive,食料品,信用
+2292,Ｓ　Ｆｏｏｄｓ,Consumer Defensive,食料品,貸借
+2301,学情,Industrials,サービス業,貸借
+2305,スタジオアリス,Industrials,サービス業,貸借
+2309,シミック,Industrials,サービス業,貸借
+2317,システムプロ,Communication Services,情報･通信業,貸借
+2322,ＮＥＣフィールディング,Industrials,サービス業,信用
+2325,日本上下水道設計,Industrials,サービス業,貸借
+2327,新日鉄ソリューションズ,Communication Services,情報･通信業,信用
+2331,綜合警備保障,Industrials,サービス業,貸借
+2335,キューブシステム,Communication Services,情報･通信業,貸借
+2338,セブンシーズ・テックワークス,Communication Services,情報･通信業,信用
+2342,トランスジェニック,Industrials,サービス業,その他
+2345,システム・テクノロジー・アイ,Communication Services,情報･通信業,その他
+2351,ＡＳＪ,Communication Services,情報･通信業,信用
+2352,エイジア,Communication Services,情報･通信業,信用
+2353,日本駐車場開発,Real Estate,不動産業,信用
+2354,安川情報システム,Communication Services,情報･通信業,信用
+2355,ＳＢＩネットシステムズ,Communication Services,情報･通信業,貸借
+2356,ＴＣＢホールディングス,Communication Services,情報･通信業,信用
+2359,コア,Communication Services,情報･通信業,貸借
+2369,メディビックグループ,Industrials,サービス業,その他
+2370,メディネット,Industrials,サービス業,その他
+2371,カカクコム,Industrials,サービス業,信用
+2372,アイロムホールディングス,Industrials,サービス業,貸借
+2375,スリープログループ,Industrials,サービス業,信用
+2378,ルネサンス,Industrials,サービス業,貸借
+2379,ディップ,Industrials,サービス業,貸借
+2385,総医研ホールディングス,Industrials,サービス業,信用
+2392,セキュアード・キャピタル・ジャパン,Industrials,サービス業,信用
+2393,日本ケアサプライ,Industrials,サービス業,信用
+2394,ジェイ・エー・エー,Industrials,サービス業,貸借
+2395,新日本科学,Industrials,サービス業,貸借
+2397,ＤＮＡチップ研究所,Industrials,サービス業,信用
+2399,綜合臨床ホールディングス,Industrials,サービス業,信用
+2402,アマナホールディングス,Industrials,サービス業,貸借
+2403,リンク・ワン,Industrials,サービス業,その他
+2404,鉄人化計画,Industrials,サービス業,貸借
+2405,フジコー,Industrials,サービス業,その他
+2409,ネクストジャパンホールディングス,Industrials,サービス業,信用
+2410,キャリアデザインセンター,Industrials,サービス業,信用
+2412,ベネフィット・ワン,Industrials,サービス業,信用
+2413,エムスリー,Industrials,サービス業,信用
+2417,ツヴァイ,Industrials,サービス業,信用
+2418,ベストブライダル,Industrials,サービス業,その他
+2432,ディー・エヌ・エー,Industrials,サービス業,信用
+2433,博報堂ＤＹホールディングス,Industrials,サービス業,貸借
+2438,アスカネット,Industrials,サービス業,信用
+2440,ぐるなび,Industrials,サービス業,貸借
+2445,エスアールジータカミヤ,Industrials,サービス業,信用
+2450,一休,Industrials,サービス業,貸借
+2451,メディアクリエイト,Industrials,サービス業,その他
+2453,ジャパンベストレスキューシステム,Industrials,サービス業,信用
+2459,アウンコンサルティング,Industrials,サービス業,信用
+2462,ジェイコムホールディングス,Industrials,サービス業,貸借
+2463,シニアコミュニケーション,Industrials,サービス業,信用
+2464,ビジネス・ブレークスルー,Industrials,サービス業,信用
+2466,パシフィックゴルフグループインターナショナルホールディングス,Industrials,サービス業,信用
+2468,フュートレック,Industrials,サービス業,信用
+2475,ＷＤＢ,Industrials,サービス業,信用
+2477,比較．ｃｏｍ,Industrials,サービス業,信用
+2478,エムケーキャピタルマネージメント,Industrials,サービス業,信用
+2489,アドウェイズ,Industrials,サービス業,信用
+2491,バリューコマース,Industrials,サービス業,貸借
+2492,インフォマート,Industrials,サービス業,信用
+2497,ｎｇｉ　ｇｒｏｕｐ,Industrials,サービス業,貸借
+2501,サッポロホールディングス,Consumer Defensive,食料品,貸借
+2502,アサヒビール,Consumer Defensive,食料品,貸借
+2503,キリンホールディングス,Consumer Defensive,食料品,貸借
+2531,宝ホールディングス,Consumer Defensive,食料品,貸借
+2533,オエノンホールディングス,Consumer Defensive,食料品,貸借
+2536,メルシャン,Consumer Defensive,食料品,貸借
+2540,養命酒製造,Consumer Defensive,食料品,信用
+2572,三国コカ・コーラボトリング,Consumer Defensive,食料品,貸借
+2573,北海道コカ・コーラボトリング,Consumer Defensive,食料品,信用
+2579,コカ・コーラウエスト,Consumer Defensive,食料品,貸借
+2580,コカ・コーラ　セントラル　ジャパン,Consumer Defensive,食料品,貸借
+2590,ダイドードリンコ,Consumer Defensive,食料品,信用
+2593,伊藤園,Consumer Defensive,食料品,貸借
+2594,キーコーヒー,Consumer Defensive,食料品,貸借
+2597,ユニカフェ,Consumer Defensive,食料品,信用
+2599,ジャパンフーズ,Consumer Defensive,食料品,信用
+2602,日清オイリオグループ,Consumer Defensive,食料品,貸借
+2607,不二製油,Consumer Defensive,食料品,貸借
+2608,ボーソー油脂,Consumer Defensive,食料品,信用
+2613,Ｊ−オイルミルズ,Consumer Defensive,食料品,貸借
+2651,ローソン,Consumer Cyclical,小売業,貸借
+2652,まんだらけ,Consumer Cyclical,小売業,その他
+2655,マックスバリュ東北,Consumer Cyclical,小売業,信用
+2657,インターニックス,Industrials,卸売業,貸借
+2659,サンエー,Consumer Cyclical,小売業,信用
+2660,キリン堂,Consumer Cyclical,小売業,信用
+2662,ダイユーエイト,Consumer Cyclical,小売業,信用
+2664,カワチ薬品,Consumer Cyclical,小売業,信用
+2665,三井情報,Communication Services,情報･通信業,信用
+2670,エービーシー・マート,Consumer Cyclical,小売業,貸借
+2674,ハードオフコーポレーション,Consumer Cyclical,小売業,貸借
+2675,ダイナック,Consumer Cyclical,小売業,信用
+2676,高千穂交易,Industrials,卸売業,貸借
+2678,アスクル,Consumer Cyclical,小売業,信用
+2681,ゲオ,Consumer Cyclical,小売業,貸借
+2683,魚喜,Consumer Cyclical,小売業,信用
+2685,ポイント,Consumer Cyclical,小売業,信用
+2687,シー・ヴイ・エス・ベイエリア,Consumer Cyclical,小売業,貸借
+2689,カワニシホールディングス,Industrials,卸売業,信用
+2692,伊藤忠食品,Industrials,卸売業,信用
+2695,くらコーポレーション,Consumer Cyclical,小売業,信用
+2698,キャンドゥ,Consumer Cyclical,小売業,貸借
+2715,エレマテック,Industrials,卸売業,貸借
+2719,キタムラ,Consumer Cyclical,小売業,信用
+2726,パル,Consumer Cyclical,小売業,信用
+2729,ＪＡＬＵＸ,Industrials,卸売業,貸借
+2730,エディオン,Consumer Cyclical,小売業,貸借
+2734,サーラコーポレーション,Consumer Cyclical,小売業,貸借
+2737,トーメンデバイス,Industrials,卸売業,信用
+2738,バルス,Consumer Cyclical,小売業,信用
+2753,あみやき亭,Consumer Cyclical,小売業,信用
+2760,東京エレクトロン　デバイス,Industrials,卸売業,貸借
+2762,三光マーケティングフーズ,Consumer Cyclical,小売業,信用
+2764,ひらまつ,Consumer Cyclical,小売業,信用
+2766,日本風力開発,Industrials,卸売業,信用
+2768,双日,Industrials,卸売業,貸借
+2780,コメ兵,Consumer Cyclical,小売業,信用
+2784,アルフレッサ　ホールディングス,Industrials,卸売業,貸借
+2788,アップルインターナショナル,Industrials,卸売業,信用
+2791,大黒天物産,Consumer Cyclical,小売業,信用
+2792,ハニーズ,Consumer Cyclical,小売業,信用
+2798,ワイズテーブルコーポレーション,Consumer Cyclical,小売業,信用
+2801,キッコーマン,Consumer Defensive,食料品,貸借
+2802,味の素,Consumer Defensive,食料品,貸借
+2804,ブルドックソース,Consumer Defensive,食料品,信用
+2805,ヱスビー食品,Consumer Defensive,食料品,信用
+2806,ユタカフーズ,Consumer Defensive,食料品,信用
+2809,キユーピー,Consumer Defensive,食料品,貸借
+2810,ハウス食品,Consumer Defensive,食料品,貸借
+2811,カゴメ,Consumer Defensive,食料品,貸借
+2812,焼津水産化学工業,Consumer Defensive,食料品,信用
+2815,アリアケジャパン,Consumer Defensive,食料品,貸借
+2816,ダイショー,Consumer Defensive,食料品,その他
+2818,ピエトロ,Consumer Defensive,食料品,信用
+2830,アヲハタ,Consumer Defensive,食料品,信用
+2831,はごろもフーズ,Consumer Defensive,食料品,信用
+2871,ニチレイ,Consumer Defensive,食料品,貸借
+2872,セイヒョー,Consumer Defensive,食料品,その他
+2874,横浜冷凍,Industrials,卸売業,貸借
+2875,東洋水産,Consumer Defensive,食料品,貸借
+2891,オリエンタル酵母工業,Consumer Defensive,食料品,貸借
+2892,日本食品化工,Consumer Defensive,食料品,信用
+2893,ローマイヤ,Consumer Defensive,食料品,その他
+2894,石井食品,Consumer Defensive,食料品,信用
+2897,日清食品ホールディングス,Consumer Defensive,食料品,貸借
+2898,ソントン食品工業,Consumer Defensive,食料品,信用
+2899,永谷園,Consumer Defensive,食料品,貸借
+2907,あじかん,Consumer Defensive,食料品,信用
+2908,フジッコ,Consumer Defensive,食料品,貸借
+2910,ロック・フィールド,Consumer Defensive,食料品,貸借
+2914,日本たばこ産業,Consumer Defensive,食料品,貸借
+2918,わらべや日洋,Consumer Defensive,食料品,貸借
+2922,なとり,Consumer Defensive,食料品,貸借
+2923,サトウ食品工業,Consumer Defensive,食料品,その他
+2926,篠崎屋,Consumer Defensive,食料品,貸借
+2929,ファーマフーズ,Consumer Defensive,食料品,信用
+3001,片倉工業,Consumer Cyclical,繊維製品,貸借
+3002,グンゼ,Consumer Cyclical,繊維製品,貸借
+3003,昭栄,Real Estate,不動産業,貸借
+3004,神栄,Industrials,卸売業,貸借
+3009,川島織物セルコン,Consumer Cyclical,繊維製品,貸借
+3010,価値開発,Real Estate,不動産業,貸借
+3011,バナーズ,Industrials,卸売業,信用
+3021,パシフィックネット,Consumer Cyclical,小売業,信用
+3022,山下医科器械,Industrials,卸売業,貸借
+3023,ラサ商事,Industrials,卸売業,貸借
+3028,アルペン,Consumer Cyclical,小売業,貸借
+3031,ラクーン,Industrials,卸売業,その他
+3036,アルコニックス,Industrials,卸売業,信用
+3041,ビューティ花壇,Industrials,卸売業,その他
+3048,ビックカメラ,Consumer Cyclical,小売業,貸借
+3049,エノテカ,Consumer Cyclical,小売業,信用
+3050,ＤＣＭ　Ｊａｐａｎホールディングス,Consumer Cyclical,小売業,貸借
+3053,ペッパーフードサービス,Industrials,卸売業,信用
+3059,ヒラキ,Consumer Cyclical,小売業,貸借
+3060,マガシーク,Consumer Cyclical,小売業,信用
+3063,ジェイプロジェクト,Consumer Cyclical,小売業,信用
+3064,ＭｏｎｏｔａＲＯ,Consumer Cyclical,小売業,貸借
+3067,東京一番フーズ,Consumer Cyclical,小売業,信用
+3071,ストリーム,Consumer Cyclical,小売業,信用
+3076,あい　ホールディングス,Industrials,卸売業,貸借
+3078,ユニバース,Consumer Cyclical,小売業,信用
+3086,Ｊ．フロント　リテイリング,Consumer Cyclical,小売業,貸借
+3087,ドトール・日レスホールディングス,Consumer Cyclical,小売業,貸借
+3088,マツモトキヨシホールディングス,Consumer Cyclical,小売業,貸借
+3092,スタートトゥデイ,Consumer Cyclical,小売業,信用
+3093,トレジャー・ファクトリー,Consumer Cyclical,小売業,その他
+3098,ココカラファイン　ホールディングス,Consumer Cyclical,小売業,貸借
+3099,三越伊勢丹ホールディングス,Consumer Cyclical,小売業,貸借
+3101,東洋紡績,Consumer Cyclical,繊維製品,貸借
+3103,ユニチカ,Consumer Cyclical,繊維製品,貸借
+3104,富士紡ホールディングス,Consumer Cyclical,繊維製品,貸借
+3105,日清紡ホールディングス,Consumer Cyclical,繊維製品,貸借
+3106,倉敷紡績,Consumer Cyclical,繊維製品,貸借
+3107,ダイワボウホールディングス,Industrials,卸売業,貸借
+3109,シキボウ,Consumer Cyclical,繊維製品,貸借
+3110,日東紡績,Materials,ガラス･土石製品,貸借
+3111,オーミケンシ,Consumer Cyclical,繊維製品,信用
+3113,Ｏａｋキャピタル,Financials,証券･商品先物取引業,信用
+3116,トヨタ紡織,Consumer Cyclical,輸送用機器,貸借
+3123,サイボー,Consumer Cyclical,繊維製品,信用
+3141,グローウェルホールディングス,Consumer Cyclical,小売業,貸借
+3148,クリエイトＳＤホールディングス,Consumer Cyclical,小売業,貸借
+3151,バイタルケーエスケー・ホールディングス,Industrials,卸売業,貸借
+3153,八洲電機,Industrials,卸売業,信用
+3156,ＵＫＣホールディングス,Industrials,卸売業,信用
+3159,ＣＨＩグループ,Consumer Cyclical,小売業,貸借
+3201,日本毛織,Consumer Cyclical,繊維製品,貸借
+3202,大東紡織,Consumer Cyclical,繊維製品,信用
+3204,トーア紡コーポレーション,Consumer Cyclical,繊維製品,信用
+3205,ダイドーリミテッド,Consumer Cyclical,繊維製品,貸借
+3225,東京建物不動産販売,Real Estate,不動産業,貸借
+3231,野村不動産ホールディングス,Real Estate,不動産業,貸借
+3237,イントランス,Real Estate,不動産業,信用
+3238,セントラル総合開発,Real Estate,不動産業,その他
+3245,ディア・ライフ,Real Estate,不動産業,その他
+3248,アールエイジ,Real Estate,不動産業,その他
+3251,駐車場綜合研究所,Real Estate,不動産業,信用
+3254,プレサンスコーポレーション,Real Estate,不動産業,信用
+3258,常和ホールディングス,Real Estate,不動産業,貸借
+3265,ヒューリック,Real Estate,不動産業,貸借
+3302,帝国繊維,Consumer Cyclical,繊維製品,信用
+3306,日本製麻,Industrials,卸売業,その他
+3311,アップガレージ,Consumer Cyclical,小売業,信用
+3313,ブックオフコーポレーション,Consumer Cyclical,小売業,貸借
+3315,日本コークス工業,Industrials,卸売業,信用
+3319,ゴルフダイジェスト・オンライン,Consumer Cyclical,小売業,信用
+3320,クロスプラス,Industrials,卸売業,貸借
+3321,ミタチ産業,Industrials,卸売業,貸借
+3325,ケンコーコム,Consumer Cyclical,小売業,その他
+3328,ネットプライスドットコム,Consumer Cyclical,小売業,信用
+3332,ＪＦＥ商事ホールディングス,Industrials,卸売業,貸借
+3333,あさひ,Consumer Cyclical,小売業,信用
+3337,サークルＫサンクス,Consumer Cyclical,小売業,貸借
+3341,日本調剤,Consumer Cyclical,小売業,信用
+3343,チップワンストップ,Industrials,卸売業,信用
+3347,トラスト,Consumer Cyclical,小売業,貸借
+3349,コスモス薬品,Consumer Cyclical,小売業,貸借
+3355,クリヤマ,Industrials,卸売業,信用
+3360,シップヘルスケアホールディングス,Industrials,卸売業,貸借
+3362,チムニー,Consumer Cyclical,小売業,信用
+3371,ソフトクリエイト,Industrials,卸売業,貸借
+3372,関門海,Consumer Cyclical,小売業,貸借
+3377,アイケイコーポレーション,Industrials,卸売業,貸借
+3382,セブン＆アイ・ホールディングス,Consumer Cyclical,小売業,貸借
+3387,クリエイト・レストランツ,Consumer Cyclical,小売業,信用
+3391,ツルハホールディングス,Consumer Cyclical,小売業,貸借
+3392,デリカフーズ,Industrials,卸売業,信用
+3393,スターティア,Industrials,卸売業,信用
+3394,ネットワークバリューコンポネンツ,Industrials,卸売業,その他
+3395,サンマルクホールディングス,Consumer Cyclical,小売業,貸借
+3396,フェリシモ,Consumer Cyclical,小売業,信用
+3397,トリドール,Consumer Cyclical,小売業,信用
+3398,クスリのアオキ,Consumer Cyclical,小売業,貸借
+3401,帝人,Consumer Cyclical,繊維製品,貸借
+3402,東レ,Consumer Cyclical,繊維製品,貸借
+3404,三菱レイヨン,Consumer Cyclical,繊維製品,貸借
+3405,クラレ,Materials,化学,貸借
+3407,旭化成,Materials,化学,貸借
+3408,サカイオーベックス,Consumer Cyclical,繊維製品,貸借
+3421,稲葉製作所,Materials,金属製品,信用
+3431,宮地エンジニアリンググループ,Materials,金属製品,貸借
+3432,三協・立山ホールディングス,Materials,金属製品,貸借
+3433,トーカロ,Materials,金属製品,信用
+3434,アルファ,Materials,金属製品,信用
+3436,ＳＵＭＣＯ,Materials,金属製品,貸借
+3443,川田テクノロジーズ,Materials,金属製品,貸借
+3501,住江織物,Consumer Cyclical,繊維製品,貸借
+3512,日本フエルト,Consumer Cyclical,繊維製品,信用
+3513,イチカワ,Consumer Cyclical,繊維製品,信用
+3514,日本バイリーン,Consumer Cyclical,繊維製品,貸借
+3521,エコナック,Real Estate,不動産業,信用
+3524,日東製網,Consumer Cyclical,繊維製品,信用
+3526,芦森工業,Consumer Cyclical,繊維製品,貸借
+3528,グローベルス,Real Estate,不動産業,信用
+3529,アツギ,Consumer Cyclical,繊維製品,貸借
+3534,ＮＢＣメッシュテック,Consumer Cyclical,繊維製品,信用
+3551,ダイニック,Consumer Cyclical,繊維製品,信用
+3553,共和レザー,Materials,化学,貸借
+3569,セーレン,Consumer Cyclical,繊維製品,貸借
+3571,ソトー,Consumer Cyclical,繊維製品,信用
+3577,東海染工,Consumer Cyclical,繊維製品,信用
+3580,小松精練,Consumer Cyclical,繊維製品,貸借
+3583,オーベクス,Consumer Cyclical,繊維製品,信用
+3591,ワコールホールディングス,Consumer Cyclical,繊維製品,貸借
+3593,ホギメディカル,Consumer Cyclical,繊維製品,貸借
+3597,自重堂,Consumer Cyclical,繊維製品,信用
+3604,川本産業,Consumer Cyclical,繊維製品,その他
+3605,サンエー・インターナショナル,Consumer Cyclical,繊維製品,貸借
+3606,レナウン,Consumer Cyclical,繊維製品,貸借
+3607,クラウディア,Consumer Cyclical,繊維製品,信用
+3620,デジタルハーツ,Communication Services,情報･通信業,信用
+3622,ネットイヤーグループ,Communication Services,情報･通信業,信用
+3623,ビリングシステム,Communication Services,情報･通信業,その他
+3624,アクセルマーク,Communication Services,情報･通信業,その他
+3626,ＩＴホールディングス,Communication Services,情報･通信業,貸借
+3627,プライムワークス,Communication Services,情報･通信業,信用
+3628,データホライゾン,Communication Services,情報･通信業,その他
+3629,クロス・マーケティング,Communication Services,情報･通信業,その他
+3630,電算システム,Communication Services,情報･通信業,貸借
+3632,グリー,Communication Services,情報･通信業,信用
+3634,ソケッツ,Communication Services,情報･通信業,その他
+3635,コーエーテクモホールディングス,Communication Services,情報･通信業,貸借
+3636,三菱総合研究所,Communication Services,情報･通信業,貸借
+3708,特種東海ホールディングス,Materials,パルプ・紙,貸借
+3712,情報企画,Communication Services,情報･通信業,貸借
+3713,ネットマークス,Communication Services,情報･通信業,信用
+3715,ドワンゴ,Communication Services,情報･通信業,貸借
+3722,日本ベリサイン,Communication Services,情報･通信業,貸借
+3723,日本ファルコム,Communication Services,情報･通信業,信用
+3724,ベリサーブ,Communication Services,情報･通信業,貸借
+3726,フェヴリナ,Consumer Cyclical,小売業,信用
+3727,アプリックス,Communication Services,情報･通信業,その他
+3730,マクロミル,Communication Services,情報･通信業,貸借
+3731,京王ズホールディングス,Communication Services,情報･通信業,信用
+3734,エム・ピー・ホールディングス,Communication Services,情報･通信業,信用
+3736,コネクトテクノロジーズ,Communication Services,情報･通信業,信用
+3738,ティーガイア,Communication Services,情報･通信業,貸借
+3742,デュオシステムズ,Communication Services,情報･通信業,その他
+3744,サイオステクノロジー,Communication Services,情報･通信業,信用
+3745,サミーネットワークス,Communication Services,情報･通信業,信用
+3747,インタートレード,Communication Services,情報･通信業,貸借
+3750,セブンシーズホールディングス,Communication Services,情報･通信業,信用
+3751,日本アジアグループ,Communication Services,情報･通信業,信用
+3753,フライトシステムコンサルティング,Communication Services,情報･通信業,その他
+3756,豆蔵ＯＳホールディングス,Communication Services,情報･通信業,信用
+3769,ＧＭＯペイメントゲートウェイ,Communication Services,情報･通信業,貸借
+3770,ザッパラス,Communication Services,情報･通信業,信用
+3772,ドリームバイザー・ホールディングス,Communication Services,情報･通信業,その他
+3773,アドバンスト・メディア,Communication Services,情報･通信業,その他
+3774,インターネットイニシアティブ,Communication Services,情報･通信業,その他
+3778,さくらインターネット,Communication Services,情報･通信業,信用
+3782,ディー・ディー・エス,Communication Services,情報･通信業,信用
+3783,ナノ・メディア,Communication Services,情報･通信業,信用
+3785,エイティング,Communication Services,情報･通信業,信用
+3786,テレビ東京ブロードバンド,Communication Services,情報･通信業,信用
+3787,テクノマセマティカル,Communication Services,情報･通信業,信用
+3788,ＧＭＯホスティング＆セキュリティ,Communication Services,情報･通信業,貸借
+3789,ソネットエンタテインメント,Communication Services,情報･通信業,貸借
+3793,ドリコム,Communication Services,情報･通信業,その他
+3796,いい生活,Communication Services,情報･通信業,貸借
+3799,キーウェアソリューションズ,Communication Services,情報･通信業,信用
+3810,サイバーステップ,Communication Services,情報･通信業,信用
+3812,ゲームオン,Communication Services,情報･通信業,信用
+3815,メディア工房,Communication Services,情報･通信業,信用
+3817,ＳＲＡホールディングス,Communication Services,情報･通信業,信用
+3820,ＪＢＩＳホールディングス,Communication Services,情報･通信業,貸借
+3823,アクロディア,Communication Services,情報･通信業,信用
+3825,リミックスポイント,Communication Services,情報･通信業,その他
+3826,システムインテグレータ,Communication Services,情報･通信業,信用
+3827,ジャパンインベスト・グループ・ピー・エル・シー,Communication Services,情報･通信業,貸借
+3828,ニフティ,Communication Services,情報･通信業,信用
+3831,パイプドビッツ,Communication Services,情報･通信業,その他
+3834,朝日ネット,Communication Services,情報･通信業,信用
+3838,ＡＱインタラクティブ,Communication Services,情報･通信業,貸借
+3840,イー・キャッシュ,Communication Services,情報･通信業,信用
+3843,フリービット,Communication Services,情報･通信業,信用
+3850,エヌ・ティ・ティ・データ・イントラマート,Communication Services,情報･通信業,信用
+3853,インフォテリア,Communication Services,情報･通信業,信用
+3856,リアルコム,Communication Services,情報･通信業,その他
+3861,王子製紙,Materials,パルプ・紙,貸借
+3864,三菱製紙,Materials,パルプ・紙,貸借
+3865,北越紀州製紙,Materials,パルプ・紙,貸借
+3877,中越パルプ工業,Materials,パルプ・紙,貸借
+3878,巴川製紙所,Materials,パルプ・紙,貸借
+3880,大王製紙,Materials,パルプ・紙,貸借
+3893,日本製紙グループ本社,Materials,パルプ・紙,貸借
+3941,レンゴー,Materials,パルプ・紙,貸借
+3945,スーパーバッグ,Materials,パルプ・紙,信用
+3946,トーモク,Materials,パルプ・紙,貸借
+3947,ダイナパック,Materials,パルプ・紙,その他
+3950,ザ・パック,Materials,パルプ・紙,貸借
+3951,朝日印刷,Materials,パルプ・紙,貸借
+3955,イムラ封筒,Materials,パルプ・紙,その他
+4003,コープケミカル,Materials,化学,信用
+4004,昭和電工,Materials,化学,貸借
+4005,住友化学,Materials,化学,貸借
+4007,日本化成,Materials,化学,貸借
+4008,住友精化,Materials,化学,貸借
+4021,日産化学工業,Materials,化学,貸借
+4022,ラサ工業,Materials,化学,貸借
+4023,クレハ,Materials,化学,貸借
+4027,テイカ,Materials,化学,貸借
+4028,石原産業,Materials,化学,貸借
+4031,片倉チッカリン,Materials,化学,貸借
+4033,日東エフシー,Materials,化学,貸借
+4041,日本曹達,Materials,化学,貸借
+4042,東ソー,Materials,化学,貸借
+4043,トクヤマ,Materials,化学,貸借
+4044,セントラル硝子,Materials,化学,貸借
+4045,東亞合成,Materials,化学,貸借
+4046,ダイソー,Materials,化学,貸借
+4047,関東電化工業,Materials,化学,貸借
+4061,電気化学工業,Materials,化学,貸借
+4062,イビデン,Technology,電気機器,貸借
+4063,信越化学工業,Materials,化学,貸借
+4064,日本カーバイド工業,Materials,化学,貸借
+4078,堺化学工業,Materials,化学,貸借
+4082,第一稀元素化学工業,Materials,化学,貸借
+4088,エア・ウォーター,Materials,化学,貸借
+4091,大陽日酸,Materials,化学,貸借
+4092,日本化学工業,Materials,化学,貸借
+4093,東邦アセチレン,Materials,化学,信用
+4094,日本化学産業,Materials,化学,信用
+4095,日本パーカライジング,Materials,化学,貸借
+4097,高圧ガス工業,Materials,化学,貸借
+4098,チタン工業,Materials,化学,信用
+4099,四国化成工業,Materials,化学,貸借
+4100,戸田工業,Materials,化学,貸借
+4107,伊勢化学工業,Materials,化学,信用
+4109,ステラ　ケミファ,Materials,化学,信用
+4112,保土谷化学工業,Materials,化学,貸借
+4114,日本触媒,Materials,化学,貸借
+4115,本州化学工業,Materials,化学,信用
+4116,大日精化工業,Materials,化学,貸借
+4117,川崎化成工業,Materials,化学,貸借
+4118,カネカ,Materials,化学,貸借
+4119,日本ピグメント,Materials,化学,信用
+4151,協和発酵キリン,Healthcare,医薬品,貸借
+4182,三菱瓦斯化学,Materials,化学,貸借
+4183,三井化学,Materials,化学,貸借
+4185,ＪＳＲ,Materials,化学,貸借
+4186,東京応化工業,Materials,化学,貸借
+4187,大阪有機化学工業,Materials,化学,貸借
+4188,三菱ケミカルホールディングス,Materials,化学,貸借
+4201,日本合成化学工業,Materials,化学,貸借
+4202,ダイセル化学工業,Materials,化学,貸借
+4203,住友ベークライト,Materials,化学,貸借
+4204,積水化学工業,Materials,化学,貸借
+4205,日本ゼオン,Materials,化学,貸借
+4206,アイカ工業,Materials,化学,貸借
+4208,宇部興産,Materials,化学,貸借
+4212,積水樹脂,Materials,化学,貸借
+4215,タキロン,Materials,化学,貸借
+4216,旭有機材工業,Materials,化学,貸借
+4217,日立化成工業,Materials,化学,貸借
+4218,ニチバン,Materials,化学,貸借
+4220,リケンテクノス,Materials,化学,貸借
+4221,大倉工業,Materials,化学,貸借
+4222,児玉化学工業,Materials,化学,信用
+4224,ロンシール工業,Materials,化学,信用
+4228,積水化成品工業,Materials,化学,貸借
+4229,群栄化学工業,Materials,化学,貸借
+4231,タイガースポリマー,Materials,化学,信用
+4271,日本カーリット,Materials,化学,信用
+4272,日本化薬,Materials,化学,貸借
+4282,イーピーエス,Industrials,サービス業,貸借
+4283,パナソニック電工インフォメーションシステムズ,Communication Services,情報･通信業,貸借
+4291,ＪＩＥＣ,Communication Services,情報･通信業,信用
+4295,フェイス,Communication Services,情報･通信業,信用
+4299,ハイマックス,Communication Services,情報･通信業,貸借
+4301,アミューズ,Industrials,サービス業,信用
+4307,野村総合研究所,Communication Services,情報･通信業,貸借
+4308,Ｊストリーム,Communication Services,情報･通信業,その他
+4310,ドリームインキュベータ,Industrials,サービス業,貸借
+4312,サイバネットシステム,Communication Services,情報･通信業,貸借
+4319,ＴＡＣ,Industrials,サービス業,信用
+4320,シーエスアイ,Communication Services,情報･通信業,信用
+4321,ケネディクス,Industrials,サービス業,貸借
+4323,日本システム技術,Communication Services,情報･通信業,信用
+4324,電通,Industrials,サービス業,貸借
+4326,インテージ,Communication Services,情報･通信業,信用
+4331,テイクアンドギヴ・ニーズ,Industrials,サービス業,信用
+4333,東邦システムサイエンス,Communication Services,情報･通信業,信用
+4337,ぴあ,Industrials,サービス業,貸借
+4340,シンプレクス・テクノロジー,Communication Services,情報･通信業,信用
+4342,セコム上信越,Industrials,サービス業,信用
+4343,イオンファンタジー,Industrials,サービス業,信用
+4344,ソースネクスト,Communication Services,情報･通信業,信用
+4346,ネクシィーズ,Industrials,サービス業,貸借
+4350,メディカルシステムネットワーク,Consumer Cyclical,小売業,信用
+4361,川口化学工業,Materials,化学,信用
+4362,日本精化,Materials,化学,貸借
+4364,マナック,Materials,化学,その他
+4401,ＡＤＥＫＡ,Materials,化学,貸借
+4403,日油,Materials,化学,貸借
+4404,ミヨシ油脂,Consumer Defensive,食料品,貸借
+4409,東邦化学工業,Materials,化学,信用
+4410,ハリマ化成,Materials,化学,貸借
+4452,花王,Materials,化学,貸借
+4461,第一工業製薬,Materials,化学,貸借
+4464,ソフト９９コーポレーション,Materials,化学,貸借
+4465,ニイタカ,Materials,化学,信用
+4471,三洋化成工業,Materials,化学,貸借
+4502,武田薬品工業,Healthcare,医薬品,貸借
+4503,アステラス製薬,Healthcare,医薬品,貸借
+4506,大日本住友製薬,Healthcare,医薬品,貸借
+4507,塩野義製薬,Healthcare,医薬品,貸借
+4508,田辺三菱製薬,Healthcare,医薬品,貸借
+4512,わかもと製薬,Healthcare,医薬品,貸借
+4514,あすか製薬,Healthcare,医薬品,貸借
+4516,日本新薬,Healthcare,医薬品,貸借
+4519,中外製薬,Healthcare,医薬品,貸借
+4521,科研製薬,Healthcare,医薬品,貸借
+4523,エーザイ,Healthcare,医薬品,貸借
+4524,森下仁丹,Healthcare,医薬品,信用
+4526,理研ビタミン,Consumer Defensive,食料品,信用
+4527,ロート製薬,Healthcare,医薬品,貸借
+4528,小野薬品工業,Healthcare,医薬品,貸借
+4530,久光製薬,Healthcare,医薬品,貸借
+4531,有機合成薬品工業,Healthcare,医薬品,貸借
+4534,持田製薬,Healthcare,医薬品,貸借
+4535,大正製薬,Healthcare,医薬品,貸借
+4536,参天製薬,Healthcare,医薬品,貸借
+4537,エスエス製薬,Healthcare,医薬品,貸借
+4538,扶桑薬品工業,Healthcare,医薬品,貸借
+4539,日本ケミファ,Healthcare,医薬品,信用
+4540,ツムラ,Healthcare,医薬品,貸借
+4543,テルモ,Technology,精密機器,貸借
+4544,みらかホールディングス,Industrials,サービス業,貸借
+4547,キッセイ薬品工業,Healthcare,医薬品,貸借
+4548,生化学工業,Healthcare,医薬品,信用
+4549,栄研化学,Healthcare,医薬品,貸借
+4550,日水製薬,Healthcare,医薬品,貸借
+4551,鳥居薬品,Healthcare,医薬品,貸借
+4553,東和薬品,Healthcare,医薬品,貸借
+4555,沢井製薬,Healthcare,医薬品,貸借
+4559,ゼリア新薬工業,Healthcare,医薬品,貸借
+4563,アンジェス　ＭＧ,Healthcare,医薬品,その他
+4564,オンコセラピー・サイエンス,Healthcare,医薬品,貸借
+4565,そーせいグループ,Healthcare,医薬品,その他
+4566,ＬＴＴバイオファーマ,Healthcare,医薬品,その他
+4568,第一三共,Healthcare,医薬品,貸借
+4569,キョーリン,Healthcare,医薬品,貸借
+4571,ナノキャリア,Healthcare,医薬品,その他
+4574,大幸薬品,Healthcare,医薬品,信用
+4575,キャンバス,Healthcare,医薬品,その他
+4611,大日本塗料,Materials,化学,貸借
+4612,日本ペイント,Materials,化学,貸借
+4613,関西ペイント,Materials,化学,貸借
+4614,トウペ,Materials,化学,貸借
+4617,中国塗料,Materials,化学,貸借
+4619,日本特殊塗料,Materials,化学,貸借
+4620,藤倉化成,Materials,化学,貸借
+4626,太陽インキ製造,Materials,化学,信用
+4631,ＤＩＣ,Materials,化学,貸借
+4633,サカタインクス,Materials,化学,貸借
+4634,東洋インキ製造,Materials,化学,貸借
+4635,東京インキ,Materials,化学,信用
+4641,アルプス技研,Industrials,サービス業,貸借
+4642,オリジナル設計,Industrials,サービス業,信用
+4651,サニックス,Industrials,サービス業,貸借
+4653,ダイオーズ,Industrials,サービス業,信用
+4658,日本空調サービス,Industrials,サービス業,信用
+4661,オリエンタルランド,Industrials,サービス業,貸借
+4665,ダスキン,Industrials,サービス業,貸借
+4666,パーク２４,Real Estate,不動産業,信用
+4668,明光ネットワークジャパン,Industrials,サービス業,信用
+4671,ファルコバイオシステムズ,Industrials,サービス業,貸借
+4674,クレスコ,Communication Services,情報･通信業,貸借
+4676,フジ・メディア・ホールディングス,Communication Services,情報･通信業,貸借
+4678,秀英予備校,Industrials,サービス業,貸借
+4679,田谷,Industrials,サービス業,信用
+4680,ラウンドワン,Industrials,サービス業,貸借
+4681,リゾートトラスト,Industrials,サービス業,貸借
+4684,オービック,Communication Services,情報･通信業,信用
+4687,ティーディーシーソフトウェアエンジニアリング,Communication Services,情報･通信業,信用
+4689,ヤフー,Communication Services,情報･通信業,貸借
+4694,ビー・エム・エル,Industrials,サービス業,貸借
+4695,マイスターエンジニアリング,Industrials,サービス業,信用
+4696,ワタベウェディング,Industrials,サービス業,貸借
+4704,トレンドマイクロ,Communication Services,情報･通信業,貸借
+4708,もしもしホットライン,Industrials,サービス業,信用
+4711,東急コミュニティー,Industrials,サービス業,貸借
+4713,日信電子サービス,Industrials,サービス業,信用
+4714,リソー教育,Industrials,サービス業,信用
+4716,日本オラクル,Communication Services,情報･通信業,貸借
+4718,早稲田アカデミー,Industrials,サービス業,信用
+4719,アルファシステムズ,Communication Services,情報･通信業,貸借
+4722,フューチャーアーキテクト,Communication Services,情報･通信業,貸借
+4724,ウェアハウス,Industrials,サービス業,貸借
+4725,シーエーシー,Communication Services,情報･通信業,貸借
+4726,ソフトバンク・テクノロジー,Communication Services,情報･通信業,貸借
+4728,トーセ,Communication Services,情報･通信業,信用
+4732,ユー・エス・エス,Industrials,サービス業,貸借
+4733,オービックビジネスコンサルタント,Communication Services,情報･通信業,信用
+4738,日立ビジネスソリューション,Communication Services,情報･通信業,信用
+4739,伊藤忠テクノソリューションズ,Communication Services,情報･通信業,信用
+4743,アイティフォー,Communication Services,情報･通信業,信用
+4744,メッツ,Real Estate,不動産業,信用
+4745,東京個別指導学院,Industrials,サービス業,貸借
+4746,東計電算,Communication Services,情報･通信業,貸借
+4747,ｅ−まちタウン,Industrials,サービス業,信用
+4749,アドバックス,Industrials,サービス業,その他
+4751,サイバーエージェント,Industrials,サービス業,貸借
+4756,カルチュア・コンビニエンス・クラブ,Industrials,サービス業,貸借
+4762,エックスネット,Communication Services,情報･通信業,信用
+4766,ピーエイ,Industrials,サービス業,その他
+4767,テー・オー・ダブリュー,Industrials,サービス業,信用
+4768,大塚商会,Communication Services,情報･通信業,貸借
+4770,図研エルミック,Communication Services,情報･通信業,信用
+4775,総合メディカル,Consumer Cyclical,小売業,貸借
+4776,サイボウズ,Communication Services,情報･通信業,信用
+4779,ソフトブレーン,Communication Services,情報･通信業,貸借
+4781,日本ハウズイング,Industrials,サービス業,信用
+4794,デザインエクスチェンジ,Industrials,サービス業,その他
+4798,エル・シー・エーホールディングス,Industrials,サービス業,信用
+4799,アグレックス,Communication Services,情報･通信業,貸借
+4801,セントラルスポーツ,Industrials,サービス業,信用
+4809,パラカ,Real Estate,不動産業,信用
+4812,電通国際情報サービス,Communication Services,情報･通信業,貸借
+4813,ＡＣＣＥＳＳ,Communication Services,情報･通信業,信用
+4820,イーエムシステムズ,Communication Services,情報･通信業,貸借
+4824,メディアシーク,Communication Services,情報･通信業,信用
+4825,ウェザーニューズ,Communication Services,情報･通信業,貸借
+4826,ＣＩＪ,Communication Services,情報･通信業,貸借
+4829,日本エンタープライズ,Communication Services,情報･通信業,貸借
+4832,ＪＦＥシステムズ,Communication Services,情報･通信業,信用
+4839,ＷＯＷＯＷ,Communication Services,情報･通信業,貸借
+4848,フルキャストホールディングス,Industrials,サービス業,貸借
+4850,ザ・ダウ・ケミカル・カンパニー,Materials,化学,その他
+4901,富士フイルムホールディングス,Materials,化学,貸借
+4902,コニカミノルタホールディングス,Technology,電気機器,貸借
+4911,資生堂,Materials,化学,貸借
+4912,ライオン,Materials,化学,貸借
+4914,高砂香料工業,Materials,化学,貸借
+4916,ノエビア,Materials,化学,信用
+4917,マンダム,Materials,化学,信用
+4919,ミルボン,Materials,化学,信用
+4921,ファンケル,Materials,化学,貸借
+4922,コーセー,Materials,化学,貸借
+4924,ドクターシーラボ,Materials,化学,貸借
+4951,エステー,Materials,化学,貸借
+4952,エス・ディー・エス　バイオテック,Materials,化学,信用
+4955,アグロ　カネショウ,Materials,化学,その他
+4956,コニシ,Materials,化学,信用
+4957,ヤスハラケミカル,Materials,化学,貸借
+4958,長谷川香料,Materials,化学,貸借
+4963,星光ＰＭＣ,Materials,化学,貸借
+4967,小林製薬,Materials,化学,貸借
+4968,荒川化学工業,Materials,化学,貸借
+4971,メック,Materials,化学,貸借
+4973,日本高純度化学,Materials,化学,信用
+4974,タカラバイオ,Materials,化学,信用
+4975,荏原ユージライト,Materials,化学,信用
+4985,アース製薬,Materials,化学,信用
+4987,寺岡製作所,Materials,化学,信用
+4989,イハラケミカル工業,Materials,化学,貸借
+4990,昭和化学工業,Materials,化学,その他
+4992,北興化学工業,Materials,化学,貸借
+4994,大成ラミック,Materials,化学,貸借
+4996,クミアイ化学工業,Materials,化学,貸借
+4997,日本農薬,Materials,化学,貸借
+4998,フマキラー,Materials,化学,貸借
+4999,セメダイン,Materials,化学,信用
+5001,新日本石油,Energy,石油･石炭製品,貸借
+5002,昭和シェル石油,Energy,石油･石炭製品,貸借
+5007,コスモ石油,Energy,石油･石炭製品,貸借
+5008,東亜石油,Energy,石油･石炭製品,貸借
+5009,富士興産,Industrials,卸売業,貸借
+5010,日本精蝋,Energy,石油･石炭製品,信用
+5011,ニチレキ,Energy,石油･石炭製品,貸借
+5012,東燃ゼネラル石油,Energy,石油･石炭製品,貸借
+5013,ユシロ化学工業,Energy,石油･石炭製品,貸借
+5015,ビーピー・カストロール,Energy,石油･石炭製品,信用
+5016,新日鉱ホールディングス,Energy,石油･石炭製品,貸借
+5017,ＡＯＣホールディングス,Energy,石油･石炭製品,貸借
+5018,ＭＯＲＥＳＣＯ,Energy,石油･石炭製品,貸借
+5019,出光興産,Energy,石油･石炭製品,貸借
+5101,横浜ゴム,Materials,ゴム製品,貸借
+5103,昭和ホールディングス,Materials,ゴム製品,その他
+5104,日東化工,Materials,ゴム製品,信用
+5105,東洋ゴム工業,Materials,ゴム製品,貸借
+5108,ブリヂストン,Materials,ゴム製品,貸借
+5110,住友ゴム工業,Materials,ゴム製品,貸借
+5121,藤倉ゴム工業,Materials,ゴム製品,貸借
+5122,オカモト,Materials,ゴム製品,貸借
+5142,アキレス,Materials,化学,貸借
+5161,西川ゴム工業,Materials,ゴム製品,信用
+5185,フコク,Materials,ゴム製品,貸借
+5186,ニッタ,Materials,ゴム製品,貸借
+5187,クリエートメディック,Technology,精密機器,信用
+5189,櫻護謨,Materials,ゴム製品,その他
+5191,東海ゴム工業,Materials,ゴム製品,貸借
+5192,三ツ星ベルト,Materials,ゴム製品,貸借
+5194,相模ゴム工業,Materials,ゴム製品,信用
+5195,バンドー化学,Materials,ゴム製品,貸借
+5196,鬼怒川ゴム工業,Consumer Cyclical,輸送用機器,貸借
+5201,旭硝子,Materials,ガラス･土石製品,貸借
+5202,日本板硝子,Materials,ガラス･土石製品,貸借
+5204,石塚硝子,Materials,ガラス･土石製品,貸借
+5208,有沢製作所,Materials,化学,貸借
+5210,日本山村硝子,Materials,ガラス･土石製品,貸借
+5214,日本電気硝子,Materials,ガラス･土石製品,貸借
+5218,オハラ,Materials,ガラス･土石製品,貸借
+5232,住友大阪セメント,Materials,ガラス･土石製品,貸借
+5233,太平洋セメント,Materials,ガラス･土石製品,貸借
+5234,デイ・シイ,Materials,ガラス･土石製品,信用
+5261,リゾートソリューション,Industrials,サービス業,信用
+5262,日本ヒューム,Materials,ガラス･土石製品,貸借
+5267,ハネックス,Materials,ガラス･土石製品,信用
+5268,旭コンクリート工業,Materials,ガラス･土石製品,信用
+5269,日本コンクリート工業,Materials,ガラス･土石製品,貸借
+5271,トーヨーアサノ,Materials,ガラス･土石製品,信用
+5276,石川島建材工業,Materials,ガラス･土石製品,信用
+5282,ジオスター,Materials,ガラス･土石製品,その他
+5288,ジャパンパイル,Materials,ガラス･土石製品,信用
+5301,東海カーボン,Materials,ガラス･土石製品,貸借
+5302,日本カーボン,Materials,ガラス･土石製品,貸借
+5310,東洋炭素,Materials,ガラス･土石製品,信用
+5331,ノリタケカンパニーリミテド,Materials,ガラス･土石製品,貸借
+5332,ＴＯＴＯ,Materials,ガラス･土石製品,貸借
+5333,日本碍子,Materials,ガラス･土石製品,貸借
+5334,日本特殊陶業,Materials,ガラス･土石製品,貸借
+5337,ダントーホールディングス,Materials,ガラス･土石製品,信用
+5344,ＭＡＲＵＷＡ,Materials,ガラス･土石製品,貸借
+5351,品川リフラクトリーズ,Materials,ガラス･土石製品,貸借
+5352,黒崎播磨,Materials,ガラス･土石製品,貸借
+5355,日本坩堝,Materials,ガラス･土石製品,信用
+5363,東京窯業,Materials,ガラス･土石製品,貸借
+5367,ニッカトー,Materials,ガラス･土石製品,貸借
+5384,フジミインコーポレーテッド,Materials,ガラス･土石製品,貸借
+5386,鶴弥,Materials,ガラス･土石製品,信用
+5390,宇部マテリアルズ,Materials,ガラス･土石製品,貸借
+5391,エーアンドエーマテリアル,Materials,ガラス･土石製品,貸借
+5393,ニチアス,Materials,ガラス･土石製品,貸借
+5395,理研コランダム,Materials,ガラス･土石製品,その他
+5401,新日本製鐵,Materials,鉄鋼,貸借
+5405,住友金属工業,Materials,鉄鋼,貸借
+5406,神戸製鋼所,Materials,鉄鋼,貸借
+5407,日新製鋼,Materials,鉄鋼,貸借
+5408,中山製鋼所,Materials,鉄鋼,貸借
+5410,合同製鐵,Materials,鉄鋼,貸借
+5411,ジェイ　エフ　イー　ホールディングス,Materials,鉄鋼,貸借
+5412,ポスコ,Materials,鉄鋼,信用
+5423,東京製鐵,Materials,鉄鋼,貸借
+5440,共英製鋼,Materials,鉄鋼,貸借
+5444,大和工業,Materials,鉄鋼,貸借
+5445,東京鐵鋼,Materials,鉄鋼,信用
+5446,北越メタル,Materials,鉄鋼,信用
+5449,大阪製鐵,Materials,鉄鋼,貸借
+5451,淀川製鋼所,Materials,鉄鋼,貸借
+5453,東洋鋼鈑,Materials,鉄鋼,貸借
+5457,住友鋼管,Materials,鉄鋼,貸借
+5458,高砂鐵工,Materials,鉄鋼,信用
+5463,丸一鋼管,Materials,鉄鋼,貸借
+5464,モリ工業,Materials,鉄鋼,貸借
+5471,大同特殊鋼,Materials,鉄鋼,貸借
+5476,日本高周波鋼業,Materials,鉄鋼,貸借
+5479,日本金属工業,Materials,鉄鋼,貸借
+5480,日本冶金工業,Materials,鉄鋼,貸借
+5481,山陽特殊製鋼,Materials,鉄鋼,貸借
+5482,愛知製鋼,Materials,鉄鋼,貸借
+5486,日立金属,Materials,鉄鋼,貸借
+5491,日本金属,Materials,鉄鋼,貸借
+5541,大平洋金属,Materials,鉄鋼,貸借
+5563,日本電工,Materials,鉄鋼,貸借
+5566,中央電気工業,Materials,鉄鋼,信用
+5602,栗本鐵工所,Materials,鉄鋼,貸借
+5605,アイメタルテクノロジー,Consumer Cyclical,輸送用機器,信用
+5606,旭テック,Materials,鉄鋼,貸借
+5609,日本鋳造,Materials,鉄鋼,貸借
+5610,大和重工,Materials,鉄鋼,信用
+5612,日本鋳鉄管,Materials,鉄鋼,信用
+5614,川金ホールディングス,Materials,鉄鋼,貸借
+5631,日本製鋼所,Industrials,機械,貸借
+5632,三菱製鋼,Materials,鉄鋼,貸借
+5641,ＴＤＦ,Materials,鉄鋼,信用
+5657,鈴木金属工業,Materials,鉄鋼,信用
+5658,日亜鋼業,Materials,鉄鋼,貸借
+5659,日本精線,Materials,鉄鋼,貸借
+5660,神鋼鋼線工業,Materials,鉄鋼,貸借
+5701,日本軽金属,Materials,非鉄金属,貸借
+5702,大紀アルミニウム工業所,Materials,非鉄金属,信用
+5706,三井金属鉱業,Materials,非鉄金属,貸借
+5707,東邦亜鉛,Materials,非鉄金属,貸借
+5711,三菱マテリアル,Materials,非鉄金属,貸借
+5713,住友金属鉱山,Materials,非鉄金属,貸借
+5714,ＤＯＷＡホールディングス,Materials,非鉄金属,貸借
+5715,古河機械金属,Materials,非鉄金属,貸借
+5726,大阪チタニウムテクノロジーズ,Materials,非鉄金属,信用
+5727,東邦チタニウム,Materials,非鉄金属,貸借
+5729,日本精鉱,Materials,非鉄金属,信用
+5738,住友軽金属工業,Materials,非鉄金属,貸借
+5741,古河スカイ,Materials,非鉄金属,信用
+5753,日本伸銅,Materials,非鉄金属,信用
+5801,古河電気工業,Materials,非鉄金属,貸借
+5802,住友電気工業,Materials,非鉄金属,貸借
+5803,フジクラ,Materials,非鉄金属,貸借
+5804,三菱電線工業,Materials,非鉄金属,貸借
+5805,昭和電線ホールディングス,Materials,非鉄金属,貸借
+5807,東京特殊電線,Materials,非鉄金属,貸借
+5809,タツタ電線,Materials,非鉄金属,貸借
+5812,日立電線,Materials,非鉄金属,貸借
+5815,沖電線,Materials,非鉄金属,貸借
+5816,オーナンバ,Materials,非鉄金属,貸借
+5819,カナレ電気,Materials,非鉄金属,信用
+5821,平河ヒューテック,Materials,非鉄金属,信用
+5851,リョービ,Materials,非鉄金属,貸借
+5852,アーレスティ,Materials,非鉄金属,貸借
+5856,東理ホールディングス,Materials,非鉄金属,信用
+5857,アサヒホールディングス,Materials,非鉄金属,貸借
+5901,東洋製罐,Materials,金属製品,貸借
+5902,ホッカンホールディングス,Materials,金属製品,貸借
+5905,日本製罐,Materials,金属製品,信用
+5909,コロナ,Materials,金属製品,信用
+5911,横河ブリッジホールディングス,Materials,金属製品,貸借
+5912,日本橋梁,Materials,金属製品,信用
+5915,駒井鉄工,Materials,金属製品,貸借
+5916,ハルテック,Materials,金属製品,信用
+5917,サクラダ,Materials,金属製品,信用
+5918,瀧上工業,Materials,金属製品,信用
+5919,ＪＳＴ,Materials,金属製品,信用
+5921,川岸工業,Materials,金属製品,信用
+5922,那須電機鉄工,Materials,金属製品,信用
+5923,高田機工,Materials,金属製品,貸借
+5929,三和ホールディングス,Materials,金属製品,貸借
+5930,文化シヤッター,Materials,金属製品,貸借
+5933,アルインコ,Materials,金属製品,信用
+5936,東洋シヤッター,Materials,金属製品,貸借
+5938,住生活グループ,Materials,金属製品,貸借
+5940,不二サッシ,Materials,金属製品,信用
+5942,日本フイルコン,Materials,金属製品,信用
+5943,ノーリツ,Materials,金属製品,貸借
+5946,長府製作所,Materials,金属製品,貸借
+5947,リンナイ,Materials,金属製品,貸借
+5949,ユニプレス,Consumer Cyclical,輸送用機器,信用
+5951,ダイニチ工業,Materials,金属製品,貸借
+5956,トーソー,Materials,金属製品,その他
+5957,日東精工,Materials,金属製品,貸借
+5958,三洋工業,Materials,金属製品,貸借
+5959,岡部,Materials,金属製品,貸借
+5963,日立ツール,Industrials,機械,信用
+5964,東洋刃物,Materials,金属製品,その他
+5965,フジマック,Materials,金属製品,信用
+5974,中国工業,Materials,金属製品,貸借
+5975,東プレ,Materials,金属製品,貸借
+5976,高周波熱錬,Materials,金属製品,貸借
+5981,東京製綱,Materials,金属製品,貸借
+5982,マルゼン,Materials,金属製品,信用
+5984,兼房,Materials,金属製品,信用
+5988,パイオラックス,Materials,金属製品,信用
+5991,日本発條,Materials,金属製品,貸借
+5992,中央発條,Materials,金属製品,貸借
+5994,ファインシンター,Materials,金属製品,信用
+5996,新立川航空機,Real Estate,不動産業,信用
+5998,アドバネクス,Materials,金属製品,信用
+6005,三浦工業,Industrials,機械,貸借
+6013,タクマ,Industrials,機械,貸借
+6022,赤阪鐵工所,Industrials,機械,信用
+6042,ニッキ,Consumer Cyclical,輸送用機器,その他
+6101,ツガミ,Industrials,機械,貸借
+6103,オークマ,Industrials,機械,貸借
+6104,東芝機械,Industrials,機械,貸借
+6112,小島鉄工所,Industrials,機械,その他
+6113,アマダ,Industrials,機械,貸借
+6118,アイダエンジニアリング,Industrials,機械,貸借
+6121,滝澤鉄工所,Industrials,機械,信用
+6125,岡本工作機械製作所,Industrials,機械,信用
+6131,浜井産業,Industrials,機械,信用
+6135,牧野フライス製作所,Industrials,機械,貸借
+6136,オーエスジー,Industrials,機械,貸借
+6137,小池酸素工業,Industrials,機械,貸借
+6138,ダイジェット工業,Industrials,機械,信用
+6140,旭ダイヤモンド工業,Industrials,機械,貸借
+6141,森精機製作所,Industrials,機械,貸借
+6143,ソディック,Industrials,機械,貸借
+6144,西部電機,Industrials,機械,その他
+6146,ディスコ,Industrials,機械,貸借
+6151,日東工器,Industrials,機械,貸借
+6155,高松機械工業,Industrials,機械,信用
+6161,エスティック,Industrials,機械,信用
+6162,ミヤノ,Industrials,機械,信用
+6201,豊田自動織機,Consumer Cyclical,輸送用機器,貸借
+6203,豊和工業,Industrials,機械,貸借
+6205,大阪機工,Industrials,機械,貸借
+6208,石川製作所,Industrials,機械,貸借
+6210,東洋機械金属,Industrials,機械,信用
+6211,倉敷機械,Industrials,機械,信用
+6213,オーエム製作所,Industrials,機械,貸借
+6217,津田駒工業,Industrials,機械,貸借
+6218,エンシュウ,Industrials,機械,貸借
+6222,島精機製作所,Industrials,機械,貸借
+6242,日本スピンドル製造,Industrials,機械,貸借
+6247,日阪製作所,Industrials,機械,貸借
+6250,やまびこ,Industrials,機械,貸借
+6252,ＴＡＩＹＯ,Industrials,機械,貸借
+6253,エフオーアイ,Industrials,機械,信用
+6255,エヌ・ピー・シー,Industrials,機械,貸借
+6262,ペガサスミシン製造,Industrials,機械,信用
+6264,マルマエ,Industrials,機械,その他
+6268,ナブテスコ,Industrials,機械,貸借
+6269,三井海洋開発,Industrials,機械,貸借
+6271,ニッセイ,Industrials,機械,貸借
+6272,レオン自動機,Industrials,機械,貸借
+6273,ＳＭＣ,Industrials,機械,貸借
+6274,新川,Industrials,機械,貸借
+6277,ホソカワミクロン,Industrials,機械,信用
+6278,ユニオンツール,Industrials,機械,貸借
+6282,オイレス工業,Industrials,機械,貸借
+6287,サトー,Industrials,機械,貸借
+6291,日本エアーテック,Industrials,機械,信用
+6293,日精樹脂工業,Industrials,機械,貸借
+6298,ワイエイシイ,Industrials,機械,貸借
+6300,アピックヤマダ,Industrials,機械,信用
+6301,小松製作所,Industrials,機械,貸借
+6302,住友重機械工業,Industrials,機械,貸借
+6305,日立建機,Industrials,機械,貸借
+6306,日工,Industrials,機械,貸借
+6309,巴工業,Industrials,機械,信用
+6310,井関農機,Industrials,機械,貸借
+6315,ＴＯＷＡ,Industrials,機械,貸借
+6316,丸山製作所,Industrials,機械,貸借
+6317,北川鉄工所,Industrials,機械,貸借
+6319,シンニッタン,Materials,鉄鋼,信用
+6321,ＩＨＩ運搬機械,Industrials,機械,信用
+6325,タカキタ,Industrials,機械,信用
+6326,クボタ,Industrials,機械,貸借
+6328,荏原実業,Industrials,機械,貸借
+6330,東洋エンジニアリング,Industrials,建設業,貸借
+6331,三菱化工機,Industrials,機械,貸借
+6332,月島機械,Industrials,機械,貸借
+6333,帝国電機製作所,Industrials,機械,貸借
+6334,明治機械,Industrials,機械,信用
+6335,東京機械製作所,Industrials,機械,貸借
+6336,石井表記,Industrials,機械,信用
+6339,新東工業,Industrials,機械,貸借
+6340,澁谷工業,Industrials,機械,信用
+6343,フリージア・マクロス,Industrials,機械,信用
+6345,アイチ　コーポレーション,Industrials,機械,貸借
+6349,小森コーポレーション,Industrials,機械,貸借
+6351,鶴見製作所,Industrials,機械,信用
+6355,住友精密工業,Industrials,機械,貸借
+6356,日本ギア工業,Industrials,機械,信用
+6358,酒井重工業,Industrials,機械,貸借
+6360,東京自働機械製作所,Industrials,機械,信用
+6361,荏原製作所,Industrials,機械,貸借
+6362,石井鐵工所,Industrials,機械,貸借
+6363,酉島製作所,Industrials,機械,貸借
+6364,北越工業,Industrials,機械,貸借
+6365,電業社機械製作所,Industrials,機械,信用
+6366,千代田化工建設,Industrials,建設業,貸借
+6367,ダイキン工業,Industrials,機械,貸借
+6368,オルガノ,Industrials,機械,貸借
+6369,トーヨーカネツ,Industrials,機械,貸借
+6370,栗田工業,Industrials,機械,貸借
+6371,椿本チエイン,Industrials,機械,貸借
+6373,大同工業,Industrials,機械,貸借
+6375,日本コンベヤ,Industrials,機械,信用
+6376,日機装,Technology,精密機器,貸借
+6378,木村化工機,Industrials,機械,貸借
+6379,新興プランテック,Industrials,建設業,貸借
+6381,アネスト岩田,Industrials,機械,貸借
+6382,トリニティ工業,Industrials,機械,信用
+6383,ダイフク,Industrials,機械,貸借
+6390,加藤製作所,Industrials,機械,貸借
+6392,ヤマダコーポレーション,Industrials,機械,信用
+6393,油研工業,Industrials,機械,貸借
+6395,タダノ,Industrials,機械,貸借
+6396,宇野澤組鐵工所,Industrials,機械,その他
+6406,フジテック,Industrials,機械,貸借
+6407,シーケーディ,Industrials,機械,貸借
+6409,キトー,Industrials,機械,貸借
+6412,平和,Industrials,機械,信用
+6413,理想科学工業,Industrials,機械,貸借
+6417,ＳＡＮＫＹＯ,Industrials,機械,貸借
+6418,日本金銭機械,Industrials,機械,貸借
+6419,マースエンジニアリング,Industrials,機械,貸借
+6420,福島工業,Industrials,機械,信用
+6421,キヤノンファインテック,Industrials,機械,貸借
+6423,アビリット,Industrials,機械,貸借
+6428,オーイズミ,Industrials,機械,貸借
+6430,ダイコク電機,Industrials,機械,貸借
+6436,アマノ,Industrials,機械,貸借
+6437,三條機械製作所,Industrials,機械,信用
+6440,ＪＵＫＩ,Industrials,機械,貸借
+6443,東洋製作所,Industrials,機械,信用
+6444,サンデン,Industrials,機械,貸借
+6445,蛇の目ミシン工業,Industrials,機械,貸借
+6448,ブラザー工業,Technology,電気機器,貸借
+6453,シルバー精工,Industrials,機械,信用
+6454,マックス,Industrials,機械,貸借
+6455,モリタホールディングス,Consumer Cyclical,輸送用機器,貸借
+6457,グローリー,Industrials,機械,貸借
+6459,大和冷機工業,Industrials,機械,貸借
+6460,セガサミーホールディングス,Industrials,機械,貸借
+6461,日本ピストンリング,Industrials,機械,貸借
+6462,リケン,Industrials,機械,貸借
+6463,帝国ピストンリング,Industrials,機械,貸借
+6465,ホシザキ電機,Industrials,機械,信用
+6466,トウアバルブグループ本社,Industrials,機械,貸借
+6470,大豊工業,Industrials,機械,貸借
+6471,日本精工,Industrials,機械,貸借
+6472,ＮＴＮ,Industrials,機械,貸借
+6473,ジェイテクト,Industrials,機械,貸借
+6474,不二越,Industrials,機械,貸借
+6479,ミネベア,Technology,電気機器,貸借
+6480,日本トムソン,Industrials,機械,貸借
+6481,ＴＨＫ,Industrials,機械,貸借
+6482,ユーシン精機,Industrials,機械,貸借
+6485,前澤給装工業,Industrials,機械,貸借
+6486,イーグル工業,Industrials,機械,貸借
+6489,前澤工業,Industrials,機械,貸借
+6490,日本ピラー工業,Industrials,機械,貸借
+6492,岡野バルブ製造,Industrials,機械,信用
+6493,日鍛バルブ,Industrials,機械,信用
+6495,宮入バルブ製作所,Industrials,機械,信用
+6498,キッツ,Industrials,機械,貸借
+6501,日立製作所,Technology,電気機器,貸借
+6502,東芝,Technology,電気機器,貸借
+6503,三菱電機,Technology,電気機器,貸借
+6504,富士電機ホールディングス,Technology,電気機器,貸借
+6505,東洋電機製造,Technology,電気機器,信用
+6506,安川電機,Technology,電気機器,貸借
+6507,シンフォニアテクノロジー,Technology,電気機器,貸借
+6508,明電舎,Technology,電気機器,貸借
+6513,オリジン電気,Technology,電気機器,信用
+6516,山洋電気,Technology,電気機器,貸借
+6517,デンヨー,Technology,電気機器,貸借
+6581,日立工機,Industrials,機械,貸借
+6584,三櫻工業,Consumer Cyclical,輸送用機器,貸借
+6585,日本電産サーボ,Technology,電気機器,信用
+6586,マキタ,Industrials,機械,貸借
+6588,東芝テック,Technology,電気機器,貸借
+6590,芝浦メカトロニクス,Technology,電気機器,貸借
+6591,西芝電機,Technology,電気機器,信用
+6592,マブチモーター,Technology,電気機器,貸借
+6594,日本電産,Technology,電気機器,貸借
+6621,高岳製作所,Technology,電気機器,貸借
+6622,ダイヘン,Technology,電気機器,貸借
+6632,ＪＶＣ・ケンウッド・ホールディングス,Technology,電気機器,貸借
+6639,コンテック,Technology,電気機器,貸借
+6641,日新電機,Technology,電気機器,貸借
+6643,戸上電機製作所,Technology,電気機器,貸借
+6644,大崎電気工業,Technology,電気機器,貸借
+6645,オムロン,Technology,電気機器,貸借
+6647,森尾電機,Technology,電気機器,信用
+6651,日東工業,Technology,電気機器,貸借
+6652,ＩＤＥＣ,Technology,電気機器,貸借
+6654,不二電機工業,Technology,電気機器,信用
+6656,インスペック,Technology,電気機器,その他
+6665,エルピーダメモリ,Technology,電気機器,信用
+6667,シコー,Technology,電気機器,信用
+6668,アドテック　プラズマ　テクノロジー,Technology,電気機器,その他
+6670,ＭＣＪ,Technology,電気機器,信用
+6672,レイテックス,Technology,電気機器,貸借
+6674,ジーエス・ユアサ　コーポレーション,Technology,電気機器,貸借
+6675,サクサホールディングス,Technology,電気機器,貸借
+6676,メルコホールディングス,Technology,電気機器,貸借
+6678,テクノメディカ,Technology,電気機器,信用
+6701,日本電気,Technology,電気機器,貸借
+6702,富士通,Technology,電気機器,貸借
+6703,沖電気工業,Technology,電気機器,貸借
+6704,岩崎通信機,Technology,電気機器,貸借
+6706,電気興業,Technology,電気機器,貸借
+6707,サンケン電気,Technology,電気機器,貸借
+6709,明星電気,Technology,電気機器,その他
+6715,ナカヨ通信機,Technology,電気機器,貸借
+6718,アイホン,Technology,電気機器,貸借
+6719,富士通コンポーネント,Technology,電気機器,その他
+6721,ウインテスト,Technology,電気機器,信用
+6723,ＮＥＣエレクトロニクス,Technology,電気機器,貸借
+6724,セイコーエプソン,Technology,電気機器,貸借
+6727,ワコム,Technology,電気機器,貸借
+6728,アルバック,Technology,電気機器,貸借
+6730,アクセル,Technology,電気機器,貸借
+6731,ピクセラ,Technology,電気機器,信用
+6737,ナナオ,Technology,電気機器,信用
+6741,日本信号,Technology,電気機器,貸借
+6742,京三製作所,Technology,電気機器,貸借
+6743,大同信号,Technology,電気機器,信用
+6744,能美防災,Technology,電気機器,貸借
+6745,ホーチキ,Technology,電気機器,貸借
+6747,小糸工業,Technology,電気機器,信用
+6749,マスプロ電工,Technology,電気機器,貸借
+6751,日本無線,Technology,電気機器,貸借
+6752,パナソニック,Technology,電気機器,貸借
+6753,シャープ,Technology,電気機器,貸借
+6754,アンリツ,Technology,電気機器,貸借
+6755,富士通ゼネラル,Technology,電気機器,貸借
+6756,日立国際電気,Technology,電気機器,貸借
+6758,ソニー,Technology,電気機器,貸借
+6762,ＴＤＫ,Technology,電気機器,貸借
+6763,帝国通信工業,Technology,電気機器,貸借
+6764,三洋電機,Technology,電気機器,貸借
+6766,宮越商事,Technology,電気機器,信用
+6767,ミツミ電機,Technology,電気機器,貸借
+6768,タムラ製作所,Technology,電気機器,貸借
+6770,アルプス電気,Technology,電気機器,貸借
+6771,池上通信機,Technology,電気機器,貸借
+6772,東京コスモス電機,Technology,電気機器,信用
+6773,パイオニア,Technology,電気機器,貸借
+6775,東和メックス,Technology,電気機器,信用
+6776,天昇電気工業,Materials,化学,信用
+6778,アルチザネットワークス,Technology,電気機器,貸借
+6779,日本電波工業,Technology,電気機器,信用
+6786,リアルビジョン,Technology,電気機器,その他
+6788,日本トリム,Technology,電気機器,貸借
+6789,ローランド　ディー．ジー．,Technology,電気機器,信用
+6790,野田スクリーン,Technology,電気機器,貸借
+6791,コロムビアミュージックエンタテインメント,Communication Services,情報･通信業,貸借
+6793,山水電気,Technology,電気機器,信用
+6794,フォスター電機,Technology,電気機器,貸借
+6796,クラリオン,Technology,電気機器,貸借
+6798,ＳＭＫ,Technology,電気機器,貸借
+6800,ヨコオ,Technology,電気機器,貸借
+6801,東光,Technology,電気機器,貸借
+6803,ティアック,Technology,電気機器,貸借
+6804,ホシデン,Technology,電気機器,貸借
+6806,ヒロセ電機,Technology,電気機器,貸借
+6807,日本航空電子工業,Technology,電気機器,貸借
+6809,ＴＯＡ,Technology,電気機器,貸借
+6810,日立マクセル,Technology,電気機器,貸借
+6815,ユニデン,Technology,電気機器,貸借
+6816,アルパイン,Technology,電気機器,貸借
+6817,スミダコーポレーション,Technology,電気機器,貸借
+6818,島田理化工業,Technology,電気機器,貸借
+6820,アイコム,Technology,電気機器,貸借
+6823,リオン,Technology,電気機器,貸借
+6826,本多通信工業,Technology,電気機器,貸借
+6832,アオイ電子,Technology,電気機器,信用
+6835,アライドテレシスホールディングス,Technology,電気機器,信用
+6836,ぷらっとホーム,Technology,電気機器,その他
+6839,船井電機,Technology,電気機器,貸借
+6841,横河電機,Technology,電気機器,貸借
+6842,ユニパルス,Technology,電気機器,信用
+6844,新電元工業,Technology,電気機器,貸借
+6845,山武,Technology,電気機器,貸借
+6848,東亜ディーケーケー,Technology,電気機器,信用
+6849,日本光電工業,Technology,電気機器,貸借
+6850,チノー,Technology,電気機器,貸借
+6853,共和電業,Technology,電気機器,信用
+6855,日本電子材料,Technology,電気機器,信用
+6856,堀場製作所,Technology,電気機器,信用
+6857,アドバンテスト,Technology,電気機器,貸借
+6858,小野測器,Technology,電気機器,信用
+6859,エスペック,Technology,電気機器,貸借
+6860,サンクス,Technology,電気機器,貸借
+6861,キーエンス,Technology,電気機器,貸借
+6866,日置電機,Technology,電気機器,信用
+6869,シスメックス,Technology,電気機器,貸借
+6875,メガチップス,Technology,電気機器,貸借
+6877,ＯＢＡＲＡ,Technology,電気機器,貸借
+6878,長野日本無線,Technology,電気機器,貸借
+6881,キョウデン,Technology,電気機器,貸借
+6883,日本電産コパル電子,Technology,電気機器,貸借
+6885,ミヤチテクノス,Technology,電気機器,信用
+6894,パルステック工業,Technology,電気機器,信用
+6897,ツインバード工業,Technology,電気機器,その他
+6899,ＡＳＴＩ,Technology,電気機器,信用
+6900,東京電波,Technology,電気機器,信用
+6901,澤藤電機,Technology,電気機器,貸借
+6902,デンソー,Consumer Cyclical,輸送用機器,貸借
+6905,コーセル,Technology,電気機器,貸借
+6910,日立メディコ,Technology,電気機器,信用
+6911,新日本無線,Technology,電気機器,貸借
+6914,オプテックス,Technology,電気機器,貸借
+6915,千代田インテグレ,Technology,電気機器,貸借
+6921,東光電気,Technology,電気機器,貸借
+6923,スタンレー電気,Technology,電気機器,貸借
+6924,岩崎電気,Technology,電気機器,貸借
+6925,ウシオ電機,Technology,電気機器,貸借
+6926,岡谷電機産業,Technology,電気機器,貸借
+6927,ヘリオス　テクノ　ホールディング,Technology,電気機器,信用
+6929,日本セラミック,Technology,電気機器,信用
+6934,新神戸電機,Technology,電気機器,貸借
+6935,日本デジタル研究所,Technology,電気機器,貸借
+6937,古河電池,Technology,電気機器,信用
+6938,双信電機,Technology,電気機器,信用
+6941,山一電機,Technology,電気機器,信用
+6945,富士通フロンテック,Technology,電気機器,貸借
+6946,日本アビオニクス,Technology,電気機器,信用
+6947,図研,Technology,電気機器,貸借
+6950,ワイ・イー・データ,Technology,電気機器,信用
+6951,日本電子,Technology,電気機器,貸借
+6952,カシオ計算機,Technology,電気機器,貸借
+6954,ファナック,Technology,電気機器,貸借
+6955,ＦＤＫ,Technology,電気機器,信用
+6958,日本シイエムケイ,Technology,電気機器,貸借
+6961,エンプラス,Technology,電気機器,信用
+6963,ローム,Technology,電気機器,貸借
+6964,サンコー,Technology,電気機器,その他
+6965,浜松ホトニクス,Technology,電気機器,貸借
+6966,三井ハイテック,Technology,電気機器,貸借
+6967,新光電気工業,Technology,電気機器,貸借
+6971,京セラ,Technology,電気機器,貸借
+6972,エルナー,Technology,電気機器,信用
+6973,協栄産業,Industrials,卸売業,信用
+6974,日本インター,Technology,電気機器,貸借
+6976,太陽誘電,Technology,電気機器,貸借
+6977,日本抵抗器製作所,Technology,電気機器,信用
+6981,村田製作所,Technology,電気機器,貸借
+6982,リード,Consumer Cyclical,輸送用機器,信用
+6985,ユーシン,Technology,電気機器,貸借
+6986,双葉電子工業,Technology,電気機器,貸借
+6988,日東電工,Materials,化学,貸借
+6989,北陸電気工業,Technology,電気機器,貸借
+6991,パナソニック電工,Technology,電気機器,貸借
+6992,国産電機,Technology,電気機器,信用
+6993,森電機,Technology,電気機器,その他
+6994,指月電機製作所,Technology,電気機器,貸借
+6995,東海理化電機製作所,Consumer Cyclical,輸送用機器,貸借
+6996,ニチコン,Technology,電気機器,貸借
+6997,日本ケミコン,Technology,電気機器,貸借
+6998,日本タングステン,Technology,電気機器,信用
+6999,ＫＯＡ,Technology,電気機器,貸借
+7003,三井造船,Consumer Cyclical,輸送用機器,貸借
+7004,日立造船,Industrials,機械,貸借
+7007,佐世保重工業,Consumer Cyclical,輸送用機器,貸借
+7011,三菱重工業,Industrials,機械,貸借
+7012,川崎重工業,Consumer Cyclical,輸送用機器,貸借
+7013,ＩＨＩ,Industrials,機械,貸借
+7018,内海造船,Consumer Cyclical,輸送用機器,貸借
+7021,ニッチツ,Industrials,機械,信用
+7102,日本車輌製造,Consumer Cyclical,輸送用機器,貸借
+7105,日本輸送機,Consumer Cyclical,輸送用機器,信用
+7122,近畿車輛,Consumer Cyclical,輸送用機器,貸借
+7201,日産自動車,Consumer Cyclical,輸送用機器,貸借
+7202,いすゞ自動車,Consumer Cyclical,輸送用機器,貸借
+7203,トヨタ自動車,Consumer Cyclical,輸送用機器,貸借
+7205,日野自動車,Consumer Cyclical,輸送用機器,貸借
+7211,三菱自動車工業,Consumer Cyclical,輸送用機器,貸借
+7212,エフテック,Consumer Cyclical,輸送用機器,信用
+7213,レシップ,Consumer Cyclical,輸送用機器,信用
+7220,武蔵精密工業,Consumer Cyclical,輸送用機器,信用
+7221,トヨタ車体,Consumer Cyclical,輸送用機器,貸借
+7222,日産車体,Consumer Cyclical,輸送用機器,貸借
+7223,関東自動車工業,Consumer Cyclical,輸送用機器,貸借
+7224,新明和工業,Consumer Cyclical,輸送用機器,貸借
+7226,極東開発工業,Consumer Cyclical,輸送用機器,貸借
+7230,日信工業,Consumer Cyclical,輸送用機器,信用
+7231,トピー工業,Consumer Cyclical,輸送用機器,貸借
+7233,自動車部品工業,Consumer Cyclical,輸送用機器,信用
+7235,東京ラヂエーター製造,Consumer Cyclical,輸送用機器,信用
+7236,ティラド,Consumer Cyclical,輸送用機器,貸借
+7238,曙ブレーキ工業,Consumer Cyclical,輸送用機器,貸借
+7239,タチエス,Consumer Cyclical,輸送用機器,貸借
+7240,ＮＯＫ,Consumer Cyclical,輸送用機器,貸借
+7241,フタバ産業,Consumer Cyclical,輸送用機器,貸借
+7242,カヤバ工業,Consumer Cyclical,輸送用機器,貸借
+7243,シロキ工業,Consumer Cyclical,輸送用機器,貸借
+7244,市光工業,Technology,電気機器,貸借
+7245,大同メタル工業,Consumer Cyclical,輸送用機器,貸借
+7246,プレス工業,Consumer Cyclical,輸送用機器,貸借
+7247,ミクニ,Consumer Cyclical,輸送用機器,信用
+7248,カルソニックカンセイ,Consumer Cyclical,輸送用機器,貸借
+7250,太平洋工業,Consumer Cyclical,輸送用機器,貸借
+7251,ケーヒン,Consumer Cyclical,輸送用機器,貸借
+7254,ユニバンス,Consumer Cyclical,輸送用機器,信用
+7256,河西工業,Consumer Cyclical,輸送用機器,貸借
+7259,アイシン精機,Consumer Cyclical,輸送用機器,貸借
+7260,富士機工,Consumer Cyclical,輸送用機器,信用
+7261,マツダ,Consumer Cyclical,輸送用機器,貸借
+7262,ダイハツ工業,Consumer Cyclical,輸送用機器,貸借
+7263,愛知機械工業,Consumer Cyclical,輸送用機器,貸借
+7266,今仙電機製作所,Consumer Cyclical,輸送用機器,信用
+7267,本田技研工業,Consumer Cyclical,輸送用機器,貸借
+7269,スズキ,Consumer Cyclical,輸送用機器,貸借
+7270,富士重工業,Consumer Cyclical,輸送用機器,貸借
+7272,ヤマハ発動機,Consumer Cyclical,輸送用機器,貸借
+7273,イクヨ,Consumer Cyclical,輸送用機器,信用
+7274,ショーワ,Consumer Cyclical,輸送用機器,貸借
+7276,小糸製作所,Technology,電気機器,貸借
+7277,ＴＢＫ,Consumer Cyclical,輸送用機器,貸借
+7278,エクセディ,Consumer Cyclical,輸送用機器,貸借
+7280,ミツバ,Technology,電気機器,貸借
+7282,豊田合成,Consumer Cyclical,輸送用機器,貸借
+7283,愛三工業,Consumer Cyclical,輸送用機器,貸借
+7284,盟和産業,Consumer Cyclical,輸送用機器,信用
+7287,日本精機,Consumer Cyclical,輸送用機器,貸借
+7291,日本プラスト,Consumer Cyclical,輸送用機器,信用
+7292,村上開明堂,Consumer Cyclical,輸送用機器,信用
+7294,ヨロズ,Consumer Cyclical,輸送用機器,貸借
+7296,エフ・シー・シー,Consumer Cyclical,輸送用機器,貸借
+7299,フジオーゼックス,Consumer Cyclical,輸送用機器,信用
+7305,新家工業,Materials,鉄鋼,貸借
+7309,シマノ,Consumer Cyclical,輸送用機器,貸借
+7311,カワムラサイクル,Consumer Cyclical,輸送用機器,信用
+7312,タカタ,Consumer Cyclical,輸送用機器,貸借
+7313,テイ・エス　テック,Consumer Cyclical,輸送用機器,貸借
+7404,昭和飛行機工業,Consumer Cyclical,輸送用機器,信用
+7408,ジャムコ,Consumer Cyclical,輸送用機器,信用
+7412,アトム,Consumer Cyclical,小売業,貸借
+7414,小野建,Industrials,卸売業,貸借
+7416,はるやま商事,Consumer Cyclical,小売業,信用
+7420,佐鳥電機,Industrials,卸売業,貸借
+7421,カッパ・クリエイト,Consumer Cyclical,小売業,信用
+7427,エコートレーディング,Industrials,卸売業,貸借
+7433,伯東,Industrials,卸売業,貸借
+7438,コンドーテック,Industrials,卸売業,信用
+7442,中山福,Industrials,卸売業,貸借
+7445,ライトオン,Consumer Cyclical,小売業,信用
+7447,ナガイレーベン,Industrials,卸売業,信用
+7448,ジーンズメイト,Consumer Cyclical,小売業,信用
+7451,菱食,Industrials,卸売業,信用
+7453,良品計画,Consumer Cyclical,小売業,貸借
+7455,三城ホールディングス,Consumer Cyclical,小売業,貸借
+7456,松田産業,Industrials,卸売業,信用
+7459,メディパルホールディングス,Industrials,卸売業,貸借
+7463,アドヴァン,Industrials,卸売業,貸借
+7466,ＳＰＫ,Industrials,卸売業,信用
+7474,ジー・ネットワークス,Consumer Cyclical,小売業,信用
+7476,アズワン,Industrials,卸売業,信用
+7480,スズデン,Industrials,卸売業,貸借
+7481,尾家産業,Industrials,卸売業,信用
+7482,シモジマ,Industrials,卸売業,貸借
+7483,ドウシシャ,Industrials,卸売業,貸借
+7487,小津産業,Industrials,卸売業,信用
+7490,日新商事,Industrials,卸売業,信用
+7494,コナカ,Consumer Cyclical,小売業,貸借
+7504,高速,Industrials,卸売業,貸借
+7505,扶桑電通,Industrials,卸売業,その他
+7506,ハウス　オブ　ローゼ,Consumer Cyclical,小売業,貸借
+7508,Ｇ‐７ホールディングス,Consumer Cyclical,小売業,貸借
+7512,イオン北海道,Consumer Cyclical,小売業,貸借
+7513,コジマ,Consumer Cyclical,小売業,貸借
+7514,ヒマラヤ,Consumer Cyclical,小売業,信用
+7516,コーナン商事,Consumer Cyclical,小売業,貸借
+7517,黒田電気,Industrials,卸売業,貸借
+7518,ネットワンシステムズ,Communication Services,情報･通信業,貸借
+7520,エコス,Consumer Cyclical,小売業,信用
+7522,ワタミ,Consumer Cyclical,小売業,貸借
+7524,マルシェ,Consumer Cyclical,小売業,貸借
+7525,リックス,Industrials,卸売業,信用
+7532,ドン・キホーテ,Consumer Cyclical,小売業,貸借
+7537,丸文,Industrials,卸売業,貸借
+7541,メガネトップ,Consumer Cyclical,小売業,信用
+7544,スリーエフ,Consumer Cyclical,小売業,貸借
+7545,西松屋チェーン,Consumer Cyclical,小売業,信用
+7550,ゼンショー,Consumer Cyclical,小売業,貸借
+7552,ハピネット,Industrials,卸売業,貸借
+7554,幸楽苑,Consumer Cyclical,小売業,貸借
+7558,トーメンエレクトロニクス,Industrials,卸売業,信用
+7560,ユニマットライフ,Consumer Cyclical,小売業,貸借
+7561,ハークスレイ,Consumer Cyclical,小売業,貸借
+7562,安楽亭,Consumer Cyclical,小売業,信用
+7563,日発販売,Industrials,卸売業,信用
+7581,サイゼリヤ,Consumer Cyclical,小売業,貸借
+7591,エクセル,Industrials,卸売業,信用
+7594,マルカキカイ,Industrials,卸売業,信用
+7595,アルゴグラフィックス,Communication Services,情報･通信業,信用
+7596,魚力,Consumer Cyclical,小売業,信用
+7599,ガリバーインターナショナル,Industrials,卸売業,貸借
+7600,日本エム・ディ・エム,Industrials,卸売業,信用
+7601,ポプラ,Consumer Cyclical,小売業,貸借
+7602,カーチスホールディングス,Industrials,卸売業,信用
+7604,梅の花,Consumer Cyclical,小売業,信用
+7606,ユナイテッドアローズ,Consumer Cyclical,小売業,信用
+7607,進和,Industrials,卸売業,信用
+7608,エスケイジャパン,Industrials,卸売業,貸借
+7609,ダイトエレクトロン,Industrials,卸売業,貸借
+7611,ハイデイ日高,Consumer Cyclical,小売業,貸借
+7613,シークス,Industrials,卸売業,貸借
+7615,京都きもの友禅,Consumer Cyclical,小売業,貸借
+7616,コロワイド,Consumer Cyclical,小売業,貸借
+7619,田中商事,Industrials,卸売業,貸借
+7625,グローバルダイニング,Consumer Cyclical,小売業,貸借
+7628,オーハシテクニカ,Industrials,卸売業,貸借
+7630,壱番屋,Consumer Cyclical,小売業,貸借
+7631,マクニカ,Industrials,卸売業,貸借
+7637,白銅,Industrials,卸売業,貸借
+7640,トップカルチャー,Consumer Cyclical,小売業,貸借
+7649,スギホールディングス,Consumer Cyclical,小売業,貸借
+7701,島津製作所,Technology,精密機器,貸借
+7702,ＪＭＳ,Technology,精密機器,貸借
+7703,川澄化学工業,Technology,精密機器,信用
+7704,アロカ,Technology,電気機器,貸借
+7705,ジーエルサイエンス,Technology,精密機器,貸借
+7709,クボテック,Technology,精密機器,貸借
+7714,モリテックス,Technology,精密機器,信用
+7715,長野計器,Technology,精密機器,貸借
+7717,ブイ・テクノロジー,Technology,精密機器,貸借
+7718,スター精密,Technology,電気機器,貸借
+7719,テークスグループ,Technology,精密機器,信用
+7721,東京計器,Technology,精密機器,貸借
+7723,愛知時計電機,Technology,精密機器,貸借
+7725,インターアクション,Technology,精密機器,貸借
+7726,黒田精工,Industrials,機械,貸借
+7727,オーバル,Technology,精密機器,信用
+7728,日本電産トーソク,Consumer Cyclical,輸送用機器,貸借
+7729,東京精密,Technology,精密機器,貸借
+7731,ニコン,Technology,精密機器,貸借
+7732,トプコン,Technology,精密機器,貸借
+7733,オリンパス,Technology,精密機器,貸借
+7734,理研計器,Technology,精密機器,貸借
+7735,大日本スクリーン製造,Technology,電気機器,貸借
+7736,ユニオンホールディングス,Technology,精密機器,その他
+7739,キヤノン電子,Technology,電気機器,貸借
+7740,タムロン,Technology,精密機器,貸借
+7741,ＨＯＹＡ,Technology,精密機器,貸借
+7744,ノーリツ鋼機,Technology,精密機器,貸借
+7745,エー・アンド・デイ,Technology,精密機器,貸借
+7747,朝日インテック,Technology,精密機器,信用
+7751,キヤノン,Technology,電気機器,貸借
+7752,リコー,Technology,電気機器,貸借
+7756,日本電産コパル,Technology,精密機器,貸借
+7757,日本電産サンキョー,Technology,電気機器,貸借
+7758,セコニック,Industrials,機械,信用
+7762,シチズンホールディングス,Technology,精密機器,貸借
+7768,ジェコー,Technology,精密機器,信用
+7769,リズム時計工業,Technology,精密機器,貸借
+7775,大研医器,Technology,精密機器,信用
+7820,ニホンフラッシュ,Industrials,その他製品,信用
+7821,前田工繊,Industrials,その他製品,信用
+7822,永大産業,Industrials,その他製品,貸借
+7825,ＳＲＩスポーツ,Industrials,その他製品,信用
+7829,サマンサタバサジャパンリミテッド,Industrials,その他製品,信用
+7831,ウイルコ,Industrials,その他製品,信用
+7832,バンダイナムコホールディングス,Industrials,その他製品,貸借
+7833,アイフィスジャパン,Industrials,その他製品,信用
+7838,共立印刷,Industrials,その他製品,貸借
+7839,ＳＨＯＥＩ,Industrials,その他製品,信用
+7840,フランスベッドホールディングス,Industrials,その他製品,貸借
+7844,マーベラスエンターテイメント,Communication Services,情報･通信業,貸借
+7846,パイロットコーポレーション,Industrials,その他製品,貸借
+7853,ＹＡＭＡＴＯ,Industrials,その他製品,その他
+7856,萩原工業,Industrials,その他製品,その他
+7859,アルメディオ,Industrials,その他製品,貸借
+7860,エイベックス・グループ・ホールディングス,Communication Services,情報･通信業,貸借
+7862,トッパン・フォームズ,Industrials,その他製品,貸借
+7864,フジシールインターナショナル,Industrials,その他製品,貸借
+7867,タカラトミー,Industrials,その他製品,貸借
+7868,廣済堂,Industrials,その他製品,信用
+7873,アーク,Industrials,その他製品,貸借
+7874,レック,Materials,化学,信用
+7879,ノダ,Industrials,その他製品,貸借
+7882,アロン化成,Materials,化学,貸借
+7885,タカノ,Industrials,その他製品,貸借
+7893,プロネクサス,Industrials,その他製品,信用
+7896,セブン工業,Industrials,その他製品,信用
+7897,ホクシン,Industrials,その他製品,貸借
+7898,ウッドワン,Industrials,その他製品,貸借
+7905,大建工業,Industrials,その他製品,貸借
+7906,ヨネックス,Industrials,その他製品,信用
+7908,きもと,Materials,化学,信用
+7911,凸版印刷,Industrials,その他製品,貸借
+7912,大日本印刷,Industrials,その他製品,貸借
+7913,図書印刷,Industrials,その他製品,貸借
+7914,共同印刷,Industrials,その他製品,貸借
+7915,日本写真印刷,Industrials,その他製品,貸借
+7916,光村印刷,Industrials,その他製品,貸借
+7917,藤森工業,Materials,化学,信用
+7919,野崎印刷紙業,Industrials,その他製品,貸借
+7920,三浦印刷,Industrials,その他製品,信用
+7921,宝印刷,Industrials,その他製品,貸借
+7925,前澤化成工業,Materials,化学,貸借
+7934,メルクス,Industrials,その他製品,その他
+7935,コンビ,Industrials,その他製品,信用
+7936,アシックス,Industrials,その他製品,貸借
+7937,ツツミ,Industrials,その他製品,信用
+7942,ＪＳＰ,Materials,化学,貸借
+7943,ニチハ,Materials,ガラス･土石製品,貸借
+7944,ローランド,Industrials,その他製品,貸借
+7947,エフピコ,Materials,化学,貸借
+7949,小松ウオール工業,Industrials,その他製品,貸借
+7951,ヤマハ,Industrials,その他製品,貸借
+7952,河合楽器製作所,Industrials,その他製品,貸借
+7955,クリナップ,Industrials,その他製品,貸借
+7956,ピジョン,Industrials,その他製品,貸借
+7958,天馬,Materials,化学,貸借
+7960,パラマウントベッド,Industrials,その他製品,貸借
+7961,兼松日産農林,Industrials,その他製品,貸借
+7962,キングジム,Industrials,その他製品,貸借
+7966,リンテック,Industrials,その他製品,貸借
+7968,田崎真珠,Industrials,その他製品,貸借
+7970,信越ポリマー,Materials,化学,貸借
+7971,東リ,Materials,化学,貸借
+7972,イトーキ,Industrials,その他製品,貸借
+7974,任天堂,Industrials,その他製品,貸借
+7976,三菱鉛筆,Industrials,その他製品,貸借
+7979,松風,Technology,精密機器,信用
+7981,タカラスタンダード,Industrials,その他製品,貸借
+7984,コクヨ,Industrials,その他製品,貸借
+7985,ネポン,Materials,金属製品,その他
+7987,ナカバヤシ,Industrials,その他製品,貸借
+7988,ニフコ,Materials,化学,貸借
+7989,立川ブラインド工業,Materials,金属製品,貸借
+7990,グローブライド,Industrials,その他製品,貸借
+7991,マミヤ・オーピー,Industrials,機械,信用
+7992,セーラー万年筆,Industrials,その他製品,信用
+7993,サンウエーブ工業,Industrials,その他製品,貸借
+7994,岡村製作所,Industrials,その他製品,貸借
+7995,日本バルカー工業,Materials,化学,貸借
+7999,ＭＵＴＯＨホールディングス,Technology,電気機器,貸借
+8001,伊藤忠商事,Industrials,卸売業,貸借
+8002,丸紅,Industrials,卸売業,貸借
+8005,スクロール,Consumer Cyclical,小売業,貸借
+8006,ユアサ・フナショク,Industrials,卸売業,貸借
+8007,高島,Industrials,卸売業,貸借
+8008,Ｆ＆Ａアクアホールディングス,Industrials,卸売業,貸借
+8011,三陽商会,Consumer Cyclical,繊維製品,貸借
+8012,長瀬産業,Industrials,卸売業,貸借
+8013,ナイガイ,Consumer Cyclical,繊維製品,貸借
+8014,蝶理,Industrials,卸売業,貸借
+8015,豊田通商,Industrials,卸売業,貸借
+8016,オンワードホールディングス,Consumer Cyclical,繊維製品,貸借
+8018,三共生興,Industrials,卸売業,貸借
+8020,兼松,Industrials,卸売業,貸借
+8022,美津濃,Industrials,その他製品,貸借
+8023,大興電子通信,Industrials,卸売業,信用
+8025,ツカモトコーポレーション,Industrials,卸売業,信用
+8028,ファミリーマート,Consumer Cyclical,小売業,貸借
+8029,ルック,Consumer Cyclical,繊維製品,貸借
+8030,中央魚類,Industrials,卸売業,貸借
+8031,三井物産,Industrials,卸売業,貸借
+8032,日本紙パルプ商事,Industrials,卸売業,貸借
+8035,東京エレクトロン,Technology,電気機器,貸借
+8036,日立ハイテクノロジーズ,Industrials,卸売業,貸借
+8037,カメイ,Industrials,卸売業,貸借
+8038,東都水産,Industrials,卸売業,貸借
+8039,築地魚市場,Industrials,卸売業,貸借
+8040,東京ソワール,Consumer Cyclical,繊維製品,信用
+8043,スターゼン,Industrials,卸売業,貸借
+8044,大都魚類,Industrials,卸売業,信用
+8046,丸藤シートパイル,Industrials,卸売業,貸借
+8050,セイコーホールディングス,Technology,精密機器,貸借
+8051,山善,Industrials,卸売業,貸借
+8052,椿本興業,Industrials,卸売業,貸借
+8053,住友商事,Industrials,卸売業,貸借
+8056,日本ユニシス,Communication Services,情報･通信業,貸借
+8057,内田洋行,Industrials,卸売業,貸借
+8058,三菱商事,Industrials,卸売業,貸借
+8059,第一実業,Industrials,卸売業,貸借
+8060,キヤノンマーケティングジャパン,Industrials,卸売業,貸借
+8061,西華産業,Industrials,卸売業,貸借
+8065,佐藤商事,Industrials,卸売業,信用
+8066,三谷商事,Industrials,卸売業,貸借
+8068,菱洋エレクトロ,Industrials,卸売業,貸借
+8070,東京産業,Industrials,卸売業,貸借
+8074,ユアサ商事,Industrials,卸売業,貸借
+8075,神鋼商事,Industrials,卸売業,貸借
+8078,阪和興業,Industrials,卸売業,貸借
+8079,正栄食品工業,Industrials,卸売業,信用
+8081,カナデン,Industrials,卸売業,信用
+8084,菱電商事,Industrials,卸売業,貸借
+8085,ナラサキ産業,Industrials,卸売業,信用
+8086,ニプロ,Technology,精密機器,貸借
+8087,フルサト工業,Industrials,卸売業,信用
+8088,岩谷産業,Industrials,卸売業,貸借
+8089,すてきナイスグループ,Industrials,卸売業,貸借
+8090,昭光通商,Industrials,卸売業,貸借
+8091,ニチモウ,Industrials,卸売業,貸借
+8093,極東貿易,Industrials,卸売業,貸借
+8095,イワキ,Industrials,卸売業,貸借
+8096,兼松エレクトロニクス,Communication Services,情報･通信業,貸借
+8097,三愛石油,Industrials,卸売業,貸借
+8098,稲畑産業,Industrials,卸売業,貸借
+8101,ＧＳＩクレオス,Industrials,卸売業,貸借
+8103,明和産業,Industrials,卸売業,貸借
+8105,堀田丸正,Industrials,卸売業,信用
+8111,ゴールドウイン,Consumer Cyclical,繊維製品,貸借
+8112,東京スタイル,Consumer Cyclical,繊維製品,貸借
+8113,ユニ・チャーム,Materials,化学,貸借
+8114,デサント,Consumer Cyclical,繊維製品,貸借
+8127,ヤマトインターナショナル,Consumer Cyclical,繊維製品,貸借
+8129,東邦ホールディングス,Industrials,卸売業,貸借
+8130,サンゲツ,Industrials,卸売業,貸借
+8131,ミツウロコ,Industrials,卸売業,貸借
+8132,シナネン,Industrials,卸売業,貸借
+8133,伊藤忠エネクス,Industrials,卸売業,貸借
+8134,ザ・トーカイ,Industrials,卸売業,貸借
+8136,サンリオ,Industrials,卸売業,貸借
+8137,サンワテクノス,Industrials,卸売業,信用
+8139,ナガホリ,Industrials,卸売業,信用
+8140,リョーサン,Industrials,卸売業,貸借
+8141,新光商事,Industrials,卸売業,信用
+8142,トーホー,Industrials,卸売業,貸借
+8143,ラピーヌ,Consumer Cyclical,繊維製品,信用
+8150,三信電気,Industrials,卸売業,貸借
+8151,東陽テクニカ,Industrials,卸売業,貸借
+8152,ソマール,Industrials,卸売業,信用
+8153,モスフードサービス,Industrials,卸売業,信用
+8154,加賀電子,Industrials,卸売業,信用
+8155,三益半導体工業,Materials,金属製品,貸借
+8157,都築電気,Industrials,卸売業,信用
+8158,ソーダニッカ,Industrials,卸売業,貸借
+8159,立花エレテック,Industrials,卸売業,貸借
+8160,木曽路,Consumer Cyclical,小売業,貸借
+8165,千趣会,Consumer Cyclical,小売業,貸借
+8166,タカキュー,Consumer Cyclical,小売業,貸借
+8167,丸久,Consumer Cyclical,小売業,貸借
+8168,ケーヨー,Consumer Cyclical,小売業,貸借
+8170,アデランスホールディングス,Industrials,その他製品,貸借
+8173,上新電機,Consumer Cyclical,小売業,貸借
+8174,日本瓦斯,Consumer Cyclical,小売業,貸借
+8175,ベスト電器,Consumer Cyclical,小売業,貸借
+8178,マルエツ,Consumer Cyclical,小売業,貸借
+8179,ロイヤルホールディングス,Consumer Cyclical,小売業,貸借
+8181,東天紅,Consumer Cyclical,小売業,信用
+8182,いなげや,Consumer Cyclical,小売業,信用
+8184,島忠,Consumer Cyclical,小売業,貸借
+8185,チヨダ,Consumer Cyclical,小売業,貸借
+8193,鈴丹,Consumer Cyclical,小売業,貸借
+8194,ライフコーポレーション,Consumer Cyclical,小売業,信用
+8196,カスミ,Consumer Cyclical,小売業,貸借
+8198,マックスバリュ東海,Consumer Cyclical,小売業,信用
+8200,リンガーハット,Consumer Cyclical,小売業,貸借
+8201,さが美,Consumer Cyclical,小売業,信用
+8202,ラオックス,Consumer Cyclical,小売業,貸借
+8203,ＭｒＭａｘ,Consumer Cyclical,小売業,貸借
+8207,テンアライド,Consumer Cyclical,小売業,信用
+8214,ＡＯＫＩホールディングス,Consumer Cyclical,小売業,貸借
+8217,オークワ,Consumer Cyclical,小売業,貸借
+8218,コメリ,Consumer Cyclical,小売業,貸借
+8219,青山商事,Consumer Cyclical,小売業,貸借
+8226,理経,Industrials,卸売業,信用
+8227,しまむら,Consumer Cyclical,小売業,貸借
+8229,ＣＦＳコーポレーション,Consumer Cyclical,小売業,貸借
+8233,高島屋,Consumer Cyclical,小売業,貸借
+8237,松屋,Consumer Cyclical,小売業,貸借
+8242,エイチ・ツー・オー　リテイリング,Consumer Cyclical,小売業,貸借
+8245,丸栄,Consumer Cyclical,小売業,貸借
+8247,大和,Consumer Cyclical,小売業,信用
+8248,ニッセンホールディングス,Consumer Cyclical,小売業,貸借
+8249,テクノアソシエ,Industrials,卸売業,信用
+8251,パルコ,Consumer Cyclical,小売業,貸借
+8252,丸井グループ,Consumer Cyclical,小売業,貸借
+8253,クレディセゾン,Financials,その他金融業,貸借
+8254,さいか屋,Consumer Cyclical,小売業,貸借
+8255,原信ナルスホールディングス,Consumer Cyclical,小売業,貸借
+8258,セディナ,Financials,その他金融業,貸借
+8260,井筒屋,Consumer Cyclical,小売業,貸借
+8263,ダイエー,Consumer Cyclical,小売業,貸借
+8266,イズミヤ,Consumer Cyclical,小売業,貸借
+8267,イオン,Consumer Cyclical,小売業,貸借
+8270,ユニー,Consumer Cyclical,小売業,貸借
+8273,イズミ,Consumer Cyclical,小売業,貸借
+8274,東武ストア,Consumer Cyclical,小売業,貸借
+8276,平和堂,Consumer Cyclical,小売業,貸借
+8278,フジ,Consumer Cyclical,小売業,貸借
+8279,ヤオコー,Consumer Cyclical,小売業,信用
+8281,ゼビオ,Consumer Cyclical,小売業,貸借
+8282,ケーズホールディングス,Consumer Cyclical,小売業,貸借
+8289,Ｏｌｙｍｐｉｃ,Consumer Cyclical,小売業,貸借
+8291,東日カーライフグループ,Consumer Cyclical,小売業,貸借
+8303,新生銀行,Financials,銀行業,貸借
+8304,あおぞら銀行,Financials,銀行業,信用
+8306,三菱ＵＦＪフィナンシャル・グループ,Financials,銀行業,貸借
+8308,りそなホールディングス,Financials,銀行業,貸借
+8309,中央三井トラスト・ホールディングス,Financials,銀行業,貸借
+8316,三井住友フィナンシャルグループ,Financials,銀行業,貸借
+8324,第四銀行,Financials,銀行業,貸借
+8325,北越銀行,Financials,銀行業,貸借
+8327,西日本シティ銀行,Financials,銀行業,貸借
+8328,札幌北洋ホールディングス,Financials,銀行業,貸借
+8331,千葉銀行,Financials,銀行業,貸借
+8332,横浜銀行,Financials,銀行業,貸借
+8333,常陽銀行,Financials,銀行業,貸借
+8334,群馬銀行,Financials,銀行業,貸借
+8336,武蔵野銀行,Financials,銀行業,貸借
+8337,千葉興業銀行,Financials,銀行業,貸借
+8338,関東つくば銀行,Financials,銀行業,貸借
+8339,東京都民銀行,Financials,銀行業,貸借
+8341,七十七銀行,Financials,銀行業,貸借
+8342,青森銀行,Financials,銀行業,貸借
+8343,秋田銀行,Financials,銀行業,貸借
+8344,山形銀行,Financials,銀行業,貸借
+8345,岩手銀行,Financials,銀行業,貸借
+8346,東邦銀行,Financials,銀行業,貸借
+8349,東北銀行,Financials,銀行業,貸借
+8350,みちのく銀行,Financials,銀行業,貸借
+8354,ふくおかフィナンシャルグループ,Financials,銀行業,貸借
+8355,静岡銀行,Financials,銀行業,貸借
+8356,十六銀行,Financials,銀行業,貸借
+8358,スルガ銀行,Financials,銀行業,貸借
+8359,八十二銀行,Financials,銀行業,貸借
+8360,山梨中央銀行,Financials,銀行業,貸借
+8361,大垣共立銀行,Financials,銀行業,貸借
+8362,福井銀行,Financials,銀行業,貸借
+8363,北國銀行,Financials,銀行業,貸借
+8364,清水銀行,Financials,銀行業,貸借
+8366,滋賀銀行,Financials,銀行業,貸借
+8367,南都銀行,Financials,銀行業,貸借
+8368,百五銀行,Financials,銀行業,貸借
+8369,京都銀行,Financials,銀行業,貸借
+8374,三重銀行,Financials,銀行業,貸借
+8377,ほくほくフィナンシャルグループ,Financials,銀行業,貸借
+8379,広島銀行,Financials,銀行業,貸借
+8381,山陰合同銀行,Financials,銀行業,貸借
+8382,中国銀行,Financials,銀行業,貸借
+8383,鳥取銀行,Financials,銀行業,貸借
+8385,伊予銀行,Financials,銀行業,貸借
+8386,百十四銀行,Financials,銀行業,貸借
+8387,四国銀行,Financials,銀行業,貸借
+8388,阿波銀行,Financials,銀行業,貸借
+8390,鹿児島銀行,Financials,銀行業,貸借
+8392,大分銀行,Financials,銀行業,貸借
+8393,宮崎銀行,Financials,銀行業,貸借
+8394,肥後銀行,Financials,銀行業,貸借
+8395,佐賀銀行,Financials,銀行業,貸借
+8396,十八銀行,Financials,銀行業,貸借
+8397,沖縄銀行,Financials,銀行業,貸借
+8399,琉球銀行,Financials,銀行業,貸借
+8403,住友信託銀行,Financials,銀行業,貸借
+8404,みずほ信託銀行,Financials,銀行業,貸借
+8409,八千代銀行,Financials,銀行業,貸借
+8411,みずほフィナンシャルグループ,Financials,銀行業,貸借
+8415,紀陽ホールディングス,Financials,銀行業,貸借
+8416,高知銀行,Financials,銀行業,信用
+8418,山口フィナンシャルグループ,Financials,銀行業,貸借
+8423,フィデック,Financials,その他金融業,貸借
+8424,芙蓉総合リース,Financials,その他金融業,貸借
+8425,興銀リース,Financials,その他金融業,貸借
+8426,ニッシン債権回収,Financials,その他金融業,貸借
+8439,東京センチュリーリース,Financials,その他金融業,貸借
+8473,ＳＢＩホールディングス,Financials,証券･商品先物取引業,貸借
+8511,日本証券金融,Financials,その他金融業,貸借
+8512,大阪証券金融,Financials,その他金融業,貸借
+8515,アイフル,Financials,その他金融業,貸借
+8518,日本アジア投資,Financials,証券･商品先物取引業,信用
+8519,ポケットカード,Financials,その他金融業,貸借
+8520,きらやか銀行,Financials,銀行業,貸借
+8521,長野銀行,Financials,銀行業,貸借
+8522,名古屋銀行,Financials,銀行業,貸借
+8527,愛知銀行,Financials,銀行業,貸借
+8529,第三銀行,Financials,銀行業,貸借
+8530,中京銀行,Financials,銀行業,貸借
+8536,東日本銀行,Financials,銀行業,貸借
+8537,大光銀行,Financials,銀行業,貸借
+8541,愛媛銀行,Financials,銀行業,貸借
+8542,トマト銀行,Financials,銀行業,貸借
+8543,みなと銀行,Financials,銀行業,貸借
+8544,京葉銀行,Financials,銀行業,貸借
+8545,関西アーバン銀行,Financials,銀行業,貸借
+8550,栃木銀行,Financials,銀行業,貸借
+8551,北日本銀行,Financials,銀行業,貸借
+8556,香川銀行,Financials,銀行業,貸借
+8558,東和銀行,Financials,銀行業,貸借
+8561,徳島銀行,Financials,銀行業,信用
+8562,福島銀行,Financials,銀行業,貸借
+8563,大東銀行,Financials,銀行業,貸借
+8564,武富士,Financials,その他金融業,貸借
+8566,リコーリース,Financials,その他金融業,貸借
+8570,イオンクレジットサービス,Financials,その他金融業,貸借
+8571,ＮＩＳグループ,Financials,その他金融業,貸借
+8572,アコム,Financials,その他金融業,貸借
+8574,プロミス,Financials,その他金融業,貸借
+8584,ジャックス,Financials,その他金融業,貸借
+8585,オリエントコーポレーション,Financials,その他金融業,貸借
+8586,日立キャピタル,Financials,その他金融業,貸借
+8591,オリックス,Financials,その他金融業,貸借
+8593,三菱ＵＦＪリース,Financials,その他金融業,貸借
+8595,ジャフコ,Financials,証券･商品先物取引業,貸借
+8601,大和証券グループ本社,Financials,証券･商品先物取引業,貸借
+8604,野村ホールディングス,Financials,証券･商品先物取引業,貸借
+8606,みずほ証券,Financials,証券･商品先物取引業,貸借
+8607,みずほインベスターズ証券,Financials,証券･商品先物取引業,貸借
+8609,岡三証券グループ,Financials,証券･商品先物取引業,貸借
+8613,丸三証券,Financials,証券･商品先物取引業,貸借
+8614,東洋証券,Financials,証券･商品先物取引業,貸借
+8616,東海東京フィナンシャル・ホールディングス,Financials,証券･商品先物取引業,貸借
+8617,光世証券,Financials,証券･商品先物取引業,貸借
+8622,水戸証券,Financials,証券･商品先物取引業,貸借
+8624,いちよし証券,Financials,証券･商品先物取引業,貸借
+8625,高木証券,Financials,証券･商品先物取引業,貸借
+8628,松井証券,Financials,証券･商品先物取引業,貸借
+8634,ジェー・ピー・モルガン・チェース・アンド・カンパニー,Financials,銀行業,その他
+8648,バンク・オブ・アメリカ・コーポレーション,Financials,銀行業,信用
+8657,ユービーエス・エイ・ジー,Financials,銀行業,その他
+8685,アメリカン・インターナショナル・グループ・インク,Financials,保険業,その他
+8686,アフラック・インコーポレーテッド,Financials,保険業,信用
+8689,エイゴン・エヌ・ヴイ,Financials,保険業,その他
+8692,だいこう証券ビジネス,Financials,証券･商品先物取引業,貸借
+8698,マネックスグループ,Financials,証券･商品先物取引業,貸借
+8703,カブドットコム証券,Financials,証券･商品先物取引業,貸借
+8706,極東証券,Financials,証券･商品先物取引業,貸借
+8707,岩井証券,Financials,証券･商品先物取引業,貸借
+8710,シティグループ・インク,Financials,銀行業,信用
+8713,フィデアホールディングス,Financials,銀行業,貸借
+8714,池田泉州ホールディングス,Financials,銀行業,信用
+8725,三井住友海上グループホールディングス,Financials,保険業,貸借
+8729,ソニーフィナンシャルホールディングス,Financials,保険業,貸借
+8742,小林洋行,Financials,証券･商品先物取引業,貸借
+8754,日本興亜損害保険,Financials,保険業,貸借
+8755,損害保険ジャパン,Financials,保険業,貸借
+8759,ニッセイ同和損害保険,Financials,保険業,貸借
+8761,あいおい損害保険,Financials,保険業,貸借
+8763,富士火災海上保険,Financials,保険業,貸借
+8766,東京海上ホールディングス,Financials,保険業,貸借
+8767,ウェブクルー,Financials,保険業,貸借
+8772,アサックス,Financials,その他金融業,信用
+8789,フィンテック　グローバル,Financials,その他金融業,信用
+8793,ＮＥＣキャピタルソリューション,Financials,その他金融業,貸借
+8795,Ｔ＆Ｄホールディングス,Financials,保険業,貸借
+8801,三井不動産,Real Estate,不動産業,貸借
+8802,三菱地所,Real Estate,不動産業,貸借
+8803,平和不動産,Real Estate,不動産業,貸借
+8804,東京建物,Real Estate,不動産業,貸借
+8806,ダイビル,Real Estate,不動産業,貸借
+8809,サンケイビル,Real Estate,不動産業,貸借
+8815,東急不動産,Real Estate,不動産業,貸借
+8818,京阪神不動産,Real Estate,不動産業,貸借
+8821,立飛企業,Real Estate,不動産業,信用
+8830,住友不動産,Real Estate,不動産業,貸借
+8833,東宝不動産,Real Estate,不動産業,信用
+8835,太平洋興発,Industrials,卸売業,貸借
+8838,有楽土地,Real Estate,不動産業,信用
+8840,大京,Real Estate,不動産業,貸借
+8841,テーオーシー,Real Estate,不動産業,貸借
+8842,東京楽天地,Real Estate,不動産業,信用
+8848,レオパレス２１,Real Estate,不動産業,信用
+8860,フジ住宅,Real Estate,不動産業,貸借
+8864,空港施設,Real Estate,不動産業,信用
+8869,明和地所,Real Estate,不動産業,貸借
+8870,住友不動産販売,Real Estate,不動産業,貸借
+8871,ゴールドクレスト,Real Estate,不動産業,信用
+8875,東栄住宅,Real Estate,不動産業,信用
+8877,日本エスリード,Real Estate,不動産業,貸借
+8879,東急リバブル,Real Estate,不動産業,貸借
+8880,飯田産業,Real Estate,不動産業,信用
+8881,日神不動産,Real Estate,不動産業,貸借
+8891,エムジーホーム,Real Estate,不動産業,信用
+8895,アーネストワン,Real Estate,不動産業,信用
+8897,タカラレーベン,Real Estate,不動産業,貸借
+8904,サンヨーハウジング名古屋,Real Estate,不動産業,信用
+8905,イオンモール,Real Estate,不動産業,信用
+8907,フージャースコーポレーション,Real Estate,不動産業,貸借
+8910,サンシティ,Real Estate,不動産業,貸借
+8912,エリアクエスト,Real Estate,不動産業,貸借
+8913,ゼクス,Real Estate,不動産業,貸借
+8914,エリアリンク,Real Estate,不動産業,貸借
+8915,タクトホーム,Real Estate,不動産業,信用
+8918,ランド,Real Estate,不動産業,信用
+8922,アイディーユー,Real Estate,不動産業,信用
+8923,トーセイ,Real Estate,不動産業,貸借
+8924,リサ・パートナーズ,Real Estate,不動産業,信用
+8925,アルデプロ,Real Estate,不動産業,貸借
+8929,船井財産コンサルタンツ,Real Estate,不動産業,信用
+8933,エヌ・ティ・ティ都市開発,Real Estate,不動産業,信用
+8934,サンフロンティア不動産,Real Estate,不動産業,貸借
+8935,エフ・ジェー・ネクスト,Real Estate,不動産業,信用
+8939,大和システム,Real Estate,不動産業,貸借
+8940,インテリックス,Real Estate,不動産業,貸借
+8944,ランドビジネス,Real Estate,不動産業,信用
+8945,日本社宅サービス,Real Estate,不動産業,その他
+8992,日本レップ,Real Estate,不動産業,信用
+8998,ＳＢＩライフリビング,Real Estate,不動産業,その他
+8999,グランディハウス,Real Estate,不動産業,信用
+9001,東武鉄道,Industrials,陸運業,貸借
+9003,相鉄ホールディングス,Industrials,陸運業,貸借
+9005,東京急行電鉄,Industrials,陸運業,貸借
+9006,京浜急行電鉄,Industrials,陸運業,貸借
+9007,小田急電鉄,Industrials,陸運業,貸借
+9008,京王電鉄,Industrials,陸運業,貸借
+9009,京成電鉄,Industrials,陸運業,貸借
+9010,富士急行,Industrials,陸運業,貸借
+9014,新京成電鉄,Industrials,陸運業,貸借
+9017,新潟交通,Industrials,陸運業,その他
+9020,東日本旅客鉄道,Industrials,陸運業,貸借
+9021,西日本旅客鉄道,Industrials,陸運業,貸借
+9022,東海旅客鉄道,Industrials,陸運業,貸借
+9028,ゼロ,Industrials,陸運業,信用
+9030,アートコーポレーション,Industrials,陸運業,貸借
+9031,西日本鉄道,Industrials,陸運業,貸借
+9033,広島電鉄,Industrials,陸運業,貸借
+9037,ハマキョウレックス,Industrials,陸運業,信用
+9039,サカイ引越センター,Industrials,陸運業,信用
+9041,近畿日本鉄道,Industrials,陸運業,貸借
+9042,阪急阪神ホールディングス,Industrials,陸運業,貸借
+9044,南海電気鉄道,Industrials,陸運業,信用
+9045,京阪電気鉄道,Industrials,陸運業,貸借
+9047,名糖運輸,Industrials,陸運業,貸借
+9048,名古屋鉄道,Industrials,陸運業,貸借
+9055,アルプス物流,Industrials,陸運業,信用
+9056,ヒューテックノオリン,Industrials,陸運業,信用
+9058,トランコム,Industrials,倉庫･運輸関連業,貸借
+9059,カンダホールディングス,Industrials,陸運業,その他
+9061,富士物流,Industrials,陸運業,貸借
+9062,日本通運,Industrials,陸運業,貸借
+9063,岡山県貨物運送,Industrials,陸運業,信用
+9064,ヤマトホールディングス,Industrials,陸運業,貸借
+9065,山九,Industrials,陸運業,貸借
+9066,日新,Industrials,倉庫･運輸関連業,貸借
+9067,丸運,Industrials,陸運業,信用
+9068,丸全昭和運輸,Industrials,陸運業,貸借
+9069,センコー,Industrials,陸運業,貸借
+9070,トナミホールディングス,Industrials,陸運業,貸借
+9072,日本梱包運輸倉庫,Industrials,陸運業,貸借
+9074,日本石油輸送,Industrials,陸運業,信用
+9075,福山通運,Industrials,陸運業,貸借
+9076,セイノーホールディングス,Industrials,陸運業,貸借
+9081,神奈川中央交通,Industrials,陸運業,貸借
+9082,大和自動車交通,Industrials,陸運業,その他
+9086,日立物流,Industrials,陸運業,貸借
+9101,日本郵船,Industrials,海運業,貸借
+9104,商船三井,Industrials,海運業,貸借
+9107,川崎汽船,Industrials,海運業,貸借
+9110,新和海運,Industrials,海運業,貸借
+9113,乾　汽船,Industrials,海運業,貸借
+9115,明治海運,Industrials,海運業,信用
+9119,飯野海運,Industrials,海運業,貸借
+9130,共栄タンカー,Industrials,海運業,貸借
+9132,第一中央汽船,Industrials,海運業,貸借
+9171,栗林商船,Industrials,海運業,その他
+9173,東海汽船,Industrials,海運業,信用
+9174,ワンダーテーブル,Consumer Cyclical,小売業,貸借
+9179,川崎近海汽船,Industrials,海運業,貸借
+9193,東京汽船,Industrials,倉庫･運輸関連業,その他
+9202,全日本空輸,Industrials,空運業,貸借
+9204,スカイマーク,Industrials,空運業,信用
+9205,日本航空,Industrials,空運業,その他
+9232,パスコ,Industrials,空運業,貸借
+9233,アジア航測,Industrials,空運業,信用
+9234,国際航業ホールディングス,Industrials,空運業,貸借
+9301,三菱倉庫,Industrials,倉庫･運輸関連業,貸借
+9302,三井倉庫,Industrials,倉庫･運輸関連業,貸借
+9303,住友倉庫,Industrials,倉庫･運輸関連業,貸借
+9304,澁澤倉庫,Industrials,倉庫･運輸関連業,貸借
+9305,ヤマタネ,Industrials,卸売業,貸借
+9306,東陽倉庫,Industrials,倉庫･運輸関連業,貸借
+9308,イヌイ倉庫,Industrials,倉庫･運輸関連業,信用
+9310,日本トランスシティ,Industrials,倉庫･運輸関連業,貸借
+9311,アサガミ,Industrials,倉庫･運輸関連業,その他
+9312,ケイヒン,Industrials,倉庫･運輸関連業,貸借
+9313,丸八倉庫,Industrials,倉庫･運輸関連業,信用
+9318,ジェイ・ブリッジ,Financials,証券･商品先物取引業,信用
+9320,三和倉庫,Industrials,倉庫･運輸関連業,信用
+9324,安田倉庫,Industrials,倉庫･運輸関連業,信用
+9351,東洋埠頭,Industrials,倉庫･運輸関連業,貸借
+9355,リンコーコーポレーション,Industrials,倉庫･運輸関連業,信用
+9358,宇徳,Industrials,倉庫･運輸関連業,信用
+9360,鈴与シンワート,Industrials,倉庫･運輸関連業,その他
+9361,伏木海陸運送,Industrials,倉庫･運輸関連業,その他
+9364,上組,Industrials,倉庫･運輸関連業,貸借
+9366,サンリツ,Industrials,倉庫･運輸関連業,貸借
+9368,キムラユニティー,Industrials,倉庫･運輸関連業,貸借
+9369,キユーソー流通システム,Industrials,倉庫･運輸関連業,信用
+9370,郵船航空サービス,Industrials,倉庫･運輸関連業,貸借
+9373,ニッコウトラベル,Industrials,サービス業,貸借
+9375,近鉄エクスプレス,Industrials,倉庫･運輸関連業,貸借
+9380,東海運,Industrials,倉庫･運輸関連業,貸借
+9381,エーアイテイー,Industrials,倉庫･運輸関連業,信用
+9382,バンテック,Industrials,倉庫･運輸関連業,貸借
+9384,内外トランスライン,Industrials,倉庫･運輸関連業,信用
+9399,新華ファイナンス・リミテッド（新華財經有限公司）,Communication Services,情報･通信業,信用
+9401,東京放送ホールディングス,Communication Services,情報･通信業,貸借
+9404,日本テレビ放送網,Communication Services,情報･通信業,貸借
+9409,テレビ朝日,Communication Services,情報･通信業,貸借
+9411,テレビ東京,Communication Services,情報･通信業,貸借
+9412,スカパーＪＳＡＴホールディングス,Communication Services,情報･通信業,貸借
+9422,アイ・ティー・シーネットワーク,Communication Services,情報･通信業,信用
+9427,イー・アクセス,Communication Services,情報･通信業,信用
+9430,ＮＥＣモバイリング,Communication Services,情報･通信業,信用
+9432,日本電信電話,Communication Services,情報･通信業,貸借
+9433,ＫＤＤＩ,Communication Services,情報･通信業,貸借
+9435,光通信,Communication Services,情報･通信業,貸借
+9437,エヌ・ティ・ティ・ドコモ,Communication Services,情報･通信業,貸借
+9445,フォーバルテレコム,Communication Services,情報･通信業,貸借
+9448,インボイス,Communication Services,情報･通信業,信用
+9449,ＧＭＯインターネット,Communication Services,情報･通信業,貸借
+9470,学研ホールディングス,Communication Services,情報･通信業,貸借
+9474,ゼンリン,Communication Services,情報･通信業,貸借
+9475,昭文社,Communication Services,情報･通信業,貸借
+9477,角川グループホールディングス,Communication Services,情報･通信業,貸借
+9479,インプレスホールディングス,Communication Services,情報･通信業,貸借
+9481,テレフォニカ・エセ・アー,Communication Services,情報･通信業,その他
+9496,ドイツテレコム・アーゲー,Communication Services,情報･通信業,信用
+9501,東京電力,Utilities,電気･ガス業,貸借
+9502,中部電力,Utilities,電気･ガス業,貸借
+9503,関西電力,Utilities,電気･ガス業,貸借
+9504,中国電力,Utilities,電気･ガス業,貸借
+9505,北陸電力,Utilities,電気･ガス業,貸借
+9506,東北電力,Utilities,電気･ガス業,貸借
+9507,四国電力,Utilities,電気･ガス業,貸借
+9508,九州電力,Utilities,電気･ガス業,貸借
+9509,北海道電力,Utilities,電気･ガス業,貸借
+9511,沖縄電力,Utilities,電気･ガス業,貸借
+9513,電源開発,Utilities,電気･ガス業,信用
+9514,ファーストエスコ,Utilities,電気･ガス業,信用
+9531,東京瓦斯,Utilities,電気･ガス業,貸借
+9532,大阪瓦斯,Utilities,電気･ガス業,貸借
+9533,東邦瓦斯,Utilities,電気･ガス業,貸借
+9534,北海道瓦斯,Utilities,電気･ガス業,貸借
+9535,広島ガス,Utilities,電気･ガス業,貸借
+9536,西部瓦斯,Utilities,電気･ガス業,貸借
+9537,北陸瓦斯,Utilities,電気･ガス業,信用
+9539,京葉瓦斯,Utilities,電気･ガス業,信用
+9541,大多喜ガス,Utilities,電気･ガス業,信用
+9542,新日本瓦斯,Utilities,電気･ガス業,その他
+9543,静岡瓦斯,Utilities,電気･ガス業,貸借
+9544,東日本ガス,Utilities,電気･ガス業,その他
+9600,アイネット,Communication Services,情報･通信業,貸借
+9601,松竹,Communication Services,情報･通信業,貸借
+9602,東宝,Communication Services,情報･通信業,貸借
+9603,エイチ・アイ・エス,Industrials,サービス業,信用
+9605,東映,Communication Services,情報･通信業,貸借
+9607,葵プロモーション,Communication Services,情報･通信業,貸借
+9609,ベンチャー・リンク,Industrials,サービス業,信用
+9612,ラックランド,Industrials,サービス業,信用
+9613,エヌ・ティ・ティ・データ,Communication Services,情報･通信業,貸借
+9615,東京美装興業,Industrials,サービス業,信用
+9616,共立メンテナンス,Industrials,サービス業,貸借
+9619,イチネンホールディングス,Industrials,サービス業,貸借
+9621,建設技術研究所,Industrials,サービス業,貸借
+9622,スペース,Industrials,サービス業,信用
+9623,キヤノンソフトウェア,Communication Services,情報･通信業,信用
+9624,長大,Industrials,サービス業,信用
+9627,アインファーマシーズ,Consumer Cyclical,小売業,信用
+9628,燦ホールディングス,Industrials,サービス業,貸借
+9629,ピー・シー・エー,Communication Services,情報･通信業,信用
+9630,アップ,Industrials,サービス業,信用
+9631,東急レクリエーション,Industrials,サービス業,信用
+9632,スバル興業,Industrials,サービス業,信用
+9633,東京テアトル,Industrials,サービス業,貸借
+9635,武蔵野興業,Industrials,サービス業,その他
+9652,日本医療事務センター,Industrials,サービス業,信用
+9661,歌舞伎座,Industrials,サービス業,信用
+9665,吉本興業,Industrials,サービス業,その他
+9667,ホリプロ,Industrials,サービス業,信用
+9671,よみうりランド,Industrials,サービス業,貸借
+9672,東京都競馬,Industrials,サービス業,貸借
+9674,花月園観光,Industrials,サービス業,信用
+9675,常磐興産,Industrials,サービス業,貸借
+9678,カナモト,Industrials,サービス業,貸借
+9680,共成レンテム,Industrials,サービス業,その他
+9681,東京ドーム,Industrials,サービス業,貸借
+9682,ＤＴＳ,Communication Services,情報･通信業,貸借
+9684,スクウェア・エニックス・ホールディングス,Communication Services,情報･通信業,貸借
+9692,シーイーシー,Communication Services,情報･通信業,貸借
+9697,カプコン,Communication Services,情報･通信業,貸借
+9701,東京會舘,Industrials,サービス業,信用
+9702,アイ・エス・ビー,Communication Services,情報･通信業,貸借
+9704,東海観光,Industrials,サービス業,信用
+9706,日本空港ビルデング,Real Estate,不動産業,信用
+9708,帝国ホテル,Industrials,サービス業,信用
+9715,トランス・コスモス,Industrials,サービス業,貸借
+9716,乃村工藝社,Industrials,サービス業,貸借
+9717,ジャステック,Communication Services,情報･通信業,貸借
+9719,住商情報システム,Communication Services,情報･通信業,信用
+9722,藤田観光,Industrials,サービス業,貸借
+9726,近畿日本ツーリスト,Industrials,サービス業,貸借
+9728,日本管財,Industrials,サービス業,貸借
+9731,白洋舎,Industrials,サービス業,信用
+9735,セコム,Industrials,サービス業,貸借
+9737,ＣＳＫホールディングス,Communication Services,情報･通信業,貸借
+9739,日本システムウエア,Communication Services,情報･通信業,信用
+9740,セントラル警備保障,Industrials,サービス業,信用
+9742,アイネス,Communication Services,情報･通信業,貸借
+9743,丹青社,Industrials,サービス業,貸借
+9744,メイテック,Industrials,サービス業,貸借
+9746,ＴＫＣ,Communication Services,情報･通信業,貸借
+9747,アサツー　ディ・ケイ,Industrials,サービス業,貸借
+9748,エヌジェーケー,Communication Services,情報･通信業,信用
+9749,富士ソフト,Communication Services,情報･通信業,貸借
+9750,ソラン,Communication Services,情報･通信業,貸借
+9755,応用地質,Industrials,サービス業,貸借
+9757,船井総合研究所,Industrials,サービス業,貸借
+9759,日本システムディベロップメント,Communication Services,情報･通信業,貸借
+9760,進学会,Industrials,サービス業,貸借
+9761,東海リース,Industrials,サービス業,信用
+9763,丸紅建材リース,Industrials,卸売業,貸借
+9764,技研興業,Industrials,建設業,信用
+9765,オオバ,Industrials,サービス業,信用
+9766,コナミ,Communication Services,情報･通信業,貸借
+9767,日建工学,Industrials,サービス業,信用
+9783,ベネッセホールディングス,Industrials,サービス業,貸借
+9787,イオンディライト,Industrials,サービス業,貸借
+9788,ナック,Industrials,サービス業,貸借
+9789,栄光,Industrials,サービス業,信用
+9790,福井コンピュータ,Communication Services,情報･通信業,貸借
+9791,ビケンテクノ,Industrials,サービス業,信用
+9792,ニチイ学館,Industrials,サービス業,貸借
+9793,ダイセキ,Industrials,サービス業,貸借
+9797,大日本コンサルタント,Industrials,サービス業,信用
+9799,旭情報サービス,Communication Services,情報･通信業,その他
+9810,日鐵商事,Industrials,卸売業,貸借
+9814,アシックス商事,Industrials,卸売業,信用
+9815,カテナ,Industrials,卸売業,信用
+9818,大丸エナウィン,Industrials,卸売業,貸借
+9824,泉州電業,Industrials,卸売業,信用
+9828,元気寿司,Consumer Cyclical,小売業,貸借
+9830,トラスコ中山,Industrials,卸売業,貸借
+9831,ヤマダ電機,Consumer Cyclical,小売業,貸借
+9832,オートバックスセブン,Industrials,卸売業,貸借
+9835,ジュンテンドー,Consumer Cyclical,小売業,その他
+9842,アークランドサカモト,Consumer Cyclical,小売業,信用
+9843,ニトリ,Consumer Cyclical,小売業,貸借
+9845,パーカーコーポレーション,Materials,化学,信用
+9846,天満屋ストア,Consumer Cyclical,小売業,信用
+9850,グルメ杵屋,Consumer Cyclical,小売業,貸借
+9854,愛眼,Consumer Cyclical,小売業,貸借
+9855,くろがねや,Consumer Cyclical,小売業,信用
+9856,ケーユーホールディングス,Consumer Cyclical,小売業,貸借
+9861,吉野家ホールディングス,Consumer Cyclical,小売業,貸借
+9869,加藤産業,Industrials,卸売業,信用
+9873,日本ケンタッキー・フライド・チキン,Consumer Cyclical,小売業,信用
+9878,セキド,Consumer Cyclical,小売業,その他
+9880,イノテック,Industrials,卸売業,信用
+9882,イエローハット,Industrials,卸売業,信用
+9883,富士エレクトロニクス,Industrials,卸売業,貸借
+9884,都築電産,Industrials,卸売業,信用
+9887,松屋フーズ,Consumer Cyclical,小売業,貸借
+9889,ＪＢＣＣホールディングス,Communication Services,情報･通信業,信用
+9896,ＪＫホールディングス,Industrials,卸売業,貸借
+9897,ユニダックス,Industrials,卸売業,貸借
+9899,サンデーサン,Consumer Cyclical,小売業,その他
+9900,サガミチェーン,Consumer Cyclical,小売業,貸借
+9902,日伝,Industrials,卸売業,貸借
+9904,ベリテ,Consumer Cyclical,小売業,信用
+9919,関西スーパーマーケット,Consumer Cyclical,小売業,貸借
+9922,日立機材,Materials,金属製品,信用
+9928,ミロク情報サービス,Communication Services,情報･通信業,信用
+9930,北沢産業,Industrials,卸売業,貸借
+9932,杉本商事,Industrials,卸売業,信用
+9934,因幡電機産業,Industrials,卸売業,貸借
+9937,セシール,Consumer Cyclical,小売業,その他
+9938,住金物産,Industrials,卸売業,信用
+9945,プレナス,Consumer Cyclical,小売業,信用
+9946,ミニストップ,Consumer Cyclical,小売業,貸借
+9947,イマージュホールディングス,Consumer Cyclical,小売業,貸借
+9948,アークス,Consumer Cyclical,小売業,信用
+9956,バロー,Consumer Cyclical,小売業,貸借
+9957,バイテック,Industrials,卸売業,信用
+9959,アシードホールディングス,Consumer Cyclical,小売業,貸借
+9961,エムオーテック,Industrials,卸売業,信用
+9962,ミスミグループ本社,Industrials,卸売業,貸借
+9963,江守商事,Industrials,卸売業,信用
+9966,藤久,Consumer Cyclical,小売業,信用
+9969,ショクブン,Consumer Cyclical,小売業,その他
+9972,アルテック,Industrials,卸売業,貸借
+9974,ベルク,Consumer Cyclical,小売業,信用
+9975,マルヤ,Consumer Cyclical,小売業,信用
+9979,大庄,Consumer Cyclical,小売業,信用
+9982,タキヒヨー,Industrials,卸売業,貸借
+9983,ファーストリテイリング,Consumer Cyclical,小売業,信用
+9984,ソフトバンク,Communication Services,情報･通信業,貸借
+9986,蔵王産業,Industrials,卸売業,信用
+9987,スズケン,Industrials,卸売業,貸借
+9989,サンドラッグ,Consumer Cyclical,小売業,貸借
+9990,東京デリカ,Consumer Cyclical,小売業,信用
+9991,ジェコス,Industrials,卸売業,貸借
+9993,ヤマザワ,Consumer Cyclical,小売業,信用
+9994,やまや,Consumer Cyclical,小売業,貸借
+9997,ベルーナ,Consumer Cyclical,小売業,貸借
