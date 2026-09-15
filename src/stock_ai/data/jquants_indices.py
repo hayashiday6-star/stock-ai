@@ -272,3 +272,87 @@ def tracking_gap(index: pd.DataFrame, etf: pd.Series) -> TrackingGap:
     report.index_return = float(left.iloc[-1] / left.iloc[0] - 1.0)
     report.etf_return = float(right.iloc[-1] / right.iloc[0] - 1.0)
     return report
+
+
+@dataclasses.dataclass
+class GapTrail:
+    """指数と ETF の差が、**いつ付いたか**。
+
+    **端点だけでは分からない。** 18年で +5.8% という数字は、なだらかな年
+    0.3% の積み重ねかもしれないし、ある1日で付いた継ぎ目かもしれない。
+    **前者なら体系的な要因、後者はデータの不具合**で、次にやることが正反対に
+    なる（2026-09-16）。
+
+    信託報酬は ETF を削る側なので、ETF が勝つ向きは**そもそも説明が付かない。**
+    だから、まず「なだらかか、飛んでいるか」を分ける。
+    """
+
+    by_year: dict[int, float]
+    """年ごとの、ETF の収益率 − 指数の収益率。"""
+
+    worst: list[tuple[dt.date, float, float, float]]
+    """1日の食い違いが大きい順に（日付、指数、ETF、差）。"""
+
+    daily_median: float
+    """1日あたりの差の中央値。**なだらかさの目安。**"""
+
+    @property
+    def largest_day(self) -> float:
+        """いちばん大きい1日の差。0 なら比べていない。"""
+        return abs(self.worst[0][3]) if self.worst else 0.0
+
+    @property
+    def concentrated(self) -> bool:
+        """差が**数日に固まっている**か。固まっていれば継ぎ目を疑う。
+
+        いちばん大きい1日が、1年ぶんの典型（年 0.3% なら1日 0.001% 程度）の
+        何百倍もあるなら、それは日々の積み重ねではない。**分割の調整が片方で
+        抜けた形がこれである。**
+        """
+        return self.largest_day > 0.05
+
+
+def gap_trail(index: pd.DataFrame, etf: pd.Series, limit: int = 5) -> GapTrail:
+    """差が付いた時期を、年ごとと「大きく食い違った日」で出す。
+
+    Args:
+        index: :func:`from_archive` が返す表。
+        etf: ETF の終値。日付を索引に持つ。
+        limit: 食い違いの大きい日を何件返すか。
+
+    Returns:
+        :class:`GapTrail`。重なる日が足りなければ空。
+    """
+    empty = GapTrail({}, [], 0.0)
+    if index.empty or etf.empty:
+        return empty
+    shared = index.index.intersection(etf.index)
+    if len(shared) < 3:
+        return empty
+
+    left = index.loc[shared, CLOSE].astype(float).sort_index()
+    right = etf.loc[shared].astype(float).sort_index()
+    # **日ごとの収益率で比べる。** 水準で比べると、最初の1日のずれが最後まで
+    # 効き続けて、どこで付いた差なのか分からなくなる。
+    index_step = left.pct_change()
+    etf_step = right.pct_change()
+    difference = (etf_step - index_step).dropna()
+    if difference.empty:
+        return empty
+
+    years = difference.index.year
+    by_year = {
+        int(year): float((1.0 + difference[years == year]).prod() - 1.0)
+        for year in sorted(set(years))
+    }
+    biggest = difference.abs().nlargest(limit).index
+    worst = [
+        (
+            day.date(),
+            float(index_step.loc[day]),
+            float(etf_step.loc[day]),
+            float(difference.loc[day]),
+        )
+        for day in biggest
+    ]
+    return GapTrail(by_year=by_year, worst=worst, daily_median=float(difference.abs().median()))

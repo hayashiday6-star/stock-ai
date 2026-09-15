@@ -241,6 +241,7 @@ from stock_ai.data.jquants_filter import product_separates
 from stock_ai.data.jquants_fundamentals import JQuantsFundamentalsProvider, normalize_statements
 from stock_ai.data.jquants_indices import census as topix_census
 from stock_ai.data.jquants_indices import from_archive as topix_from_archive
+from stock_ai.data.jquants_indices import gap_trail as topix_gap_trail
 from stock_ai.data.jquants_indices import tracking_gap as topix_tracking_gap
 from stock_ai.data.jquants_markets import HOLIDAY_DIVISION, TRADING_DIVISIONS, half_days_by_year
 from stock_ai.data.jquants_markets import agreement as calendar_agreement
@@ -4441,6 +4442,38 @@ def jquants_topix(
     console.print()
     console.print(f"[bold]指数 と {etf}（重なる日だけ）[/]")
     console.print(gap.summary())
+
+    # **端点だけでは分からない。** 18年で +5.8% は、なだらかな年 0.3% の
+    # 積み重ねかもしれないし、ある1日で付いた継ぎ目かもしれない。前者なら
+    # 体系的な要因、後者はデータの不具合で、**次にやることが正反対になる。**
+    trail = topix_gap_trail(frame, prices[CLOSE])
+    if trail.by_year:
+        console.print(
+            f"[dim]1日の差の中央値 {trail.daily_median:.4%}、"
+            f"いちばん大きい1日 {trail.largest_day:.2%}。[/]"
+        )
+        if trail.concentrated:
+            console.print(
+                "[red]差は数日に固まっている。[/] "
+                "**日々の積み重ねではない。分割の調整が片方で抜けた形である。**"
+            )
+            detail = Table(title="食い違いの大きい日")
+            for column in ("日付", "指数", "ETF", "差"):
+                detail.add_column(column, justify="right" if column != "日付" else "left")
+            for day, left, right, difference in trail.worst:
+                detail.add_row(str(day), f"{left:+.2%}", f"{right:+.2%}", f"{difference:+.2%}")
+            console.print(detail)
+        else:
+            console.print(
+                "[yellow]差はなだらかに付いている。[/] "
+                "**1日で飛んではいない。継ぎ目ではなく、毎日効く要因である。**"
+            )
+            years = Table(title="年ごとの差（ETF − 指数）")
+            years.add_column("年")
+            years.add_column("差", justify="right")
+            for year, value in trail.by_year.items():
+                years.add_row(str(year), f"{value:+.2%}")
+            console.print(years)
     if not gap.days:
         console.print(
             "[dim]どちらも配当を含まない前提である。片方だけ配当込みなら、"
