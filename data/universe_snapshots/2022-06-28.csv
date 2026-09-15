@@ -22,20 +22,16 @@ symbol,name,sector,industry,lending
 1429,日本アクア,Industrials,建設業,貸借
 1430,ファーストコーポレーション,Industrials,建設業,貸借
 1431,Ｌｉｂ　Ｗｏｒｋ,Industrials,建設業,貸借
-1432,動力,Industrials,建設業,その他
 1433,ベステラ,Industrials,建設業,貸借
 1434,ＪＥＳＣＯホールディングス,Industrials,建設業,貸借
 1435,Ｒｏｂｏｔ　Ｈｏｍｅ,Industrials,建設業,信用
 1436,フィット,Industrials,建設業,信用
 1439,安江工務店,Industrials,建設業,信用
-1440,やまぜんホームズ,Industrials,建設業,その他
 1443,技研ホールディングス,Industrials,建設業,信用
-1445,ひかりホールディングス,Industrials,建設業,その他
 1446,キャンディル,Industrials,建設業,貸借
 1447,ＩＴｂｏｏｋホールディングス,Industrials,建設業,信用
 1450,田中建設工業,Industrials,建設業,信用
 1451,ＫＨＣ,Industrials,建設業,信用
-1452,横浜ライト工業,Industrials,建設業,その他
 1491,中外鉱業,Materials,非鉄金属,信用
 1514,住石ホールディングス,Energy,鉱業,貸借
 1515,日鉄鉱業,Energy,鉱業,貸借
@@ -334,7 +330,6 @@ symbol,name,sector,industry,lending
 2440,ぐるなび,Industrials,サービス業,貸借
 2445,タカミヤ,Industrials,サービス業,貸借
 2449,プラップジャパン,Industrials,サービス業,信用
-2452,コンピュータマインド,Communication Services,情報･通信業,その他
 2453,ジャパンベストレスキューシステム,Industrials,サービス業,貸借
 2454,オールアバウト,Industrials,サービス業,信用
 2459,アウンコンサルティング,Industrials,サービス業,信用
@@ -515,22 +510,16 @@ symbol,name,sector,industry,lending
 2961,日本調理機,Materials,金属製品,信用
 2970,グッドライフカンパニー,Real Estate,不動産業,信用
 2975,スター・マイカ・ホールディングス,Real Estate,不動産業,貸借
-2977,Ｌｉｖ−ｕｐ,Real Estate,不動産業,その他
 2978,ツクルバ,Real Estate,不動産業,信用
 2980,ＳＲＥホールディングス,Real Estate,不動産業,貸借
 2981,ランディックス,Real Estate,不動産業,信用
 2982,ＡＤワークスグループ,Real Estate,不動産業,貸借
 2983,アールプランナー,Real Estate,不動産業,信用
 2984,ヤマイチ・ユニハイムエステート,Real Estate,不動産業,信用
-2985,ファーストステージ,Real Estate,不動産業,その他
 2986,ＬＡホールディングス,Real Estate,不動産業,貸借
 2987,タスキ,Real Estate,不動産業,信用
-2990,アイダ設計,Real Estate,不動産業,その他
 2991,ランドネット,Real Estate,不動産業,信用
-2992,アーバンライク,Real Estate,不動産業,その他
 2993,長栄,Real Estate,不動産業,信用
-2994,アンサーホールディングス,Real Estate,不動産業,その他
-2995,ジェイレックス・コーポレーション,Real Estate,不動産業,その他
 2997,ストレージ王,Real Estate,不動産業,信用
 2998,クリアル,Real Estate,不動産業,信用
 2999,ホームポジション,Real Estate,不動産業,信用
@@ -551,7 +540,6 @@ symbol,name,sector,industry,lending
 3035,ケイティケイ,Industrials,卸売業,信用
 3036,アルコニックス,Industrials,卸売業,貸借
 3038,神戸物産,Industrials,卸売業,貸借
-3039,碧,Consumer Cyclical,小売業,その他
 3040,ソリトンシステムズ,Communication Services,情報･通信業,信用
 3041,ビューティ花壇,Industrials,卸売業,貸借
 3042,セキュアヴェイル,Communication Services,情報･通信業,貸借
@@ -768,12 +756,9 @@ symbol,name,sector,industry,lending
 3445,ＲＳ　Ｔｅｃｈｎｏｌｏｇｉｅｓ,Materials,金属製品,貸借
 3446,ジェイテックコーポレーション,Materials,金属製品,貸借
 3447,信和,Materials,金属製品,信用
-3448,清鋼材,Materials,金属製品,その他
 3449,テクノフレックス,Materials,金属製品,貸借
-3450,サトウ産業,Materials,金属製品,その他
 3452,ビーロット,Real Estate,不動産業,信用
 3454,ファーストブラザーズ,Real Estate,不動産業,貸借
-3456,ＴＳＯＮ,Real Estate,不動産業,その他
 3457,Ａｎｄ　Ｄｏホールディングス,Real Estate,不動産業,貸借
 3458,シーアールイー,Real Estate,不動産業,信用
 3461,パルマ,Real Estate,不動産業,信用
@@ -787,7 +772,6 @@ symbol,name,sector,industry,lending
 3479,ティーケーピー,Real Estate,不動産業,貸借
 3480,ジェイ・エス・ビー,Real Estate,不動産業,貸借
 3482,ロードスターキャピタル,Real Estate,不動産業,貸借
-3483,翔栄,Real Estate,不動産業,その他
 3484,テンポイノベーション,Real Estate,不動産業,貸借
 3486,グローバル・リンク・マネジメント,Real Estate,不動産業,信用
 3489,フェイスネットワーク,Real Estate,不動産業,貸借
@@ -1179,7 +1163,6 @@ symbol,name,sector,industry,lending
 4193,ファブリカコミュニケーションズ,Communication Services,情報･通信業,信用
 4194,ビジョナル,Communication Services,情報･通信業,信用
 4196,ネオマーケティング,Communication Services,情報･通信業,信用
-4197,アスマーク,Communication Services,情報･通信業,その他
 4198,テンダ,Communication Services,情報･通信業,信用
 4199,ワンダープラネット,Communication Services,情報･通信業,信用
 4200,ＨＣＳホールディングス,Communication Services,情報･通信業,信用
@@ -1216,7 +1199,6 @@ symbol,name,sector,industry,lending
 4251,恵和,Materials,化学,貸借
 4255,ＴＨＥＣＯＯ,Communication Services,情報･通信業,信用
 4256,サインド,Communication Services,情報･通信業,信用
-4257,エヴィクサー,Communication Services,情報･通信業,その他
 4258,網屋,Communication Services,情報･通信業,貸借
 4259,エクサウィザーズ,Communication Services,情報･通信業,信用
 4260,ハイブリッドテクノロジーズ,Communication Services,情報･通信業,信用
@@ -1327,7 +1309,6 @@ symbol,name,sector,industry,lending
 4423,アルテリア・ネットワークス,Communication Services,情報･通信業,貸借
 4424,Ａｍａｚｉａ,Communication Services,情報･通信業,貸借
 4425,Ｋｕｄａｎ,Communication Services,情報･通信業,貸借
-4426,パスロジ,Communication Services,情報･通信業,その他
 4427,ＥｄｕＬａｂ,Communication Services,情報･通信業,信用
 4428,シノプス,Communication Services,情報･通信業,貸借
 4429,リックソフト,Communication Services,情報･通信業,貸借
@@ -1658,11 +1639,8 @@ symbol,name,sector,industry,lending
 5033,ヌーラボ,Communication Services,情報･通信業,その他
 5070,ドラフト,Industrials,建設業,貸借
 5071,ヴィス,Industrials,建設業,貸借
-5072,アートフォースジャパン,Industrials,建設業,その他
 5074,テスホールディングス,Industrials,建設業,貸借
-5075,アップコン,Industrials,建設業,その他
 5076,インフロニア・ホールディングス,Industrials,建設業,貸借
-5077,ハンズ,Industrials,建設業,その他
 5078,セレコーポレーション,Industrials,建設業,信用
 5079,ノバック,Industrials,建設業,信用
 5101,横浜ゴム,Materials,ゴム製品,貸借
@@ -1818,7 +1796,6 @@ symbol,name,sector,industry,lending
 5852,アーレスティ,Materials,非鉄金属,貸借
 5856,エルアイイーエイチ,Consumer Cyclical,小売業,信用
 5857,アサヒホールディングス,Materials,非鉄金属,貸借
-5858,ＳＴＧ,Materials,非鉄金属,その他
 5900,ダイケン,Materials,金属製品,信用
 5901,東洋製罐グループホールディングス,Materials,金属製品,貸借
 5902,ホッカンホールディングス,Materials,金属製品,貸借
@@ -1982,11 +1959,9 @@ symbol,name,sector,industry,lending
 6165,パンチ工業,Industrials,機械,貸借
 6166,中村超硬,Industrials,機械,信用
 6167,冨士ダイス,Industrials,機械,貸借
-6168,オージックグループ,Industrials,機械,その他
 6171,土木管理総合試験所,Industrials,サービス業,貸借
 6172,メタップス,Industrials,サービス業,信用
 6173,アクアライン,Industrials,サービス業,信用
-6174,デンタス,Industrials,サービス業,その他
 6175,ネットマーケティング,Industrials,サービス業,貸借
 6176,ブランジスタ,Industrials,サービス業,信用
 6177,ＡｐｐＢａｎｋ,Industrials,サービス業,信用
@@ -2021,7 +1996,6 @@ symbol,name,sector,industry,lending
 6222,島精機製作所,Industrials,機械,貸借
 6226,守谷輸送機工業,Industrials,機械,信用
 6227,ＡＩメカテック,Industrials,機械,信用
-6228,ジェイ・イー・ティ,Industrials,機械,その他
 6229,オーケーエム,Industrials,機械,信用
 6230,ＳＡＮＥＩ,Industrials,機械,信用
 6231,木村工機,Industrials,機械,信用
@@ -2254,7 +2228,6 @@ symbol,name,sector,industry,lending
 6572,ＲＰＡホールディングス,Industrials,サービス業,信用
 6573,アジャイルメディア・ネットワーク,Industrials,サービス業,その他
 6574,コンヴァノ,Industrials,サービス業,信用
-6576,揚工舎,Industrials,サービス業,その他
 6577,ベストワンドットコム,Industrials,サービス業,信用
 6578,エヌリンクス,Industrials,サービス業,信用
 6579,ログリー,Industrials,サービス業,信用
@@ -2265,7 +2238,6 @@ symbol,name,sector,industry,lending
 6590,芝浦メカトロニクス,Technology,電気機器,貸借
 6592,マブチモーター,Technology,電気機器,貸借
 6594,日本電産,Technology,電気機器,貸借
-6596,筑波精工,Technology,電気機器,その他
 6597,ＨＰＣシステムズ,Technology,電気機器,信用
 6599,エブレン,Technology,電気機器,信用
 6612,バルミューダ,Technology,電気機器,信用
@@ -2315,7 +2287,6 @@ symbol,name,sector,industry,lending
 6677,エスケーエレクトロニクス,Technology,電気機器,信用
 6678,テクノメディカ,Technology,電気機器,信用
 6694,ズーム,Technology,電気機器,信用
-6695,トリプルワン,Technology,電気機器,その他
 6696,トラース・オン・プロダクト,Technology,電気機器,信用
 6697,テックポイント・インク,Technology,電気機器,信用
 6698,ヴィスコ・テクノロジーズ,Technology,電気機器,貸借
@@ -2514,7 +2485,6 @@ symbol,name,sector,industry,lending
 7048,ベルトラ,Industrials,サービス業,貸借
 7049,識学,Industrials,サービス業,貸借
 7050,フロンティアインターナショナル,Industrials,サービス業,信用
-7056,マルク,Industrials,サービス業,その他
 7057,エヌ・シー・エヌ,Industrials,サービス業,信用
 7058,共栄セキュリティーサービス,Industrials,サービス業,信用
 7059,コプロ・ホールディングス,Industrials,サービス業,貸借
@@ -2533,7 +2503,6 @@ symbol,name,sector,industry,lending
 7072,インティメート・マージャー,Industrials,サービス業,信用
 7073,ジェイック,Industrials,サービス業,信用
 7074,トゥエンティーフォーセブン,Industrials,サービス業,信用
-7075,ＱＬＳホールディングス,Industrials,サービス業,その他
 7077,ＡＬｉＮＫインターネット,Industrials,サービス業,信用
 7078,ＩＮＣＬＵＳＩＶＥ,Industrials,サービス業,信用
 7079,ＷＤＢココ,Industrials,サービス業,信用
@@ -2555,25 +2524,19 @@ symbol,name,sector,industry,lending
 7095,Ｍａｃｂｅｅ　Ｐｌａｎｅｔ,Industrials,サービス業,信用
 7096,ステムセル研究所,Industrials,サービス業,信用
 7097,さくらさくプラス,Industrials,サービス業,信用
-7098,エージェント,Industrials,サービス業,その他
 7102,日本車輌製造,Consumer Cyclical,輸送用機器,貸借
 7105,三菱ロジスネクスト,Consumer Cyclical,輸送用機器,貸借
 7122,近畿車輛,Consumer Cyclical,輸送用機器,貸借
-7125,イヴレス,Industrials,卸売業,その他
 7126,タンゴヤ,Consumer Cyclical,小売業,信用
 7127,一家ホールディングス,Consumer Cyclical,小売業,信用
 7128,フルサト・マルカホールディングス,Industrials,卸売業,貸借
 7129,ミアヘルサホールディングス,Consumer Cyclical,小売業,信用
 7130,ヤマエグループホールディングス,Industrials,卸売業,貸借
 7131,のむら産業,Industrials,卸売業,信用
-7132,フローバル,Industrials,卸売業,その他
 7133,ＨＹＵＧＡ　ＰＲＩＭＡＲＹ　ＣＡＲＥ,Consumer Cyclical,小売業,信用
 7134,クルーバー,Consumer Cyclical,小売業,信用
 7135,藤久ホールディングス,Consumer Cyclical,小売業,貸借
-7136,ウェルビングループ,Consumer Cyclical,小売業,その他
-7137,グラントマト,Consumer Cyclical,小売業,その他
 7138,ＴＯＲＩＣＯ,Consumer Cyclical,小売業,信用
-7139,東京高圧山崎,Industrials,卸売業,その他
 7140,ペットゴー,Consumer Cyclical,小売業,信用
 7148,ＦＰＧ,Financials,証券･商品先物取引業,貸借
 7150,島根銀行,Financials,銀行業,貸借
@@ -2583,11 +2546,9 @@ symbol,name,sector,industry,lending
 7164,全国保証,Financials,その他金融業,貸借
 7167,めぶきフィナンシャルグループ,Financials,銀行業,貸借
 7169,ＮＦＣホールディングス,Financials,保険業,その他
-7170,中央インターナショナルグループ,Financials,保険業,その他
 7172,ジャパンインベストメントアドバイザー,Financials,証券･商品先物取引業,貸借
 7173,東京きらぼしフィナンシャルグループ,Financials,銀行業,貸借
 7175,今村証券,Financials,証券･商品先物取引業,信用
-7176,シンプレクス・ファイナンシャル・ホールディングス,Financials,証券･商品先物取引業,その他
 7177,ＧＭＯフィナンシャルホールディングス,Financials,証券･商品先物取引業,信用
 7180,九州フィナンシャルグループ,Financials,銀行業,貸借
 7181,かんぽ生命保険,Financials,保険業,貸借
@@ -2690,7 +2651,6 @@ symbol,name,sector,industry,lending
 7352,Ｂｒａｎｄｉｎｇ　Ｅｎｇｉｎｅｅｒ,Industrials,サービス業,信用
 7353,ＫＩＹＯラーニング,Industrials,サービス業,信用
 7354,ダイレクトマーケティングミックス,Industrials,サービス業,貸借
-7355,一寸房,Industrials,サービス業,その他
 7356,Ｒｅｔｔｙ,Industrials,サービス業,貸借
 7357,ジオコード,Industrials,サービス業,信用
 7358,ポピンズ,Industrials,サービス業,信用
@@ -2699,7 +2659,6 @@ symbol,name,sector,industry,lending
 7361,ヒューマンクリエイションホールディングス,Industrials,サービス業,信用
 7362,Ｔ．Ｓ．Ｉ,Industrials,サービス業,信用
 7363,ベビーカレンダー,Industrials,サービス業,信用
-7364,琉球アスティーダスポーツクラブ,Industrials,サービス業,その他
 7366,ＬＩＴＡＬＩＣＯ,Industrials,サービス業,貸借
 7367,セルム,Industrials,サービス業,信用
 7368,表示灯,Industrials,サービス業,信用
@@ -2862,7 +2821,6 @@ symbol,name,sector,industry,lending
 7677,ヤシマキザイ,Industrials,卸売業,信用
 7678,あさくま,Consumer Cyclical,小売業,貸借
 7679,薬王堂ホールディングス,Consumer Cyclical,小売業,貸借
-7680,軽自動車館,Consumer Cyclical,小売業,その他
 7681,レオクラン,Industrials,卸売業,信用
 7682,浜木綿,Consumer Cyclical,小売業,信用
 7683,ダブルエー,Consumer Cyclical,小売業,信用
@@ -2870,10 +2828,7 @@ symbol,name,sector,industry,lending
 7686,カクヤスグループ,Industrials,卸売業,貸借
 7687,ミクリード,Industrials,卸売業,信用
 7689,コパ・コーポレーション,Industrials,卸売業,信用
-7690,カレント自動車,Industrials,卸売業,その他
-7691,Ｃ　Ｃｈａｎｎｅｌ,Consumer Cyclical,小売業,その他
 7692,アースインフィニティ,Consumer Cyclical,小売業,信用
-7693,北海道歯科産業,Industrials,卸売業,その他
 7694,いつも,Consumer Cyclical,小売業,信用
 7695,交換できるくん,Consumer Cyclical,小売業,信用
 7698,アイスコ,Industrials,卸売業,信用
@@ -2926,7 +2881,6 @@ symbol,name,sector,industry,lending
 7780,メニコン,Technology,精密機器,貸借
 7781,平山ホールディングス,Technology,精密機器,信用
 7782,シンシア,Technology,精密機器,貸借
-7790,バルコス,Industrials,その他製品,その他
 7791,ドリームベッド,Industrials,その他製品,信用
 7792,コラントッテ,Industrials,その他製品,信用
 7793,イメージ・マジック,Industrials,その他製品,信用
@@ -3384,7 +3338,6 @@ symbol,name,sector,industry,lending
 8918,ランド,Real Estate,不動産業,信用
 8919,カチタス,Real Estate,不動産業,貸借
 8920,東祥,Industrials,サービス業,貸借
-8921,シーズクリエイト,Real Estate,不動産業,その他
 8923,トーセイ,Real Estate,不動産業,貸借
 8925,アルデプロ,Real Estate,不動産業,貸借
 8927,明豊エンタープライズ,Real Estate,不動産業,貸借
@@ -3470,7 +3423,6 @@ symbol,name,sector,industry,lending
 9142,九州旅客鉄道,Industrials,陸運業,貸借
 9143,ＳＧホールディングス,Industrials,陸運業,貸借
 9145,ビーイングホールディングス,Industrials,陸運業,貸借
-9146,五健堂,Industrials,陸運業,その他
 9147,ＮＩＰＰＯＮ　ＥＸＰＲＥＳＳホールディングス,Industrials,陸運業,貸借
 9171,栗林商船,Industrials,海運業,信用
 9173,東海汽船,Industrials,海運業,信用
@@ -3488,10 +3440,6 @@ symbol,name,sector,industry,lending
 9219,ギックス,Industrials,サービス業,信用
 9220,エフビー介護サービス,Industrials,サービス業,信用
 9221,フルハシＥＰＯ,Industrials,サービス業,信用
-9222,ｍａｎａｂｙ,Industrials,サービス業,その他
-9224,環境のミカタ,Industrials,サービス業,その他
-9225,ブリッジコンサルティンググループ,Industrials,サービス業,その他
-9226,アイガー,Industrials,サービス業,その他
 9227,マイクロ波化学,Industrials,サービス業,信用
 9229,サンウェルズ,Industrials,サービス業,信用
 9232,パスコ,Industrials,空運業,貸借
@@ -3499,7 +3447,6 @@ symbol,name,sector,industry,lending
 9240,デリバリーコンサルティング,Industrials,サービス業,信用
 9241,フューチャーリンクネットワーク,Industrials,サービス業,信用
 9242,メディア総研,Industrials,サービス業,信用
-9243,富士テクノホールディングス,Industrials,サービス業,その他
 9244,デジタリフト,Industrials,サービス業,信用
 9245,リベロ,Industrials,サービス業,信用
 9246,プロジェクトカンパニー,Industrials,サービス業,信用
@@ -3528,7 +3475,6 @@ symbol,name,sector,industry,lending
 9273,コーア商事ホールディングス,Industrials,卸売業,貸借
 9274,国際紙パルプ商事,Industrials,卸売業,貸借
 9275,ナルミヤ・インターナショナル,Consumer Cyclical,小売業,信用
-9276,アザース,Consumer Cyclical,小売業,その他
 9278,ブックオフグループホールディングス,Consumer Cyclical,小売業,貸借
 9279,ギフトホールディングス,Consumer Cyclical,小売業,貸借
 9301,三菱倉庫,Industrials,倉庫･運輸関連業,貸借
@@ -3571,7 +3517,6 @@ symbol,name,sector,industry,lending
 9384,内外トランスライン,Industrials,倉庫･運輸関連業,貸借
 9385,ショーエイコーポレーション,Materials,化学,貸借
 9386,日本コンセプト,Industrials,倉庫･運輸関連業,信用
-9388,パパネッツ,Industrials,倉庫･運輸関連業,その他
 9399,ビート・ホールディングス・リミテッド（貝徳控股有限公司）,Communication Services,情報･通信業,その他
 9401,ＴＢＳホールディングス,Communication Services,情報･通信業,貸借
 9404,日本テレビホールディングス,Communication Services,情報･通信業,貸借
@@ -3604,7 +3549,6 @@ symbol,name,sector,industry,lending
 9446,サカイホールディングス,Communication Services,情報･通信業,信用
 9449,ＧＭＯインターネット,Communication Services,情報･通信業,貸借
 9450,ファイバーゲート,Communication Services,情報･通信業,貸借
-9465,Ｋｉｐｓ,Communication Services,情報･通信業,その他
 9466,アイドママーケティングコミュニケーション,Communication Services,情報･通信業,貸借
 9467,アルファポリス,Communication Services,情報･通信業,貸借
 9468,ＫＡＤＯＫＡＷＡ,Communication Services,情報･通信業,貸借

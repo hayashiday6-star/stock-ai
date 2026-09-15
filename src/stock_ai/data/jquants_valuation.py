@@ -42,9 +42,11 @@ from __future__ import annotations
 
 import dataclasses
 import datetime as dt
+import math
 from collections import Counter
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 
 from stock_ai.core.logging import get_logger
@@ -121,7 +123,23 @@ def parse_valuation(payload: bytes) -> pd.DataFrame:
         rows.append(row)
     if not rows:
         return pd.DataFrame(columns=[DATE, SYMBOL, *COLUMN_MAP.values()])
-    return pd.DataFrame(rows)
+    frame = pd.DataFrame(rows)
+    # **数の列は、必ず数の型にする。**
+    #
+    # 1ファイルの中で、ある列が1件も埋まっていないことがある——2008年の
+    # `EPS` と `PER` がそうで、census で 0% と出る。全部 `None` の列を
+    # `DataFrame` に渡すと **object 型**になり、`concat` すると他のファイルの
+    # float 列まで object に引きずられる。
+    #
+    # そのまま掛け算・割り算をしても**例外は出ない**。並べ替えのところで
+    # 初めて落ちる（`nlargest` が object を受け付けない）。1,588万行で2度
+    # 落ちた（2026-09-15）。
+    #
+    # **fixture は1ファイル分しか作っていなかったので、連結を一度も通して
+    # いなかった。** 型をここで決めれば、どのファイルから来ても同じになる。
+    for column in COLUMN_MAP.values():
+        frame[column] = pd.to_numeric(frame[column], errors="coerce")
+    return frame
 
 
 def unknown_columns(payload: bytes) -> list[str]:
@@ -221,7 +239,12 @@ class IdentityReport:
     checked: int
     agreed: int
     skipped_small: int
-    """EPS か BPS が :data:`IDENTITY_FLOOR` 未満で、判定できなかった行。"""
+    """小さすぎて判定できなかった行。
+
+    EPS か BPS が :data:`IDENTITY_FLOOR` 未満のもの**と、掛け算の結果が
+    それ未満のもの**。`pbr` が 0 なら `bps` が大きくても積は 0 になるので、
+    片方ずつ見るだけでは足りない。
+    """
 
     skipped_missing: int
     """どれかの列が空で、判定できなかった行。"""
@@ -268,24 +291,34 @@ def identity_check(frame: pd.DataFrame, limit: int = 5) -> IdentityReport:
     missing = int((~present).sum())
 
     usable = frame[present]
-    big = (usable["eps"].abs() >= IDENTITY_FLOOR) & (usable["bps"].abs() >= IDENTITY_FLOOR)
+    # **掛け算の結果そのものを見る。** 最初は `eps` と `bps` だけを見ていて、
+    # 「片方が 0 になる行は判定から外れているはず」とコメントに書いた。
+    # **外れていなかった。** `pbr` が 0 なら、`bps` がどれだけ大きくても積は
+    # 0 になる。実データ 1,588万行で `pd.NA` が入り、`_gap` が object 型に
+    # なって落ちた（2026-09-15）。
+    #
+    # 想定を書いたのに、その想定が成り立つかを確かめていなかった。**積に床を
+    # 当てれば、前提そのものが要らなくなる。**
+    from_earnings = usable["per"] * usable["eps"]
+    from_book = usable["pbr"] * usable["bps"]
+    big = (
+        (usable["eps"].abs() >= IDENTITY_FLOOR)
+        & (usable["bps"].abs() >= IDENTITY_FLOOR)
+        & (from_book.abs() >= IDENTITY_FLOOR)
+    )
     small = int((~big).sum())
 
     judged = usable[big]
     if judged.empty:
         return IdentityReport(0, 0, small, missing)
 
-    from_earnings = judged["per"] * judged["eps"]
-    from_book = judged["pbr"] * judged["bps"]
-    # **割り算の分母に 0 を置かない。** 片方が 0 になる行は判定から外れて
-    # いるはずだが、外れていなくても落ちないようにしておく。
-    scale = from_book.abs().where(from_book.abs() > 0, other=pd.NA)
-    gap = (from_earnings - from_book).abs() / scale
+    from_earnings, from_book = from_earnings[big], from_book[big]
+    gap = (from_earnings - from_book).abs() / from_book.abs()
     agreed = gap <= IDENTITY_TOLERANCE
 
     # **ずれの大きい順に並べる。** 件数だけでは、丸めの積み重なりなのか、
     # 特定の銘柄が外れているのかが分からない。
-    off = judged.loc[~agreed.fillna(False)].assign(_gap=gap[~agreed.fillna(False)])
+    off = judged.loc[~agreed].assign(_gap=gap[~agreed])
     worst = [
         (
             row[DATE],
@@ -298,8 +331,533 @@ def identity_check(frame: pd.DataFrame, limit: int = 5) -> IdentityReport:
 
     return IdentityReport(
         checked=int(len(judged)),
-        agreed=int(agreed.fillna(False).sum()),
+        agreed=int(agreed.sum()),
         skipped_small=small,
         skipped_missing=missing,
         worst=worst,
+    )
+
+
+#: ずれを EPS の大きさで分ける境目。**丸めの影響は小さい EPS ほど大きい。**
+#:
+#: `PER` が小数2桁で丸められているなら、`PER × EPS` の相対誤差は EPS が
+#: 小さいほど大きくなる。原因が丸めなら、ずれは**小さい EPS に偏る**。
+#: 偏らないなら、丸めでは説明が付かない。
+EPS_BUCKETS: tuple[float, ...] = (2.0, 10.0, 50.0)
+
+
+@dataclasses.dataclass
+class GapProfile:
+    """一致しなかった行が、何で説明できるか。
+
+    **「96.9% 一致」で止めない。** 残りの 3.1% が丸めなのか、列の意味が違う
+    のかで、次にやることが正反対になる。丸めなら許容幅の問題で、データは
+    使える。意味が違うなら、その列を使う説を止める。
+
+    **断定の前に、原因の候補ごとに数える。**
+    """
+
+    by_eps_size: dict[str, tuple[int, int]]
+    """EPS の大きさ別の (判定した行, 合った行)。"""
+
+    negative_eps: tuple[int, int]
+    """EPS が負（赤字）の (判定した行, 合った行)。"""
+
+    forward_rescues: int
+    """合わなかった行のうち、``PER × 予想EPS`` なら合う行。
+
+    **東証の PER は会社予想 EPS で計算する慣行がある。** そうなら、実績 EPS で
+    掛けて合わないのは当たり前で、列の意味の取り違えということになる。
+    """
+
+    gap_median: float
+    gap_p99: float
+
+    checked_off: int = 0
+    """合わなかった行の数。:attr:`forward_share` の分母。"""
+
+    def rate(self, bucket: str) -> float:
+        """その区分で合った割合。判定した行が無ければ 0。"""
+        checked, agreed = self.by_eps_size.get(bucket, (0, 0))
+        return agreed / checked if checked else 0.0
+
+    def eps_size_matters(self) -> bool:
+        """ずれが**小さい EPS に偏っている**か。
+
+        **これを「丸めかどうか」の判定に使ってはいけない。** 一度そうして
+        間違えた（2026-09-15）。
+
+        実データでは、どの区分も 96% 台で**平ら**だった。それを「丸めでは
+        ない」と読んだが、効いていたのは **PBR の丸め**である。PBR は 1 前後
+        なので小数2桁なら相対誤差 ±0.5%、**EPS の大小とは関係が無い。**
+
+        平らであることは丸めを否定しない。ここが立つのは、EPS 由来の丸めが
+        **上乗せで**効いているときだけである。
+        """
+        buckets = list(self.by_eps_size)
+        if len(buckets) < 2:
+            return False
+        return self.rate(buckets[-1]) - self.rate(buckets[0]) > 0.05
+
+    @property
+    def forward_share(self) -> float:
+        """合わなかった行のうち、会社予想でなら合う割合。
+
+        **件数がゼロでないことを根拠にしない。** 実データでは 8,086 行
+        （合わない行の 2.5%、判定した行の 0.08%）で「列を取り違えている」と
+        赤字を出していた。**取り違えなら、ほとんどが救われるはずである。**
+        """
+        off = self.checked_off
+        return self.forward_rescues / off if off else 0.0
+
+
+def _bucket_labels() -> list[str]:
+    edges = EPS_BUCKETS
+    labels = [f"〜{edges[0]:g}"]
+    labels += [f"{low:g}〜{high:g}" for low, high in zip(edges, edges[1:], strict=False)]
+    labels.append(f"{edges[-1]:g}〜")
+    return labels
+
+
+def explain_gap(frame: pd.DataFrame) -> GapProfile:
+    """一致しなかった行の正体を、原因の候補ごとに数える。**断定しない。**
+
+    Args:
+        frame: :func:`parse_valuation` が返す表。
+
+    Returns:
+        :class:`GapProfile`。判定できる行が無ければ、どの区分も 0 になる。
+    """
+    empty = GapProfile(dict.fromkeys(_bucket_labels(), (0, 0)), (0, 0), 0, 0.0, 0.0, 0)
+    if frame.empty:
+        return empty
+
+    needed = ["eps", "per", "bps", "pbr"]
+    usable = frame[frame[needed].notna().all(axis=1)]
+    if usable.empty:
+        return empty
+
+    from_earnings = usable["per"] * usable["eps"]
+    from_book = usable["pbr"] * usable["bps"]
+    big = (
+        (usable["eps"].abs() >= IDENTITY_FLOOR)
+        & (usable["bps"].abs() >= IDENTITY_FLOOR)
+        & (from_book.abs() >= IDENTITY_FLOOR)
+    )
+    judged = usable[big]
+    if judged.empty:
+        return empty
+
+    earnings, book = from_earnings[big], from_book[big]
+    gap = (earnings - book).abs() / book.abs()
+    agreed = gap <= IDENTITY_TOLERANCE
+
+    size = judged["eps"].abs()
+    labels = _bucket_labels()
+    edges = [0.0, *EPS_BUCKETS, float("inf")]
+    by_size = {}
+    for label, low, high in zip(labels, edges, edges[1:], strict=False):
+        inside = (size >= low) & (size < high)
+        by_size[label] = (int(inside.sum()), int((inside & agreed).sum()))
+
+    loss = judged["eps"] < 0
+    negative = (int(loss.sum()), int((loss & agreed).sum()))
+
+    # **会社予想 EPS なら合うのか。** 合うなら、列の意味の取り違えである。
+    rescues = 0
+    off = ~agreed
+    if off.any() and judged["forward_eps"].notna().any():
+        forward = judged.loc[off, "per"] * judged.loc[off, "forward_eps"]
+        book_off = book[off]
+        usable_forward = forward.notna() & (book_off.abs() > 0)
+        if usable_forward.any():
+            forward_gap = (forward - book_off).abs() / book_off.abs()
+            rescues = int((forward_gap[usable_forward] <= IDENTITY_TOLERANCE).sum())
+
+    return GapProfile(
+        by_eps_size=by_size,
+        negative_eps=negative,
+        forward_rescues=rescues,
+        gap_median=float(gap.median()),
+        gap_p99=float(gap.quantile(0.99)),
+        checked_off=int((~agreed).sum()),
+    )
+
+
+def implied_shares(frame: pd.DataFrame) -> pd.Series:
+    """``時価総額 ÷ 終値`` から出る発行済株式数。
+
+    終値は ``PBR × BPS`` で復元する。**時価総額そのものを確かめる手立てが
+    これしか無い**——株式数は原本に入っていない。
+
+    出てくる数が銘柄ごとに安定していれば、時価総額は終値と同じ尺度で
+    作られている。桁が飛ぶなら、**単位が違うか、分割を跨いで尺度が変わって
+    いる**。どちらもこのプロジェクトが繰り返し踏んでいる形である。
+    """
+    needed = ["market_cap", "pbr", "bps"]
+    usable = frame[frame[needed].notna().all(axis=1)]
+    close = usable["pbr"] * usable["bps"]
+    return (usable["market_cap"] / close.where(close.abs() >= IDENTITY_FLOOR)).dropna()
+
+
+def decimals_seen(payload: bytes, limit: int = 20000) -> dict[str, Counter]:
+    """原本の**生の文字列**から、列ごとに小数点以下が何桁あるかを数える。
+
+    **許容幅を推測で決めないための材料である。**
+
+    `PBR` が小数2桁で載っているなら、`PBR × BPS` は最大 ±0.5% ずれる
+    ——PBR が 1 前後だからで、**EPS の大小とは関係が無い。** 1% という
+    決め打ちの幅では、その裾をちょうど切ってしまう。
+
+    2026-09-15 に、その裾（3.1%）を「列の意味が違う」と読んだ。**丸めの
+    出どころを EPS だと思い込んでいた。** 桁は原本に書いてある。
+
+    Args:
+        payload: 展開済みの CSV。
+        limit: 何行まで見るか。**全部見る必要は無い**——書式は揃っている。
+
+    Returns:
+        列名（原本の綴り）→ 桁数ごとの件数。空欄は数えない。
+    """
+    counts: dict[str, Counter] = {source: Counter() for source in COLUMN_MAP}
+    for index, record in enumerate(records_from_csv(payload)):
+        if index >= limit:
+            break
+        for source in COLUMN_MAP:
+            text = (record.get(source) or "").strip()
+            if not text or text in {"-", "－"}:
+                continue
+            counts[source][len(text.partition(".")[2])] += 1
+    return counts
+
+
+def half_widths(counts: dict[str, Counter]) -> dict[str, float]:
+    """桁数から、四捨五入の**片側の幅**を出す。2桁なら 0.005。
+
+    **いちばん多い桁を採る。いちばん粗い桁ではない。**
+
+    最初は `min()`（いちばん粗い桁）にしていた。「狭く見積もると丸めで説明の
+    付くものを『合わない』に数える」からである。**その理屈は片側しか見て
+    いなかった。**
+
+    `25.10` は `25.1` と書かれる——末尾の 0 は落ちる。1件でもそう書かれれば
+    `min()` は 1 桁と読み、列全体の幅が **10倍** になる。実データでは全9列が
+    `±0.05` になり、`PBR` は 1 前後なので**相対 5%** の幅になった。ずれの
+    99%点が 1.3% なので、**何をしても 100% 収まる**——落ちようのない検査で
+    ある（2026-09-15）。
+
+    **広すぎる幅は、狭すぎる幅より悪い。** 狭ければ誤報が出て気付くが、広い
+    と「全部合っている」と出て、確かめたつもりになる。
+
+    書式そのものの桁は、いちばん多く現れる桁である。末尾の 0 が落ちたものは
+    そこから少ないほうへ散らばるだけで、書式が変わったわけではない。
+    """
+    widths = {}
+    for source, target in COLUMN_MAP.items():
+        seen = counts.get(source)
+        if not seen:
+            continue
+        digits = seen.most_common(1)[0][0]
+        widths[target] = 0.5 * 10**-digits
+    return widths
+
+
+def digit_spread(counts: dict[str, Counter], column: str) -> str:
+    """その列の桁数の散らばりを1行で。**採った桁が代表かどうかを見せる。**
+
+    「2桁が98%」なら書式は2桁である。「2桁が40%、1桁が35%」なら、そもそも
+    揃っていない——**そのときは幅そのものを信じない。**
+    """
+    seen = counts.get(column)
+    if not seen:
+        return "無し"
+    total = sum(seen.values())
+    top = sorted(seen.items(), key=lambda pair: -pair[1])[:3]
+    return "、".join(f"{digits}桁 {count / total:.0%}" for digits, count in top)
+
+
+def rounding_bound(frame: pd.DataFrame, widths: dict[str, float]) -> pd.Series:
+    """行ごとに、**丸めだけで説明の付くずれの上限**を返す（相対値）。
+
+    ``PER × EPS`` の不確かさは ``|EPS|·h(PER) + |PER|·h(EPS)``。書物側も
+    同じ形で、両方を足して終値で割れば、比べられる幅になる。
+
+    **決め打ちの 1% を置き換えるためのものである。** 幅が原本の桁から出て
+    いれば、「合わない」は本当に説明の付かないものだけになる。
+    """
+    per_h = widths.get("per", 0.0)
+    eps_h = widths.get("eps", 0.0)
+    pbr_h = widths.get("pbr", 0.0)
+    bps_h = widths.get("bps", 0.0)
+
+    from_book = (frame["pbr"] * frame["bps"]).abs()
+    earnings_slack = frame["eps"].abs() * per_h + frame["per"].abs() * eps_h
+    book_slack = frame["bps"].abs() * pbr_h + frame["pbr"].abs() * bps_h
+    return (earnings_slack + book_slack) / from_book.where(from_book >= IDENTITY_FLOOR)
+
+
+#: 行ごとの丸めの幅がこれを超えたら、**その行は判定できない**と見なす。
+#:
+#: 確かめているのは「2通りに計算した終値が一致するか」である。その行の幅が
+#: 1% なら、終値を ±1% までしか突き合わせられない。ずれの典型は 0.2% なので、
+#: **1% の幅では丸めと本当の食い違いを区別できない。**
+#:
+#: **行ごとに見る。全体の中央値では守れない**（2026-09-15）。幅の中央値が
+#: 0.55% でも、EPS が 0.01 の行は PER が 37,230 になり、EPS の ±0.005 が
+#: 終値の ±36% に化ける。その行は 31% ずれていても「収まった」に数えられて
+#: いた。
+RESOLVING_LIMIT = 0.01
+
+
+@dataclasses.dataclass
+class Resolution:
+    """桁から出る幅で見たとき、何行が**本当に**確かめられたか。
+
+    **「収まった」と「収まらないことがありえない」を分ける。** 分けないと、
+    判定不能な行がそのまま合格に数えられる。
+    """
+
+    within: int
+    """幅の中に収まり、しかもその幅が意味を持つ行。"""
+
+    outside: int
+    """幅を超えた行。**説明の付かない食い違いはここだけ。**"""
+
+    unresolvable: int
+    """幅そのものが広すぎて、判定できない行。"""
+
+    bound_median: float
+    gap_median: float
+
+    @property
+    def judged(self) -> int:
+        """判定できた行。"""
+        return self.within + self.outside
+
+    @property
+    def rate(self) -> float:
+        """判定できた行のうち、収まった割合。"""
+        return self.within / self.judged if self.judged else 0.0
+
+    def summary(self) -> str:
+        """1行のまとめ。**判定できなかった行を必ず言う。**"""
+        total = self.judged + self.unresolvable
+        return (
+            f"桁から出る幅で見ると、{total:,} 行のうち "
+            f"{self.unresolvable:,} 行は幅が広すぎて判定できない。"
+            f"残る {self.judged:,} 行では {self.within:,} 行（{self.rate:.2%}）が収まる。"
+        )
+
+
+def resolve(frame: pd.DataFrame, widths: dict[str, float]) -> Resolution:
+    """行ごとに、収まった／超えた／判定できない を分ける。
+
+    Args:
+        frame: :func:`parse_valuation` が返す表。
+        widths: :func:`half_widths` が返す、列ごとの丸めの片側の幅。
+
+    Returns:
+        :class:`Resolution`。幅が無ければ全部 0。
+    """
+    if frame.empty or not widths:
+        return Resolution(0, 0, 0, 0.0, 0.0)
+
+    book = (frame["pbr"] * frame["bps"]).abs()
+    gap = ((frame["per"] * frame["eps"]) - (frame["pbr"] * frame["bps"])).abs() / book
+    bound = rounding_bound(frame, widths)
+    usable = gap.notna() & bound.notna()
+    if not usable.any():
+        return Resolution(0, 0, 0, 0.0, 0.0)
+
+    gap, bound = gap[usable], bound[usable]
+    vague = bound > RESOLVING_LIMIT
+    inside = (~vague) & (gap <= bound)
+    return Resolution(
+        within=int(inside.sum()),
+        outside=int(((~vague) & (gap > bound)).sum()),
+        unresolvable=int(vague.sum()),
+        bound_median=float(bound.median()),
+        gap_median=float(gap.median()),
+    )
+
+
+def close_bound(frame: pd.DataFrame, widths: dict[str, float]) -> pd.Series:
+    """``PBR × BPS`` で復元した終値の、**丸めによる相対的な不確かさ**。
+
+    株式数は ``時価総額 ÷ 終値`` で割り出すので、終値のゆらぎがそのまま
+    株式数のゆらぎになる。
+
+    **ここを決め打ちにして失敗した**（2026-09-15）。「1日で 0.1% 以上動いたら
+    分割」としたが、`PBR` の2桁丸めが作るゆらぎは ±0.4% で、**閾値がノイズ
+    より下だった。** 正しいデータで「毎日動いている」と出た。
+    """
+    pbr_h = widths.get("pbr", 0.0)
+    bps_h = widths.get("bps", 0.0)
+    close = (frame["pbr"] * frame["bps"]).abs()
+    slack = frame["bps"].abs() * pbr_h + frame["pbr"].abs() * bps_h
+    return slack / close.where(close >= IDENTITY_FLOOR)
+
+
+#: 割り出した株式数として、桁がありうる範囲。
+#:
+#: **出典のある数字ではない。桁の目安である。** 日本の上場企業は、小さいもので
+#: 百万株台、大きいもので百億株台に収まる。ここを外れたら、**株式数ではなく
+#: 単位が違う**と読む。
+#:
+#: 広めに取ってある。**狭く取って誤報を出すより、桁違いだけを捕まえたい。**
+#: 2026-09-15 に中央値 21 株と出た。どんなに広く取っても外れる値である。
+SHARES_PLAUSIBLE = (1e6, 1e11)
+
+
+@dataclasses.dataclass
+class ShareStability:
+    """``時価総額 ÷ 終値`` で出る株式数が、日をまたいで落ち着いているか。
+
+    **時価総額は、この検査に1度も出てこない列だった。** `PER × EPS` と
+    `PBR × BPS` の突き合わせが見ているのは4列だけで、時価総額はそこに入って
+    いない。**確かめていないものを、確かめたつもりにしない。**
+
+    株式数は原本に入っていないので、割り出すしかない。分割や増資では本当に
+    動くが、それ以外の日は動かないはずである。**毎日動くなら、時価総額は
+    終値と同じ尺度で作られていない。**
+    """
+
+    steps: int
+    """日をまたいだ比較の回数。"""
+
+    moved: int
+    """丸めでは説明の付かない大きさで動いた回数。**分割・増資はここに入る。**"""
+
+    symbols: int
+    median_shares: float
+    """割り出した株式数の中央値。**桁が妥当かを見る。**"""
+
+    spread_median: float
+    """銘柄×月ごとの、株式数の散らばり（相対）の中央値。
+
+    **段差だけでは足りない。** 時価総額が終値に連動していないと、株式数は
+    1日あたりの丸めより小さい幅でじわじわ動く。段差では捕まらないが、1ヶ月
+    ぶん貯まれば散らばりとして出る（2026-09-15 に、その形を作って素通りした）。
+    """
+
+    spread_slack: float
+    """丸めだけで説明の付く散らばり。:attr:`spread_median` の比べ相手。"""
+
+    @property
+    def level_holds(self) -> bool:
+        """水準が、丸めで説明の付く範囲に収まっているか。
+
+        **これは「比例しているか」しか見ていない。** 単位が円かどうかは別で
+        ある。比例していても、時価総額が百万円単位なら株式数は百万分の一に
+        出る。:attr:`units_hold` を別に見ること。
+        """
+        return self.spread_slack > 0 and self.spread_median <= self.spread_slack * 2
+
+    @property
+    def units_hold(self) -> bool:
+        """割り出した株式数の桁が、ありうる範囲に入っているか。
+
+        **比例していることと、単位が円であることは別である。** 2026-09-15 に
+        中央値 21 株と出た。日本の上場企業に 21 株の会社は無い。**それでも
+        「同じ尺度で作られている」と緑を出していた**——桁を表示しておきながら、
+        その数字を検査に使っていなかった。
+        """
+        low, high = SHARES_PLAUSIBLE
+        return low <= self.median_shares <= high
+
+    @property
+    def orders_off(self) -> float:
+        """ありうる範囲から、何桁はみ出しているか。中なら 0。
+
+        **測れることだけ返す。** 「何倍ずれているか」を1つの数で言うと、
+        範囲の中心から逆算した根拠の無い数字になる（最初そうした）。下限より
+        何桁下か、上限より何桁上か——それは測れる。
+
+        どの単位なのかを決めるのは、この数字を見た人である。**道具は、桁が
+        合っていないことまでしか言えない。**
+        """
+        low, high = SHARES_PLAUSIBLE
+        if self.median_shares <= 0:
+            return 0.0
+        if self.median_shares < low:
+            return -(math.log10(low) - math.log10(self.median_shares))
+        if self.median_shares > high:
+            return math.log10(self.median_shares) - math.log10(high)
+        return 0.0
+
+    @property
+    def steady(self) -> float:
+        """動かなかった割合。"""
+        return 1.0 - (self.moved / self.steps) if self.steps else 0.0
+
+    def summary(self) -> str:
+        """1行のまとめ。"""
+        if not self.steps:
+            return "株式数を割り出せる行が足りない。**確かめていない。**"
+        return (
+            f"{self.symbols:,} 銘柄・{self.steps:,} 回の日またぎのうち、"
+            f"{self.moved:,} 回が動いた（落ち着いているのは {self.steady:.2%}）。"
+            f"株式数の中央値は {self.median_shares:,.0f} 株。"
+            f"月ごとの散らばりは {self.spread_median:.2%}"
+            f"（丸めで説明の付く幅は {self.spread_slack:.2%}）。"
+        )
+
+
+def share_stability(frame: pd.DataFrame, widths: dict[str, float]) -> ShareStability:
+    """割り出した株式数が、日をまたいで落ち着いているかを数える。
+
+    **「銘柄ごとに一定か」では見ない。** 18年のあいだに分割も増資も起きる。
+    見るのは**隣り合う日の変化**で、分割の日だけが動き、他は動かないはずで
+    ある。
+
+    Args:
+        frame: :func:`parse_valuation` が返す表。
+        widths: :func:`half_widths` が返す、列ごとの丸めの片側の幅。
+
+    Returns:
+        :class:`ShareStability`。割り出せる行が足りなければ全部 0。
+    """
+    shares = implied_shares(frame)
+    if shares.empty or not widths:
+        return ShareStability(0, 0, 0, 0.0, 0.0, 0.0)
+
+    bound = close_bound(frame, widths)
+    ordered = frame.loc[shares.index, [DATE, SYMBOL]].assign(
+        shares=shares, slack=bound.loc[shares.index]
+    )
+    ordered = ordered.sort_values([SYMBOL, DATE])
+    grouped = ordered.groupby(SYMBOL, sort=False)
+    previous = grouped["shares"].shift(1)
+    previous_slack = grouped["slack"].shift(1)
+    change = (ordered["shares"] - previous).abs() / previous.abs()
+
+    # **閾値を決め打たない。** 両日それぞれに丸めのゆらぎが乗るので、足す。
+    allowed = ordered["slack"] + previous_slack
+    # **水準も見る。** 段差では捕まらないゆっくりしたズレが、1ヶ月ぶん貯まれば
+    # 散らばりとして出る。分割は月に何度も起きないので、月で切れば混ざらない。
+    month = pd.to_datetime(ordered[DATE]).dt.to_period("M")
+    by_month = ordered.groupby([ordered[SYMBOL], month], sort=False)["shares"]
+    spread = (by_month.max() - by_month.min()) / by_month.median().abs()
+    spread = spread[np.isfinite(spread)]
+    spread_median = float(spread.median()) if not spread.empty else 0.0
+    spread_slack = float(ordered["slack"].median() * 2) if ordered["slack"].notna().any() else 0.0
+
+    usable = change.notna() & allowed.notna() & np.isfinite(change) & np.isfinite(allowed)
+    if not usable.any():
+        return ShareStability(
+            0,
+            0,
+            int(ordered[SYMBOL].nunique()),
+            float(shares.median()),
+            spread_median,
+            spread_slack,
+        )
+
+    return ShareStability(
+        steps=int(usable.sum()),
+        moved=int((change[usable] > allowed[usable]).sum()),
+        symbols=int(ordered[SYMBOL].nunique()),
+        median_shares=float(shares.median()),
+        spread_median=spread_median,
+        spread_slack=spread_slack,
     )

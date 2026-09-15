@@ -5107,6 +5107,26 @@ def jquants_inventory(
     )
 
 
+def _valuation_precision(directory: Path) -> dict:
+    """Count how many decimals each valuation column actually carries.
+
+    原本を1本だけ読んで、列ごとの小数点以下の桁数を数える。
+
+    **書式は揃っている**ので、全部読む必要は無い。読めなければ空を返し、
+    呼ぶ側は桁に依る判定をしない——**分からないことを、分かったことにしない。**
+    """
+    from stock_ai.data.jquants_archive import path_for, read_manifest
+    from stock_ai.data.jquants_read import endpoint_of, read_archived
+    from stock_ai.data.jquants_valuation import VALUATION_ENDPOINT, decimals_seen
+
+    keys = sorted(key for key in read_manifest(directory) if endpoint_of(key) == VALUATION_ENDPOINT)
+    if not keys:
+        return {}
+    # **いちばん新しい原本を見る。** 古いものは空の列が多く、桁を数える材料に
+    # ならない。
+    return decimals_seen(read_archived(path_for(directory, keys[-1])))
+
+
 @app.command(name="jquants-valuation")
 def jquants_valuation(
     directory: str = typer.Option(
@@ -5127,7 +5147,13 @@ def jquants_valuation(
     """
     from stock_ai.data.jquants_valuation import (
         ACTUAL_COLUMNS,
+        COLUMN_MAP,
+        SHARES_PLAUSIBLE,
+        digit_spread,
+        half_widths,
         identity_check,
+        resolve,
+        share_stability,
     )
     from stock_ai.data.jquants_valuation import (
         census as valuation_census,
@@ -5172,26 +5198,113 @@ def jquants_valuation(
 
     # **公式の注意書きを引き写さない。** 「2008〜2010 は Null が多い」と書いて
     # あるが、どの列がどれだけ空なのかは書いていない。手元のファイルが答える。
-    thin = found.thin_years("market_cap")
-    if thin:
+    # **1列だけ見て済ませない。** 最初は時価総額しか見ていなかった。実データ
+    # では `eps` が 2008〜2010 で 0%、`per` も 2011 年まで 0% だったのに、
+    # **警告は1行も出なかった**（2026-09-15）。表には出ているが、表は読む側が
+    # 気付く必要がある。**気付かなくても目に入るのが警告である。**
+    for name in ACTUAL_COLUMNS.values():
+        thin = found.thin_years(name)
+        if not thin:
+            continue
+        empty = [year for year in thin if found.share(year, name) == 0]
         console.print(
-            "[yellow]時価総額が半分も埋まっていない年: [/]"
+            f"[yellow]{name} が半分も埋まっていない年: [/]"
             + "、".join(str(year) for year in thin)
-            + " [dim]サイズで並べる前に、ここを外すか埋めるかを決めること。[/]"
+            + (f" [red]うち {'、'.join(str(year) for year in empty)} は皆無。[/]" if empty else "")
         )
+    if any(found.thin_years(name) for name in ACTUAL_COLUMNS.values()):
+        console.print(
+            "[dim]その年をまたいで並べ替えると、**埋まっている銘柄だけが選ばれる。**"
+            "期間を切るか、列を替えるかを先に決めること。[/]"
+        )
+
+    # **許容幅を推測で決めない。** 桁は原本に書いてある。1% という決め打ちは、
+    # PBR の丸め（1 前後の値を小数2桁なら ±0.5%）が作る裾を、ちょうど切って
+    # いた。そしてその裾を「列の意味が違う」と読んだ（2026-09-15）。
+    counts = _valuation_precision(Path(directory))
+    widths = half_widths(counts)
+    if widths:
+        spread = Table(title="原本に載っている桁（丸めの幅はここから出る）")
+        for column in ("列", "桁の内訳", "幅"):
+            spread.add_column(column)
+        for name in ACTUAL_COLUMNS.values():
+            if name not in widths:
+                continue
+            source = next(key for key, value in COLUMN_MAP.items() if value == name)
+            spread.add_row(name, digit_spread(counts, source), f"±{widths[name]:g}")
+        console.print(spread)
 
     report = identity_check(frame)
     console.print(report.summary())
-    if report.rate >= 0.99:
+
+    # **推測の 1% ではなく、載っている桁から出した幅で見る。**
+    #
+    # そして**行ごとに**見る。全体の中央値では守れない——幅の中央値が 0.55%
+    # でも、EPS が 0.01 の行は PER が 37,230 になり、EPS の ±0.005 が終値の
+    # ±36% に化ける。その行は 31% ずれていても「収まった」に数えられていた
+    # （2026-09-15、6784）。
+    if widths:
+        found = resolve(frame, widths)
+        console.print(found.summary())
         console.print(
-            "[green]PER × EPS と PBR × BPS が同じ終値を指している。[/] "
-            "[dim]列の意味は想像どおりである。**別の原本を持ち出さずに言えた。**[/]"
+            f"[dim]幅の中央値 {found.bound_median:.2%} ／ ずれの中央値 {found.gap_median:.2%}。[/]"
         )
-    elif report.checked:
-        console.print(
-            "[red]2つの掛け算が別の終値を指している。[/] "
-            "**列の意味がこちらの想像と違う。使う前にここを説明すること。**"
-        )
+        if found.unresolvable:
+            console.print(
+                f"[dim]判定できない {found.unresolvable:,} 行は、EPS が小さく PER が"
+                "大きい行である。**EPS の丸めが終値の何割にもなる。**[/]"
+            )
+        if found.outside:
+            console.print(
+                f"[red]説明の付かない食い違いが {found.outside:,} 行ある。[/] "
+                "**丸めでは届かない。使う前にここを説明すること。**"
+            )
+        elif found.judged:
+            console.print(
+                "[green]判定できた行では、食い違いが1件も無い。[/] "
+                "[dim]**列の意味は想像どおりで、残りは丸めである。**[/]"
+            )
+
+    # **時価総額は、上の突き合わせに1度も出てこない列である。**
+    # `PER × EPS` と `PBR × BPS` が見ているのは4列だけで、時価総額はそこに
+    # 入っていない。**確かめていないものを、確かめたつもりにしない。**
+    if widths:
+        held = share_stability(frame, widths)
+        console.print()
+        console.print(f"[bold]時価総額[/] {held.summary()}")
+        if not held.steps:
+            console.print("[yellow]株式数を割り出せる行が足りない。**確かめていない。**[/]")
+        elif not held.units_hold:
+            # **比例していることと、単位が円であることは別である。**
+            #
+            # 2026-09-15 に中央値 21 株と出た。日本の上場企業に 21 株の会社は
+            # 無い。それでも「同じ尺度で作られている」と緑を出していた——桁を
+            # 表示しておきながら、その数字を検査に使っていなかった。
+            low, high = SHARES_PLAUSIBLE
+            console.print(
+                f"[red]割り出した株式数 {held.median_shares:,.0f} 株は、"
+                f"ありうる桁（{low:,.0f}〜{high:,.0f} 株）から "
+                f"{abs(held.orders_off):.1f} 桁はみ出している。[/]"
+            )
+            console.print(
+                "**時価総額の単位は円ではない。** "
+                "[dim]比例はしている（月ごとの散らばり "
+                f"{held.spread_median:.2%} ≦ 丸めの {held.spread_slack:.2%}）ので、"
+                "定数倍のずれである。**円として使うと、その定数倍だけ間違える。**[/]"
+            )
+        elif held.level_holds:
+            console.print(
+                "[green]割り出した株式数は、桁も散らばりも収まっている。[/] "
+                "[dim]**時価総額は終値と同じ尺度・同じ単位で作られている。** "
+                f"動いた {held.moved:,} 回は分割・増資とみられる。[/]"
+            )
+        else:
+            console.print(
+                f"[red]株式数の散らばり {held.spread_median:.2%} が、丸めで説明の付く "
+                f"{held.spread_slack:.2%} を超えている。[/] "
+                "**時価総額が終値と同じ尺度で動いていない。使う前にここを説明すること。**"
+            )
+
         detail = Table(title="ずれの大きいもの")
         for column in ("日付", "銘柄", "PER × EPS", "PBR × BPS"):
             detail.add_column(column, justify="right" if "×" in column else "left")

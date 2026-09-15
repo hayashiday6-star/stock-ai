@@ -42,6 +42,13 @@ if ($LASTEXITCODE -ne 0 -or -not $branch -or $branch -eq 'HEAD') {
     Exit-WithPause 1
 }
 
+# 取り込み先の枝。**決め打ちしない**——名前が `main` とは限らない。
+# 引けなければ `main` に倒す（引けないのは remote HEAD が未設定のときで、
+# その場合ここを使う案内自体を出さない側に倒れるだけである）。
+$defaultBranch = (git symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>$null)
+if ($defaultBranch) { $defaultBranch = $defaultBranch -replace '^origin/', '' }
+if (-not $defaultBranch) { $defaultBranch = 'main' }
+
 $before = (git rev-parse --short HEAD 2>$null)
 Write-Host "枝      : $branch"
 Write-Host "現在    : $before"
@@ -115,8 +122,64 @@ Use-Utf8Git { git merge --ff-only "origin/$branch" 2>&1 } |
 if ($LASTEXITCODE -ne 0) {
     Write-Host ''
     Write-Err '早送りで取り込めませんでした。何も変更していません。'
-    Write-Host '  手元に編集が残っているか、枝が分かれています。'
-    Write-Host '  git status の出力をそのまま貼ってください。'
+
+    # **「手元に編集が残っている」と「上流で履歴が書き換わった」は別である。**
+    # 直し方が違うのに同じ文面を出していたので、毎回 git status を貼って
+    # もらう往復が要った（2026-09-15）。ここで切り分ける。
+    # **ファイル名は日本語でありうる**（`checks\*.bat`）。cp932 のまま読むと
+    # 化ける。このセッションで一度直した形なので、ここでも通す。
+    $dirty = @(Use-Utf8Git { git status --porcelain 2>$null } | Where-Object { $_.Trim() })
+    if ($dirty.Count -gt 0) {
+        Write-Host ''
+        Write-Host '  原因: 手元に未コミットの編集があります。' -ForegroundColor Yellow
+        foreach ($line in ($dirty | Select-Object -First 10)) {
+            Write-Host "    $line" -ForegroundColor DarkGray
+        }
+        if ($dirty.Count -gt 10) {
+            Write-Host "    ... ほか $($dirty.Count - 10) 件" -ForegroundColor DarkGray
+        }
+        Write-Host ''
+
+        # **`data/` の中身は取り直せないことがある。** 名簿は J-Quants の
+        # プランを落とすと二度と取れない。`git stash` で見えなくすると、
+        # 「消えた」と「隠れた」の区別が付かなくなる——記録するほうが先である。
+        $precious = @($dirty | Where-Object { $_ -match 'data/' })
+        if ($precious.Count -gt 0) {
+            Write-Host "  このうち $($precious.Count) 件は data/ の中身です。" -ForegroundColor Yellow
+            Write-Host '  **取り直せないものが混じっている可能性があります。**' -ForegroundColor Yellow
+            Write-Host '  退避する前に、記録してください:' -ForegroundColor DarkGray
+            Write-Host '    checks\名簿を記録する.bat' -ForegroundColor Cyan
+            Write-Host ''
+        }
+        Write-Host '  そのほかは退避できます:' -ForegroundColor DarkGray
+        Write-Host '    git stash push --include-untracked' -ForegroundColor Cyan
+        Write-Host '  そのあともう一度このファイルを実行してください。' -ForegroundColor DarkGray
+        Exit-WithPause 1
+    }
+
+    # 編集は無い。**上流で履歴が書き換えられた場合である。**
+    Write-Host ''
+    Write-Host '  原因: 上流でこの枝の履歴が書き換えられました。' -ForegroundColor Yellow
+    Write-Host '  手元に編集は残っていません。' -ForegroundColor DarkGray
+
+    # **失われるものが本当に無いかを、こちらで確かめてから案内する。**
+    # 「たぶん安全」で `reset --hard` を勧めない。手元の中身が取り込み先と
+    # 同一なら、捨てても何も失われない。
+    git diff --quiet HEAD "origin/$defaultBranch" 2>$null
+    $sameAsMain = ($LASTEXITCODE -eq 0)
+    Write-Host ''
+    if ($sameAsMain) {
+        Write-Host "  手元の中身は $defaultBranch と同一です。捨てても失われるものはありません:" -ForegroundColor DarkGray
+        Write-Host "    git fetch origin" -ForegroundColor Cyan
+        Write-Host "    git reset --hard origin/$branch" -ForegroundColor Cyan
+        Write-Host '  そのあともう一度このファイルを実行してください。' -ForegroundColor DarkGray
+    }
+    else {
+        Write-Host "  ただし手元の中身は $defaultBranch と一致しません。" -ForegroundColor Yellow
+        Write-Host '  **捨てると失われるものがあります。** reset は案内しません。' -ForegroundColor Yellow
+        Write-Host '  次の出力をそのまま貼ってください:' -ForegroundColor DarkGray
+        Write-Host "    git diff --stat HEAD origin/$defaultBranch" -ForegroundColor Cyan
+    }
     Exit-WithPause 1
 }
 

@@ -1564,3 +1564,152 @@ class TestNoTestBetsOnRenderedHelp:
         """**検査が空を通していないこと。** 通る理由が「何も見ていない」では困る。"""
         assert "--existing" in declared_options("delisted-harvest")
         assert "--nonexistent" not in declared_options("delisted-harvest")
+
+
+class TestWarningAboutEveryEmptyColumnNotJustOne:
+    """**表に出ていることと、目に入ることは別である。**
+
+    実データで `eps` が 2008〜2010 年に皆無、`per` も 2011 年まで皆無だったが、
+    **警告は1行も出なかった**——見ていたのが `market_cap` だけだったため
+    （2026-09-15）。表には出ていた。表は読む側が気付く必要がある。
+    """
+
+    def _archive(self, tmp_path, rows):
+        import datetime as dt
+        import gzip
+
+        from stock_ai.data.jquants_archive import archive
+        from stock_ai.data.jquants_bulk import BulkFile
+
+        header = "Date,Code,EPS,FwdEPS,BPS,ROE,FwdROE,PER,FwdPER,PBR,MktCap"
+        payload = gzip.compress(("\n".join([header, *rows]) + "\n").encode("utf-8"))
+        archive(
+            [
+                BulkFile(
+                    key="equities/valuation/historical/2009/eq_valuation_200906.csv.gz",
+                    last_modified="",
+                    size=len(payload),
+                )
+            ],
+            lambda _k: payload,
+            tmp_path,
+            on=dt.date(2026, 9, 15),
+        )
+
+    def _run(self, tmp_path):
+        from typer.testing import CliRunner
+
+        from stock_ai.cli import app
+
+        return CliRunner().invoke(app, ["jquants-valuation", "--dir", str(tmp_path)])
+
+    def test_an_empty_earnings_column_is_warned_about(self, tmp_path) -> None:
+        self._archive(
+            tmp_path,
+            [
+                "2009-06-01,13010,,,2000,,,,,1.25,1",
+                "2009-06-02,13020,,,2000,,,,,1.25,1",
+            ],
+        )
+
+        result = self._run(tmp_path)
+
+        assert result.exit_code == 0, result.output
+        assert "eps" in result.output
+        assert "皆無" in result.output, result.output
+
+    def test_a_column_that_is_full_is_not_warned_about(self, tmp_path) -> None:
+        """**全部に警告を出さない。** 出せば、どれも読まれなくなる。"""
+        self._archive(tmp_path, ["2009-06-01,13010,100,120,2000,5.0,6.0,25.0,20.8,1.25,1"])
+
+        result = self._run(tmp_path)
+
+        assert "皆無" not in result.output, result.output
+
+    def test_an_archive_with_a_zero_product_does_not_crash(self, tmp_path) -> None:
+        """1,588万行で落ちた形を、この経路でも1回通す。"""
+        self._archive(
+            tmp_path,
+            [
+                "2009-06-01,13010,100,120,2000,5.0,6.0,25.0,20.8,1.25,1",
+                "2009-06-02,13020,100,120,2000,5.0,6.0,25.0,20.8,0,1",
+            ],
+        )
+
+        result = self._run(tmp_path)
+
+        assert result.exit_code == 0, result.output
+
+
+class TestSayingWhenTheCheckCannotFail:
+    """**落ちようのない検査は、何も言っていない。**
+
+    丸めの幅を「いちばん粗い桁」から出していたとき、全9列が `±0.05` になり
+    `PBR` の相対幅が 5% になった。ずれの99%点は 1.3% なので、何を入れても
+    100% 収まる。**「全部合っている」と出て、確かめたつもりになる**
+    （2026-09-15）。狭すぎる幅なら誤報が出て気付くので、**広すぎるほうが悪い。**
+
+    最初の見張りは「幅がずれより一桁以上広ければ」だった。**鳴らなかった**
+    ——桁が粗ければずれも一緒に広がるので、比では捕まらない。絶対値で見る。
+    """
+
+    def _archive(self, tmp_path, pbr_digits: int):
+        import datetime as dt
+        import gzip
+
+        from stock_ai.data.jquants_archive import archive
+        from stock_ai.data.jquants_bulk import BulkFile
+
+        header = "Date,Code,EPS,FwdEPS,BPS,ROE,FwdROE,PER,FwdPER,PBR,MktCap"
+        rows = []
+        for index in range(400):
+            close, bps, eps = 2500.0 + index, 2000.0 + index, 100.0 + index
+            rows.append(
+                f"2024-06-03,{1300 + index}0,{eps:.2f},,{bps:.2f},8.00,,"
+                f"{close / eps:.2f},,{close / bps:.{pbr_digits}f},{close * 1e6:.0f}"
+            )
+        payload = gzip.compress(("\n".join([header, *rows]) + "\n").encode("utf-8"))
+        archive(
+            [
+                BulkFile(
+                    key="equities/valuation/historical/2024/eq_valuation_202406.csv.gz",
+                    last_modified="",
+                    size=len(payload),
+                )
+            ],
+            lambda _k: payload,
+            tmp_path,
+            on=dt.date(2026, 9, 15),
+        )
+
+    def _run(self, tmp_path):
+        from typer.testing import CliRunner
+
+        from stock_ai.cli import app
+
+        return CliRunner().invoke(app, ["jquants-valuation", "--dir", str(tmp_path)]).output
+
+    def test_a_coarse_column_leaves_nothing_judgeable(self, tmp_path) -> None:
+        """桁が粗ければ、**行ごとの幅が全部 1% を超える。**"""
+        self._archive(tmp_path, pbr_digits=0)
+
+        output = self._run(tmp_path)
+
+        assert "判定できない" in output, output
+
+    def test_a_precise_column_lets_rows_be_judged(self, tmp_path) -> None:
+        self._archive(tmp_path, pbr_digits=2)
+
+        output = self._run(tmp_path)
+
+        assert "収まる" in output, output
+        assert "食い違いが1件も無い" in output
+
+    def test_the_digits_actually_present_are_shown(self, tmp_path) -> None:
+        """**幅だけ出さない。** どの桁から出たかが見えないと、確かめようがない。"""
+        self._archive(tmp_path, pbr_digits=2)
+
+        output = self._run(tmp_path)
+
+        assert "原本に載っている桁" in output, output
+        assert "桁" in output
