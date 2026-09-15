@@ -119,7 +119,14 @@ class PriceIngestReport:
     """
 
     skipped_code: int = 0
-    """4桁に直せないコード（優先株・種類株）。"""
+    """4桁に直せないコード（優先株・種類株）。
+
+    **2箇所で数えているのに、まとめに一度も出していなかった**（2026-09-15 に
+    気付いた）。`ExtractReport.empty` と同じ形である——落とした数を集めて、
+    誰にも見せずに捨てていた。
+
+    **落とす件数は、期間で変わる。** 5桁コードの扱いも、優先株の数も、20年の
+    あいだに変わっている。**出さなければ、変わったことに気付けない。**"""
 
     undated: int = 0
     splits: int = 0
@@ -175,6 +182,7 @@ class PriceIngestReport:
                 if self.no_close_but_traded
                 else ""
             )
+            + (f"、4桁にならないコード {self.skipped_code:,}" if self.skipped_code else "")
             + (f"、日付なし {self.undated:,}" if self.undated else "")
             + (f"、重なって飛ばした行 {self.repeated:,}" if self.repeated else "")
             + (f"、分割 {self.splits:,}" if self.splits else "")

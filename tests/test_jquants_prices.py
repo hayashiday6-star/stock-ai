@@ -905,3 +905,58 @@ class TestTheSameDayInTwoFiles:
         self._archive_two(tmp_path, [_row("2026-08-03", "13010", 100.0)])
 
         assert "重なって飛ばした" in ingest(tmp_path, lambda _s, frame: len(frame)).summary()
+
+
+class TestDropCountersReachAHuman:
+    """**落とした数を集めて、誰にも見せずに捨てない。**
+
+    `skipped_code` は2箇所で数えているのに、まとめに一度も出していなかった
+    （2026-09-15）。直前に `ExtractReport.empty` で同じ形を踏んだあと、
+    静的に洗って見つかった。
+
+    **落とす件数は期間で変わる。** 5桁コードの扱いも優先株の数も、20年の
+    あいだに変わっている。**出さなければ、変わったことに気付けない。**
+    """
+
+    def test_a_code_that_is_not_four_digits_is_counted(self) -> None:
+        payload = _csv([_row("2026-08-03", "12345", 100.0)])
+
+        _frames, report = frames_from_payload(payload)
+
+        assert report.skipped_code == 1
+
+    def test_the_summary_says_how_many(self) -> None:
+        payload = _csv([_row("2026-08-03", "12345", 100.0)])
+
+        _frames, report = frames_from_payload(payload)
+
+        assert "4桁にならないコード 1" in report.summary()
+
+    def test_an_ordinary_run_says_nothing_about_it(self) -> None:
+        """**毎回出すと、普通の実行に数字が1つ増えるだけになる。**"""
+        payload = _csv([_row("2026-08-03", "13010", 100.0)])
+
+        _frames, report = frames_from_payload(payload)
+
+        assert "4桁にならない" not in report.summary()
+
+    def test_it_survives_the_whole_run(self, tmp_path) -> None:
+        """1本ぶんで数えても、**足し上げたほうに出なければ意味が無い。**"""
+        payload = gzip.compress(_csv([_row("2026-08-03", "12345", 100.0)]))
+        archive(
+            [
+                BulkFile(
+                    key="equities/bars/daily/historical/2026/eq_bars_202608.csv.gz",
+                    last_modified="",
+                    size=len(payload),
+                )
+            ],
+            lambda _k: payload,
+            tmp_path,
+            on=TODAY,
+        )
+
+        report = ingest(tmp_path, lambda _s, frame: len(frame))
+
+        assert report.skipped_code == 1
+        assert "4桁にならないコード 1" in report.summary()
