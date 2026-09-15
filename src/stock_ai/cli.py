@@ -3374,12 +3374,50 @@ def jquants_daily_rosters(
     # 休日にも当たり、一括には立会日しか無いので重ならない。それは欠けでは
     # ない。だが立会日なのに名簿が無い日が混じっていたら、それは本当の欠けで
     # ある。**件数では区別が付かないので、カレンダーに当てる。**
-    grid_only = sorted(set(stored_dates(Path(DEFAULT_SNAPSHOT_DIR))) - set(stored_dates(target)))
-    if grid_only:
-        holidays, gaps = explain_missing(grid_only, trading_days_from_archive(source))
+    daily = sorted(stored_dates(target))
+    grid_only = sorted(set(stored_dates(Path(DEFAULT_SNAPSHOT_DIR))) - set(daily))
+
+    # **営業日ごとの名簿が始まる前の日付を「欠け」と呼ばない。**
+    #
+    # 一括の名簿は 2008-05-07 からしか無い。30日刻みの名簿にはそれより前の
+    # 日付があり、立会日なら全部「本当の欠け」に落ちていた——実際 2008-02-12
+    # と 2008-03-13 がそう出た（2026-09-15）。**欠けているのではなく、
+    # こちらが始まっていない。**
+    #
+    # 「重なる期間だけ見る」を、同じ形で**3度目**に踏んだ。項目5・項目6 で
+    # 直したのと同じ話である。
+    before = [day for day in grid_only if daily and day < daily[0]] if daily else list(grid_only)
+    inside = [day for day in grid_only if not daily or day >= daily[0]]
+
+    if before:
+        console.print(
+            f"[dim]{len(before)} 日は、営業日ごとの名簿が始まる {daily[0]} より前"
+            "（一括の名簿は 2008-05-07 から）。**欠けではない。**[/]"
+        )
+        # **それでも、その日の名簿が存在すること自体は確かめる価値がある。**
+        # 一括が覆っていない日付を JSON 経路が返したことになる。同じ中身を
+        # 使い回しているなら、日付の違う同じ名簿が並ぶ。
+        grid_dir = Path(DEFAULT_SNAPSHOT_DIR)
+        shapes = {
+            frozenset(profile.symbol for profile in read_snapshot(snapshot_path(grid_dir, day)))
+            for day in before
+        }
+        if len(shapes) == 1 and len(before) > 1:
+            console.print(
+                f"[yellow]その {len(before)} 日は、**中身が1種類しかない。**[/] "
+                "日付が違うのに同じ名簿である——問い合わせた日付が効いていない疑い。"
+            )
+        else:
+            console.print(
+                f"[dim]  中身は {len(shapes)} 種類あり、日付ごとに違う。"
+                "**一括より前を JSON 経路が返している。**[/]"
+            )
+
+    if inside:
+        holidays, gaps = explain_missing(inside, trading_days_from_archive(source))
         if holidays and not gaps:
             console.print(
-                f"[dim]重ならなかった {len(grid_only)} 日は、**全部が非立会日**だった"
+                f"[dim]重ならなかった {len(inside)} 日は、**全部が非立会日**だった"
                 "（取引カレンダーで確認）。欠けではない。[/]"
             )
         elif gaps:
@@ -3390,7 +3428,7 @@ def jquants_daily_rosters(
             )
         else:
             console.print(
-                f"[dim]重ならなかった {len(grid_only)} 日は、取引カレンダーの原本が"
+                f"[dim]重ならなかった {len(inside)} 日は、取引カレンダーの原本が"
                 "無いので説明できない。[/]"
             )
 
