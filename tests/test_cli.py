@@ -1689,21 +1689,21 @@ class TestSayingWhenTheCheckCannotFail:
 
         return CliRunner().invoke(app, ["jquants-valuation", "--dir", str(tmp_path)]).output
 
-    def test_a_coarse_column_is_called_out(self, tmp_path) -> None:
+    def test_a_coarse_column_leaves_nothing_judgeable(self, tmp_path) -> None:
+        """桁が粗ければ、**行ごとの幅が全部 1% を超える。**"""
         self._archive(tmp_path, pbr_digits=0)
 
         output = self._run(tmp_path)
 
-        assert "細かくは確かめられない" in output, output
-        assert "証拠にならない" in output
+        assert "判定できない" in output, output
 
-    def test_a_precise_column_is_reported_as_meaningful(self, tmp_path) -> None:
+    def test_a_precise_column_lets_rows_be_judged(self, tmp_path) -> None:
         self._archive(tmp_path, pbr_digits=2)
 
         output = self._run(tmp_path)
 
-        assert "同じ桁にある" in output, output
-        assert "細かくは確かめられない" not in output
+        assert "収まる" in output, output
+        assert "食い違いが1件も無い" in output
 
     def test_the_digits_actually_present_are_shown(self, tmp_path) -> None:
         """**幅だけ出さない。** どの桁から出たかが見えないと、確かめようがない。"""

@@ -5107,17 +5107,6 @@ def jquants_inventory(
     )
 
 
-#: 丸めの幅がこれを超えたら、**その桁では確かめられない**と見なす。
-#:
-#: 確かめているのは「2通りに計算した終値が一致するか」である。幅が 1% なら、
-#: 終値を ±1% までしか突き合わせられない。実データのずれの典型は 0.2% なので、
-#: **1% の幅では丸めと本当の食い違いを区別できない。**
-#:
-#: 2026-09-15 に、幅が 5% になっているのに「100% 収まる」と出した。**収まった
-#: のではなく、収まらないことがありえない幅だった。**
-RESOLVING_LIMIT = 0.01
-
-
 def _valuation_precision(directory: Path) -> dict:
     """Count how many decimals each valuation column actually carries.
 
@@ -5160,10 +5149,9 @@ def jquants_valuation(
         ACTUAL_COLUMNS,
         COLUMN_MAP,
         digit_spread,
-        explain_gap,
         half_widths,
         identity_check,
-        rounding_bound,
+        resolve,
     )
     from stock_ai.data.jquants_valuation import (
         census as valuation_census,
@@ -5248,97 +5236,32 @@ def jquants_valuation(
     console.print(report.summary())
 
     # **推測の 1% ではなく、載っている桁から出した幅で見る。**
+    #
+    # そして**行ごとに**見る。全体の中央値では守れない——幅の中央値が 0.55%
+    # でも、EPS が 0.01 の行は PER が 37,230 になり、EPS の ±0.005 が終値の
+    # ±36% に化ける。その行は 31% ずれていても「収まった」に数えられていた
+    # （2026-09-15、6784）。
     if widths:
-        close = (frame["pbr"] * frame["bps"]).abs()
-        gap = ((frame["per"] * frame["eps"]) - (frame["pbr"] * frame["bps"])).abs() / close
-        bound = rounding_bound(frame, widths)
-        judged = gap.notna() & bound.notna()
-        total = int(judged.sum())
-        if total:
-            within = int((gap[judged] <= bound[judged]).sum())
-            console.print(
-                f"[bold]桁から出る幅で見ると、{total:,} 行のうち "
-                f"{within:,} 行（{within / total:.1%}）が収まる。[/]"
-            )
-            # **落ちようのない検査は、何も言っていない。**
-            #
-            # 幅を「いちばん粗い桁」から出していたとき、全9列が ±0.05 になり
-            # PBR の相対幅が 5% になった。ずれの99%点は 1.3% なので、何を
-            # 入れても 100% 収まる。**「全部合っている」と出て、確かめたつもり
-            # になる**——狭すぎる幅より悪い（2026-09-15）。
-            #
-            # 幅とずれを並べれば、それが見える。
-            typical_bound = float(bound[judged].median())
-            typical_gap = float(gap[judged].median())
-            console.print(
-                f"[dim]幅の中央値 {typical_bound:.2%} ／ ずれの中央値 {typical_gap:.2%}。[/]"
-            )
-            # **比で見ない。絶対値で見る。**
-            #
-            # 最初は「幅がずれより一桁以上広ければ警告」にした。**鳴らなかった。**
-            # 幅が広いのは桁が粗いからで、桁が粗ければ**ずれも一緒に広がる。**
-            # 幅 50%・ずれ 13.8% でも比は 3.6 倍にしかならない（2026-09-15）。
-            #
-            # 問うているのは「この桁で、どれだけ細かく確かめられるか」である。
-            # 幅がずれの典型より広ければ、収まったことは何も言っていない。
-            if typical_bound > RESOLVING_LIMIT:
-                console.print(
-                    f"[red]桁が粗く、{typical_bound:.1%} より細かくは確かめられない。[/] "
-                    "**この 100% は、丸めで説明が付いた証拠にならない。** "
-                    "[dim]収まったのではなく、収まらないことがありえない幅である。[/]"
-                )
-            else:
-                console.print(
-                    f"[green]幅は {typical_bound:.2%} で、ずれの典型 {typical_gap:.2%} と"
-                    "同じ桁にある。[/] [dim]収まったことに意味がある。**列の意味は"
-                    "想像どおりで、残りは丸めである。**[/]"
-                )
-    if report.rate >= 0.99:
+        found = resolve(frame, widths)
+        console.print(found.summary())
         console.print(
-            "[green]PER × EPS と PBR × BPS が同じ終値を指している。[/] "
-            "[dim]列の意味は想像どおりである。**別の原本を持ち出さずに言えた。**[/]"
+            f"[dim]幅の中央値 {found.bound_median:.2%} ／ ずれの中央値 {found.gap_median:.2%}。[/]"
         )
-    elif report.checked:
-        # **「9割合っている」を「違う」と言わない。** 96.9% で「列の意味が
-        # 違う」と出していた（2026-09-15）。大半が合っていて少数が外れている
-        # のは、**丸めかもしれないし、意味の違いかもしれない。** 断定の前に、
-        # 原因の候補ごとに数える。
-        profile = explain_gap(frame)
-        console.print(
-            f"[yellow]合わない行が {report.checked - report.agreed:,} ある。[/] "
-            f"[dim]ずれの中央値 {profile.gap_median:.2%}、99%点 {profile.gap_p99:.1%}。[/]"
-        )
-
-        split = Table(title="合わない行は何で説明が付くか")
-        split.add_column("EPS の大きさ")
-        split.add_column("判定した行", justify="right")
-        split.add_column("合った割合", justify="right")
-        for label, (checked, _) in profile.by_eps_size.items():
-            split.add_row(label, f"{checked:,}", f"{profile.rate(label):.1%}")
-        console.print(split)
-
-        loss_checked, loss_agreed = profile.negative_eps
-        if loss_checked:
+        if found.unresolvable:
             console.print(
-                f"[dim]EPS が負（赤字）の行は {loss_checked:,}、"
-                f"うち合ったのは {loss_agreed / loss_checked:.1%}。[/]"
+                f"[dim]判定できない {found.unresolvable:,} 行は、EPS が小さく PER が"
+                "大きい行である。**EPS の丸めが終値の何割にもなる。**[/]"
             )
-        # **「ゼロでない」を根拠にしない。** 合わない行の 2.5%（判定した行の
-        # 0.08%）で「列を取り違えている」と赤字を出した。取り違えなら
-        # **ほとんどが**救われるはずである。
-        if profile.forward_share >= 0.5:
+        if found.outside:
             console.print(
-                f"[red]合わない行の {profile.forward_share:.0%} は、"
-                "**実績ではなく会社予想の EPS でなら合う。**[/] "
-                "[dim]東証の PER は会社予想で計算する。列を取り違えている。[/]"
+                f"[red]説明の付かない食い違いが {found.outside:,} 行ある。[/] "
+                "**丸めでは届かない。使う前にここを説明すること。**"
             )
-        elif profile.forward_rescues:
+        elif found.judged:
             console.print(
-                f"[dim]会社予想の EPS でなら合う行は {profile.forward_rescues:,}"
-                f"（合わない行の {profile.forward_share:.1%}）。**説明にはならない。**[/]"
+                "[green]判定できた行では、食い違いが1件も無い。[/] "
+                "[dim]**列の意味は想像どおりで、残りは丸めである。**[/]"
             )
-        if profile.eps_size_matters():
-            console.print("[dim]ずれは EPS の小さい銘柄に偏っている。[/]")
 
         detail = Table(title="ずれの大きいもの")
         for column in ("日付", "銘柄", "PER × EPS", "PBR × BPS"):

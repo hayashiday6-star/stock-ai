@@ -592,3 +592,88 @@ def rounding_bound(frame: pd.DataFrame, widths: dict[str, float]) -> pd.Series:
     earnings_slack = frame["eps"].abs() * per_h + frame["per"].abs() * eps_h
     book_slack = frame["bps"].abs() * pbr_h + frame["pbr"].abs() * bps_h
     return (earnings_slack + book_slack) / from_book.where(from_book >= IDENTITY_FLOOR)
+
+
+#: 行ごとの丸めの幅がこれを超えたら、**その行は判定できない**と見なす。
+#:
+#: 確かめているのは「2通りに計算した終値が一致するか」である。その行の幅が
+#: 1% なら、終値を ±1% までしか突き合わせられない。ずれの典型は 0.2% なので、
+#: **1% の幅では丸めと本当の食い違いを区別できない。**
+#:
+#: **行ごとに見る。全体の中央値では守れない**（2026-09-15）。幅の中央値が
+#: 0.55% でも、EPS が 0.01 の行は PER が 37,230 になり、EPS の ±0.005 が
+#: 終値の ±36% に化ける。その行は 31% ずれていても「収まった」に数えられて
+#: いた。
+RESOLVING_LIMIT = 0.01
+
+
+@dataclasses.dataclass
+class Resolution:
+    """桁から出る幅で見たとき、何行が**本当に**確かめられたか。
+
+    **「収まった」と「収まらないことがありえない」を分ける。** 分けないと、
+    判定不能な行がそのまま合格に数えられる。
+    """
+
+    within: int
+    """幅の中に収まり、しかもその幅が意味を持つ行。"""
+
+    outside: int
+    """幅を超えた行。**説明の付かない食い違いはここだけ。**"""
+
+    unresolvable: int
+    """幅そのものが広すぎて、判定できない行。"""
+
+    bound_median: float
+    gap_median: float
+
+    @property
+    def judged(self) -> int:
+        """判定できた行。"""
+        return self.within + self.outside
+
+    @property
+    def rate(self) -> float:
+        """判定できた行のうち、収まった割合。"""
+        return self.within / self.judged if self.judged else 0.0
+
+    def summary(self) -> str:
+        """1行のまとめ。**判定できなかった行を必ず言う。**"""
+        total = self.judged + self.unresolvable
+        return (
+            f"桁から出る幅で見ると、{total:,} 行のうち "
+            f"{self.unresolvable:,} 行は幅が広すぎて判定できない。"
+            f"残る {self.judged:,} 行では {self.within:,} 行（{self.rate:.2%}）が収まる。"
+        )
+
+
+def resolve(frame: pd.DataFrame, widths: dict[str, float]) -> Resolution:
+    """行ごとに、収まった／超えた／判定できない を分ける。
+
+    Args:
+        frame: :func:`parse_valuation` が返す表。
+        widths: :func:`half_widths` が返す、列ごとの丸めの片側の幅。
+
+    Returns:
+        :class:`Resolution`。幅が無ければ全部 0。
+    """
+    if frame.empty or not widths:
+        return Resolution(0, 0, 0, 0.0, 0.0)
+
+    book = (frame["pbr"] * frame["bps"]).abs()
+    gap = ((frame["per"] * frame["eps"]) - (frame["pbr"] * frame["bps"])).abs() / book
+    bound = rounding_bound(frame, widths)
+    usable = gap.notna() & bound.notna()
+    if not usable.any():
+        return Resolution(0, 0, 0, 0.0, 0.0)
+
+    gap, bound = gap[usable], bound[usable]
+    vague = bound > RESOLVING_LIMIT
+    inside = (~vague) & (gap <= bound)
+    return Resolution(
+        within=int(inside.sum()),
+        outside=int(((~vague) & (gap > bound)).sum()),
+        unresolvable=int(vague.sum()),
+        bound_median=float(bound.median()),
+        gap_median=float(gap.median()),
+    )

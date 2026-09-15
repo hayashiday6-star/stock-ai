@@ -30,6 +30,7 @@ from stock_ai.data.jquants_valuation import (
     identity_check,
     implied_shares,
     parse_valuation,
+    resolve,
     rounding_bound,
     unknown_columns,
 )
@@ -637,3 +638,78 @@ class TestNotCallingItAMixUpFromAHandfulOfRows:
         profile = explain_gap(parse_valuation(_csv(CONSISTENT)))
 
         assert profile.forward_share == 0.0
+
+
+class TestTellingApartCannotSayFromAgrees:
+    """**全体の中央値では、行ごとの無意味さを守れない。**
+
+    幅の中央値が 0.55% でも、`EPS` が 0.01 の行は `PER` が 37,230 になり、
+    `EPS` の ±0.005 が終値の **±36%** に化ける。その行は 31% ずれていても
+    「収まった」に数えられていた（2026-09-15、6784）。
+
+    **同じ形を3度踏んだ**——全体の数字が、個別の無意味さを隠す。
+    """
+
+    def _rows(self) -> list[str]:
+        rows = []
+        for index in range(200):
+            close, bps, eps = 2500.0 + index, 2000.0 + index, 100.0 + index
+            rows.append(
+                f"2024-06-03,{1300 + index}0,{eps:.2f},,{bps:.2f},8.0000,,"
+                f"{close / eps:.2f},,{close / bps:.2f},1.0"
+            )
+        return rows
+
+    def _widths(self, payload: bytes) -> dict:
+        return half_widths(decimals_seen(payload))
+
+    def test_a_tiny_eps_row_is_unresolvable_not_agreeing(self) -> None:
+        # 6784 の形。31% ずれているが、その行の幅は 36% ある。
+        rows = [*self._rows(), "2013-07-16,67840,0.01,,2010.00,8.0000,,37230.00,,0.27,1.0"]
+        payload = _csv(*rows)
+
+        found = resolve(parse_valuation(payload), self._widths(payload))
+
+        assert found.unresolvable == 1
+        assert found.outside == 0
+
+    def test_a_real_mismatch_is_counted_as_outside(self) -> None:
+        # 丸めでは届かない外れ方。**ここだけが説明の付かない食い違いである。**
+        rows = [*self._rows(), "2024-06-03,99990,100.00,,2000.00,8.0000,,25.00,,2.50,1.0"]
+        payload = _csv(*rows)
+
+        found = resolve(parse_valuation(payload), self._widths(payload))
+
+        assert found.outside == 1
+        assert found.unresolvable == 0
+
+    def test_the_rate_is_taken_over_what_could_be_judged(self) -> None:
+        """**判定できなかった行を分母に入れない。** 入れると割合が甘くなる。"""
+        rows = [
+            *self._rows(),
+            "2013-07-16,67840,0.01,,2010.00,8.0000,,37230.00,,0.27,1.0",
+            "2024-06-03,99990,100.00,,2000.00,8.0000,,25.00,,2.50,1.0",
+        ]
+        payload = _csv(*rows)
+
+        found = resolve(parse_valuation(payload), self._widths(payload))
+
+        assert found.judged == found.within + found.outside
+        assert found.judged == 201
+        assert found.rate == 200 / 201
+
+    def test_the_summary_always_names_what_could_not_be_judged(self) -> None:
+        rows = [*self._rows(), "2013-07-16,67840,0.01,,2010.00,8.0000,,37230.00,,0.27,1.0"]
+        payload = _csv(*rows)
+
+        assert "判定できない" in resolve(parse_valuation(payload), self._widths(payload)).summary()
+
+    def test_no_widths_means_nothing_judged_rather_than_everything_agreeing(self) -> None:
+        """**幅が分からないことを「全部合っている」にしない。**"""
+        found = resolve(parse_valuation(_csv(CONSISTENT)), {})
+
+        assert found.judged == 0
+        assert found.rate == 0.0
+
+    def test_an_empty_frame_does_not_raise(self) -> None:
+        assert resolve(parse_valuation(_csv()), {"pbr": 0.005}).judged == 0
