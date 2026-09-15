@@ -237,7 +237,12 @@ function Show-CopyReading {
         Write-Host '  そのときは robocopy に /FFT を足します（2秒単位で見る）。' -ForegroundColor DarkGray
         return
     }
-    Write-Host ('  同じ場所に無いのは {0:N0} 本です。それだけ写るのが正しい姿です。' -f ($Total - $Already)) -ForegroundColor DarkGray
+    # **「同じ場所にある」と「写さなくてよい」は別である。** 中身の変わった
+    # ファイルは、同じ場所にあっても写る。実測（2026-09-15）で、写るのは
+    # 3,238本だったのにここは 3,237本と出した——差は目録そのもので、場所は
+    # 同じだが中身が変わっていた。**「それだけ写る」と言い切らない。**
+    Write-Host ('  同じ場所に無いのは {0:N0} 本です。' -f ($Total - $Already)) -ForegroundColor DarkGray
+    Write-Host '  写るのはそれと、同じ場所にあって中身の変わったものです。' -ForegroundColor DarkGray
 }
 
 if ($DryRun) {

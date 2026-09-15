@@ -284,3 +284,63 @@ class TestTheWholeRunEndToEnd:
 
         assert report.days == 0
         assert report.missing_roster == [DAY]
+
+
+class TestTheSameDayInTwoBarFiles:
+    """**当月ぶんの `live` は、翌月に `historical` へ畳まれる。**
+
+    目録には両方が残る。日付ごとに数えるので、飛ばさないと同じ日を2回数える
+    ——名簿の銘柄日も、一致した数も、倍になる。**例外は出ない。**
+    """
+
+    def _archive_two(self, tmp_path: Path, body: bytes, master: bytes) -> None:
+        for key in (
+            "equities/bars/daily/historical/2026/eq_bars_202608.csv.gz",
+            "equities/bars/daily/live/eq_bars_20260803.csv.gz",
+        ):
+            payload = gzip.compress(body)
+            archive(
+                [BulkFile(key=key, last_modified="", size=len(payload))],
+                lambda _k, load=payload: load,
+                tmp_path,
+                on=TODAY,
+            )
+        payload = gzip.compress(master)
+        archive(
+            [
+                BulkFile(
+                    key="equities/master/historical/2026/eq_master_202608.csv.gz",
+                    last_modified="",
+                    size=len(payload),
+                )
+            ],
+            lambda _k: payload,
+            tmp_path,
+            on=TODAY,
+        )
+
+    def test_a_day_in_two_files_is_compared_once(self, tmp_path: Path) -> None:
+        self._archive_two(
+            tmp_path,
+            _csv(BAR_COLUMNS, [_bar("2026-08-03", "13010")]),
+            _csv(MASTER_COLUMNS, [_listing("2026-08-03", "13010")]),
+        )
+        out = tmp_path / "rosters"
+        write_snapshot(out, DAY, [SecurityProfile(symbol="1301", market="JP", name="会社")])
+
+        report = check(tmp_path, out)
+
+        assert report.days == 1
+        assert report.matched == 1
+        assert report.repeated == 1
+
+    def test_the_summary_says_so_when_it_happened(self, tmp_path: Path) -> None:
+        self._archive_two(
+            tmp_path,
+            _csv(BAR_COLUMNS, [_bar("2026-08-03", "13010")]),
+            _csv(MASTER_COLUMNS, [_listing("2026-08-03", "13010")]),
+        )
+        out = tmp_path / "rosters"
+        write_snapshot(out, DAY, [SecurityProfile(symbol="1301", market="JP", name="会社")])
+
+        assert "重なって飛ばした" in check(tmp_path, out).summary()

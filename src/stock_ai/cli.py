@@ -4340,14 +4340,20 @@ def jquants_archive_verify(
 
     read = sum(item.bytes_written for item in manifest.values())
     if read:
+        # **「この4倍を見込め」と書いていた（2026-09-12〜15）。** 5年ぶんしか
+        # 手元に無かったときの目安で、20年を取ったいまは掛ける相手がいない。
+        # **伸ばす先が無くなった目安を残すと、読んだ人が4倍して身構える。**
         console.print(
             f"[dim]{_bytes_label(read)} を {elapsed:.1f} 秒で読み直した"
-            f"（{_bytes_label(int(read / elapsed))}/秒）。"
-            f"**20年ぶんはこの4倍を見込むこと。**[/]"
+            f"（{_bytes_label(int(read / elapsed))}/秒）。[/]"
         )
 
-    # **目録に無いファイルは、verify が一度も見ない。** 「消えている」は
-    # 見つかるが「余っている」は見つからない。写しは運ぶのに照合は見ない。
+    # **目録 → ディスクは `verify` が見る。** その逆（ディスクに置いたが目録に
+    # 無い）は誰も見ていなかったので、ここで数える。
+    #
+    # 一覧から消えた鍵は余りにならない——**目録は積み上がる。** 2026-09-15 に
+    # 「一覧に無い65本は目録にも無い」と読んで外した。`read_manifest` が既存を
+    # 読んでから足すので、鍵は残る。書き直すのは中身であって鍵の集合ではない。
     extra = archive_orphans(target)
     if extra:
         console.print(

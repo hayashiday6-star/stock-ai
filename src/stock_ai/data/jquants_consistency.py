@@ -100,6 +100,13 @@ class ConsistencyReport:
     missing_master: list[dt.date] = dataclasses.field(default_factory=list)
     """名簿の原本が覆っていない日。**理由を引く相手がいない日である。**"""
 
+    repeated: int = 0
+    """2本目以降の原本にも出てきた日。**飛ばした数である。**
+
+    当月ぶんの `live` が翌月に `historical` へ畳まれても、目録には両方が残る。
+    飛ばさずに数えると、その期間だけ銘柄日が倍になる。**例外は出ない。**
+    """
+
     no_bar_row: Counter[str] = dataclasses.field(default_factory=Counter)
     """銘柄 → 四本値の行が無かった日数。**警告。**"""
 
@@ -127,6 +134,7 @@ class ConsistencyReport:
             f"行が無い {sum(self.no_bar_row.values()):,}。"
             f"名簿に無い終値 {self.price_only:,} 銘柄日、"
             f"うち理由を言えないもの {sum(self.unexplained.values()):,}"
+            + (f"。重なって飛ばした日 {self.repeated:,}" if self.repeated else "")
         )
 
 
@@ -274,6 +282,14 @@ def check(
     cached_key: str | None = None
     cached: dict[dt.date, dict[str, str]] = {}
 
+    # **同じ日が2つのファイルに入っている。** 当月ぶんの `live`（日ごと）は、
+    # 翌月に `historical`（月ごと）へ畳まれるが、**目録には両方が残る。**
+    # 日付ごとに数えるので、飛ばさないと同じ日を2回数えることになる。
+    #
+    # 2026-09-15 の保存で、この形が 65本ぶん手元に来た。5年ぶんのときは重なりが
+    # 無かったので表に出ていない。**件数が倍になっても例外は出ない。**
+    seen: set[dt.date] = set()
+
     total = len(keys)
     for number, key in enumerate(keys, start=1):
         if progress is not None:
@@ -287,6 +303,10 @@ def check(
         report.files += 1
 
         for date in sorted(bars):
+            if date in seen:
+                report.repeated += 1
+                continue
+            seen.add(date)
             path = snapshot_path(roster_dir, date)
             if not path.is_file():
                 # **名簿が無い日を「一致した」に数えない。** 比べていない。

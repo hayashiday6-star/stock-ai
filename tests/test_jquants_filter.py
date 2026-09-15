@@ -392,3 +392,74 @@ class TestNamingTheSymbolsBehindAValue:
 
         assert report.product_symbols["012"].kept == {"1301"}
         assert report.symbol_names["1301"] == "会社13010"
+
+
+class TestTheSameDayInTwoFiles:
+    """**当月ぶんの `live` は、翌月に `historical` へ畳まれる。**
+
+    目録には両方が残るので、足し込むだけにすると重なった期間の銘柄日が倍に
+    なる。**割合は変わらないので、件数を見ないかぎり気付けない。**
+
+    2026-09-15 の保存で、この形が65本ぶん手元に来た。5年ぶんのときは重なりが
+    無かったので表に出ていなかった。
+    """
+
+    def _archive_two(self, tmp_path: Path, rows: list[dict[str, str]]) -> None:
+        payload = gzip.compress(_csv(rows))
+        for key in (
+            "equities/master/historical/2026/eq_master_202608.csv.gz",
+            "equities/master/live/eq_master_20260803.csv.gz",
+        ):
+            archive(
+                [BulkFile(key=key, last_modified="", size=len(payload))],
+                lambda _k, body=payload: body,
+                tmp_path,
+                on=TODAY,
+            )
+
+    def test_a_day_in_two_files_is_counted_once(self, tmp_path: Path) -> None:
+        self._archive_two(tmp_path, [_row("2026-08-03", "13010")])
+
+        report = census(tmp_path)
+
+        assert report.files == 2
+        assert report.rows == 1
+        assert report.repeated == 1
+
+    def test_every_row_of_the_same_file_still_counts(self, tmp_path: Path) -> None:
+        """**1本の中では、同じ日が何行も出るのが普通である。**
+
+        読んでいる最中に「数えた」に移すと、2行目から飛ばして1日1行になる。
+        """
+        self._archive_two(
+            tmp_path,
+            [_row("2026-08-03", "13010"), _row("2026-08-03", "13020")],
+        )
+
+        report = census(tmp_path)
+
+        assert report.rows == 2
+        assert report.repeated == 2
+
+    def test_the_summary_says_so_when_it_happened(self, tmp_path: Path) -> None:
+        self._archive_two(tmp_path, [_row("2026-08-03", "13010")])
+
+        assert "重なって飛ばした" in census(tmp_path).summary()
+
+    def test_nothing_is_said_when_there_is_no_overlap(self, tmp_path: Path) -> None:
+        """**毎回出すと、普通の実行に警告が混じる。**"""
+        payload = gzip.compress(_csv([_row("2026-08-03", "13010")]))
+        archive(
+            [
+                BulkFile(
+                    key="equities/master/historical/2026/eq_master_202608.csv.gz",
+                    last_modified="",
+                    size=len(payload),
+                )
+            ],
+            lambda _k: payload,
+            tmp_path,
+            on=TODAY,
+        )
+
+        assert "重なって" not in census(tmp_path).summary()
