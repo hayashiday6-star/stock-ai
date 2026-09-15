@@ -102,11 +102,16 @@ if ([int]$behind -eq 0) {
 }
 
 Write-Host "$behind 件の新しいコミットがあります:" -ForegroundColor Cyan
-git log --oneline --no-decorate "HEAD..origin/$branch" 2>$null | ForEach-Object { Write-Host "  $_" }
+# **コミットの件名は日本語である。** git の出力は UTF-8 なので、
+# cp932 のまま読むと化ける。
+Invoke-Git log --oneline --no-decorate "HEAD..origin/$branch" 2>$null |
+    ForEach-Object { Write-Host "  $_" }
 Write-Host ''
 
 # 早送りだけ。手元の編集を巻き込む取り込み方はしない。
-git merge --ff-only "origin/$branch" 2>&1 | ForEach-Object { Write-Host "  $_" -ForegroundColor DarkGray }
+# **変わったファイルの名前も日本語でありうる**（`checks\*.bat`）。
+Invoke-Git merge --ff-only "origin/$branch" 2>&1 |
+    ForEach-Object { Write-Host "  $_" -ForegroundColor DarkGray }
 if ($LASTEXITCODE -ne 0) {
     Write-Host ''
     Write-Err '早送りで取り込めませんでした。何も変更していません。'

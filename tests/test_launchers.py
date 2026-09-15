@@ -319,3 +319,56 @@ class TestTakingTheIrreplaceableOnesFirst:
         body = _text("jquants-archive.ps1")
 
         assert "if ($DryRun -or $Endpoint -ne '')" in body
+
+
+class TestGitOutputIsReadAsUtf8:
+    """**PowerShell は外部プログラムの出力を `[Console]::OutputEncoding` で復号する。**
+
+    日本語 Windows ではそれが cp932 で、git は UTF-8 で出すので食い違う。
+    2026-09-15 に報告された形:
+
+        20蟷ｴ縺ｶ繧薙・蜷咲ｰｿ縺後〒縺阪◆
+
+    **スクリプト自身の日本語は化けていない**ので、化けているのは git が返した
+    文字列だけだと分かる。記録そのものは正しく入っている（履歴で確認した）。
+    """
+
+    def test_the_helper_switches_and_puts_it_back(self) -> None:
+        """**戻すのが要点である。** 切り替えたままだと、こちらの日本語が化ける。"""
+        body = _text("_common.ps1")
+
+        assert "function Invoke-Git" in body
+        assert "UTF8Encoding" in body
+        assert "$previous" in body
+        assert "finally" in body
+
+    def test_paths_are_not_octal_escaped(self) -> None:
+        """既定では非 ASCII のファイル名が 8進に化ける。**`.bat` が日本語である。**"""
+        assert "core.quotepath=false" in _text("_common.ps1")
+
+    def test_the_update_script_reads_commit_subjects_through_it(self) -> None:
+        """コミットの件名は日本語である。**ここが報告された箇所そのもの。**"""
+        lines = _text("0-update.ps1").splitlines()
+
+        shown = [line for line in lines if "log --oneline" in line]
+        assert shown, "件名を出す行が見当たらない（名前が変わった？）"
+        for line in shown:
+            assert "Invoke-Git" in line, line
+
+    def test_the_merge_output_goes_through_it_too(self) -> None:
+        """変わったファイルの名前も日本語でありうる（`checks\\*.bat`）。"""
+        lines = [line for line in _text("0-update.ps1").splitlines() if "merge --ff-only" in line]
+
+        assert lines
+        for line in lines:
+            assert "Invoke-Git" in line, line
+
+    def test_the_snapshot_script_uses_it_as_well(self) -> None:
+        body = _text("commit-snapshots.ps1")
+        bare = [
+            line.strip()
+            for line in body.splitlines()
+            if line.strip().startswith("git ") and "Get-Command" not in line
+        ]
+
+        assert bare == [], f"素の git 呼び出しが残っている: {bare}"

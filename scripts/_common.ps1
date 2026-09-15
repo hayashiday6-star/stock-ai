@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Shared helpers for the stock-ai setup scripts.
 
@@ -90,6 +90,43 @@ function Show-Version {
         Write-Host '  Update first:'
         Write-Host "      git pull origin $branch"
         Write-Host ''
+    }
+}
+
+function Invoke-Git {
+    <#
+        .SYNOPSIS
+            git を呼び、その出力を UTF-8 として読む。
+
+        .DESCRIPTION
+            **PowerShell は外部プログラムの出力を [Console]::OutputEncoding で
+            復号する。** 日本語 Windows ではそれが cp932 で、git は UTF-8 で
+            出すので食い違う。コミットの件名やファイル名が
+
+              20蟷ｴ縺ｶ繧薙・蜷咲ｰｿ縺後〒縺阪◆
+
+            のように化ける（2026-09-15 に報告）。**スクリプト自身の日本語は
+            化けない**ので、化けているのは git が返した文字列だけだと分かる。
+
+            読むときだけ UTF-8 に切り替えて、すぐ戻す。**戻すのが要点である**
+            ——切り替えたままにすると、こちらが書く日本語のほうが化ける。
+            復号さえ正しければ、あとは .NET の文字列なので、表示は元の
+            エンコーディングで問題なく通る。
+
+            `core.quotepath=false` も渡す。**既定では非 ASCII のファイル名が
+            `\346\226\207` のような8進に化ける。** このプロジェクトは
+            `.bat` の名前が日本語なので、毎回それに当たる。
+    #>
+    [CmdletBinding()]
+    param([Parameter(ValueFromRemainingArguments = $true)][string[]]$Arguments)
+
+    $previous = [Console]::OutputEncoding
+    try {
+        [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding $false
+        & git -c core.quotepath=false @Arguments
+    }
+    finally {
+        [Console]::OutputEncoding = $previous
     }
 }
 
