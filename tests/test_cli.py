@@ -1100,3 +1100,48 @@ class TestPickingTheOldestArchivedFile:
         from stock_ai.cli import _key_period
 
         assert _key_period("a/2021/b_200805.csv.gz") == "20080501"
+
+
+class TestRefetchingExactlyWhatIsOnDisk:
+    """**「いまあるものを取り直す」は、「グリッドを回す」とは別の仕事である。**
+
+    `--refetch` だけを渡すと、日付はプランから引き直される。Premium に上げた日
+    にそれをやって、**66枚を揃えるつもりが 2006-09-20 からの245枚を新しく
+    作った**（2026-09-15）。古いグリッドと新しいグリッドが同居し、規則も2通りに
+    なった——**揃えるどころか、混ざり方が増えた。**
+
+    開始日をプランから引くのは意図した設計である（上げた日に効くように）。
+    **間違っていたのは、それを取り直しに当てはめたことである。**
+    """
+
+    def test_the_cli_offers_a_mode_for_it(self) -> None:
+        from typer.testing import CliRunner
+
+        from stock_ai.cli import app
+
+        result = CliRunner().invoke(app, ["delisted-harvest", "--help"])
+
+        assert "--existing" in result.output
+
+    def test_the_launcher_uses_that_mode_not_bare_refetch(self) -> None:
+        """**`.bat` に `-Refetch` を書かない。** それは日付を増やす側である。"""
+        import pathlib
+
+        body = (
+            pathlib.Path(__file__).resolve().parent.parent / "checks" / "名簿を同じ規則で揃える.bat"
+        ).read_text(encoding="ascii")
+        invocation = next(line for line in body.splitlines() if "delisted-harvest.ps1" in line)
+
+        assert "-Existing" in invocation
+        assert "-Refetch" not in invocation
+
+    def test_the_script_passes_it_through(self) -> None:
+        import pathlib
+
+        raw = (
+            pathlib.Path(__file__).resolve().parent.parent / "scripts" / "delisted-harvest.ps1"
+        ).read_bytes()
+        body = raw[3:].decode("utf-8") if raw.startswith(b"\xef\xbb\xbf") else raw.decode("utf-8")
+
+        assert "'--existing'" in body
+        assert "[switch]$Existing" in body

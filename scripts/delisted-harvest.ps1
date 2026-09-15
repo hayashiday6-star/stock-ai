@@ -73,7 +73,8 @@ param(
     [int]$Limit = 0,
     [switch]$NoPrices,
     [switch]$Refetch,
-    [switch]$FillLending
+    [switch]$FillLending,
+    [switch]$Existing
 )
 
 $ErrorActionPreference = 'Continue'
@@ -116,6 +117,7 @@ if ($Limit -gt 0) { $arguments += @('--limit', "$Limit") }
 if ($NoPrices) { $arguments += '--no-prices' }
 if ($Refetch) { $arguments += '--refetch' }
 if ($FillLending) { $arguments += '--fill-lending' }
+if ($Existing) { $arguments += '--existing' }
 
 uv @arguments
 $code = $LASTEXITCODE

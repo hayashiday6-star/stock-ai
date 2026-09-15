@@ -2477,6 +2477,11 @@ def delisted_harvest(
         "--fill-lending",
         help="Re-request only the saved dates that carry no lending class.",
     ),
+    existing: bool = typer.Option(
+        False,
+        "--existing",
+        help="Re-request exactly the dates already saved. Ignores the date grid.",
+    ),
     prices: bool = typer.Option(
         True, "--prices/--no-prices", help="Also backfill prices for symbols the DB lacks."
     ),
@@ -2527,7 +2532,26 @@ def delisted_harvest(
     if last is None:
         raise typer.BadParameter(f"--end must be YYYY-MM-DD; got {end!r}.")
     target = Path(directory)
-    if fill_lending:
+    if existing:
+        # **「いまあるものを取り直す」は、「グリッドを回す」とは別の仕事である。**
+        #
+        # `--refetch` だけを渡すと、日付はプランから引き直される。Premium に
+        # 上げた日にそれをやって、**66枚を揃えるつもりが 2006-09-20 からの
+        # 245枚を新しく作った**（2026-09-15）。古いグリッドと新しいグリッドが
+        # 同居し、規則も2通りになった——**揃えるどころか、混ざり方が増えた。**
+        #
+        # 開始日をプランから引くのは意図した設計である（上げた日に効くように）。
+        # **間違っていたのは、それを取り直しに当てはめたことである。**
+        wanted = sorted(stored_dates(target))
+        refetch = True
+        if not wanted:
+            console.print("[yellow]名簿が1枚も無い。[/] 取り直す相手がいない。")
+            return
+        console.print(
+            f"保存済みの [bold]{len(wanted)}[/] 日ぶんを、**いまの規則で**取り直す"
+            f"（{wanted[0]} 〜 {wanted[-1]}）。[dim] 日付は増やさない。[/]"
+        )
+    elif fill_lending:
         # **取り直す対象を日付グリッドで決めない。** 日次で書かれる名簿は
         # 30日刻みに乗らないので、グリッドで回すと取り残される。実際、63件を
         # 取り直したあとに直近3日ぶんだけが残った。
