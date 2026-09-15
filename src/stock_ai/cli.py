@@ -3403,9 +3403,26 @@ def jquants_daily_rosters(
             for day in before
         }
         if len(shapes) == 1 and len(before) > 1:
+            # **これは「疑い」ではなく、分かったことである（2026-09-15）。**
+            #
+            # 開始前の日付を投げても J-Quants は断らない。毎回**同じ名簿**を
+            # 返す。断ってくれるなら気付けたが、返ってくるので気付けない。
+            #
+            # 日付の違う同じ名簿を並べて差を取れば、**消えてもいない銘柄が
+            # 「消えた」になる。** 生存バイアスを直すための材料が、逆に歪みを
+            # 入れる側に回る。
             console.print(
                 f"[yellow]その {len(before)} 日は、**中身が1種類しかない。**[/] "
-                "日付が違うのに同じ名簿である——問い合わせた日付が効いていない疑い。"
+                "日付が違うのに同じ名簿である——**開始前の日付が効いていない。**"
+            )
+            console.print(
+                "[yellow]  この "
+                + "、".join(str(day) for day in before[:8])
+                + ("…" if len(before) > 8 else "")
+                + " は消してよい。[/] "
+                "[dim]名簿としては使えず、**廃止の判定に混ぜると害になる。** "
+                "日付グリッドの開始は上場銘柄一覧の開始（2008-05-07）で床を"
+                "打つようにしたので、取り直しても増えない。[/]"
             )
         else:
             console.print(
@@ -5106,6 +5123,109 @@ def jquants_inventory(
         "2026-09-03 に閉じた（docs/HYPOTHESES.md）。**再開する予定が無いなら"
         "取り直す必要は無い。** 再開しうるなら、解約前が最後の機会になる。[/]"
     )
+
+
+@app.command(name="jquants-plan-coverage")
+def jquants_plan_coverage(
+    to_plan: str = typer.Option("Free", "--to", help="Plan to downgrade to."),
+    directory: str = typer.Option(
+        str(DEFAULT_ARCHIVE_DIR), "--dir", help="Where the archived originals live."
+    ),
+) -> None:
+    """Say whether downgrading is safe, by endpoint, without fetching anything.
+
+    **「たぶん全部取った」で解約しない。** 公式のプラン表と、原本の目録に実際に
+    何本あるかを並べる。落とすと取れなくなり、しかも手元に1本も無いものが
+    あれば、それが止める理由になる。
+
+    取りには行かない。数えるだけ。
+    """
+    from stock_ai.data.jquants_plan import (
+        NO_HISTORY,
+        UNARCHIVABLE,
+        archivable,
+    )
+    from stock_ai.data.jquants_plan import (
+        coverage as plan_coverage,
+    )
+
+    settings = get_settings()
+    configure_logging(settings.log_level)
+
+    plan = (settings.jquants_plan or "").strip().capitalize()
+    target = to_plan.strip().capitalize()
+    report = plan_coverage(plan, Path(directory))
+
+    console.print(f"いま [bold]{plan or '不明'}[/] → 落とす先 [bold]{target}[/]")
+    console.print()
+
+    table = Table(title="原本の在庫（公式のプラン表に当てたもの）")
+    for column, justify in (
+        ("データ", "left"),
+        ("最低プラン", "left"),
+        ("本数", "right"),
+        ("大きさ", "right"),
+        ("期間", "left"),
+        (f"{target} で増やせるか", "left"),
+    ):
+        # **名前を省略しない。** `/derivatives/bars/d…` が3行並ぶと、
+        # どれが0本なのか読めない——解約の判断がその1点にかかっているのに。
+        table.add_column(column, justify=justify, overflow="fold")
+    for entry in report.entries:
+        span = f"{entry.first[:6]} 〜 {entry.last[:6]}" if entry.first else ""
+        table.add_row(
+            entry.endpoint,
+            entry.minimum_plan,
+            f"{entry.files:,}" if entry.files else "[red]0[/]",
+            f"{entry.bytes / 1_000_000:,.0f} MB" if entry.bytes else "",
+            span,
+            "はい" if archivable(target, entry.endpoint) else "[dim]いいえ[/]",
+        )
+    console.print(table)
+
+    if report.unknown_keys:
+        # **表に無い鍵が出たら、表のほうが古い。** 数えられなかったものを
+        # 黙って捨てると、在庫が実際より少なく見える。
+        console.print(
+            f"[yellow]どのエンドポイントにも当てはまらない原本が {report.unknown_keys} 本ある。[/] "
+            "**こちらの一覧のほうが古い可能性がある。**"
+        )
+
+    blockers = report.blockers(target)
+    if blockers:
+        console.print(
+            f"[red]落とす前に取りに行く先が {len(blockers)} 本ある。[/] "
+            + "、".join(entry.endpoint for entry in blockers)
+        )
+        console.print("[red]**いま落とすと、再契約するまで取れない。**[/]")
+        return
+
+    losing = report.losing(target)
+    console.print(
+        f"[green]手元に1本も無いものは無い。[/] "
+        f"{target} で増やせなくなるのは {len(losing)} 種類だが、"
+        "**どれも既に原本がある。**"
+    )
+    # **失うのは「貯めたもの」ではなく「これから取れること」である。**
+    # 再契約すればその日から戻る。ここを混ぜると、戻せる話が戻せない話に
+    # 見えてしまう。
+    console.print(
+        "[dim]落として失うのは *これから取れること* で、*貯めたもの* ではない。"
+        "原本は手元とpCloudの両方にある。再契約すればその日から増やせる。[/]"
+    )
+
+    if target == "Free":
+        console.print(
+            "[dim]Free は取引カレンダーを除いて一括が使えず、API で見える範囲も"
+            "「12週間前〜2年12週間前」になる。**日々の更新も止まる。**[/]"
+        )
+    for endpoint in sorted(NO_HISTORY):
+        console.print(
+            f"[dim]{endpoint} は全プランで直近のみ。原本が何本あっても、"
+            "過去のある日に何が予定されていたかは戻らない。[/]"
+        )
+    for name, why in UNARCHIVABLE.items():
+        console.print(f"[dim]{name}: {why} 原本に残せないので、在庫の表には出ない。[/]")
 
 
 @app.command(name="price-audit")

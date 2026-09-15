@@ -221,13 +221,35 @@ def window_days(plan: str | None = None) -> int:
     return years * 365
 
 
+#: 上場銘柄一覧そのものが始まる日。**プランを上げても、ここより前は無い。**
+#:
+#: 出典: 2026-09-15 にユーザーが貼った公式の「契約ごとに利用可能なAPIとデータ
+#: 格納期間」。保存した原本の実測とも一致している（営業日ごとの名簿は
+#: 2008-05-07 から 4,491 枚）。
+#:
+#: **遡れる年数は、プランの上限とデータの開始の、小さいほうである。**
+#: 片方だけを見ると、Premium で 2006-09-20 まで遡れることになる。
+LISTING_DATA_START = dt.date(2008, 5, 7)
+
+
 def earliest_reachable(plan: str | None = None, today: dt.date | None = None) -> dt.date:
     """そのプランで**いま**遡れる最も古い日付。
 
     既定の開始日をここから取る。固定値にすると、プランを上げた日に何も起きない
     ——例外も警告も出ないまま、窓の外だと判断して要求を出さない。
+
+    **データの開始（:data:`LISTING_DATA_START`）で床を打つ。** 打たないと、
+    Premium で 2006-09-20 からの日付グリッドを作ってしまう。**その範囲を
+    J-Quants は断らない。** 断ってくれるなら気付けたが、実際には毎回**同じ
+    名簿**を返す——2026-09-15 に、開始前の 20 日ぶんの名簿が全部同じ中身
+    だったことで分かった。
+
+    日付の違う同じ名簿を並べて差を取れば、消えてもいない銘柄が「消えた」に
+    なる。**このプロジェクトで繰り返している「もっともらしいが違う値が黙って
+    出る」形そのものである。**
     """
-    return (today or dt.date.today()) - dt.timedelta(days=window_days(plan))
+    window = (today or dt.date.today()) - dt.timedelta(days=window_days(plan))
+    return max(window, LISTING_DATA_START)
 
 
 def beyond_the_window(

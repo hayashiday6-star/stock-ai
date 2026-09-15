@@ -1212,3 +1212,81 @@ class TestAskingForColumnsIsNotSilencedByNoShapes:
 
         assert "-NoShapes" in invocation
         assert "-Columns" in invocation
+
+
+class TestSayingWhetherItIsSafeToDowngrade:
+    """**「たぶん全部取った」で解約しない。**
+
+    Free に落とすと、取引カレンダーを除いて一括が丸ごと止まる。**いま原本が
+    無いものは、再契約するまで取れない。** 落とす先で取れなくなり、かつ手元に
+    1本も無いものが1つでもあれば、そこで止める。
+    """
+
+    def _archive(self, tmp_path, keys):
+        import datetime as dt
+
+        from stock_ai.data.jquants_archive import ArchivedFile, write_manifest
+
+        write_manifest(
+            tmp_path,
+            {
+                key: ArchivedFile(
+                    key=key,
+                    size=1,
+                    bytes_written=1,
+                    sha256="0" * 64,
+                    last_modified="",
+                    fetched_on=dt.date(2026, 9, 15),
+                )
+                for key in keys
+            },
+        )
+
+    def _run(self, tmp_path, monkeypatch, plan):
+        from typer.testing import CliRunner
+
+        from stock_ai.cli import app
+
+        monkeypatch.setenv("JQUANTS_PLAN", plan)
+        return CliRunner().invoke(
+            app, ["jquants-plan-coverage", "--to", "Free", "--dir", str(tmp_path)]
+        )
+
+    def test_an_empty_archive_on_premium_names_what_to_fetch_first(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        result = self._run(tmp_path, monkeypatch, "Premium")
+
+        assert "落とす前に取りに行く先" in result.output, result.output
+        assert "/fins/details" in result.output
+
+    def test_a_full_archive_says_nothing_is_missing(self, tmp_path, monkeypatch) -> None:
+        from stock_ai.data.jquants_bulk import ARCHIVE_ENDPOINTS
+
+        self._archive(
+            tmp_path,
+            [
+                f"{endpoint.lstrip('/')}/historical/2021/x_202109.csv.gz"
+                for endpoint in ARCHIVE_ENDPOINTS
+            ],
+        )
+
+        result = self._run(tmp_path, monkeypatch, "Premium")
+
+        assert "手元に1本も無いものは無い" in result.output, result.output
+        # **失うのは「これから取れること」であって「貯めたもの」ではない。**
+        # そこを混ぜると、戻せる話が戻せない話に見える。
+        assert "再契約すれば" in result.output
+
+    def test_zero_rows_are_shown_rather_than_hidden(self, tmp_path, monkeypatch) -> None:
+        result = self._run(tmp_path, monkeypatch, "Premium")
+
+        # 0本のものを表から消すと、取り逃したものが見えなくなる。
+        assert "/markets/breakdown" in result.output
+
+    def test_every_archived_endpoint_has_a_minimum_plan_recorded(self) -> None:
+        """**表に無い口があると、落としてよいかを言えない。**"""
+        from stock_ai.data.jquants_bulk import ARCHIVE_ENDPOINTS
+        from stock_ai.data.jquants_plan import MINIMUM_PLAN
+
+        assert set(ARCHIVE_ENDPOINTS) <= set(MINIMUM_PLAN)
