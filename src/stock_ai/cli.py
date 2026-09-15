@@ -5172,12 +5172,24 @@ def jquants_valuation(
 
     # **公式の注意書きを引き写さない。** 「2008〜2010 は Null が多い」と書いて
     # あるが、どの列がどれだけ空なのかは書いていない。手元のファイルが答える。
-    thin = found.thin_years("market_cap")
-    if thin:
+    # **1列だけ見て済ませない。** 最初は時価総額しか見ていなかった。実データ
+    # では `eps` が 2008〜2010 で 0%、`per` も 2011 年まで 0% だったのに、
+    # **警告は1行も出なかった**（2026-09-15）。表には出ているが、表は読む側が
+    # 気付く必要がある。**気付かなくても目に入るのが警告である。**
+    for name in ACTUAL_COLUMNS.values():
+        thin = found.thin_years(name)
+        if not thin:
+            continue
+        empty = [year for year in thin if found.share(year, name) == 0]
         console.print(
-            "[yellow]時価総額が半分も埋まっていない年: [/]"
+            f"[yellow]{name} が半分も埋まっていない年: [/]"
             + "、".join(str(year) for year in thin)
-            + " [dim]サイズで並べる前に、ここを外すか埋めるかを決めること。[/]"
+            + (f" [red]うち {'、'.join(str(year) for year in empty)} は皆無。[/]" if empty else "")
+        )
+    if any(found.thin_years(name) for name in ACTUAL_COLUMNS.values()):
+        console.print(
+            "[dim]その年をまたいで並べ替えると、**埋まっている銘柄だけが選ばれる。**"
+            "期間を切るか、列を替えるかを先に決めること。[/]"
         )
 
     report = identity_check(frame)

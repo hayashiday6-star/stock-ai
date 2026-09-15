@@ -153,6 +153,51 @@ class TestCheckingTheFileAgainstItself:
         assert identity_check(parse_valuation(_csv())).rate == 0.0
 
 
+class TestAProductThatComesOutZero:
+    """**1,588万行で落ちた形。** fixture が小さすぎて出なかった。
+
+    `pbr` が 0 なら、`bps` がどれだけ大きくても `pbr × bps` は 0 になる。
+    割り算の分母になるので、そこを `pd.NA` で塞いだら列が object 型になり、
+    並べ替えが `TypeError` で落ちた（2026-09-15）。
+
+    **コメントには「片方が 0 になる行は判定から外れているはず」と書いてあった。**
+    書いたが、確かめていなかった。積に床を当てれば前提そのものが要らない。
+    """
+
+    def _zero_pbr(self) -> str:
+        # bps は十分大きいが、pbr が 0。積は 0 になる。
+        return "2026-08-03,13020,100,120,2000,5.0,6.0,25.0,20.8,0,1"
+
+    def test_it_does_not_raise(self) -> None:
+        frame = parse_valuation(_csv(CONSISTENT, self._zero_pbr()))
+
+        identity_check(frame)  # 落ちないこと自体が主張である
+
+    def test_a_zero_product_is_not_counted_as_a_disagreement(self) -> None:
+        """**「合わない」と「判定できない」を分ける。** 0 は判定できない側。"""
+        report = identity_check(parse_valuation(_csv(CONSISTENT, self._zero_pbr())))
+
+        assert report.checked == 1
+        assert report.agreed == 1
+        assert report.skipped_small == 1
+        assert report.rate == 1.0
+
+    def test_the_worst_list_still_sorts_when_a_zero_row_is_present(self) -> None:
+        """並べ替えの列が数のままであること。**ここが落ちた箇所である。**"""
+        broken = "2026-08-04,13030,100,120,2000,5.0,6.0,25.0,20.8,2.50,1"
+        report = identity_check(parse_valuation(_csv(CONSISTENT, self._zero_pbr(), broken)))
+
+        assert report.agreed == 1
+        assert [symbol for _, symbol, _, _ in report.worst] == ["1303"]
+
+    def test_a_zero_eps_row_lands_in_the_same_bucket(self) -> None:
+        zero_eps = "2026-08-05,13040,0,120,2000,5.0,6.0,25.0,20.8,1.25,1"
+        report = identity_check(parse_valuation(_csv(CONSISTENT, zero_eps)))
+
+        assert report.skipped_small == 1
+        assert report.checked == 1
+
+
 class TestCountingWhatIsEmptyByYear:
     """**公式の注意書きを引き写さない。** 手元のファイルが答える。"""
 

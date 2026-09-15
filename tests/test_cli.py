@@ -1564,3 +1564,78 @@ class TestNoTestBetsOnRenderedHelp:
         """**検査が空を通していないこと。** 通る理由が「何も見ていない」では困る。"""
         assert "--existing" in declared_options("delisted-harvest")
         assert "--nonexistent" not in declared_options("delisted-harvest")
+
+
+class TestWarningAboutEveryEmptyColumnNotJustOne:
+    """**表に出ていることと、目に入ることは別である。**
+
+    実データで `eps` が 2008〜2010 年に皆無、`per` も 2011 年まで皆無だったが、
+    **警告は1行も出なかった**——見ていたのが `market_cap` だけだったため
+    （2026-09-15）。表には出ていた。表は読む側が気付く必要がある。
+    """
+
+    def _archive(self, tmp_path, rows):
+        import datetime as dt
+        import gzip
+
+        from stock_ai.data.jquants_archive import archive
+        from stock_ai.data.jquants_bulk import BulkFile
+
+        header = "Date,Code,EPS,FwdEPS,BPS,ROE,FwdROE,PER,FwdPER,PBR,MktCap"
+        payload = gzip.compress(("\n".join([header, *rows]) + "\n").encode("utf-8"))
+        archive(
+            [
+                BulkFile(
+                    key="equities/valuation/historical/2009/eq_valuation_200906.csv.gz",
+                    last_modified="",
+                    size=len(payload),
+                )
+            ],
+            lambda _k: payload,
+            tmp_path,
+            on=dt.date(2026, 9, 15),
+        )
+
+    def _run(self, tmp_path):
+        from typer.testing import CliRunner
+
+        from stock_ai.cli import app
+
+        return CliRunner().invoke(app, ["jquants-valuation", "--dir", str(tmp_path)])
+
+    def test_an_empty_earnings_column_is_warned_about(self, tmp_path) -> None:
+        self._archive(
+            tmp_path,
+            [
+                "2009-06-01,13010,,,2000,,,,,1.25,1",
+                "2009-06-02,13020,,,2000,,,,,1.25,1",
+            ],
+        )
+
+        result = self._run(tmp_path)
+
+        assert result.exit_code == 0, result.output
+        assert "eps" in result.output
+        assert "皆無" in result.output, result.output
+
+    def test_a_column_that_is_full_is_not_warned_about(self, tmp_path) -> None:
+        """**全部に警告を出さない。** 出せば、どれも読まれなくなる。"""
+        self._archive(tmp_path, ["2009-06-01,13010,100,120,2000,5.0,6.0,25.0,20.8,1.25,1"])
+
+        result = self._run(tmp_path)
+
+        assert "皆無" not in result.output, result.output
+
+    def test_an_archive_with_a_zero_product_does_not_crash(self, tmp_path) -> None:
+        """1,588万行で落ちた形を、この経路でも1回通す。"""
+        self._archive(
+            tmp_path,
+            [
+                "2009-06-01,13010,100,120,2000,5.0,6.0,25.0,20.8,1.25,1",
+                "2009-06-02,13020,100,120,2000,5.0,6.0,25.0,20.8,0,1",
+            ],
+        )
+
+        result = self._run(tmp_path)
+
+        assert result.exit_code == 0, result.output

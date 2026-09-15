@@ -221,7 +221,12 @@ class IdentityReport:
     checked: int
     agreed: int
     skipped_small: int
-    """EPS か BPS が :data:`IDENTITY_FLOOR` 未満で、判定できなかった行。"""
+    """小さすぎて判定できなかった行。
+
+    EPS か BPS が :data:`IDENTITY_FLOOR` 未満のもの**と、掛け算の結果が
+    それ未満のもの**。`pbr` が 0 なら `bps` が大きくても積は 0 になるので、
+    片方ずつ見るだけでは足りない。
+    """
 
     skipped_missing: int
     """どれかの列が空で、判定できなかった行。"""
@@ -268,24 +273,34 @@ def identity_check(frame: pd.DataFrame, limit: int = 5) -> IdentityReport:
     missing = int((~present).sum())
 
     usable = frame[present]
-    big = (usable["eps"].abs() >= IDENTITY_FLOOR) & (usable["bps"].abs() >= IDENTITY_FLOOR)
+    # **掛け算の結果そのものを見る。** 最初は `eps` と `bps` だけを見ていて、
+    # 「片方が 0 になる行は判定から外れているはず」とコメントに書いた。
+    # **外れていなかった。** `pbr` が 0 なら、`bps` がどれだけ大きくても積は
+    # 0 になる。実データ 1,588万行で `pd.NA` が入り、`_gap` が object 型に
+    # なって落ちた（2026-09-15）。
+    #
+    # 想定を書いたのに、その想定が成り立つかを確かめていなかった。**積に床を
+    # 当てれば、前提そのものが要らなくなる。**
+    from_earnings = usable["per"] * usable["eps"]
+    from_book = usable["pbr"] * usable["bps"]
+    big = (
+        (usable["eps"].abs() >= IDENTITY_FLOOR)
+        & (usable["bps"].abs() >= IDENTITY_FLOOR)
+        & (from_book.abs() >= IDENTITY_FLOOR)
+    )
     small = int((~big).sum())
 
     judged = usable[big]
     if judged.empty:
         return IdentityReport(0, 0, small, missing)
 
-    from_earnings = judged["per"] * judged["eps"]
-    from_book = judged["pbr"] * judged["bps"]
-    # **割り算の分母に 0 を置かない。** 片方が 0 になる行は判定から外れて
-    # いるはずだが、外れていなくても落ちないようにしておく。
-    scale = from_book.abs().where(from_book.abs() > 0, other=pd.NA)
-    gap = (from_earnings - from_book).abs() / scale
+    from_earnings, from_book = from_earnings[big], from_book[big]
+    gap = (from_earnings - from_book).abs() / from_book.abs()
     agreed = gap <= IDENTITY_TOLERANCE
 
     # **ずれの大きい順に並べる。** 件数だけでは、丸めの積み重なりなのか、
     # 特定の銘柄が外れているのかが分からない。
-    off = judged.loc[~agreed.fillna(False)].assign(_gap=gap[~agreed.fillna(False)])
+    off = judged.loc[~agreed].assign(_gap=gap[~agreed])
     worst = [
         (
             row[DATE],
@@ -298,7 +313,7 @@ def identity_check(frame: pd.DataFrame, limit: int = 5) -> IdentityReport:
 
     return IdentityReport(
         checked=int(len(judged)),
-        agreed=int(agreed.fillna(False).sum()),
+        agreed=int(agreed.sum()),
         skipped_small=small,
         skipped_missing=missing,
         worst=worst,
