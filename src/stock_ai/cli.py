@@ -5127,6 +5127,7 @@ def jquants_valuation(
     """
     from stock_ai.data.jquants_valuation import (
         ACTUAL_COLUMNS,
+        explain_gap,
         identity_check,
     )
     from stock_ai.data.jquants_valuation import (
@@ -5200,10 +5201,45 @@ def jquants_valuation(
             "[dim]列の意味は想像どおりである。**別の原本を持ち出さずに言えた。**[/]"
         )
     elif report.checked:
+        # **「9割合っている」を「違う」と言わない。** 96.9% で「列の意味が
+        # 違う」と出していた（2026-09-15）。大半が合っていて少数が外れている
+        # のは、**丸めかもしれないし、意味の違いかもしれない。** 断定の前に、
+        # 原因の候補ごとに数える。
+        profile = explain_gap(frame)
         console.print(
-            "[red]2つの掛け算が別の終値を指している。[/] "
-            "**列の意味がこちらの想像と違う。使う前にここを説明すること。**"
+            f"[yellow]合わない行が {report.checked - report.agreed:,} ある。[/] "
+            f"[dim]ずれの中央値 {profile.gap_median:.2%}、99%点 {profile.gap_p99:.1%}。[/]"
         )
+
+        split = Table(title="合わない行は何で説明が付くか")
+        split.add_column("EPS の大きさ")
+        split.add_column("判定した行", justify="right")
+        split.add_column("合った割合", justify="right")
+        for label, (checked, _) in profile.by_eps_size.items():
+            split.add_row(label, f"{checked:,}", f"{profile.rate(label):.1%}")
+        console.print(split)
+
+        loss_checked, loss_agreed = profile.negative_eps
+        if loss_checked:
+            console.print(
+                f"[dim]EPS が負（赤字）の行は {loss_checked:,}、"
+                f"うち合ったのは {loss_agreed / loss_checked:.1%}。[/]"
+            )
+        if profile.rounding_explains_it():
+            console.print(
+                "[green]ずれは EPS の小さい銘柄に偏っている。[/] "
+                "**丸めで説明が付く。列の意味は想像どおりである。** "
+                "[dim]許容幅の問題であって、データの問題ではない。[/]"
+            )
+        elif profile.forward_rescues:
+            console.print(
+                f"[red]合わない行のうち {profile.forward_rescues:,} 行は、"
+                "**実績ではなく会社予想の EPS でなら合う。**[/] "
+                "[dim]東証の PER は会社予想で計算する。列を取り違えている。[/]"
+            )
+        else:
+            console.print("[red]丸めにも会社予想にも寄らない。[/] **使う前にここを説明すること。**")
+
         detail = Table(title="ずれの大きいもの")
         for column in ("日付", "銘柄", "PER × EPS", "PBR × BPS"):
             detail.add_column(column, justify="right" if "×" in column else "left")

@@ -22,8 +22,10 @@ from pathlib import Path
 from stock_ai.data.jquants_valuation import (
     IDENTITY_FLOOR,
     census,
+    explain_gap,
     from_archive,
     identity_check,
+    implied_shares,
     parse_valuation,
     unknown_columns,
 )
@@ -358,3 +360,118 @@ class TestReadingTheArchive:
         frame = from_archive(tmp_path)
         assert frame.empty
         assert "market_cap" in frame.columns
+
+
+class TestNotDecidingFromTheAgreementRateAlone:
+    """**「96.9% 一致」は「違う」ではない。**
+
+    大半が合っていて少数が外れているとき、丸めなのか意味の違いなのかで、
+    次にやることが正反対になる。丸めなら許容幅の問題でデータは使える。
+    意味が違うなら、その列を使う説を止める。
+
+    **断定の前に、原因の候補ごとに数える。**
+    """
+
+    def _row(
+        self, day: str, code: str, true_eps: float, close: float, digits: int, bps: float = 2000.0
+    ) -> str:
+        """EPS を ``digits`` 桁で丸めて書く。**PER は丸める前の EPS から作る。**
+
+        原本はそういう形である——`PER` は向こうが正しい値から計算し、`EPS` は
+        表示の桁で丸めて載せる。**こちらが掛け戻すと、丸めたぶんだけずれる。**
+        相対誤差は EPS が小さいほど大きい。
+        """
+        shown = round(true_eps, digits)
+        per = close / true_eps
+        pbr = close / bps
+        return f"{day},{code},{shown},{shown},{bps},5.0,6.0,{per:.6f},20.8,{pbr:.10f},1"
+
+    def test_rounding_shows_up_as_a_slope_across_eps_sizes(self) -> None:
+        rows = []
+        for index in range(60):
+            # 小さい EPS: 1.449 → 1.4 と書かれる。掛け戻すと 3.4% ずれる。
+            rows.append(self._row("2020-06-01", f"{1300 + index}0", 1.449, 2500.0, 1))
+        for index in range(60):
+            # 大きい EPS: 144.9 → 144.9 のまま。ずれない。
+            rows.append(self._row("2020-06-02", f"{1400 + index}0", 144.9, 2500.0, 1))
+
+        profile = explain_gap(parse_valuation(_csv(*rows)))
+
+        assert profile.rate("〜2") == 0.0, profile.by_eps_size
+        assert profile.rate("50〜") == 1.0, profile.by_eps_size
+        assert profile.rounding_explains_it()
+
+    def test_a_uniform_mismatch_is_not_called_rounding(self) -> None:
+        """**どの区分でも同じように外れるなら、丸めではない。**"""
+        rows = []
+        for index, eps in enumerate((1.5, 5.0, 20.0, 100.0) * 15):
+            code = f"{1300 + index}0"
+            # PBR を倍にして、大きさに依らず外す
+            per = round(2500.0 / eps, 4)
+            rows.append(f"2020-06-01,{code},{eps},{eps},2000,5.0,6.0,{per},20.8,2.5,1")
+
+        profile = explain_gap(parse_valuation(_csv(*rows)))
+
+        assert not profile.rounding_explains_it()
+
+    def test_a_forecast_based_per_is_detected(self) -> None:
+        """東証の PER は会社予想 EPS で計算する。**そこを取り違えたら言う。**"""
+        rows = []
+        for index in range(20):
+            code = f"{1300 + index}0"
+            actual, forecast, close, bps = 100.0, 125.0, 2500.0, 2000.0
+            per = close / forecast
+            rows.append(f"2020-06-01,{code},{actual},{forecast},{bps},5.0,6.0,{per},20.8,1.25,1")
+
+        profile = explain_gap(parse_valuation(_csv(*rows)))
+
+        assert profile.forward_rescues == 20
+
+    def test_loss_making_rows_are_counted_separately(self) -> None:
+        rows = [
+            self._row("2020-06-01", "13010", 100.0, 2500.0, 4),
+            "2020-06-02,13020,-50.0,-50.0,2000,5.0,6.0,-50.0,20.8,1.25,1",
+        ]
+
+        profile = explain_gap(parse_valuation(_csv(*rows)))
+
+        assert profile.negative_eps[0] == 1
+
+    def test_an_empty_frame_gives_zeros_rather_than_raising(self) -> None:
+        profile = explain_gap(parse_valuation(_csv()))
+
+        assert profile.negative_eps == (0, 0)
+        assert profile.forward_rescues == 0
+        assert not profile.rounding_explains_it()
+
+
+class TestCheckingTheMarketCapAgainstSomethingElse:
+    """時価総額を確かめる手立ては、**株式数を割り出すことしか無い。**
+
+    株式数は原本に入っていない。`時価総額 ÷ 終値` で出る数が銘柄ごとに安定
+    していれば、時価総額は終値と同じ尺度で作られている。桁が飛ぶなら、
+    **単位が違うか、分割を跨いで尺度が変わっている。**
+    """
+
+    def test_a_consistent_file_gives_a_steady_share_count(self) -> None:
+        # 終値 2,500 円、時価総額 2.5e11 → 1億株
+        rows = [
+            "2026-08-03,13010,100,120,2000,5.0,6.0,25.0,20.8,1.25,250000000000",
+            "2026-08-04,13010,100,120,2000,5.0,6.0,25.0,20.8,1.25,250000000000",
+        ]
+        shares = implied_shares(parse_valuation(_csv(*rows)))
+
+        assert shares.round(-6).nunique() == 1
+        assert abs(shares.iloc[0] - 100_000_000) < 1
+
+    def test_rows_without_a_market_cap_are_dropped_not_zeroed(self) -> None:
+        rows = [
+            "2026-08-03,13010,100,120,2000,5.0,6.0,25.0,20.8,1.25,250000000000",
+            "2026-08-04,13020,100,120,2000,5.0,6.0,25.0,20.8,1.25,",
+        ]
+        assert len(implied_shares(parse_valuation(_csv(*rows)))) == 1
+
+    def test_a_zero_close_does_not_become_an_infinite_share_count(self) -> None:
+        rows = ["2026-08-03,13010,100,120,2000,5.0,6.0,25.0,20.8,0,250000000000"]
+
+        assert implied_shares(parse_valuation(_csv(*rows))).empty

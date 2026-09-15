@@ -334,3 +334,143 @@ def identity_check(frame: pd.DataFrame, limit: int = 5) -> IdentityReport:
         skipped_missing=missing,
         worst=worst,
     )
+
+
+#: ずれを EPS の大きさで分ける境目。**丸めの影響は小さい EPS ほど大きい。**
+#:
+#: `PER` が小数2桁で丸められているなら、`PER × EPS` の相対誤差は EPS が
+#: 小さいほど大きくなる。原因が丸めなら、ずれは**小さい EPS に偏る**。
+#: 偏らないなら、丸めでは説明が付かない。
+EPS_BUCKETS: tuple[float, ...] = (2.0, 10.0, 50.0)
+
+
+@dataclasses.dataclass
+class GapProfile:
+    """一致しなかった行が、何で説明できるか。
+
+    **「96.9% 一致」で止めない。** 残りの 3.1% が丸めなのか、列の意味が違う
+    のかで、次にやることが正反対になる。丸めなら許容幅の問題で、データは
+    使える。意味が違うなら、その列を使う説を止める。
+
+    **断定の前に、原因の候補ごとに数える。**
+    """
+
+    by_eps_size: dict[str, tuple[int, int]]
+    """EPS の大きさ別の (判定した行, 合った行)。"""
+
+    negative_eps: tuple[int, int]
+    """EPS が負（赤字）の (判定した行, 合った行)。"""
+
+    forward_rescues: int
+    """合わなかった行のうち、``PER × 予想EPS`` なら合う行。
+
+    **東証の PER は会社予想 EPS で計算する慣行がある。** そうなら、実績 EPS で
+    掛けて合わないのは当たり前で、列の意味の取り違えということになる。
+    """
+
+    gap_median: float
+    gap_p99: float
+
+    def rate(self, bucket: str) -> float:
+        """その区分で合った割合。判定した行が無ければ 0。"""
+        checked, agreed = self.by_eps_size.get(bucket, (0, 0))
+        return agreed / checked if checked else 0.0
+
+    def rounding_explains_it(self) -> bool:
+        """ずれが**小さい EPS に偏っている**か。偏っていれば丸めで説明が付く。
+
+        いちばん小さい区分といちばん大きい区分で、合う割合が目に見えて違う
+        ことを条件にする。**どの区分でも同じように外れるなら、丸めではない。**
+        """
+        buckets = list(self.by_eps_size)
+        if len(buckets) < 2:
+            return False
+        return self.rate(buckets[-1]) - self.rate(buckets[0]) > 0.05
+
+
+def _bucket_labels() -> list[str]:
+    edges = EPS_BUCKETS
+    labels = [f"〜{edges[0]:g}"]
+    labels += [f"{low:g}〜{high:g}" for low, high in zip(edges, edges[1:], strict=False)]
+    labels.append(f"{edges[-1]:g}〜")
+    return labels
+
+
+def explain_gap(frame: pd.DataFrame) -> GapProfile:
+    """一致しなかった行の正体を、原因の候補ごとに数える。**断定しない。**
+
+    Args:
+        frame: :func:`parse_valuation` が返す表。
+
+    Returns:
+        :class:`GapProfile`。判定できる行が無ければ、どの区分も 0 になる。
+    """
+    empty = GapProfile(dict.fromkeys(_bucket_labels(), (0, 0)), (0, 0), 0, 0.0, 0.0)
+    if frame.empty:
+        return empty
+
+    needed = ["eps", "per", "bps", "pbr"]
+    usable = frame[frame[needed].notna().all(axis=1)]
+    if usable.empty:
+        return empty
+
+    from_earnings = usable["per"] * usable["eps"]
+    from_book = usable["pbr"] * usable["bps"]
+    big = (
+        (usable["eps"].abs() >= IDENTITY_FLOOR)
+        & (usable["bps"].abs() >= IDENTITY_FLOOR)
+        & (from_book.abs() >= IDENTITY_FLOOR)
+    )
+    judged = usable[big]
+    if judged.empty:
+        return empty
+
+    earnings, book = from_earnings[big], from_book[big]
+    gap = (earnings - book).abs() / book.abs()
+    agreed = gap <= IDENTITY_TOLERANCE
+
+    size = judged["eps"].abs()
+    labels = _bucket_labels()
+    edges = [0.0, *EPS_BUCKETS, float("inf")]
+    by_size = {}
+    for label, low, high in zip(labels, edges, edges[1:], strict=False):
+        inside = (size >= low) & (size < high)
+        by_size[label] = (int(inside.sum()), int((inside & agreed).sum()))
+
+    loss = judged["eps"] < 0
+    negative = (int(loss.sum()), int((loss & agreed).sum()))
+
+    # **会社予想 EPS なら合うのか。** 合うなら、列の意味の取り違えである。
+    rescues = 0
+    off = ~agreed
+    if off.any() and judged["forward_eps"].notna().any():
+        forward = judged.loc[off, "per"] * judged.loc[off, "forward_eps"]
+        book_off = book[off]
+        usable_forward = forward.notna() & (book_off.abs() > 0)
+        if usable_forward.any():
+            forward_gap = (forward - book_off).abs() / book_off.abs()
+            rescues = int((forward_gap[usable_forward] <= IDENTITY_TOLERANCE).sum())
+
+    return GapProfile(
+        by_eps_size=by_size,
+        negative_eps=negative,
+        forward_rescues=rescues,
+        gap_median=float(gap.median()),
+        gap_p99=float(gap.quantile(0.99)),
+    )
+
+
+def implied_shares(frame: pd.DataFrame) -> pd.Series:
+    """``時価総額 ÷ 終値`` から出る発行済株式数。
+
+    終値は ``PBR × BPS`` で復元する。**時価総額そのものを確かめる手立てが
+    これしか無い**——株式数は原本に入っていない。
+
+    出てくる数が銘柄ごとに安定していれば、時価総額は終値と同じ尺度で
+    作られている。桁が飛ぶなら、**単位が違うか、分割を跨いで尺度が変わって
+    いる**。どちらもこのプロジェクトが繰り返し踏んでいる形である。
+    """
+    needed = ["market_cap", "pbr", "bps"]
+    usable = frame[frame[needed].notna().all(axis=1)]
+    close = usable["pbr"] * usable["bps"]
+    return (usable["market_cap"] / close.where(close.abs() >= IDENTITY_FLOOR)).dropna()
