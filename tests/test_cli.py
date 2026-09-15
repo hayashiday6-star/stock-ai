@@ -1043,3 +1043,60 @@ class TestDifferingSymbols:
             self._write(tmp_path / name, "2026-08-03", ["1301"])
 
         assert _differing_symbols(tmp_path / "a", tmp_path / "b", [dt.date(2026, 8, 3)]) == set()
+
+
+class TestPickingTheOldestArchivedFile:
+    """**名前の並び順で「いちばん古いファイル」を決めてはいけない。**
+
+    2026-09-15 に実際にずれた。20年ぶんを入れたのに、原本の覆う期間が
+    `2021-09-01 〜` と出た。Light の頃に取ったファイルと Premium で取った
+    ファイルで**鍵の形が違う**ため、文字列で並べると新しいほうが前に来た。
+
+    **向こうの名前の付け方は、こちらの都合では決まらない。**
+    """
+
+    def test_a_month_becomes_the_first_of_that_month(self) -> None:
+        from stock_ai.cli import _key_period
+
+        assert _key_period("equities/bars/daily/historical/eq_bars_200805.csv.gz") == "20080501"
+
+    def test_a_day_stays_as_it_is(self) -> None:
+        from stock_ai.cli import _key_period
+
+        assert _key_period("equities/bars/daily/live/eq_bars_20260914.csv.gz") == "20260914"
+
+    def test_a_year_folder_does_not_win_over_the_filename(self) -> None:
+        """**ここが本番。** `2021/` の `2` が `equities...` の `e` より前に来る。"""
+        from stock_ai.cli import _key_period
+
+        old = "equities/bars/daily/historical/2021/equities_bars_daily_202109.csv.gz"
+        new = "equities/bars/daily/historical/equities_bars_daily_200805.csv.gz"
+
+        assert sorted([old, new])[0] == old, "文字列の並びでは新しいほうが前に来る"
+        assert _key_period(new) < _key_period(old)
+
+    def test_six_and_eight_digits_compare_correctly(self) -> None:
+        """**6桁と8桁を、数のまま比べない。** 桁が違うと大小が逆になる。
+
+        `202612`（2026年12月）と `20080501`（2008-05-01）を数として比べると
+        前者のほうが小さく、**2026年が2008年より前**になる。
+        """
+        from stock_ai.cli import _key_period
+
+        assert int("202612") < int("20080501")  # 素朴に比べると逆になる
+
+        later = _key_period("x_202612.csv.gz")
+        earlier = _key_period("x_20080501.csv.gz")
+
+        assert earlier < later
+
+    def test_a_key_without_digits_does_not_raise(self) -> None:
+        from stock_ai.cli import _key_period
+
+        assert _key_period("equities/bars/daily/live/latest.csv.gz") == ""
+
+    def test_the_last_run_of_digits_wins(self) -> None:
+        """年フォルダではなく、**ファイル名側の日付**を採る。"""
+        from stock_ai.cli import _key_period
+
+        assert _key_period("a/2021/b_200805.csv.gz") == "20080501"

@@ -10,6 +10,7 @@ import contextlib
 import datetime as dt
 import hashlib
 import math
+import re
 import shutil
 import sys
 import time
@@ -3554,22 +3555,50 @@ def jquants_bulk_prices(
         )
 
 
-def _archive_window(directory: Path) -> tuple[dt.date, dt.date] | None:
-    """Return the first and last date the archived bars cover.
+def _key_period(key: str) -> str:
+    """Return a sortable YYYYMMDD taken from the digits in an archive key.
+
+    **名前の並び順で「いちばん古いファイル」を決めてはいけない。**
+
+    2026-09-15 に実際にずれた。20年ぶんを入れたのに、原本の覆う期間が
+    `2021-09-01 〜` と出た。Light の頃に取ったファイルと、Premium で取った
+    ファイルで**鍵の形が違う**ためで、文字列で並べると新しいほうが前に来た。
+
+    **向こうの名前の付け方は、こちらの都合では決まらない。** 数字を拾って
+    並べれば、区切りの位置が変わっても順番は変わらない。
+
+    6桁は `YYYYMM` として月初に寄せる。**8桁と6桁をそのまま比べない**——
+    `202109` と `20260914` を数として比べると、前者のほうが小さくなる。
+    """
+    runs = re.findall(r"\d{6,8}", key)
+    if not runs:
+        return ""
+    period = runs[-1]
+    return period if len(period) == 8 else f"{period[:6]}01"
+
+
+def _archive_window(directory: Path) -> tuple[dt.date, dt.date, str, str] | None:
+    """Return the first and last date the archived bars cover, with the keys used.
 
     原本が覆う期間。**取り込みの報告と DB を突き合わせる相手**になる。
+
+    **どの原本から取ったかも返す。** 間違った1本を選んでいても、日付だけでは
+    気付けない——2026-09-15 がそうだった。
     """
     from stock_ai.data.jquants_prices import BARS_ENDPOINT
 
-    keys = [key for key in sorted(read_manifest(directory)) if endpoint_of(key) == BARS_ENDPOINT]
+    keys = [key for key in read_manifest(directory) if endpoint_of(key) == BARS_ENDPOINT]
     if not keys:
         return None
-    first = archive_shape(directory, keys[0])
-    last = archive_shape(directory, keys[-1])
+    ordered = sorted(keys, key=lambda key: (_key_period(key), key))
+    first = archive_shape(directory, ordered[0])
+    last = archive_shape(directory, ordered[-1])
     if first is None or last is None or not first.first_date or not last.last_date:
         return None
     start, end = _parse_date(first.first_date), _parse_date(last.last_date)
-    return (start, end) if start and end else None
+    if not start or not end:
+        return None
+    return (start, end, ordered[0], ordered[-1])
 
 
 def _archive_first_date(directory: Path) -> dt.date | None:
@@ -4810,7 +4839,8 @@ def jquants_inventory(
     # **原本が覆う期間を渡す。** DB には立花の2001年以降も入っているので、
     # 全体の行数と取り込みの報告はそもそも一致しない。期間を切って初めて
     # 比べられる。
-    window = _archive_window(Path(DEFAULT_ARCHIVE_DIR))
+    covered = _archive_window(Path(DEFAULT_ARCHIVE_DIR))
+    window = (covered[0], covered[1]) if covered else None
     coverage = audit(database, snapshots, window=window)
     left = coverage.days_left()
 
@@ -4885,15 +4915,21 @@ def jquants_inventory(
     )
     console.print(risk)
 
-    if window:
+    if covered:
         # **銘柄数だけでは、書けたことにならない。** 取り込みは「N 行を
         # 書いた」と言うが、それは upsert に渡した数である。渡したことと
         # 入ったことは別で、**入らなくても例外は出ない。**
         console.print(
-            f"[dim]原本が覆う {window[0]} 〜 {window[1]} の日足は "
+            f"[dim]原本が覆う {covered[0]} 〜 {covered[1]} の日足は "
             f"[bold]{coverage.price_rows_in_window:,}[/] 行。"
             "**一括取り込みが「書いた」と言った行数と突き合わせること。**[/]"
         )
+        # **どの原本から期間を取ったかも出す。** 間違った1本を選んでいても、
+        # 日付だけでは気付けない——2026-09-15 に、20年ぶんを入れたのに
+        # 「2021-09-01 〜」と出た。鍵の形が2通りあり、文字列で並べると新しい
+        # ほうが前に来ていた。
+        console.print(f"[dim]  期間の出どころ: {covered[2]}[/]")
+        console.print(f"[dim]              〜 {covered[3]}[/]")
 
     console.print()
     files, with_lending, lending_rows = lending_coverage(Path(DEFAULT_SNAPSHOT_DIR))
