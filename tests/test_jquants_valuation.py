@@ -17,10 +17,12 @@ from __future__ import annotations
 
 import datetime as dt
 import gzip
+import math
 from pathlib import Path
 
 from stock_ai.data.jquants_valuation import (
     IDENTITY_FLOOR,
+    SHARES_PLAUSIBLE,
     census,
     decimals_seen,
     digit_spread,
@@ -782,3 +784,71 @@ class TestCheckingTheMarketCapItself:
 
     def test_an_empty_frame_does_not_raise(self) -> None:
         assert share_stability(parse_valuation(_csv()), {"pbr": 0.005}).steps == 0
+
+
+class TestProportionalIsNotTheSameAsCorrectUnits:
+    """**比例していることと、単位が円であることは別である。**
+
+    実データで株式数の中央値が **21 株**と出た。日本の上場企業に 21 株の会社は
+    無い。それでも「時価総額は終値と同じ尺度で作られている」と緑を出していた
+    ——**桁を表示しておきながら、その数字を検査に使っていなかった**
+    （2026-09-15）。単位の取り違えを捕まえるために出した数字だったのに。
+
+    百万円単位で作ったデータは、実データと同じ 21 株を出す。
+    """
+
+    def _build(self, divisor: float, shares: float = 21_000_000.0):
+        rows = []
+        for symbol in range(5):
+            for day in range(1, 21):
+                close, bps = 2500.0 + day * 10, 2000.0
+                rows.append(
+                    f"2024-06-{day:02d},{1300 + symbol}0,100.00,,{bps:.2f},8.0000,,"
+                    f"{close / 100:.2f},,{close / bps:.2f},{close * shares / divisor:.1f}"
+                )
+        payload = _csv(*rows)
+        return parse_valuation(payload), half_widths(decimals_seen(payload))
+
+    def test_yen_units_pass_both_checks(self) -> None:
+        frame, widths = self._build(divisor=1.0)
+        held = share_stability(frame, widths)
+
+        assert held.units_hold
+        assert held.level_holds
+        assert held.orders_off == 0.0
+
+    def test_millions_of_yen_are_proportional_but_the_units_are_wrong(self) -> None:
+        """**比例の検査は通ってしまう。** 定数倍は散らばりを変えない。"""
+        frame, widths = self._build(divisor=1e6)
+        held = share_stability(frame, widths)
+
+        assert held.level_holds, "比例そのものは保たれている"
+        assert not held.units_hold
+        assert round(held.median_shares) == 21
+
+    def test_how_far_off_is_measured_not_guessed(self) -> None:
+        """**「何倍ずれているか」を1つの数で言わない。**
+
+        範囲の中心から逆算すると、根拠の無い数字が出る（最初そうした）。
+        下限より何桁下かは測れる。どの単位かを決めるのは、見た人である。
+        """
+        frame, widths = self._build(divisor=1e6)
+        held = share_stability(frame, widths)
+
+        low, _high = SHARES_PLAUSIBLE
+        assert held.orders_off < 0
+        assert abs(held.orders_off - -(math.log10(low) - math.log10(21.0))) < 0.01
+
+    def test_a_count_above_the_band_is_also_caught(self) -> None:
+        """**下だけ見ない。** 単位が逆向きに違うこともある。"""
+        frame, widths = self._build(divisor=1e-6)
+        held = share_stability(frame, widths)
+
+        assert not held.units_hold
+        assert held.orders_off > 0
+
+    def test_the_band_is_wide_enough_for_a_real_small_cap(self) -> None:
+        """**狭く取って誤報を出さない。** 捕まえたいのは桁違いだけである。"""
+        frame, widths = self._build(divisor=1.0, shares=2_000_000.0)
+
+        assert share_stability(frame, widths).units_hold

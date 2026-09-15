@@ -42,6 +42,7 @@ from __future__ import annotations
 
 import dataclasses
 import datetime as dt
+import math
 from collections import Counter
 from pathlib import Path
 
@@ -697,6 +698,17 @@ def close_bound(frame: pd.DataFrame, widths: dict[str, float]) -> pd.Series:
     return slack / close.where(close >= IDENTITY_FLOOR)
 
 
+#: 割り出した株式数として、桁がありうる範囲。
+#:
+#: **出典のある数字ではない。桁の目安である。** 日本の上場企業は、小さいもので
+#: 百万株台、大きいもので百億株台に収まる。ここを外れたら、**株式数ではなく
+#: 単位が違う**と読む。
+#:
+#: 広めに取ってある。**狭く取って誤報を出すより、桁違いだけを捕まえたい。**
+#: 2026-09-15 に中央値 21 株と出た。どんなに広く取っても外れる値である。
+SHARES_PLAUSIBLE = (1e6, 1e11)
+
+
 @dataclasses.dataclass
 class ShareStability:
     """``時価総額 ÷ 終値`` で出る株式数が、日をまたいで落ち着いているか。
@@ -733,8 +745,45 @@ class ShareStability:
 
     @property
     def level_holds(self) -> bool:
-        """水準が、丸めで説明の付く範囲に収まっているか。"""
+        """水準が、丸めで説明の付く範囲に収まっているか。
+
+        **これは「比例しているか」しか見ていない。** 単位が円かどうかは別で
+        ある。比例していても、時価総額が百万円単位なら株式数は百万分の一に
+        出る。:attr:`units_hold` を別に見ること。
+        """
         return self.spread_slack > 0 and self.spread_median <= self.spread_slack * 2
+
+    @property
+    def units_hold(self) -> bool:
+        """割り出した株式数の桁が、ありうる範囲に入っているか。
+
+        **比例していることと、単位が円であることは別である。** 2026-09-15 に
+        中央値 21 株と出た。日本の上場企業に 21 株の会社は無い。**それでも
+        「同じ尺度で作られている」と緑を出していた**——桁を表示しておきながら、
+        その数字を検査に使っていなかった。
+        """
+        low, high = SHARES_PLAUSIBLE
+        return low <= self.median_shares <= high
+
+    @property
+    def orders_off(self) -> float:
+        """ありうる範囲から、何桁はみ出しているか。中なら 0。
+
+        **測れることだけ返す。** 「何倍ずれているか」を1つの数で言うと、
+        範囲の中心から逆算した根拠の無い数字になる（最初そうした）。下限より
+        何桁下か、上限より何桁上か——それは測れる。
+
+        どの単位なのかを決めるのは、この数字を見た人である。**道具は、桁が
+        合っていないことまでしか言えない。**
+        """
+        low, high = SHARES_PLAUSIBLE
+        if self.median_shares <= 0:
+            return 0.0
+        if self.median_shares < low:
+            return -(math.log10(low) - math.log10(self.median_shares))
+        if self.median_shares > high:
+            return math.log10(self.median_shares) - math.log10(high)
+        return 0.0
 
     @property
     def steady(self) -> float:

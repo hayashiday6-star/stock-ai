@@ -5148,6 +5148,7 @@ def jquants_valuation(
     from stock_ai.data.jquants_valuation import (
         ACTUAL_COLUMNS,
         COLUMN_MAP,
+        SHARES_PLAUSIBLE,
         digit_spread,
         half_widths,
         identity_check,
@@ -5273,10 +5274,28 @@ def jquants_valuation(
         console.print(f"[bold]時価総額[/] {held.summary()}")
         if not held.steps:
             console.print("[yellow]株式数を割り出せる行が足りない。**確かめていない。**[/]")
+        elif not held.units_hold:
+            # **比例していることと、単位が円であることは別である。**
+            #
+            # 2026-09-15 に中央値 21 株と出た。日本の上場企業に 21 株の会社は
+            # 無い。それでも「同じ尺度で作られている」と緑を出していた——桁を
+            # 表示しておきながら、その数字を検査に使っていなかった。
+            low, high = SHARES_PLAUSIBLE
+            console.print(
+                f"[red]割り出した株式数 {held.median_shares:,.0f} 株は、"
+                f"ありうる桁（{low:,.0f}〜{high:,.0f} 株）から "
+                f"{abs(held.orders_off):.1f} 桁はみ出している。[/]"
+            )
+            console.print(
+                "**時価総額の単位は円ではない。** "
+                "[dim]比例はしている（月ごとの散らばり "
+                f"{held.spread_median:.2%} ≦ 丸めの {held.spread_slack:.2%}）ので、"
+                "定数倍のずれである。**円として使うと、その定数倍だけ間違える。**[/]"
+            )
         elif held.level_holds:
             console.print(
-                "[green]割り出した株式数は、丸めで説明の付く範囲に収まっている。[/] "
-                "[dim]**時価総額は終値と同じ尺度で作られている。** "
+                "[green]割り出した株式数は、桁も散らばりも収まっている。[/] "
+                "[dim]**時価総額は終値と同じ尺度・同じ単位で作られている。** "
                 f"動いた {held.moved:,} 回は分割・増資とみられる。[/]"
             )
         else:
