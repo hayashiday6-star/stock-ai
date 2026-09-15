@@ -232,6 +232,9 @@ from stock_ai.data.jquants_filter import baseline as filter_baseline
 from stock_ai.data.jquants_filter import census as filter_census
 from stock_ai.data.jquants_filter import product_separates
 from stock_ai.data.jquants_fundamentals import JQuantsFundamentalsProvider, normalize_statements
+from stock_ai.data.jquants_indices import census as topix_census
+from stock_ai.data.jquants_indices import from_archive as topix_from_archive
+from stock_ai.data.jquants_indices import tracking_gap as topix_tracking_gap
 from stock_ai.data.jquants_markets import HOLIDAY_DIVISION, TRADING_DIVISIONS, half_days_by_year
 from stock_ai.data.jquants_markets import agreement as calendar_agreement
 from stock_ai.data.jquants_markets import census as calendar_census
@@ -4174,6 +4177,104 @@ def jquants_filter_census(
     console.print(report.summary())
     console.print(f"[bold]{filter_baseline(report)}[/]")
     console.print("[dim]20年ぶんを取った日に、同じコマンドを実行してこの行と比べること。[/]")
+
+
+@app.command(name="jquants-topix")
+def jquants_topix(
+    archive_dir: str = typer.Option(
+        str(DEFAULT_ARCHIVE_DIR), "--dir", help="Where the raw files are kept."
+    ),
+    etf: str = typer.Option(BENCHMARK, "--etf", help="ETF to compare against the index."),
+    show: int = typer.Option(8, "--show", help="How many gaps to list."),
+) -> None:
+    """Read the TOPIX index itself and compare it with the ETF we use as benchmark.
+
+    **ベンチマークに 1306（TOPIX 連動 ETF）を使っているのは、指数が手元に
+    無かったからである。** それ以上の理由は無い。
+
+    Premium で `/indices/bars/daily/topix` が開いた。2008-05 からの18年ぶんが
+    88 KB で入っている。
+
+    | | |
+    |---|---|
+    | TOPIX | 指数。信託報酬も、売買のずれも無い |
+    | 1306 | それを追う ETF。**信託報酬が毎日引かれ、追跡のずれが乗る** |
+
+    18年ぶん積み上がると小さくないはずだが、**それは見込みであって測った値では
+    ない。** 引き算をする。
+
+    **置き換えは判定のやり直しではない。** #7 のベンチマークを替えて回し直せば
+    2回目の判定になる。ここで作るのは測る道具で、使えるのはまだ判定を消費して
+    いない説（#5・#8）である。
+
+    API を1回も叩かない。
+    """
+    settings = get_settings()
+    configure_logging(settings.log_level)
+
+    frame = topix_from_archive(Path(archive_dir))
+    if frame.empty:
+        console.print(
+            "[yellow]TOPIX の原本が無い。[/]"
+            "[dim] 先に `checks\\原本をまるごと保存.bat` を実行すること。[/]"
+        )
+        raise typer.Exit(code=1)
+
+    report = topix_census(frame)
+    table = Table(title="TOPIX（指数そのもの）")
+    table.add_column("見たもの")
+    table.add_column("値", justify="right")
+    table.add_row("日数", f"{report.rows:,}")
+    table.add_row("期間", f"{report.first} 〜 {report.last}")
+    table.add_row("始まりの水準", f"{frame[CLOSE].iloc[0]:,.2f}")
+    table.add_row("終わりの水準", f"{frame[CLOSE].iloc[-1]:,.2f}")
+    table.add_row(
+        "[red]5日を超える穴[/]" if report.gaps else "5日を超える穴", f"{len(report.gaps):,}"
+    )
+    console.print(table)
+
+    if report.gaps:
+        listed = "  ".join(f"{when}({span}日)" for when, span in report.gaps[:show])
+        console.print(
+            f"[yellow]穴が {len(report.gaps)} 件[/] [dim]{listed}[/]"
+            "[dim]  連休は5日までなので、これらは連休では説明が付かない。[/]"
+        )
+
+    database = Database(settings.database_url)
+    with database.session() as session:
+        prices = PriceRepository(session).get_prices(etf)
+    if prices.empty:
+        console.print(
+            f"[yellow]{etf} の株価が DB に無いので、引き算は飛ばした。[/]"
+            "[dim] **比べていない、であって差が無い、ではない。**[/]"
+        )
+        console.print(report.summary())
+        return
+
+    gap = topix_tracking_gap(frame, prices[CLOSE])
+    console.print()
+    console.print(f"[bold]指数 と {etf}（重なる日だけ）[/]")
+    console.print(gap.summary())
+    if not gap.days:
+        console.print(
+            "[dim]どちらも配当を含まない前提である。片方だけ配当込みなら、"
+            "この差は信託報酬ではなく配当利回りを測ることになる。[/]"
+        )
+    elif gap.total < 0:
+        console.print(
+            f"[green]ETF は指数に {-gap.total:.1%} 届いていない[/]"
+            f"（年あたり {-gap.annual:.2%}）。"
+            "[dim] 信託報酬と追跡のずれが、この向きに出る。[/]"
+        )
+    else:
+        console.print(
+            f"[yellow]ETF が指数を {gap.total:+.1%} 上回っている[/]"
+            f"（年あたり {gap.annual:+.2%}）。"
+            "**信託報酬は ETF を削る側なので、この向きは説明が付かない。**"
+            "[dim] 片方が配当込みでないか、分割の調整がどちらかで抜けている疑い。[/]"
+        )
+
+    console.print(report.summary())
 
 
 @app.command(name="jquants-archive-verify")
