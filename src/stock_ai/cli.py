@@ -5107,6 +5107,26 @@ def jquants_inventory(
     )
 
 
+def _valuation_precision(directory: Path) -> dict:
+    """Count how many decimals each valuation column actually carries.
+
+    原本を1本だけ読んで、列ごとの小数点以下の桁数を数える。
+
+    **書式は揃っている**ので、全部読む必要は無い。読めなければ空を返し、
+    呼ぶ側は桁に依る判定をしない——**分からないことを、分かったことにしない。**
+    """
+    from stock_ai.data.jquants_archive import path_for, read_manifest
+    from stock_ai.data.jquants_read import endpoint_of, read_archived
+    from stock_ai.data.jquants_valuation import VALUATION_ENDPOINT, decimals_seen
+
+    keys = sorted(key for key in read_manifest(directory) if endpoint_of(key) == VALUATION_ENDPOINT)
+    if not keys:
+        return {}
+    # **いちばん新しい原本を見る。** 古いものは空の列が多く、桁を数える材料に
+    # ならない。
+    return decimals_seen(read_archived(path_for(directory, keys[-1])))
+
+
 @app.command(name="jquants-valuation")
 def jquants_valuation(
     directory: str = typer.Option(
@@ -5128,7 +5148,9 @@ def jquants_valuation(
     from stock_ai.data.jquants_valuation import (
         ACTUAL_COLUMNS,
         explain_gap,
+        half_widths,
         identity_check,
+        rounding_bound,
     )
     from stock_ai.data.jquants_valuation import (
         census as valuation_census,
@@ -5193,8 +5215,34 @@ def jquants_valuation(
             "期間を切るか、列を替えるかを先に決めること。[/]"
         )
 
+    # **許容幅を推測で決めない。** 桁は原本に書いてある。1% という決め打ちは、
+    # PBR の丸め（1 前後の値を小数2桁なら ±0.5%）が作る裾を、ちょうど切って
+    # いた。そしてその裾を「列の意味が違う」と読んだ（2026-09-15）。
+    widths = half_widths(_valuation_precision(Path(directory)))
+    if widths:
+        console.print(
+            "[dim]原本の桁から出る丸めの幅: "
+            + "、".join(f"{name} ±{width:g}" for name, width in sorted(widths.items()))
+            + "[/]"
+        )
+
     report = identity_check(frame)
     console.print(report.summary())
+
+    # **推測の 1% ではなく、載っている桁から出した幅で見る。**
+    if widths:
+        close = (frame["pbr"] * frame["bps"]).abs()
+        gap = ((frame["per"] * frame["eps"]) - (frame["pbr"] * frame["bps"])).abs() / close
+        bound = rounding_bound(frame, widths)
+        judged = gap.notna() & bound.notna()
+        total = int(judged.sum())
+        if total:
+            within = int((gap[judged] <= bound[judged]).sum())
+            console.print(
+                f"[bold]桁から出る幅で見ると、{total:,} 行のうち "
+                f"{within:,} 行（{within / total:.1%}）が収まる。[/] "
+                "[dim]この幅は推測ではなく、原本に載っている桁数から出ている。[/]"
+            )
     if report.rate >= 0.99:
         console.print(
             "[green]PER × EPS と PBR × BPS が同じ終値を指している。[/] "
@@ -5225,20 +5273,22 @@ def jquants_valuation(
                 f"[dim]EPS が負（赤字）の行は {loss_checked:,}、"
                 f"うち合ったのは {loss_agreed / loss_checked:.1%}。[/]"
             )
-        if profile.rounding_explains_it():
+        # **「ゼロでない」を根拠にしない。** 合わない行の 2.5%（判定した行の
+        # 0.08%）で「列を取り違えている」と赤字を出した。取り違えなら
+        # **ほとんどが**救われるはずである。
+        if profile.forward_share >= 0.5:
             console.print(
-                "[green]ずれは EPS の小さい銘柄に偏っている。[/] "
-                "**丸めで説明が付く。列の意味は想像どおりである。** "
-                "[dim]許容幅の問題であって、データの問題ではない。[/]"
-            )
-        elif profile.forward_rescues:
-            console.print(
-                f"[red]合わない行のうち {profile.forward_rescues:,} 行は、"
+                f"[red]合わない行の {profile.forward_share:.0%} は、"
                 "**実績ではなく会社予想の EPS でなら合う。**[/] "
                 "[dim]東証の PER は会社予想で計算する。列を取り違えている。[/]"
             )
-        else:
-            console.print("[red]丸めにも会社予想にも寄らない。[/] **使う前にここを説明すること。**")
+        elif profile.forward_rescues:
+            console.print(
+                f"[dim]会社予想の EPS でなら合う行は {profile.forward_rescues:,}"
+                f"（合わない行の {profile.forward_share:.1%}）。**説明にはならない。**[/]"
+            )
+        if profile.eps_size_matters():
+            console.print("[dim]ずれは EPS の小さい銘柄に偏っている。[/]")
 
         detail = Table(title="ずれの大きいもの")
         for column in ("日付", "銘柄", "PER × EPS", "PBR × BPS"):

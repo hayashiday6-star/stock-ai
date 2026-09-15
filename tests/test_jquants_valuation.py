@@ -22,11 +22,14 @@ from pathlib import Path
 from stock_ai.data.jquants_valuation import (
     IDENTITY_FLOOR,
     census,
+    decimals_seen,
     explain_gap,
     from_archive,
+    half_widths,
     identity_check,
     implied_shares,
     parse_valuation,
+    rounding_bound,
     unknown_columns,
 )
 from stock_ai.data.schema import DATE
@@ -399,10 +402,18 @@ class TestNotDecidingFromTheAgreementRateAlone:
 
         assert profile.rate("〜2") == 0.0, profile.by_eps_size
         assert profile.rate("50〜") == 1.0, profile.by_eps_size
-        assert profile.rounding_explains_it()
+        assert profile.eps_size_matters()
 
-    def test_a_uniform_mismatch_is_not_called_rounding(self) -> None:
-        """**どの区分でも同じように外れるなら、丸めではない。**"""
+    def test_a_flat_profile_does_not_by_itself_mean_anything(self) -> None:
+        """**平らであることは、丸めを否定しない。**
+
+        一度これを「丸めではない」と読んで間違えた（2026-09-15）。実データは
+        どの区分も 96% 台で平らだったが、効いていたのは `PBR` の丸めで、
+        それは `EPS` の大小と関係が無い。
+
+        この旗が立つのは、**EPS 由来の丸めが上乗せで効いているときだけ**で
+        ある。立たないことは、何も意味しない。
+        """
         rows = []
         for index, eps in enumerate((1.5, 5.0, 20.0, 100.0) * 15):
             code = f"{1300 + index}0"
@@ -412,7 +423,7 @@ class TestNotDecidingFromTheAgreementRateAlone:
 
         profile = explain_gap(parse_valuation(_csv(*rows)))
 
-        assert not profile.rounding_explains_it()
+        assert not profile.eps_size_matters()
 
     def test_a_forecast_based_per_is_detected(self) -> None:
         """東証の PER は会社予想 EPS で計算する。**そこを取り違えたら言う。**"""
@@ -442,7 +453,7 @@ class TestNotDecidingFromTheAgreementRateAlone:
 
         assert profile.negative_eps == (0, 0)
         assert profile.forward_rescues == 0
-        assert not profile.rounding_explains_it()
+        assert not profile.eps_size_matters()
 
 
 class TestCheckingTheMarketCapAgainstSomethingElse:
@@ -475,3 +486,135 @@ class TestCheckingTheMarketCapAgainstSomethingElse:
         rows = ["2026-08-03,13010,100,120,2000,5.0,6.0,25.0,20.8,0,250000000000"]
 
         assert implied_shares(parse_valuation(_csv(*rows))).empty
+
+
+class TestTakingTheToleranceFromThePublishedDigits:
+    """**許容幅を推測で決めない。** 桁は原本に書いてある。
+
+    1% という決め打ちは、`PBR` の丸めが作る裾をちょうど切っていた。`PBR` は
+    1 前後なので、小数2桁なら相対誤差は ±0.5% になる——**`EPS` の大小とは
+    関係が無い。** そしてその裾を「列の意味が違う」と読んだ（2026-09-15）。
+
+    桁から幅を出せば、「合わない」は本当に説明の付かないものだけになる。
+    """
+
+    def test_the_digits_are_counted_from_the_raw_text(self) -> None:
+        payload = _csv("2024-06-03,13010,1.25,1.2,100.5,8.0,6.0,25.25,20.8,1.25,1")
+        seen = decimals_seen(payload)
+
+        assert seen["PBR"] == {2: 1}
+        assert seen["BPS"] == {1: 1}
+        assert seen["MktCap"] == {0: 1}
+
+    def test_blanks_are_not_counted_as_zero_digits(self) -> None:
+        # **空欄を0桁として数えると、幅が広がる。** 0桁は ±0.5 である。
+        payload = _csv("2024-06-03,13010,,,,,,,,,")
+        assert decimals_seen(payload)["PBR"] == {}
+
+    def test_the_coarsest_digit_count_wins(self) -> None:
+        """揃っていなければ**粗いほう**が本当の不確かさである。"""
+        payload = _csv(
+            "2024-06-03,13010,1.25,1.2,100.5,8.0,6.0,25.25,20.8,1.25,1",
+            "2024-06-04,13020,1.25,1.2,100.5,8.0,6.0,25.25,20.8,1.2,1",
+        )
+        assert half_widths(decimals_seen(payload))["pbr"] == 0.05
+
+    def test_two_decimals_give_half_a_hundredth(self) -> None:
+        payload = _csv(CONSISTENT)
+        assert half_widths(decimals_seen(payload))["bps"] == 0.5
+
+    def test_no_digits_measured_means_no_width_rather_than_zero(self) -> None:
+        """**分からないことを、分かったことにしない。** 幅0は「ぴったり合え」である。"""
+        assert "pbr" not in half_widths(decimals_seen(_csv("2024-06-03,13010,,,,,,,,,")))
+
+
+class TestWhatTheRoundingBoundAllows:
+    def _frame(self, close: float, eps: float, bps: float):
+        row = ",".join(
+            [
+                "2024-06-03",
+                "13010",
+                f"{eps:.2f}",
+                "",
+                f"{bps:.2f}",
+                "8.00",
+                "",
+                f"{close / eps:.2f}",
+                "",
+                f"{close / bps:.2f}",
+                "1",
+            ]
+        )
+        return parse_valuation(_csv(row))
+
+    def test_a_row_rounded_to_two_places_fits_inside_the_bound(self) -> None:
+        frame = self._frame(2500.0, 137.0, 2000.0)
+        widths = {"per": 0.005, "eps": 0.005, "pbr": 0.005, "bps": 0.005}
+
+        gap = ((frame["per"] * frame["eps"]) - (frame["pbr"] * frame["bps"])).abs() / (
+            frame["pbr"] * frame["bps"]
+        ).abs()
+
+        assert (gap <= rounding_bound(frame, widths)).all()
+
+    def test_a_genuinely_wrong_row_does_not_fit(self) -> None:
+        # PBR を倍にする。丸めでは届かない差である。
+        broken = parse_valuation(_csv("2024-06-03,13010,137.00,,2000.00,8.00,,18.25,,2.50,1"))
+        widths = {"per": 0.005, "eps": 0.005, "pbr": 0.005, "bps": 0.005}
+
+        gap = ((broken["per"] * broken["eps"]) - (broken["pbr"] * broken["bps"])).abs() / (
+            broken["pbr"] * broken["bps"]
+        ).abs()
+
+        assert not (gap <= rounding_bound(broken, widths)).all()
+
+    def test_a_coarser_pbr_widens_the_bound(self) -> None:
+        """**PBR の桁がいちばん効く。** 1 前後の値だからである。"""
+        frame = self._frame(2500.0, 137.0, 2000.0)
+        fine = rounding_bound(frame, {"pbr": 0.005, "bps": 0.005}).iloc[0]
+        coarse = rounding_bound(frame, {"pbr": 0.05, "bps": 0.005}).iloc[0]
+
+        assert coarse > fine * 5
+
+    def test_missing_widths_give_a_bound_of_zero_not_an_error(self) -> None:
+        frame = self._frame(2500.0, 137.0, 2000.0)
+
+        assert float(rounding_bound(frame, {}).iloc[0]) == 0.0
+
+
+class TestNotCallingItAMixUpFromAHandfulOfRows:
+    """**「ゼロでない」を根拠にしない。**
+
+    合わない行の 2.5%（判定した行の 0.08%）で「列を取り違えている」と赤字を
+    出していた。取り違えなら**ほとんどが**救われるはずである。
+    """
+
+    def test_a_few_rescues_do_not_make_a_majority(self) -> None:
+        rows = []
+        for index in range(40):
+            code = f"{1300 + index}0"
+            if index == 0:
+                # 会社予想でなら合う1行
+                rows.append(f"2020-06-01,{code},100,125,2000,5.0,6.0,20.0,20.8,1.25,1")
+            else:
+                # 丸めでは届かない外れ方
+                rows.append(f"2020-06-01,{code},100,100,2000,5.0,6.0,10.0,20.8,1.25,1")
+
+        profile = explain_gap(parse_valuation(_csv(*rows)))
+
+        assert profile.forward_rescues == 1
+        assert profile.forward_share < 0.5
+
+    def test_a_real_mix_up_rescues_nearly_everything(self) -> None:
+        rows = [
+            f"2020-06-01,{1300 + index}0,100,125,2000,5.0,6.0,20.0,20.8,1.25,1"
+            for index in range(20)
+        ]
+        profile = explain_gap(parse_valuation(_csv(*rows)))
+
+        assert profile.forward_share == 1.0
+
+    def test_no_disagreements_means_no_share_rather_than_a_crash(self) -> None:
+        profile = explain_gap(parse_valuation(_csv(CONSISTENT)))
+
+        assert profile.forward_share == 0.0

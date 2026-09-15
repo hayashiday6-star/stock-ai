@@ -371,21 +371,42 @@ class GapProfile:
     gap_median: float
     gap_p99: float
 
+    checked_off: int = 0
+    """合わなかった行の数。:attr:`forward_share` の分母。"""
+
     def rate(self, bucket: str) -> float:
         """その区分で合った割合。判定した行が無ければ 0。"""
         checked, agreed = self.by_eps_size.get(bucket, (0, 0))
         return agreed / checked if checked else 0.0
 
-    def rounding_explains_it(self) -> bool:
-        """ずれが**小さい EPS に偏っている**か。偏っていれば丸めで説明が付く。
+    def eps_size_matters(self) -> bool:
+        """ずれが**小さい EPS に偏っている**か。
 
-        いちばん小さい区分といちばん大きい区分で、合う割合が目に見えて違う
-        ことを条件にする。**どの区分でも同じように外れるなら、丸めではない。**
+        **これを「丸めかどうか」の判定に使ってはいけない。** 一度そうして
+        間違えた（2026-09-15）。
+
+        実データでは、どの区分も 96% 台で**平ら**だった。それを「丸めでは
+        ない」と読んだが、効いていたのは **PBR の丸め**である。PBR は 1 前後
+        なので小数2桁なら相対誤差 ±0.5%、**EPS の大小とは関係が無い。**
+
+        平らであることは丸めを否定しない。ここが立つのは、EPS 由来の丸めが
+        **上乗せで**効いているときだけである。
         """
         buckets = list(self.by_eps_size)
         if len(buckets) < 2:
             return False
         return self.rate(buckets[-1]) - self.rate(buckets[0]) > 0.05
+
+    @property
+    def forward_share(self) -> float:
+        """合わなかった行のうち、会社予想でなら合う割合。
+
+        **件数がゼロでないことを根拠にしない。** 実データでは 8,086 行
+        （合わない行の 2.5%、判定した行の 0.08%）で「列を取り違えている」と
+        赤字を出していた。**取り違えなら、ほとんどが救われるはずである。**
+        """
+        off = self.checked_off
+        return self.forward_rescues / off if off else 0.0
 
 
 def _bucket_labels() -> list[str]:
@@ -405,7 +426,7 @@ def explain_gap(frame: pd.DataFrame) -> GapProfile:
     Returns:
         :class:`GapProfile`。判定できる行が無ければ、どの区分も 0 になる。
     """
-    empty = GapProfile(dict.fromkeys(_bucket_labels(), (0, 0)), (0, 0), 0, 0.0, 0.0)
+    empty = GapProfile(dict.fromkeys(_bucket_labels(), (0, 0)), (0, 0), 0, 0.0, 0.0, 0)
     if frame.empty:
         return empty
 
@@ -457,6 +478,7 @@ def explain_gap(frame: pd.DataFrame) -> GapProfile:
         forward_rescues=rescues,
         gap_median=float(gap.median()),
         gap_p99=float(gap.quantile(0.99)),
+        checked_off=int((~agreed).sum()),
     )
 
 
@@ -474,3 +496,70 @@ def implied_shares(frame: pd.DataFrame) -> pd.Series:
     usable = frame[frame[needed].notna().all(axis=1)]
     close = usable["pbr"] * usable["bps"]
     return (usable["market_cap"] / close.where(close.abs() >= IDENTITY_FLOOR)).dropna()
+
+
+def decimals_seen(payload: bytes, limit: int = 20000) -> dict[str, Counter]:
+    """原本の**生の文字列**から、列ごとに小数点以下が何桁あるかを数える。
+
+    **許容幅を推測で決めないための材料である。**
+
+    `PBR` が小数2桁で載っているなら、`PBR × BPS` は最大 ±0.5% ずれる
+    ——PBR が 1 前後だからで、**EPS の大小とは関係が無い。** 1% という
+    決め打ちの幅では、その裾をちょうど切ってしまう。
+
+    2026-09-15 に、その裾（3.1%）を「列の意味が違う」と読んだ。**丸めの
+    出どころを EPS だと思い込んでいた。** 桁は原本に書いてある。
+
+    Args:
+        payload: 展開済みの CSV。
+        limit: 何行まで見るか。**全部見る必要は無い**——書式は揃っている。
+
+    Returns:
+        列名（原本の綴り）→ 桁数ごとの件数。空欄は数えない。
+    """
+    counts: dict[str, Counter] = {source: Counter() for source in COLUMN_MAP}
+    for index, record in enumerate(records_from_csv(payload)):
+        if index >= limit:
+            break
+        for source in COLUMN_MAP:
+            text = (record.get(source) or "").strip()
+            if not text or text in {"-", "－"}:
+                continue
+            counts[source][len(text.partition(".")[2])] += 1
+    return counts
+
+
+def half_widths(counts: dict[str, Counter]) -> dict[str, float]:
+    """桁数から、四捨五入の**片側の幅**を出す。2桁なら 0.005。
+
+    **いちばん粗い桁を採る。** 揃っているはずだが、揃っていなければ粗いほう
+    が本当の不確かさである。狭く見積もると、丸めで説明が付くものを
+    「合わない」に数えることになる。
+    """
+    widths = {}
+    for source, target in COLUMN_MAP.items():
+        seen = counts.get(source)
+        if not seen:
+            continue
+        widths[target] = 0.5 * 10 ** -min(seen)
+    return widths
+
+
+def rounding_bound(frame: pd.DataFrame, widths: dict[str, float]) -> pd.Series:
+    """行ごとに、**丸めだけで説明の付くずれの上限**を返す（相対値）。
+
+    ``PER × EPS`` の不確かさは ``|EPS|·h(PER) + |PER|·h(EPS)``。書物側も
+    同じ形で、両方を足して終値で割れば、比べられる幅になる。
+
+    **決め打ちの 1% を置き換えるためのものである。** 幅が原本の桁から出て
+    いれば、「合わない」は本当に説明の付かないものだけになる。
+    """
+    per_h = widths.get("per", 0.0)
+    eps_h = widths.get("eps", 0.0)
+    pbr_h = widths.get("pbr", 0.0)
+    bps_h = widths.get("bps", 0.0)
+
+    from_book = (frame["pbr"] * frame["bps"]).abs()
+    earnings_slack = frame["eps"].abs() * per_h + frame["per"].abs() * eps_h
+    book_slack = frame["bps"].abs() * pbr_h + frame["pbr"].abs() * bps_h
+    return (earnings_slack + book_slack) / from_book.where(from_book >= IDENTITY_FLOOR)
