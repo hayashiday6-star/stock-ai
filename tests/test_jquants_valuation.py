@@ -23,6 +23,7 @@ from stock_ai.data.jquants_valuation import (
     IDENTITY_FLOOR,
     census,
     decimals_seen,
+    digit_spread,
     explain_gap,
     from_archive,
     half_widths,
@@ -511,13 +512,31 @@ class TestTakingTheToleranceFromThePublishedDigits:
         payload = _csv("2024-06-03,13010,,,,,,,,,")
         assert decimals_seen(payload)["PBR"] == {}
 
-    def test_the_coarsest_digit_count_wins(self) -> None:
-        """揃っていなければ**粗いほう**が本当の不確かさである。"""
+    def test_the_most_common_digit_count_wins_not_the_coarsest(self) -> None:
+        """**末尾の 0 は落ちる。** `25.10` は `25.1` と書かれる。
+
+        いちばん粗い桁を採ると、そういう行が1件あるだけで列全体の幅が10倍に
+        なる。実データでは全9列が `±0.05` になり、`PBR` の相対幅が 5% に
+        なった——**何をしても収まる幅**である（2026-09-15）。
+        """
         payload = _csv(
             "2024-06-03,13010,1.25,1.2,100.5,8.0,6.0,25.25,20.8,1.25,1",
-            "2024-06-04,13020,1.25,1.2,100.5,8.0,6.0,25.25,20.8,1.2,1",
+            "2024-06-04,13020,1.25,1.2,100.5,8.0,6.0,25.25,20.8,1.26,1",
+            "2024-06-05,13030,1.25,1.2,100.5,8.0,6.0,25.25,20.8,1.2,1",
         )
-        assert half_widths(decimals_seen(payload))["pbr"] == 0.05
+        assert half_widths(decimals_seen(payload))["pbr"] == 0.005
+
+    def test_the_spread_shows_whether_the_format_is_settled(self) -> None:
+        """**採った桁が代表かどうかを見せる。** 割れていれば幅を信じない。"""
+        payload = _csv(
+            "2024-06-03,13010,1.25,1.2,100.5,8.0,6.0,25.25,20.8,1.25,1",
+            "2024-06-04,13020,1.25,1.2,100.5,8.0,6.0,25.25,20.8,1.26,1",
+            "2024-06-05,13030,1.25,1.2,100.5,8.0,6.0,25.25,20.8,1.2,1",
+        )
+        assert digit_spread(decimals_seen(payload), "PBR") == "2桁 67%、1桁 33%"
+
+    def test_a_column_never_seen_says_so(self) -> None:
+        assert digit_spread(decimals_seen(_csv("2024-06-03,13010,,,,,,,,,")), "PBR") == "無し"
 
     def test_two_decimals_give_half_a_hundredth(self) -> None:
         payload = _csv(CONSISTENT)

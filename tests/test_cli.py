@@ -1639,3 +1639,77 @@ class TestWarningAboutEveryEmptyColumnNotJustOne:
         result = self._run(tmp_path)
 
         assert result.exit_code == 0, result.output
+
+
+class TestSayingWhenTheCheckCannotFail:
+    """**落ちようのない検査は、何も言っていない。**
+
+    丸めの幅を「いちばん粗い桁」から出していたとき、全9列が `±0.05` になり
+    `PBR` の相対幅が 5% になった。ずれの99%点は 1.3% なので、何を入れても
+    100% 収まる。**「全部合っている」と出て、確かめたつもりになる**
+    （2026-09-15）。狭すぎる幅なら誤報が出て気付くので、**広すぎるほうが悪い。**
+
+    最初の見張りは「幅がずれより一桁以上広ければ」だった。**鳴らなかった**
+    ——桁が粗ければずれも一緒に広がるので、比では捕まらない。絶対値で見る。
+    """
+
+    def _archive(self, tmp_path, pbr_digits: int):
+        import datetime as dt
+        import gzip
+
+        from stock_ai.data.jquants_archive import archive
+        from stock_ai.data.jquants_bulk import BulkFile
+
+        header = "Date,Code,EPS,FwdEPS,BPS,ROE,FwdROE,PER,FwdPER,PBR,MktCap"
+        rows = []
+        for index in range(400):
+            close, bps, eps = 2500.0 + index, 2000.0 + index, 100.0 + index
+            rows.append(
+                f"2024-06-03,{1300 + index}0,{eps:.2f},,{bps:.2f},8.00,,"
+                f"{close / eps:.2f},,{close / bps:.{pbr_digits}f},{close * 1e6:.0f}"
+            )
+        payload = gzip.compress(("\n".join([header, *rows]) + "\n").encode("utf-8"))
+        archive(
+            [
+                BulkFile(
+                    key="equities/valuation/historical/2024/eq_valuation_202406.csv.gz",
+                    last_modified="",
+                    size=len(payload),
+                )
+            ],
+            lambda _k: payload,
+            tmp_path,
+            on=dt.date(2026, 9, 15),
+        )
+
+    def _run(self, tmp_path):
+        from typer.testing import CliRunner
+
+        from stock_ai.cli import app
+
+        return CliRunner().invoke(app, ["jquants-valuation", "--dir", str(tmp_path)]).output
+
+    def test_a_coarse_column_is_called_out(self, tmp_path) -> None:
+        self._archive(tmp_path, pbr_digits=0)
+
+        output = self._run(tmp_path)
+
+        assert "細かくは確かめられない" in output, output
+        assert "証拠にならない" in output
+
+    def test_a_precise_column_is_reported_as_meaningful(self, tmp_path) -> None:
+        self._archive(tmp_path, pbr_digits=2)
+
+        output = self._run(tmp_path)
+
+        assert "同じ桁にある" in output, output
+        assert "細かくは確かめられない" not in output
+
+    def test_the_digits_actually_present_are_shown(self, tmp_path) -> None:
+        """**幅だけ出さない。** どの桁から出たかが見えないと、確かめようがない。"""
+        self._archive(tmp_path, pbr_digits=2)
+
+        output = self._run(tmp_path)
+
+        assert "原本に載っている桁" in output, output
+        assert "桁" in output

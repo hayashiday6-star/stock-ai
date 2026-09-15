@@ -5107,6 +5107,17 @@ def jquants_inventory(
     )
 
 
+#: 丸めの幅がこれを超えたら、**その桁では確かめられない**と見なす。
+#:
+#: 確かめているのは「2通りに計算した終値が一致するか」である。幅が 1% なら、
+#: 終値を ±1% までしか突き合わせられない。実データのずれの典型は 0.2% なので、
+#: **1% の幅では丸めと本当の食い違いを区別できない。**
+#:
+#: 2026-09-15 に、幅が 5% になっているのに「100% 収まる」と出した。**収まった
+#: のではなく、収まらないことがありえない幅だった。**
+RESOLVING_LIMIT = 0.01
+
+
 def _valuation_precision(directory: Path) -> dict:
     """Count how many decimals each valuation column actually carries.
 
@@ -5147,6 +5158,8 @@ def jquants_valuation(
     """
     from stock_ai.data.jquants_valuation import (
         ACTUAL_COLUMNS,
+        COLUMN_MAP,
+        digit_spread,
         explain_gap,
         half_widths,
         identity_check,
@@ -5218,13 +5231,18 @@ def jquants_valuation(
     # **許容幅を推測で決めない。** 桁は原本に書いてある。1% という決め打ちは、
     # PBR の丸め（1 前後の値を小数2桁なら ±0.5%）が作る裾を、ちょうど切って
     # いた。そしてその裾を「列の意味が違う」と読んだ（2026-09-15）。
-    widths = half_widths(_valuation_precision(Path(directory)))
+    counts = _valuation_precision(Path(directory))
+    widths = half_widths(counts)
     if widths:
-        console.print(
-            "[dim]原本の桁から出る丸めの幅: "
-            + "、".join(f"{name} ±{width:g}" for name, width in sorted(widths.items()))
-            + "[/]"
-        )
+        spread = Table(title="原本に載っている桁（丸めの幅はここから出る）")
+        for column in ("列", "桁の内訳", "幅"):
+            spread.add_column(column)
+        for name in ACTUAL_COLUMNS.values():
+            if name not in widths:
+                continue
+            source = next(key for key, value in COLUMN_MAP.items() if value == name)
+            spread.add_row(name, digit_spread(counts, source), f"±{widths[name]:g}")
+        console.print(spread)
 
     report = identity_check(frame)
     console.print(report.summary())
@@ -5240,9 +5258,41 @@ def jquants_valuation(
             within = int((gap[judged] <= bound[judged]).sum())
             console.print(
                 f"[bold]桁から出る幅で見ると、{total:,} 行のうち "
-                f"{within:,} 行（{within / total:.1%}）が収まる。[/] "
-                "[dim]この幅は推測ではなく、原本に載っている桁数から出ている。[/]"
+                f"{within:,} 行（{within / total:.1%}）が収まる。[/]"
             )
+            # **落ちようのない検査は、何も言っていない。**
+            #
+            # 幅を「いちばん粗い桁」から出していたとき、全9列が ±0.05 になり
+            # PBR の相対幅が 5% になった。ずれの99%点は 1.3% なので、何を
+            # 入れても 100% 収まる。**「全部合っている」と出て、確かめたつもり
+            # になる**——狭すぎる幅より悪い（2026-09-15）。
+            #
+            # 幅とずれを並べれば、それが見える。
+            typical_bound = float(bound[judged].median())
+            typical_gap = float(gap[judged].median())
+            console.print(
+                f"[dim]幅の中央値 {typical_bound:.2%} ／ ずれの中央値 {typical_gap:.2%}。[/]"
+            )
+            # **比で見ない。絶対値で見る。**
+            #
+            # 最初は「幅がずれより一桁以上広ければ警告」にした。**鳴らなかった。**
+            # 幅が広いのは桁が粗いからで、桁が粗ければ**ずれも一緒に広がる。**
+            # 幅 50%・ずれ 13.8% でも比は 3.6 倍にしかならない（2026-09-15）。
+            #
+            # 問うているのは「この桁で、どれだけ細かく確かめられるか」である。
+            # 幅がずれの典型より広ければ、収まったことは何も言っていない。
+            if typical_bound > RESOLVING_LIMIT:
+                console.print(
+                    f"[red]桁が粗く、{typical_bound:.1%} より細かくは確かめられない。[/] "
+                    "**この 100% は、丸めで説明が付いた証拠にならない。** "
+                    "[dim]収まったのではなく、収まらないことがありえない幅である。[/]"
+                )
+            else:
+                console.print(
+                    f"[green]幅は {typical_bound:.2%} で、ずれの典型 {typical_gap:.2%} と"
+                    "同じ桁にある。[/] [dim]収まったことに意味がある。**列の意味は"
+                    "想像どおりで、残りは丸めである。**[/]"
+                )
     if report.rate >= 0.99:
         console.print(
             "[green]PER × EPS と PBR × BPS が同じ終値を指している。[/] "

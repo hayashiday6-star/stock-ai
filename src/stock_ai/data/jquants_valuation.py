@@ -532,17 +532,46 @@ def decimals_seen(payload: bytes, limit: int = 20000) -> dict[str, Counter]:
 def half_widths(counts: dict[str, Counter]) -> dict[str, float]:
     """桁数から、四捨五入の**片側の幅**を出す。2桁なら 0.005。
 
-    **いちばん粗い桁を採る。** 揃っているはずだが、揃っていなければ粗いほう
-    が本当の不確かさである。狭く見積もると、丸めで説明が付くものを
-    「合わない」に数えることになる。
+    **いちばん多い桁を採る。いちばん粗い桁ではない。**
+
+    最初は `min()`（いちばん粗い桁）にしていた。「狭く見積もると丸めで説明の
+    付くものを『合わない』に数える」からである。**その理屈は片側しか見て
+    いなかった。**
+
+    `25.10` は `25.1` と書かれる——末尾の 0 は落ちる。1件でもそう書かれれば
+    `min()` は 1 桁と読み、列全体の幅が **10倍** になる。実データでは全9列が
+    `±0.05` になり、`PBR` は 1 前後なので**相対 5%** の幅になった。ずれの
+    99%点が 1.3% なので、**何をしても 100% 収まる**——落ちようのない検査で
+    ある（2026-09-15）。
+
+    **広すぎる幅は、狭すぎる幅より悪い。** 狭ければ誤報が出て気付くが、広い
+    と「全部合っている」と出て、確かめたつもりになる。
+
+    書式そのものの桁は、いちばん多く現れる桁である。末尾の 0 が落ちたものは
+    そこから少ないほうへ散らばるだけで、書式が変わったわけではない。
     """
     widths = {}
     for source, target in COLUMN_MAP.items():
         seen = counts.get(source)
         if not seen:
             continue
-        widths[target] = 0.5 * 10 ** -min(seen)
+        digits = seen.most_common(1)[0][0]
+        widths[target] = 0.5 * 10**-digits
     return widths
+
+
+def digit_spread(counts: dict[str, Counter], column: str) -> str:
+    """その列の桁数の散らばりを1行で。**採った桁が代表かどうかを見せる。**
+
+    「2桁が98%」なら書式は2桁である。「2桁が40%、1桁が35%」なら、そもそも
+    揃っていない——**そのときは幅そのものを信じない。**
+    """
+    seen = counts.get(column)
+    if not seen:
+        return "無し"
+    total = sum(seen.values())
+    top = sorted(seen.items(), key=lambda pair: -pair[1])[:3]
+    return "、".join(f"{digits}桁 {count / total:.0%}" for digits, count in top)
 
 
 def rounding_bound(frame: pd.DataFrame, widths: dict[str, float]) -> pd.Series:
