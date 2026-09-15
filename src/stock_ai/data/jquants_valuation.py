@@ -121,7 +121,23 @@ def parse_valuation(payload: bytes) -> pd.DataFrame:
         rows.append(row)
     if not rows:
         return pd.DataFrame(columns=[DATE, SYMBOL, *COLUMN_MAP.values()])
-    return pd.DataFrame(rows)
+    frame = pd.DataFrame(rows)
+    # **数の列は、必ず数の型にする。**
+    #
+    # 1ファイルの中で、ある列が1件も埋まっていないことがある——2008年の
+    # `EPS` と `PER` がそうで、census で 0% と出る。全部 `None` の列を
+    # `DataFrame` に渡すと **object 型**になり、`concat` すると他のファイルの
+    # float 列まで object に引きずられる。
+    #
+    # そのまま掛け算・割り算をしても**例外は出ない**。並べ替えのところで
+    # 初めて落ちる（`nlargest` が object を受け付けない）。1,588万行で2度
+    # 落ちた（2026-09-15）。
+    #
+    # **fixture は1ファイル分しか作っていなかったので、連結を一度も通して
+    # いなかった。** 型をここで決めれば、どのファイルから来ても同じになる。
+    for column in COLUMN_MAP.values():
+        frame[column] = pd.to_numeric(frame[column], errors="coerce")
+    return frame
 
 
 def unknown_columns(payload: bytes) -> list[str]:

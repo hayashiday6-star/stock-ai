@@ -198,6 +198,100 @@ class TestAProductThatComesOutZero:
         assert report.checked == 1
 
 
+class TestAColumnThatIsEmptyInOneWholeFile:
+    """**2度落ちた形。** fixture が1ファイル分しか無かったので通らなかった。
+
+    2008年のファイルは `EPS` と `PER` が1件も埋まっていない（census で 0%）。
+    全部 `None` の列は **object 型**になり、`concat` すると他のファイルの
+    float 列まで引きずられる。
+
+    **掛け算も割り算も例外を出さない。** 並べ替えのところで初めて落ちる。
+    型を読み口で決めれば、どのファイルから来ても同じになる。
+    """
+
+    def test_a_column_with_nothing_in_it_is_still_numeric(self) -> None:
+        frame = parse_valuation(_csv("2008-07-08,13010,,,2000,,,,,1.25,1"))
+
+        assert frame["eps"].dtype.kind == "f", frame["eps"].dtype
+
+    def test_every_numeric_column_is_numeric_even_when_all_empty(self) -> None:
+        frame = parse_valuation(_csv("2008-07-08,13010,,,,,,,,,"))
+
+        for column in ("eps", "bps", "roe", "per", "pbr", "market_cap"):
+            assert frame[column].dtype.kind == "f", (column, frame[column].dtype)
+
+    def test_concatenating_two_files_keeps_the_type(self) -> None:
+        import pandas as pd
+
+        empty = parse_valuation(_csv("2008-07-08,13010,,,2000,,,,,1.25,1"))
+        full = parse_valuation(_csv(CONSISTENT))
+
+        assert pd.concat([empty, full])["eps"].dtype.kind == "f"
+
+
+class TestReadingAnArchiveThatMixesEmptyAndFullFiles:
+    """**実データそのものの形。** 2008年のファイルと、近年のファイルが並ぶ。
+
+    ここを通していれば、1,588万行で落ちる前に落ちていた。`from_archive` を
+    呼ぶテストが `worst` まで届いていなかった。
+    """
+
+    def _archive(self, tmp_path: Path, files: dict[str, list[str]]) -> None:
+        import datetime as dt
+
+        from stock_ai.data.jquants_archive import archive
+        from stock_ai.data.jquants_bulk import BulkFile
+
+        bodies = {key: gzip.compress(_csv(*rows)) for key, rows in files.items()}
+        archive(
+            [BulkFile(key=key, last_modified="", size=len(body)) for key, body in bodies.items()],
+            lambda key: bodies[key],
+            tmp_path,
+            on=dt.date(2026, 9, 15),
+        )
+
+    def _both(self, tmp_path: Path) -> None:
+        self._archive(
+            tmp_path,
+            {
+                # 2008: EPS も PER も1件も無い
+                "equities/valuation/historical/2008/eq_valuation_200807.csv.gz": [
+                    "2008-07-08,13010,,,2000,,,,,1.25,1",
+                    "2008-07-09,13020,,,2000,,,,,1.25,1",
+                ],
+                # 近年: 埋まっていて、しかも食い違いが1件ある
+                "equities/valuation/historical/2026/eq_valuation_202608.csv.gz": [
+                    CONSISTENT,
+                    "2026-08-04,13030,100,120,2000,5.0,6.0,25.0,20.8,2.50,1",
+                ],
+            },
+        )
+
+    def test_the_columns_stay_numeric_across_files(self, tmp_path: Path) -> None:
+        self._both(tmp_path)
+
+        assert from_archive(tmp_path)["eps"].dtype.kind == "f"
+
+    def test_the_check_runs_to_the_end(self, tmp_path: Path) -> None:
+        """**落ちないこと自体が主張である。** ここが2度落ちた。"""
+        self._both(tmp_path)
+
+        report = identity_check(from_archive(tmp_path))
+
+        assert report.checked == 2
+        assert report.agreed == 1
+        assert [symbol for _, symbol, _, _ in report.worst] == ["1303"]
+
+    def test_the_empty_year_shows_as_empty_rather_than_as_a_disagreement(
+        self, tmp_path: Path
+    ) -> None:
+        self._both(tmp_path)
+        found = census(from_archive(tmp_path))
+
+        assert found.share(2008, "eps") == 0.0
+        assert found.thin_years("eps") == [2008]
+
+
 class TestCountingWhatIsEmptyByYear:
     """**公式の注意書きを引き写さない。** 手元のファイルが答える。"""
 
