@@ -184,10 +184,12 @@ from stock_ai.data.delisted import (
     delistings,
     earliest_reachable,
     harvest_snapshots,
+    latest_reachable,
     lending_coverage,
     membership,
     monthly_membership,
     monthly_snapshot,
+    plan_is_known,
     read_snapshot,
     snapshot_dates,
     snapshot_path,
@@ -207,7 +209,6 @@ from stock_ai.data.jquants_bulk import (
     ARCHIVE_ENDPOINTS,
     BULK_ENDPOINTS,
     DEADLINE_ENDPOINTS,
-    PLAN_HISTORY_YEARS,
     PLAN_REQUESTS_PER_MINUTE,
     PRESIGNED_URL_TTL,
     BulkFile,
@@ -415,13 +416,18 @@ def info() -> None:
     # 警告も出ないまま、窓の外だと判断して古い日付を要求しない——20年ぶん
     # 払って5年ぶんだけ落とす形になる。上の3つと同じ理由でここに出す。
     plan = (settings.jquants_plan or "").strip().capitalize()
-    known = plan in PLAN_HISTORY_YEARS
+    known = plan_is_known(plan)
     reach = earliest_reachable(plan)
+    newest = latest_reachable(plan)
+    # **新しい端も出す。** Free は直近12週が取れない——他のプランには無い形で、
+    # そこを出さないと「昨日のデータが来ない」理由が分からなくなる。
+    span = f"{reach} 〜 {newest}" if newest < dt.date.today() else f"{reach} まで"
     table.add_row(
         "jquants_plan",
         f"{settings.jquants_plan or '(未設定)'}"
         + ("" if known else "  [red](未知の値。5年として扱う)[/]")
-        + f"  遡れる: {reach} まで",
+        + f"  取れる: {span}"
+        + ("  [yellow](直近12週は取れない)[/]" if plan == "Free" else ""),
     )
     if settings.jp_price_source.strip().lower() == "tachibana":
         version = settings.tachibana_api_version or tachibana_default_version()

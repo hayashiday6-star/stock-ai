@@ -207,6 +207,47 @@ def read_snapshot(path: Path) -> list[SecurityProfile]:
 ROLLING_WINDOW_DAYS = 5 * 365
 
 
+#: Free は**直近もこれだけ取れない**（12週間）。
+#:
+#: 出典: `.claude/skills/jquants-cli-usage/references/plans.md`（さらにその
+#: 出典は https://jpx-jquants.com/ja/spec/data-spec ）の `12w〜2y12w`。
+#:
+#: **他のプランには無い形である。** Light 以上は「今日から N 年前まで」で、
+#: 新しい端は今日そのものである。Free だけ両端が動く。
+FREE_RECENT_CUTOFF_DAYS = 12 * 7
+
+#: Free で遡れる幅。**新しい端（12週間前）から、さらに2年。**
+FREE_WINDOW_DAYS = 2 * 365 + FREE_RECENT_CUTOFF_DAYS
+
+
+def plan_is_known(plan: str | None) -> bool:
+    """そのプラン名を、こちらが扱えるか。
+
+    **Free は `PLAN_HISTORY_YEARS` に無いが、未知ではない。** 「N 年前まで」
+    という形をしていないだけである。混ぜると、正しく設定したのに
+    `uv run stock-ai info` が赤字を出す。
+    """
+    from stock_ai.data.jquants_bulk import PLAN_HISTORY_YEARS
+
+    named = (plan or "").strip().capitalize()
+    return named == "Free" or named in PLAN_HISTORY_YEARS
+
+
+def latest_reachable(plan: str | None = None, today: dt.date | None = None) -> dt.date:
+    """そのプランで**いま取れる、いちばん新しい日付**。
+
+    Light 以上は今日である。**Free だけ 12週間前になる。**
+
+    知らないプラン名は今日に倒す——狭いほうに倒すと、取れるものを取れないと
+    案内することになる。ここは :func:`earliest_reachable` と逆向きである
+    （あちらは「取れないものを取れると言わない」ために狭く倒す）。
+    """
+    now = today or dt.date.today()
+    if (plan or "").strip().capitalize() == "Free":
+        return now - dt.timedelta(days=FREE_RECENT_CUTOFF_DAYS)
+    return now
+
+
 def window_days(plan: str | None = None) -> int:
     """そのプランで遡れるおおよその日数。
 
@@ -217,7 +258,15 @@ def window_days(plan: str | None = None) -> int:
     """
     from stock_ai.data.jquants_bulk import PLAN_HISTORY_YEARS
 
-    years = PLAN_HISTORY_YEARS.get((plan or "").strip().capitalize(), 5)
+    named = (plan or "").strip().capitalize()
+    # **Free は「N 年前まで」の形をしていない。**
+    #
+    # `PLAN_HISTORY_YEARS` に Free が無いので、黙って Light（5年）に落ちて
+    # いた。2026-09-15 に Free へ落としたとき、`info` が「遡れる 2021-09-16」
+    # と表示した——**もっともらしいが違う値が黙って出る**形そのもの。
+    if named == "Free":
+        return FREE_WINDOW_DAYS
+    years = PLAN_HISTORY_YEARS.get(named, 5)
     return years * 365
 
 

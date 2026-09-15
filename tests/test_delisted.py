@@ -480,3 +480,60 @@ def test_a_date_outside_light_is_inside_premium() -> None:
 
     assert beyond_the_window([day], today, plan="Light") == [day]
     assert beyond_the_window([day], today, plan="Premium") == []
+
+
+class TestFreeIsNotAShorterLight:
+    """**Free は「N 年前まで」の形をしていない。**
+
+    `PLAN_HISTORY_YEARS` に Free が無いので、黙って Light（5年）に落ちて
+    いた。2026-09-15 に Free へ落としたとき、`uv run stock-ai info` が
+    「遡れる 2021-09-16」と表示した——**もっともらしいが違う値が黙って出る**
+    形そのものである。
+
+    公式の表記は `12w〜2y12w`。**直近12週も取れない**のが、他のプランには
+    無い点である。
+    """
+
+    TODAY = dt.date(2026, 9, 15)
+
+    def test_free_does_not_fall_back_to_the_light_window(self) -> None:
+        from stock_ai.data.delisted import window_days
+
+        assert window_days("Free") != window_days("Light")
+
+    def test_the_recent_end_moves_back_twelve_weeks(self) -> None:
+        from stock_ai.data.delisted import latest_reachable
+
+        assert latest_reachable("Free", self.TODAY) == self.TODAY - dt.timedelta(days=84)
+
+    def test_every_other_plan_reaches_today(self) -> None:
+        from stock_ai.data.delisted import latest_reachable
+
+        for plan in ("Light", "Standard", "Premium"):
+            assert latest_reachable(plan, self.TODAY) == self.TODAY
+
+    def test_the_old_end_is_two_years_before_the_recent_end(self) -> None:
+        from stock_ai.data.delisted import earliest_reachable, latest_reachable
+
+        span = latest_reachable("Free", self.TODAY) - earliest_reachable("Free", self.TODAY)
+        assert span == dt.timedelta(days=2 * 365)
+
+    def test_free_is_a_known_plan_even_though_it_has_no_year_count(self) -> None:
+        """**未知の値として赤字を出さない。** 正しく設定したのに叱られる。"""
+        from stock_ai.data.delisted import plan_is_known
+
+        assert plan_is_known("Free")
+        assert plan_is_known("free")
+        assert plan_is_known("Premium")
+
+    def test_a_name_nobody_uses_is_still_unknown(self) -> None:
+        from stock_ai.data.delisted import plan_is_known
+
+        assert not plan_is_known("Plus")
+        assert not plan_is_known("")
+        assert not plan_is_known(None)
+
+    def test_the_free_window_still_cannot_start_before_the_data_does(self) -> None:
+        from stock_ai.data.delisted import LISTING_DATA_START, earliest_reachable
+
+        assert earliest_reachable("Free", self.TODAY) >= LISTING_DATA_START
