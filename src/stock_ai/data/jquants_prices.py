@@ -62,7 +62,7 @@ from __future__ import annotations
 
 import dataclasses
 import datetime as dt
-from collections.abc import Callable
+from collections.abc import Callable, Collection
 from pathlib import Path
 
 import pandas as pd
@@ -143,6 +143,22 @@ class PriceIngestReport:
     ——片方だけでは「一致した」と「比べていない」の区別が付かない。
     """
 
+    dates: set[dt.date] = dataclasses.field(default_factory=set)
+    """この原本に出てきた日付。**重なりを飛ばすのに使う。**"""
+
+    repeated: int = 0
+    """前の原本で既に取り込んだ日だったので飛ばした行数。
+
+    当月ぶんの `live`（日ごと）は、翌月に `historical`（月ごと）へ畳まれるが、
+    **目録には両方が残る。** 実測（2026-09-15）で `/equities/bars/daily` は
+    一覧 230本に対しディスク上 295本だった——差の65本がこれである。
+
+    飛ばさないと、同じ ``(銘柄, 日付)`` を2回 ``upsert`` に渡す。**DB は
+    `upsert` なので正しいままだが、「書いた行数」だけが水増しされる。**
+    その数を DB の行数と突き合わせているので、**合っているのに合わないと
+    出る。**
+    """
+
     failed: dict[str, str] = dataclasses.field(default_factory=dict)
 
     split_table: SplitTable = dataclasses.field(default_factory=dict)
@@ -160,6 +176,7 @@ class PriceIngestReport:
                 else ""
             )
             + (f"、日付なし {self.undated:,}" if self.undated else "")
+            + (f"、重なって飛ばした行 {self.repeated:,}" if self.repeated else "")
             + (f"、分割 {self.splits:,}" if self.splits else "")
             + (
                 f"、AdjC のある行 {self.adj_c_rows:,}（うち違う {self.adj_mismatch:,}）"
@@ -210,7 +227,9 @@ def cumulative_factor(factors: dict[dt.date, float] | None, on: dt.date) -> floa
 
 
 def frames_from_payload(
-    payload: bytes, splits: SplitTable | None = None
+    payload: bytes,
+    splits: SplitTable | None = None,
+    skip_dates: Collection[dt.date] | None = None,
 ) -> tuple[dict[str, pd.DataFrame], PriceIngestReport]:
     """展開済みの一括四本値を、**銘柄ごとの表**にする。
 
@@ -233,6 +252,12 @@ def frames_from_payload(
         if date is None:
             report.undated += 1
             continue
+        if skip_dates and date in skip_dates:
+            # **前の原本で取り込んだ日。** 同じ1本の中で同じ日が何度も出るのは
+            # 普通なので、飛ばす相手は**前の原本の日付だけ**である。
+            report.repeated += 1
+            continue
+        report.dates.add(date)
         close = parse_number(row.get("C"))
         if close is None or close == 0:
             report.skipped_no_close += 1
@@ -327,13 +352,22 @@ def ingest(
     logger.info("分割のある銘柄: %d", len(splits))
 
     # 2周目: 書き込む。
+    #
+    # **同じ日が2本の原本に入っている。** 当月ぶんの `live` が翌月に
+    # `historical` へ畳まれても、目録には両方が残る。飛ばさないと同じ
+    # ``(銘柄, 日付)`` を2回渡すことになり、**「書いた行数」だけが水増し
+    # される。** その数を DB と突き合わせているので、合っているのに合わないと
+    # 出る。
+    done: set[dt.date] = set()
     for index, key in enumerate(keys, start=1):
         if progress is not None:
             progress(total + index, total * 2, key)
         if key in total_report.failed:
             continue
         try:
-            frames, report = frames_from_payload(read_archived(path_for(archive_dir, key)), splits)
+            frames, report = frames_from_payload(
+                read_archived(path_for(archive_dir, key)), splits, skip_dates=done
+            )
         except Exception as exc:  # noqa: BLE001 - どこで読めないかが記録に値する
             total_report.failed[key] = f"{type(exc).__name__}: {exc}"
             logger.warning("原本を読めなかった: %s: %s", key, exc)
@@ -349,6 +383,10 @@ def ingest(
         total_report.adj_c_rows += report.adj_c_rows
         total_report.adj_mismatch += report.adj_mismatch
         total_report.symbols |= report.symbols
+        total_report.repeated += report.repeated
+        # **1本を読み終えてから移す。** 読んでいる最中に移すと、同じ原本の
+        # 2行目が「もう取り込んだ日」に見えて、1日1行しか入らなくなる。
+        done |= report.dates
         for symbol, frame in frames.items():
             total_report.written += upsert(symbol, frame)
 

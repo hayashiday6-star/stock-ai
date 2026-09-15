@@ -820,3 +820,88 @@ class TestSymbolProbe:
         )
 
         assert set(probe_symbols(tmp_path, {"7203"})) == {"7203"}
+
+
+class TestTheSameDayInTwoFiles:
+    """**当月ぶんの `live` は、翌月に `historical` へ畳まれる。**
+
+    目録には両方が残る。実測（2026-09-15）で `/equities/bars/daily` は一覧
+    230本に対しディスク上 295本だった——差の65本がこれである。
+
+    飛ばさないと、同じ `(銘柄, 日付)` を2回 `upsert` に渡す。**DB は `upsert`
+    なので正しいままだが、「書いた行数」だけが水増しされる。** その数を DB の
+    行数と突き合わせているので、**合っているのに合わないと出る。**
+    """
+
+    def _archive_two(self, tmp_path: Path, rows: list[dict[str, str]]) -> None:
+        payload = gzip.compress(_csv(rows))
+        for key in (
+            "equities/bars/daily/historical/2026/eq_bars_202608.csv.gz",
+            "equities/bars/daily/live/eq_bars_20260803.csv.gz",
+        ):
+            archive(
+                [BulkFile(key=key, last_modified="", size=len(payload))],
+                lambda _k, body=payload: body,
+                tmp_path,
+                on=TODAY,
+            )
+
+    def test_a_day_in_two_files_is_written_once(self, tmp_path) -> None:
+        self._archive_two(tmp_path, [_row("2026-08-03", "13010", 100.0)])
+
+        report = ingest(tmp_path, lambda _s, frame: len(frame))
+
+        assert report.files == 2
+        assert report.written == 1
+        assert report.repeated == 1
+
+    def test_every_symbol_of_the_same_file_still_lands(self, tmp_path) -> None:
+        """**1本の中では同じ日が何行も出る。** 読んでいる最中に移すと1行になる。"""
+        self._archive_two(
+            tmp_path,
+            [_row("2026-08-03", "13010", 100.0), _row("2026-08-03", "13020", 200.0)],
+        )
+
+        report = ingest(tmp_path, lambda _s, frame: len(frame))
+
+        assert report.written == 2
+        assert report.repeated == 2
+
+    def test_a_day_only_in_the_second_file_still_lands(self, tmp_path) -> None:
+        """**飛ばすのは重なった日だけ。** 2本目にしかない日を落とさない。"""
+        first = gzip.compress(_csv([_row("2026-08-03", "13010", 100.0)]))
+        second = gzip.compress(_csv([_row("2026-09-14", "13010", 110.0)]))
+        archive(
+            [
+                BulkFile(
+                    key="equities/bars/daily/historical/2026/eq_bars_202608.csv.gz",
+                    last_modified="",
+                    size=len(first),
+                )
+            ],
+            lambda _k: first,
+            tmp_path,
+            on=TODAY,
+        )
+        archive(
+            [
+                BulkFile(
+                    key="equities/bars/daily/live/eq_bars_20260914.csv.gz",
+                    last_modified="",
+                    size=len(second),
+                )
+            ],
+            lambda _k: second,
+            tmp_path,
+            on=TODAY,
+        )
+
+        report = ingest(tmp_path, lambda _s, frame: len(frame))
+
+        assert report.written == 2
+        assert report.repeated == 0
+
+    def test_the_summary_says_so_when_it_happened(self, tmp_path) -> None:
+        self._archive_two(tmp_path, [_row("2026-08-03", "13010", 100.0)])
+
+        assert "重なって飛ばした" in ingest(tmp_path, lambda _s, frame: len(frame)).summary()
