@@ -5319,6 +5319,73 @@ def jquants_valuation(
         console.print(detail)
 
 
+@app.command(name="jquants-row-audit")
+def jquants_row_audit(
+    directory: str = typer.Option(
+        str(DEFAULT_ARCHIVE_DIR), "--dir", help="Where the archived originals live."
+    ),
+    rosters: str = typer.Option(
+        str(DEFAULT_SNAPSHOT_DIR), "--rosters", help="Where the dated rosters live."
+    ),
+) -> None:
+    """Count archive rows against database rows, for delisted symbols only.
+
+    **項目4 は、この形でしか閉じられない。** データベースは行ごとの出所を
+    持っていないので、立花の行と J-Quants の行を区別できない。20年に伸ばした
+    ら窓が立花と重なり、差がどちらから来たのか言えなくなった。
+
+    立花のマスタは現存銘柄しか返さない。**廃止銘柄の株価が DB にあれば、それは
+    J-Quants から来たものに決まっている。**
+
+    取りには行かない。数えるだけ。
+    """
+    from stock_ai.data.jquants_rowaudit import audit as row_audit
+
+    settings = get_settings()
+    configure_logging(settings.log_level)
+
+    database = Database()
+    database.create_all()
+    snapshots = membership(Path(rosters))
+    if len(snapshots) < 2:
+        console.print(
+            f"[yellow]名簿が {len(snapshots)} 枚しかない。[/] "
+            "**廃止銘柄を決められない。比べていない。**"
+        )
+        return
+
+    covered = _archive_window(Path(directory))
+    window = (covered[0], covered[1]) if covered else None
+    if window:
+        console.print(f"[dim]原本が覆う期間: {window[0]} 〜 {window[1]}[/]")
+
+    def progress(index: int, total: int, _key: str) -> None:
+        console.print(f"数えている… {index}/{total}", end="\r")
+
+    found = row_audit(database, Path(directory), snapshots, window, progress)
+    console.print(" " * 40, end="\r")
+    console.print(found.summary())
+
+    if not found.symbols:
+        return
+    if found.difference == 0:
+        console.print(
+            "[green]原本から読んだ行は、全部データベースに入っている。[/] "
+            "[dim]**項目4 はここで閉じる。** 立花の行が混ざらない集合で数えた。[/]"
+        )
+    elif found.difference < 0:
+        console.print(
+            f"[red]データベースに {-found.difference:,} 行足りない。[/] "
+            "**読めたのに入っていない。** 取り込みが途中で落ちた可能性がある。"
+        )
+    else:
+        console.print(
+            f"[red]データベースのほうが {found.difference:,} 行多い。[/] "
+            "**廃止銘柄に、原本以外から入った行がある。** "
+            "[dim]名簿の廃止判定か、取り込み経路のどちらかを疑うこと。[/]"
+        )
+
+
 @app.command(name="jquants-plan-coverage")
 def jquants_plan_coverage(
     to_plan: str = typer.Option("Free", "--to", help="Plan to downgrade to."),
