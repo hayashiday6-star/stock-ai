@@ -401,3 +401,46 @@ class TestVerifyingAtGigabyteScale:
         target.write_bytes(payload)
 
         assert fingerprint(target) == (len(payload), hashlib.sha256(payload).hexdigest())
+
+
+class TestFilesTheManifestDoesNotKnowAbout:
+    """**`verify` は目録を辿るので、目録に無いファイルを一度も見ない。**
+
+    「消えている」は見つかるが、「余っている」は見つからない。**写しは運ぶのに
+    照合は見ない**、という状態になる。
+
+    余りが出るのは、向こうのファイル名が変わったときである。実測
+    （2026-09-15）: Light で取った385本のうち 320本しか Premium の一覧に再掲
+    されず、**65本が目録から外れた。**
+    """
+
+    def test_a_file_outside_the_manifest_is_found(self, tmp_path) -> None:
+        from stock_ai.data.jquants_archive import orphans
+
+        payload = _gz("x")
+        archive([_file("a/b.csv.gz", len(payload))], lambda _k: payload, tmp_path, on=TODAY)
+        stale = tmp_path / "a" / "old.csv.gz"
+        stale.write_bytes(payload)
+
+        assert orphans(tmp_path) == ["a/old.csv.gz"]
+
+    def test_verify_alone_does_not_notice_it(self, tmp_path) -> None:
+        """**これが問題そのものである。** 照合は緑のまま通る。"""
+        payload = _gz("x")
+        archive([_file("a/b.csv.gz", len(payload))], lambda _k: payload, tmp_path, on=TODAY)
+        (tmp_path / "a" / "old.csv.gz").write_bytes(payload)
+
+        assert verify(tmp_path) == ([], [], [])
+
+    def test_the_manifest_itself_is_not_an_orphan(self, tmp_path) -> None:
+        from stock_ai.data.jquants_archive import orphans
+
+        payload = _gz("x")
+        archive([_file("a/b.csv.gz", len(payload))], lambda _k: payload, tmp_path, on=TODAY)
+
+        assert orphans(tmp_path) == []
+
+    def test_nothing_on_disk_is_not_an_error(self, tmp_path) -> None:
+        from stock_ai.data.jquants_archive import orphans
+
+        assert orphans(tmp_path / "無い") == []

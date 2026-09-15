@@ -31,7 +31,8 @@
 [CmdletBinding()]
 param(
     [string]$Dir = '',
-    [switch]$NoShapes
+    [switch]$NoShapes,
+    [string]$Columns = ''
 )
 
 $ErrorActionPreference = 'Continue'
@@ -50,6 +51,7 @@ Write-Host ''
 $arguments = @('run', 'stock-ai', 'jquants-archive-read')
 if ($Dir -ne '') { $arguments += @('--dir', $Dir) }
 if ($NoShapes) { $arguments += '--no-shapes' }
+if ($Columns -ne '') { $arguments += @('--columns', $Columns) }
 
 uv @arguments
 $code = $LASTEXITCODE

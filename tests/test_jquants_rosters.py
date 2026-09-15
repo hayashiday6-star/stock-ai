@@ -629,3 +629,123 @@ class TestReadingTheCalendarWholeRatherThanFiltered:
         self._calendar(tmp_path, b"Date,HolDiv\n2009-12-30,2\n2009-12-31,0\n")
 
         assert trading_days_from_archive(tmp_path) == {dt.date(2009, 12, 30)}
+
+
+class TestDaysWhereNothingSurvivedTheFilter:
+    """**「原本に行が無い日」と「行はあったが全部落ちた日」を混ぜない。**
+
+    2026-09-15 に、立会日なのに名簿の無い日が2日見つかった——2008-12-30 と
+    2009-01-05 で、**範囲内の半日立会2日とぴったり同じ**だった。
+
+    そのとき `empty` は集めているのに**まとめに出していなかった。** 出さないと
+    2通りが同じ顔になる。**直す場所が違う。**
+    """
+
+    def test_a_day_where_nothing_survives_is_not_written(self, tmp_path) -> None:
+        """空の名簿を書くと、その日に全銘柄が上場廃止したように見える。"""
+        from stock_ai.data.jquants_rosters import extract
+
+        # TOKYO PRO Market だけの日。絞り込みで全部落ちる。
+        row = _row("2026-08-03", "20000")
+        row["Mkt"], row["MktNm"] = "0105", "TOKYO PRO MARKET"
+        _archive(tmp_path, [row])
+
+        report = extract(tmp_path, tmp_path / "out")
+
+        assert report.written == []
+        assert report.empty == [dt.date(2026, 8, 3)]
+
+    def test_the_summary_says_how_many(self, tmp_path) -> None:
+        """**集めるだけにしない。** 出さなければ気付けない。"""
+        from stock_ai.data.jquants_rosters import extract
+
+        row = _row("2026-08-03", "20000")
+        row["Mkt"], row["MktNm"] = "0105", "TOKYO PRO MARKET"
+        _archive(tmp_path, [row])
+
+        assert "1銘柄も残らなかった日 1" in extract(tmp_path, tmp_path / "out").summary()
+
+    def test_an_ordinary_run_says_nothing_about_it(self, tmp_path) -> None:
+        """**毎回出すと、普通の実行に警告が混じる。**"""
+        from stock_ai.data.jquants_rosters import extract
+
+        _archive(tmp_path, [_row("2026-08-03", "13010")])
+
+        assert "残らなかった" not in extract(tmp_path, tmp_path / "out").summary()
+
+    def test_a_date_missing_from_the_source_is_not_counted_as_empty(self, tmp_path) -> None:
+        """**原本にその日の行が無いなら、ここには出ない。** それが区別である。"""
+        from stock_ai.data.jquants_rosters import extract
+
+        _archive(tmp_path, [_row("2026-08-03", "13010")])
+
+        report = extract(tmp_path, tmp_path / "out")
+
+        assert dt.date(2026, 8, 4) not in report.empty
+        assert report.empty == []
+
+
+class TestWhyADayHasNoRoster:
+    """**「原本に行が無い」と「絞り込みが全部落とした」を分ける。**
+
+    どちらも結果は「名簿の無い日」で、**直す場所が違う。** まとめの件数だけ
+    ではどちらか決まらない。
+    """
+
+    def test_a_date_the_source_does_not_carry(self, tmp_path) -> None:
+        from stock_ai.data.jquants_rosters import day_detail
+
+        _archive(tmp_path, [_row("2026-08-03", "13010")])
+
+        found = day_detail(tmp_path, dt.date(2008, 12, 30))
+
+        assert found.files == []
+        assert found.rows == 0
+        assert found.verdict == "原本にその日の行が無い"
+
+    def test_a_date_whose_rows_were_all_rejected(self, tmp_path) -> None:
+        from stock_ai.data.jquants_rosters import day_detail
+
+        row = _row("2026-08-03", "20000")
+        row["Mkt"], row["MktNm"] = "0105", "TOKYO PRO MARKET"
+        _archive(tmp_path, [row])
+
+        found = day_detail(tmp_path, dt.date(2026, 8, 3))
+
+        assert found.rows == 1
+        assert found.kept == 0
+        assert found.verdict == "行はあるが、絞り込みが全部落とした"
+        assert sum(found.reasons.values()) == 1
+
+    def test_a_normal_day_says_the_roster_can_be_built(self, tmp_path) -> None:
+        from stock_ai.data.jquants_rosters import day_detail
+
+        _archive(tmp_path, [_row("2026-08-03", "13010")])
+
+        found = day_detail(tmp_path, dt.date(2026, 8, 3))
+
+        assert found.kept == 1
+        assert "名簿が作れる" in found.verdict
+
+    def test_the_rows_are_named_not_only_counted(self, tmp_path) -> None:
+        """**件数では決まらないものがある。** 名前まで降りる。"""
+        from stock_ai.data.jquants_rosters import day_detail
+
+        _archive(tmp_path, [_row("2026-08-03", "13010", name="テスト会社")])
+
+        found = day_detail(tmp_path, dt.date(2026, 8, 3))
+
+        assert found.examples == [("13010", "テスト会社")]
+
+    def test_other_endpoints_are_left_alone(self, tmp_path) -> None:
+        from stock_ai.data.jquants_rosters import day_detail
+
+        payload = gzip.compress(b"Date,Code,C\n2026-08-03,13010,100\n")
+        archive(
+            [BulkFile(key="equities/bars/daily/x.csv.gz", last_modified="", size=len(payload))],
+            lambda _k: payload,
+            tmp_path,
+            on=TODAY,
+        )
+
+        assert day_detail(tmp_path, dt.date(2026, 8, 3)).files == []

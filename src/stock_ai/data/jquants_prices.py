@@ -62,7 +62,7 @@ from __future__ import annotations
 
 import dataclasses
 import datetime as dt
-from collections.abc import Callable
+from collections.abc import Callable, Collection
 from pathlib import Path
 
 import pandas as pd
@@ -119,7 +119,14 @@ class PriceIngestReport:
     """
 
     skipped_code: int = 0
-    """4桁に直せないコード（優先株・種類株）。"""
+    """4桁に直せないコード（優先株・種類株）。
+
+    **2箇所で数えているのに、まとめに一度も出していなかった**（2026-09-15 に
+    気付いた）。`ExtractReport.empty` と同じ形である——落とした数を集めて、
+    誰にも見せずに捨てていた。
+
+    **落とす件数は、期間で変わる。** 5桁コードの扱いも、優先株の数も、20年の
+    あいだに変わっている。**出さなければ、変わったことに気付けない。**"""
 
     undated: int = 0
     splits: int = 0
@@ -143,6 +150,22 @@ class PriceIngestReport:
     ——片方だけでは「一致した」と「比べていない」の区別が付かない。
     """
 
+    dates: set[dt.date] = dataclasses.field(default_factory=set)
+    """この原本に出てきた日付。**重なりを飛ばすのに使う。**"""
+
+    repeated: int = 0
+    """前の原本で既に取り込んだ日だったので飛ばした行数。
+
+    当月ぶんの `live`（日ごと）は、翌月に `historical`（月ごと）へ畳まれるが、
+    **目録には両方が残る。** 実測（2026-09-15）で `/equities/bars/daily` は
+    一覧 230本に対しディスク上 295本だった——差の65本がこれである。
+
+    飛ばさないと、同じ ``(銘柄, 日付)`` を2回 ``upsert`` に渡す。**DB は
+    `upsert` なので正しいままだが、「書いた行数」だけが水増しされる。**
+    その数を DB の行数と突き合わせているので、**合っているのに合わないと
+    出る。**
+    """
+
     failed: dict[str, str] = dataclasses.field(default_factory=dict)
 
     split_table: SplitTable = dataclasses.field(default_factory=dict)
@@ -159,7 +182,9 @@ class PriceIngestReport:
                 if self.no_close_but_traded
                 else ""
             )
+            + (f"、4桁にならないコード {self.skipped_code:,}" if self.skipped_code else "")
             + (f"、日付なし {self.undated:,}" if self.undated else "")
+            + (f"、重なって飛ばした行 {self.repeated:,}" if self.repeated else "")
             + (f"、分割 {self.splits:,}" if self.splits else "")
             + (
                 f"、AdjC のある行 {self.adj_c_rows:,}（うち違う {self.adj_mismatch:,}）"
@@ -210,7 +235,9 @@ def cumulative_factor(factors: dict[dt.date, float] | None, on: dt.date) -> floa
 
 
 def frames_from_payload(
-    payload: bytes, splits: SplitTable | None = None
+    payload: bytes,
+    splits: SplitTable | None = None,
+    skip_dates: Collection[dt.date] | None = None,
 ) -> tuple[dict[str, pd.DataFrame], PriceIngestReport]:
     """展開済みの一括四本値を、**銘柄ごとの表**にする。
 
@@ -233,6 +260,12 @@ def frames_from_payload(
         if date is None:
             report.undated += 1
             continue
+        if skip_dates and date in skip_dates:
+            # **前の原本で取り込んだ日。** 同じ1本の中で同じ日が何度も出るのは
+            # 普通なので、飛ばす相手は**前の原本の日付だけ**である。
+            report.repeated += 1
+            continue
+        report.dates.add(date)
         close = parse_number(row.get("C"))
         if close is None or close == 0:
             report.skipped_no_close += 1
@@ -327,13 +360,22 @@ def ingest(
     logger.info("分割のある銘柄: %d", len(splits))
 
     # 2周目: 書き込む。
+    #
+    # **同じ日が2本の原本に入っている。** 当月ぶんの `live` が翌月に
+    # `historical` へ畳まれても、目録には両方が残る。飛ばさないと同じ
+    # ``(銘柄, 日付)`` を2回渡すことになり、**「書いた行数」だけが水増し
+    # される。** その数を DB と突き合わせているので、合っているのに合わないと
+    # 出る。
+    done: set[dt.date] = set()
     for index, key in enumerate(keys, start=1):
         if progress is not None:
             progress(total + index, total * 2, key)
         if key in total_report.failed:
             continue
         try:
-            frames, report = frames_from_payload(read_archived(path_for(archive_dir, key)), splits)
+            frames, report = frames_from_payload(
+                read_archived(path_for(archive_dir, key)), splits, skip_dates=done
+            )
         except Exception as exc:  # noqa: BLE001 - どこで読めないかが記録に値する
             total_report.failed[key] = f"{type(exc).__name__}: {exc}"
             logger.warning("原本を読めなかった: %s: %s", key, exc)
@@ -349,6 +391,10 @@ def ingest(
         total_report.adj_c_rows += report.adj_c_rows
         total_report.adj_mismatch += report.adj_mismatch
         total_report.symbols |= report.symbols
+        total_report.repeated += report.repeated
+        # **1本を読み終えてから移す。** 読んでいる最中に移すと、同じ原本の
+        # 2行目が「もう取り込んだ日」に見えて、1日1行しか入らなくなる。
+        done |= report.dates
         for symbol, frame in frames.items():
             total_report.written += upsert(symbol, frame)
 
@@ -445,6 +491,22 @@ def split_day_returns(
     return found
 
 
+def comparable(factor: float) -> bool:
+    """その係数で、**掛け忘れかどうかを判定できるか。**
+
+    **`係数 - 1` が判定の幅より小さいと、何も言えない。** 係数 0.99706
+    （`係数 - 1` は −0.29%）なら、その日の動きが ±2% の中にありさえすれば
+    「係数そのもの」に見える。**動かなかった日が全部引っかかる。**
+
+    実測（2026-09-15）で、4件のうち1件がこれだった——2588 は係数 0.99706 で
+    その日の動きが 0% だったために挙がっていた。
+
+    **「比べられない」と「一致しない」を分ける。** 数えないのではなく、別に
+    数える。
+    """
+    return abs(factor - 1.0) >= UNAPPLIED_TOLERANCE
+
+
 def looks_unapplied(change: float, factor: float) -> bool:
     """その日の動きが、**係数を掛け忘れた形**に見えるか。
 
@@ -454,8 +516,38 @@ def looks_unapplied(change: float, factor: float) -> bool:
 
     規約を間違えていれば、動きは**ちょうど `係数 - 1`** になる。しかも
     **1件ではなく全件がそうなる。** 見るべきはそこである。
+
+    **:func:`comparable` が偽の係数には使わない。** 判定の幅より小さい係数では
+    区別が付かない。
     """
     return abs(change - (factor - 1.0)) < UNAPPLIED_TOLERANCE
+
+
+#: 一致した割合がこれを超えたら、**規約の間違い**とみなす。
+#:
+#: `j >= d` と `j > d` を取り違えれば、**全部の権利落ち日がずれる。** 一部だけ
+#: がずれることはない。だから「少数が一致する」のは規約の話ではなく、その銘柄
+#: の事情（係数の立つ日と値の付く日がずれている、など）である。
+#:
+#: **半分に置いたのは、規約の間違いなら 100% に寄るからである。** 半分を割って
+#: いるなら、少なくとも「全部がずれている」ではない。
+SYSTEMIC_SHARE = 0.5
+
+
+def split_verdict(matched: int, checked: int) -> str:
+    """一致の件数から、**規約の間違いか個別の事情かを分ける。**
+
+    **1件でも「組み立てがずれている」と言っていた**（2026-09-15 に気付いた）。
+    3行上のコメントに「全件がそうなる。見るべきはそこである」と自分で書いて
+    あるのに、判定は `if unapplied:` だった。**書いた理屈と、当てはめが食い
+    違っていた。**
+
+    Returns:
+        ``"規約"``（全部ずれている）／``"個別"``（少数）／``"なし"``。
+    """
+    if not matched:
+        return "なし"
+    return "規約" if matched / max(checked, 1) >= SYSTEMIC_SHARE else "個別"
 
 
 @dataclasses.dataclass

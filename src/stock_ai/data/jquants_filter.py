@@ -138,6 +138,15 @@ class FilterCensus:
     symbol_names: dict[str, str] = dataclasses.field(default_factory=dict)
     """銘柄 → 名前。**名前を見るまで決まらないものがある。**"""
 
+    counted: set[dt.date] = dataclasses.field(default_factory=set)
+    """既に数え終えた日付。**2本目の原本に同じ日が出たら飛ばす。**"""
+
+    counting: set[dt.date] = dataclasses.field(default_factory=set)
+    """いま読んでいる原本で数えている日付。1本の中では当然何行も出る。"""
+
+    repeated: int = 0
+    """重なって飛ばした行数。**0 でないなら、原本が重なっている。**"""
+
     failed: dict[str, str] = dataclasses.field(default_factory=dict)
 
     @property
@@ -161,6 +170,7 @@ class FilterCensus:
             f"`S33` が空 {no_sector:,}（{no_sector / self.rows:.2%}、"
             f"{len(self.no_sector_symbols)} 銘柄）、"
             f"表に無い符号 {sum(self.unknown_sector_codes.values()):,}"
+            + (f"、重なって飛ばした行 {self.repeated:,}" if self.repeated else "")
         )
 
 
@@ -222,11 +232,20 @@ def census_payload(payload: bytes, into: FilterCensus) -> None:
 
     `ProdCat` の値ごとに**銘柄**も控える。**値を1つずつ聞き直さずに済ませる
     ため**で、件数が少ない値はその場で名前まで出せる。
+
+    **同じ日が2本目の原本にも出てきたら、その日は飛ばす。** 当月ぶんの `live`
+    （日ごと）は翌月に `historical`（月ごと）へ畳まれるが、**目録には両方が
+    残る。** 足し込むだけにすると、重なった期間の銘柄日が倍になる。割合は
+    変わらないので、**件数を見ないかぎり気付けない。**
     """
     for row in records_from_csv(payload):
         date = parse_date(row.get("Date"))
         if date is None:
             continue
+        if date in into.counted and date not in into.counting:
+            into.repeated += 1
+            continue
+        into.counting.add(date)
         slice_ = into.by_year.setdefault(date.year, YearSlice())
         slice_.rows += 1
 
@@ -288,12 +307,17 @@ def census(
     for number, key in enumerate(keys, start=1):
         if progress is not None:
             progress(number, total, key)
+        report.counting = set()
         try:
             census_payload(read_archived(path_for(archive_dir, key)), report)
         except Exception as exc:  # noqa: BLE001 - どこで読めないかが記録に値する
             report.failed[key] = f"{type(exc).__name__}: {exc}"
             logger.warning("名簿の原本を読めなかった: %s: %s", key, exc)
             continue
+        finally:
+            # **1本を読み終えてから移す。** 読んでいる最中に移すと、同じ原本の
+            # 2行目が「もう数えた日」に見えて、1日1行しか数えなくなる。
+            report.counted |= report.counting
         report.files += 1
 
     logger.info("絞り込みの通り具合: %s", report.summary())

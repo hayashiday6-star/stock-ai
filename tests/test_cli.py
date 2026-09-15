@@ -15,15 +15,39 @@ def test_version_command_exits_cleanly() -> None:
     assert result.exit_code == 0
 
 
+def declared_options(command: str) -> set[str]:
+    """そのコマンドが**宣言している**引数。
+
+    **描画した `--help` を読まない。** `--help` は端末の幅で折り返す。幅が
+    足りないと `--existing` のような綴りが途中で割れ、**手元で緑・CI で赤**に
+    なる。実際そうなった（2026-09-15、PR #100）。幅40で再現する。
+
+    引数が在るかどうかは、描画の結果ではなく定義に聞けば分かる。
+    """
+    import typer.main
+
+    from stock_ai.cli import app
+
+    command_object = typer.main.get_command(app).commands[command]
+    return {option for parameter in command_object.params for option in parameter.opts}
+
+
+def declared_commands() -> set[str]:
+    """`app` が持っているコマンド名。**同じ理由で `--help` を読まない。**"""
+    import typer.main
+
+    from stock_ai.cli import app
+
+    return set(typer.main.get_command(app).commands)
+
+
 def test_version_command_reports_current_version() -> None:
     result = runner.invoke(app, ["version"])
     assert __version__ in result.stdout
 
 
 def test_help_lists_version_command() -> None:
-    result = runner.invoke(app, ["--help"])
-    assert result.exit_code == 0
-    assert "version" in result.stdout
+    assert "version" in declared_commands()
 
 
 def test_info_command_runs_and_masks_secrets() -> None:
@@ -1043,3 +1067,500 @@ class TestDifferingSymbols:
             self._write(tmp_path / name, "2026-08-03", ["1301"])
 
         assert _differing_symbols(tmp_path / "a", tmp_path / "b", [dt.date(2026, 8, 3)]) == set()
+
+
+class TestPickingTheOldestArchivedFile:
+    """**名前の並び順で「いちばん古いファイル」を決めてはいけない。**
+
+    2026-09-15 に実際にずれた。20年ぶんを入れたのに、原本の覆う期間が
+    `2021-09-01 〜` と出た。Light の頃に取ったファイルと Premium で取った
+    ファイルで**鍵の形が違う**ため、文字列で並べると新しいほうが前に来た。
+
+    **向こうの名前の付け方は、こちらの都合では決まらない。**
+    """
+
+    def test_a_month_becomes_the_first_of_that_month(self) -> None:
+        from stock_ai.data.jquants_archive import key_period
+
+        assert key_period("equities/bars/daily/historical/eq_bars_200805.csv.gz") == "20080501"
+
+    def test_a_day_stays_as_it_is(self) -> None:
+        from stock_ai.data.jquants_archive import key_period
+
+        assert key_period("equities/bars/daily/live/eq_bars_20260914.csv.gz") == "20260914"
+
+    def test_a_year_folder_does_not_win_over_the_filename(self) -> None:
+        """**ここが本番。** `2021/` の `2` が `equities...` の `e` より前に来る。"""
+        from stock_ai.data.jquants_archive import key_period
+
+        old = "equities/bars/daily/historical/2021/equities_bars_daily_202109.csv.gz"
+        new = "equities/bars/daily/historical/equities_bars_daily_200805.csv.gz"
+
+        assert sorted([old, new])[0] == old, "文字列の並びでは新しいほうが前に来る"
+        assert key_period(new) < key_period(old)
+
+    def test_six_and_eight_digits_compare_correctly(self) -> None:
+        """**6桁と8桁を、数のまま比べない。** 桁が違うと大小が逆になる。
+
+        `202612`（2026年12月）と `20080501`（2008-05-01）を数として比べると
+        前者のほうが小さく、**2026年が2008年より前**になる。
+        """
+        from stock_ai.data.jquants_archive import key_period
+
+        assert int("202612") < int("20080501")  # 素朴に比べると逆になる
+
+        later = key_period("x_202612.csv.gz")
+        earlier = key_period("x_20080501.csv.gz")
+
+        assert earlier < later
+
+    def test_a_key_without_digits_does_not_raise(self) -> None:
+        from stock_ai.data.jquants_archive import key_period
+
+        assert key_period("equities/bars/daily/live/latest.csv.gz") == ""
+
+    def test_the_last_run_of_digits_wins(self) -> None:
+        """年フォルダではなく、**ファイル名側の日付**を採る。"""
+        from stock_ai.data.jquants_archive import key_period
+
+        assert key_period("a/2021/b_200805.csv.gz") == "20080501"
+
+
+class TestRefetchingExactlyWhatIsOnDisk:
+    """**「いまあるものを取り直す」は、「グリッドを回す」とは別の仕事である。**
+
+    `--refetch` だけを渡すと、日付はプランから引き直される。Premium に上げた日
+    にそれをやって、**66枚を揃えるつもりが 2006-09-20 からの245枚を新しく
+    作った**（2026-09-15）。古いグリッドと新しいグリッドが同居し、規則も2通りに
+    なった——**揃えるどころか、混ざり方が増えた。**
+
+    開始日をプランから引くのは意図した設計である（上げた日に効くように）。
+    **間違っていたのは、それを取り直しに当てはめたことである。**
+    """
+
+    def test_the_cli_offers_a_mode_for_it(self) -> None:
+        assert "--existing" in declared_options("delisted-harvest")
+
+    def test_the_launcher_uses_that_mode_not_bare_refetch(self) -> None:
+        """**`.bat` に `-Refetch` を書かない。** それは日付を増やす側である。"""
+        import pathlib
+
+        body = (
+            pathlib.Path(__file__).resolve().parent.parent / "checks" / "名簿を同じ規則で揃える.bat"
+        ).read_text(encoding="ascii")
+        invocation = next(line for line in body.splitlines() if "delisted-harvest.ps1" in line)
+
+        assert "-Existing" in invocation
+        assert "-Refetch" not in invocation
+
+    def test_the_script_passes_it_through(self) -> None:
+        import pathlib
+
+        raw = (
+            pathlib.Path(__file__).resolve().parent.parent / "scripts" / "delisted-harvest.ps1"
+        ).read_bytes()
+        body = raw[3:].decode("utf-8") if raw.startswith(b"\xef\xbb\xbf") else raw.decode("utf-8")
+
+        assert "'--existing'" in body
+        assert "[switch]$Existing" in body
+
+
+class TestAskingForColumnsIsNotSilencedByNoShapes:
+    """**出力を小さくする指定が、目的そのものを潰していた。**
+
+    `checks\\この原本の列を全部見る.bat` は `-NoShapes` を渡す（形の表は要らない
+    ので）。ところが `--columns` の処理がその早期 return の**後ろ**にあり、
+    **列が1行も出なかった**（2026-09-15）。
+
+    出力を小さく保つのはこのプロジェクトの方針だが、**頼まれたものまで消しては
+    いけない。**
+    """
+
+    def _archive(self, tmp_path):
+        import datetime as dt
+        import gzip
+
+        from stock_ai.data.jquants_archive import archive
+        from stock_ai.data.jquants_bulk import BulkFile
+
+        payload = gzip.compress(b"Date,Code,EPS,FwdEPS,BPS\n2026-08-03,13010,1,2,3\n")
+        archive(
+            [
+                BulkFile(
+                    key="equities/valuation/historical/2026/eq_valuation_202608.csv.gz",
+                    last_modified="",
+                    size=len(payload),
+                )
+            ],
+            lambda _k: payload,
+            tmp_path,
+            on=dt.date(2026, 9, 15),
+        )
+
+    def test_columns_are_printed_even_with_no_shapes(self, tmp_path) -> None:
+        from typer.testing import CliRunner
+
+        from stock_ai.cli import app
+
+        self._archive(tmp_path)
+
+        result = CliRunner().invoke(
+            app,
+            [
+                "jquants-archive-read",
+                "--dir",
+                str(tmp_path),
+                "--no-shapes",
+                "--columns",
+                "/equities/valuation",
+            ],
+        )
+
+        assert "FwdEPS" in result.output, result.output
+        assert "BPS" in result.output
+
+    def test_the_launcher_asks_for_both(self) -> None:
+        """`.bat` が `-NoShapes` と `-Columns` を同時に渡している。"""
+        import pathlib
+
+        body = (
+            pathlib.Path(__file__).resolve().parent.parent / "checks" / "この原本の列を全部見る.bat"
+        ).read_text(encoding="ascii")
+        invocation = next(line for line in body.splitlines() if "archive-read.ps1" in line)
+
+        assert "-NoShapes" in invocation
+        assert "-Columns" in invocation
+
+
+class TestSayingWhetherItIsSafeToDowngrade:
+    """**「たぶん全部取った」で解約しない。**
+
+    Free に落とすと、取引カレンダーを除いて一括が丸ごと止まる。**いま原本が
+    無いものは、再契約するまで取れない。** 落とす先で取れなくなり、かつ手元に
+    1本も無いものが1つでもあれば、そこで止める。
+    """
+
+    def _archive(self, tmp_path, keys):
+        import datetime as dt
+
+        from stock_ai.data.jquants_archive import ArchivedFile, write_manifest
+
+        write_manifest(
+            tmp_path,
+            {
+                key: ArchivedFile(
+                    key=key,
+                    size=1,
+                    bytes_written=1,
+                    sha256="0" * 64,
+                    last_modified="",
+                    fetched_on=dt.date(2026, 9, 15),
+                )
+                for key in keys
+            },
+        )
+
+    def _run(self, tmp_path, monkeypatch, plan):
+        from typer.testing import CliRunner
+
+        from stock_ai.cli import app
+
+        monkeypatch.setenv("JQUANTS_PLAN", plan)
+        return CliRunner().invoke(
+            app, ["jquants-plan-coverage", "--to", "Free", "--dir", str(tmp_path)]
+        )
+
+    def test_an_empty_archive_on_premium_names_what_to_fetch_first(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        result = self._run(tmp_path, monkeypatch, "Premium")
+
+        assert "落とす前に取りに行く先" in result.output, result.output
+        assert "/fins/details" in result.output
+
+    def test_a_full_archive_says_nothing_is_missing(self, tmp_path, monkeypatch) -> None:
+        from stock_ai.data.jquants_bulk import ARCHIVE_ENDPOINTS
+
+        self._archive(
+            tmp_path,
+            [
+                f"{endpoint.lstrip('/')}/historical/2021/x_202109.csv.gz"
+                for endpoint in ARCHIVE_ENDPOINTS
+            ],
+        )
+
+        result = self._run(tmp_path, monkeypatch, "Premium")
+
+        assert "手元に1本も無いものは無い" in result.output, result.output
+        # **失うのは「これから取れること」であって「貯めたもの」ではない。**
+        # そこを混ぜると、戻せる話が戻せない話に見える。
+        assert "再契約すれば" in result.output
+
+    def test_zero_rows_are_shown_rather_than_hidden(self, tmp_path, monkeypatch) -> None:
+        result = self._run(tmp_path, monkeypatch, "Premium")
+
+        # 0本のものを表から消すと、取り逃したものが見えなくなる。
+        assert "/markets/breakdown" in result.output
+
+    def test_every_archived_endpoint_has_a_minimum_plan_recorded(self) -> None:
+        """**表に無い口があると、落としてよいかを言えない。**"""
+        from stock_ai.data.jquants_bulk import ARCHIVE_ENDPOINTS
+        from stock_ai.data.jquants_plan import MINIMUM_PLAN
+
+        assert set(ARCHIVE_ENDPOINTS) <= set(MINIMUM_PLAN)
+
+
+class _RecordingUniverse:
+    """`JQuantsUniverse` の代わり。**どの日付で作られたかだけを覚える。**"""
+
+    asked: list = []
+
+    def __init__(self, api_key=None, as_of=None) -> None:
+        type(self).asked.append(as_of)
+
+    def profiles(self, _segment):
+        from stock_ai.data.universe import SecurityProfile
+
+        return [SecurityProfile(symbol="1301", market="JP", name="A", lending="貸借")]
+
+
+class _HarvestFixture:
+    """名簿を置いた場所と、取りに行かせない仕掛けを作る。"""
+
+    def _prepare(self, tmp_path, monkeypatch, saved):
+        from stock_ai.data.delisted import write_snapshot
+        from stock_ai.data.universe import SecurityProfile
+
+        for on, lending in saved.items():
+            write_snapshot(
+                tmp_path,
+                on,
+                [SecurityProfile(symbol="1301", market="JP", name="A", lending=lending)],
+            )
+        _RecordingUniverse.asked = []
+        monkeypatch.setattr("stock_ai.cli.JQuantsUniverse", _RecordingUniverse)
+        monkeypatch.setenv("JQUANTS_PLAN", "Premium")
+
+    def _run(self, tmp_path, *flags):
+        from typer.testing import CliRunner
+
+        from stock_ai.cli import app
+
+        return CliRunner().invoke(app, ["delisted-harvest", "--dir", str(tmp_path), *flags])
+
+
+class TestRefetchingExactlyWhatIsStored(_HarvestFixture):
+    """`checks\\名簿を同じ規則で揃える.bat` が渡す `-Existing -NoPrices`。
+
+    **`--refetch` だけでは、日付がプランから引き直される。** Premium に上げた
+    日にそれをやって、66枚を揃えるつもりが 2006-09-20 からの245枚を新しく
+    作った（2026-09-15）。揃えるどころか、規則の混ざり方が増えた。
+
+    `--existing` は**保存済みの日付だけ**を見る。グリッドを回さない。
+    """
+
+    def test_only_the_saved_dates_are_requested(self, tmp_path, monkeypatch) -> None:
+        import datetime as dt
+
+        saved = {dt.date(2021, 9, 6): "貸借", dt.date(2026, 9, 3): "貸借"}
+        self._prepare(tmp_path, monkeypatch, saved)
+
+        result = self._run(tmp_path, "--existing", "--no-prices")
+
+        assert result.exit_code == 0, result.output
+        assert set(_RecordingUniverse.asked) == set(saved), _RecordingUniverse.asked
+
+    def test_the_plan_window_does_not_add_dates(self, tmp_path, monkeypatch) -> None:
+        """**日付は増えない。** ここが `--refetch` との違いそのものである。"""
+        import datetime as dt
+
+        self._prepare(tmp_path, monkeypatch, {dt.date(2021, 9, 6): "貸借"})
+
+        self._run(tmp_path, "--existing", "--no-prices")
+
+        assert len(_RecordingUniverse.asked) == 1, _RecordingUniverse.asked
+
+    def test_nothing_stored_means_nothing_requested(self, tmp_path, monkeypatch) -> None:
+        self._prepare(tmp_path, monkeypatch, {})
+
+        result = self._run(tmp_path, "--existing", "--no-prices")
+
+        assert _RecordingUniverse.asked == []
+        assert "取り直す相手がいない" in result.output
+
+
+class TestRefetchingOnlyTheRostersMissingLending(_HarvestFixture):
+    """`checks\\貸借区分を取り直す.bat` が渡す `-FillLending -NoPrices`。
+
+    **取り直す対象を日付グリッドで決めない。** 日次で書かれる名簿は30日刻みに
+    乗らないので、グリッドで回すと取り残される。実際、63件を取り直したあとに
+    直近3日ぶんだけが残った。
+    """
+
+    def test_only_the_dates_without_lending_are_requested(self, tmp_path, monkeypatch) -> None:
+        import datetime as dt
+
+        missing, present = dt.date(2026, 9, 3), dt.date(2026, 9, 4)
+        self._prepare(tmp_path, monkeypatch, {missing: None, present: "貸借"})
+
+        result = self._run(tmp_path, "--fill-lending", "--no-prices")
+
+        assert result.exit_code == 0, result.output
+        assert _RecordingUniverse.asked == [missing], _RecordingUniverse.asked
+
+    def test_a_date_off_the_thirty_day_grid_is_still_picked_up(self, tmp_path, monkeypatch) -> None:
+        """**グリッドに乗らない日付こそが、取り残された3日ぶんだった。**"""
+        import datetime as dt
+
+        odd = dt.date(2026, 9, 11)
+        self._prepare(tmp_path, monkeypatch, {odd: None})
+
+        self._run(tmp_path, "--fill-lending", "--no-prices")
+
+        assert _RecordingUniverse.asked == [odd]
+
+    def test_nothing_missing_means_nothing_requested(self, tmp_path, monkeypatch) -> None:
+        import datetime as dt
+
+        self._prepare(tmp_path, monkeypatch, {dt.date(2026, 9, 4): "貸借"})
+
+        result = self._run(tmp_path, "--fill-lending", "--no-prices")
+
+        assert _RecordingUniverse.asked == []
+        assert "取りに行かない" in result.output
+
+
+class TestLoadingASegmentWithALimit:
+    """`3-データ取得.bat` が渡す `-Segment growth -Limit 20`。
+
+    `.ps1` はこれを `universe --segment growth --limit 20` に組み立てる。
+    **片方がもう片方を消してはいけない。** 消えても例外は出ず、prime を取り
+    込んだのに growth のつもりでいる、という形になる。
+    """
+
+    class _Recording:
+        name = "test"
+        asked: list = []
+
+        def profiles(self, segment, limit=None):
+            from stock_ai.data.universe import SecurityProfile
+
+            type(self).asked.append((segment, limit))
+            return [SecurityProfile(symbol="1301", market="JP", name="A")]
+
+    def _run(self, monkeypatch, *flags):
+        from typer.testing import CliRunner
+
+        from stock_ai.cli import app
+
+        self._Recording.asked = []
+        monkeypatch.setattr("stock_ai.cli._universe_source", lambda *_a, **_k: self._Recording())
+        return CliRunner().invoke(app, ["universe", "--no-store", *flags])
+
+    def test_both_the_segment_and_the_limit_arrive(self, monkeypatch) -> None:
+        from stock_ai.data.universe import Segment
+
+        result = self._run(monkeypatch, "--segment", "growth", "--limit", "20")
+
+        assert result.exit_code == 0, result.output
+        assert self._Recording.asked == [(Segment.GROWTH, 20)]
+
+    def test_the_limit_does_not_fall_back_to_the_default_segment(self, monkeypatch) -> None:
+        """**ここが消えると、prime を取り込んで growth のつもりになる。**"""
+        from stock_ai.data.universe import Segment
+
+        self._run(monkeypatch, "--segment", "growth", "--limit", "20")
+
+        assert self._Recording.asked[0][0] is not Segment.PRIME
+
+    def test_the_segment_does_not_drop_the_limit(self, monkeypatch) -> None:
+        self._run(monkeypatch, "--segment", "growth", "--limit", "20")
+
+        assert self._Recording.asked[0][1] == 20
+
+
+class TestRunningPeadWithASurpriseMeasure:
+    """`research\\SUE検証(IS).bat` が渡す `-Period is -Surprise sue`。
+
+    **この2つが揃って効かないと、別の事前登録を回したことになる。**
+    `docs/PREREG_SUE_JP.md` と `docs/PREREG_PEAD_JP.md` は、並べ替えに使う
+    変数**だけ**が違う。`--surprise` が黙って既定に落ちれば、SUE のつもりで
+    reaction を回し、**その判定を SUE の判定として記録する。**
+
+    判定は一度きりの資源である。取り違えは取り返しが付かない。
+
+    **モックではなく出力を見る。** 最初は `build_events` を差し替えたが、
+    関数の中で import されているので差し替わらず、**空の辞書を素通しして
+    通っていた。** 通ったこと自体が嘘だった。出力の1行目は、どちらの登録を
+    回したかをそのまま言っている。
+    """
+
+    def _run(self, *args):
+        from typer.testing import CliRunner
+
+        from stock_ai.cli import app
+
+        return CliRunner().invoke(app, ["pead-run", *args])
+
+    def test_the_surprise_picks_the_registration_it_names(self) -> None:
+        result = self._run("is", "--surprise", "sue")
+
+        assert result.exit_code == 0, result.output
+        assert "PREREG_SUE_JP.md" in result.output, result.output
+
+    def test_the_default_names_the_other_registration(self) -> None:
+        """**既定は reaction である。** 上のテストが何を示すかは、この対比で決まる。"""
+        result = self._run("is")
+
+        assert "PREREG_PEAD_JP.md" in result.output, result.output
+
+    def test_the_period_is_echoed_so_a_silent_switch_would_show(self) -> None:
+        result = self._run("is", "--surprise", "sue")
+
+        assert "期間: is" in result.output, result.output
+
+    def test_an_unknown_surprise_is_refused_rather_than_defaulted(self) -> None:
+        """**知らない綴りを既定に倒さない。** 倒すと、打ち間違いが黙って通る。"""
+        result = self._run("is", "--surprise", "suee")
+
+        assert result.exit_code != 0
+
+    def test_the_oos_period_needs_the_extra_flag(self) -> None:
+        """判定は一度きり。**うっかり回せないこと。**"""
+        result = self._run("oos", "--surprise", "sue")
+
+        assert result.exit_code != 0
+
+
+class TestNoTestBetsOnRenderedHelp:
+    """**`--help` の描画結果に賭けない。** 端末の幅で折り返す。
+
+    2026-09-15、`--existing` を `--help` の出力から探すテストが**手元で緑・
+    CI で赤**になった（幅40で再現する）。引数が在るかどうかは、描画ではなく
+    定義に聞けば分かる——:func:`declared_options` がそれである。
+
+    **手元の3つを通したことは、CI を通したことではない。** 端末の幅は、
+    こちらの手元にしかない条件だった。
+    """
+
+    def test_no_test_file_asserts_on_help_output(self) -> None:
+        import pathlib
+        import re
+
+        offenders = []
+        here = pathlib.Path(__file__).resolve().parent
+        for path in sorted(here.glob("test_*.py")):
+            for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+                stripped = line.strip()
+                # 実行している行だけを見る。**この検査を説明した文そのものに
+                # 引っ掛からないようにする**——同じ形で2度やっている。
+                if not stripped.startswith("assert "):
+                    continue
+                if re.search(r'"--help"|\[.*--help.*\]', line):
+                    offenders.append(f"{path.name}:{number}")
+        assert not offenders, offenders
+
+    def test_the_replacement_actually_finds_options(self) -> None:
+        """**検査が空を通していないこと。** 通る理由が「何も見ていない」では困る。"""
+        assert "--existing" in declared_options("delisted-harvest")
+        assert "--nonexistent" not in declared_options("delisted-harvest")

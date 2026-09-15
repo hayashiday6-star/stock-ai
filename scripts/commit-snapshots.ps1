@@ -104,7 +104,7 @@ if ($answer -notmatch '^[yY]') {
 }
 
 Write-Host ''
-git add -- $targets
+Use-Utf8Git { git add -- $targets }
 if ($LASTEXITCODE -ne 0) {
     Write-Err '追加できませんでした。上の出力を貼ってください。'
     Exit-WithPause 1
@@ -112,7 +112,9 @@ if ($LASTEXITCODE -ne 0) {
 
 $message = "名簿を $(Get-Date -Format 'yyyy-MM-dd') 時点まで記録する`n`n" +
     "解約後どこからも作り直せないデータ。手元にあるだけの状態にしない。"
-git commit -m $message
+# **記録そのものは正しく入る**（履歴で確認済み）。化けるのは、git が
+# 返してくる要約をこちらが読むときだけである。
+Use-Utf8Git { git commit -m $message }
 if ($LASTEXITCODE -ne 0) {
     Write-Err '記録できませんでした。上の出力を貼ってください。'
     Exit-WithPause 1
@@ -121,7 +123,7 @@ Write-Ok '記録しました。'
 
 Write-Host ''
 Write-Host 'origin の最新を取り込みます...' -ForegroundColor DarkGray
-git pull --rebase origin $expected
+Use-Utf8Git { git pull --rebase origin $expected }
 if ($LASTEXITCODE -ne 0) {
     Write-Err '取り込みで止まりました。**記録そのものは手元に残っています。**'
     Write-Host '  上の出力をそのまま貼ってください。' -ForegroundColor Yellow
@@ -130,7 +132,7 @@ if ($LASTEXITCODE -ne 0) {
 
 Write-Host ''
 Write-Host 'origin へ送ります...' -ForegroundColor DarkGray
-git push -u origin $expected
+Use-Utf8Git { git push -u origin $expected }
 if ($LASTEXITCODE -ne 0) {
     Write-Err '送れませんでした。**記録そのものは手元に残っています。**'
     Write-Host '  上の出力をそのまま貼ってください。' -ForegroundColor Yellow

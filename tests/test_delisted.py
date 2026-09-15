@@ -453,13 +453,22 @@ def test_the_default_start_moves_back_when_the_plan_goes_up() -> None:
     見なすだけで、その害は断られ方が1回記録に残らないことに留まる。逆向きに
     ずらすと、取れない日付を取れると案内することになる。
     """
-    from stock_ai.data.delisted import earliest_reachable
+    from stock_ai.data.delisted import LISTING_DATA_START, earliest_reachable
 
     today = dt.date(2026, 9, 15)
 
     assert earliest_reachable("Light", today) == dt.date(2021, 9, 16)
-    assert earliest_reachable("Premium", today) == dt.date(2006, 9, 20)
-    assert earliest_reachable("Premium", today) > today.replace(year=today.year - 20)
+
+    # **Premium の窓は 2006-09-20 まで開くが、データはそこに無い。** 上場銘柄
+    # 一覧そのものが 2008-05-07 からで、遡れる年数は**プランの上限とデータの
+    # 開始の、小さいほう**である。
+    #
+    # 床を打たないと、開始前の日付グリッドを作る。**J-Quants はそれを
+    # 断らない**——毎回同じ名簿を返す。2026-09-15 に、開始前の 20 日ぶんが
+    # 全部同じ中身だったことで分かった。日付の違う同じ名簿を並べて差を取れば、
+    # 消えてもいない銘柄が「消えた」になる。
+    assert earliest_reachable("Premium", today) == LISTING_DATA_START
+    assert earliest_reachable("Premium", today) > today - dt.timedelta(days=20 * 365)
 
 
 def test_a_date_outside_light_is_inside_premium() -> None:

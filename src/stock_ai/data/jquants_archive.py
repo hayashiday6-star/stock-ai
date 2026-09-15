@@ -51,6 +51,7 @@ import csv
 import dataclasses
 import datetime as dt
 import hashlib
+import re
 import time
 from collections.abc import Callable
 from pathlib import Path
@@ -358,6 +359,36 @@ def _fetch_with_backoff(
 #: **ファイル1本を丸ごとメモリに載せない。** いまの最大は十数MBなので載せても
 #: 通るが、分足やティックを足すと1本が大きくなる。**そのとき落ちるのではなく、
 #: 落ちる前に遅くなって気付けなくなる。**
+_PERIOD = re.compile(r"\d{6,8}")
+
+
+def key_period(key: str) -> str:
+    """鍵から、並べ替えに使える ``YYYYMMDD`` を取る。無ければ空文字。
+
+    **名前の並び順で「いちばん古いファイル」を決めてはいけない。**
+
+    2026-09-15 に実際にずれた。20年ぶんを入れたのに、原本の覆う期間が
+    `2021-09-01 〜` と出た。Light の頃に取ったファイルと、Premium で取った
+    ファイルで**鍵の形が違う**（`historical/2021` と `premium/historical/2008`）
+    ためで、文字列で並べると新しいほうが前に来た。
+
+    **向こうの名前の付け方は、こちらの都合では決まらない。** 数字を拾って
+    並べれば、区切りの位置が変わっても順番は変わらない。
+
+    6桁は ``YYYYMM`` として月初に寄せる。**8桁と6桁をそのまま比べない**——
+    ``202109`` と ``20260914`` を数として比べると、前者のほうが小さくなる。
+
+    **ここが正本である。** 同じ処理を呼ぶ側で書き直さないこと。一度2つに
+    なったことがあり（`cli._key_period` と `jquants_plan.key_period`）、
+    片方だけ直したときに気付ける手立てが無かった。
+    """
+    runs = _PERIOD.findall(key)
+    if not runs:
+        return ""
+    period = runs[-1]
+    return period if len(period) == 8 else f"{period[:6]}01"
+
+
 HASH_CHUNK = 1024 * 1024
 
 
@@ -370,6 +401,36 @@ def fingerprint(path: Path) -> tuple[int, str]:
             size += len(chunk)
             digest.update(chunk)
     return size, digest.hexdigest()
+
+
+def orphans(directory: Path = DEFAULT_ARCHIVE_DIR) -> list[str]:
+    """置いてあるのに**目録に無い**ファイル。
+
+    :func:`verify` は目録を辿るので、**目録に無いファイルを一度も見ない。**
+    「消えている」は見つかるが、「余っている」は見つからない。写しは運ぶのに
+    照合は見ない、という状態になる。
+
+    余りが出るのは、向こうのファイル名が変わったときである。実測（2026-09-15）:
+    Light で取った 385本のうち 320本しか Premium の一覧に再掲されず、**65本が
+    目録から外れた。** 当月ぶんの `live` が、翌週には `historical` の別名に
+    なっていたためと見られる。
+
+    **消さない。** 古いほうが正しいことも、両方要ることもある。**数えて名指し
+    するところまでにする。**
+
+    目録そのもの（`manifest.csv`）は余りに数えない。
+    """
+    manifest = read_manifest(directory)
+    if not directory.is_dir():
+        return []
+    known = {path_for(directory, key).resolve() for key in manifest}
+    found: list[str] = []
+    for path in sorted(directory.rglob("*")):
+        if not path.is_file() or path.name == MANIFEST:
+            continue
+        if path.resolve() not in known:
+            found.append(str(path.relative_to(directory)).replace("\\", "/"))
+    return found
 
 
 def verify(

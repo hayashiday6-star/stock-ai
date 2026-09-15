@@ -820,3 +820,193 @@ class TestSymbolProbe:
         )
 
         assert set(probe_symbols(tmp_path, {"7203"})) == {"7203"}
+
+
+class TestTheSameDayInTwoFiles:
+    """**当月ぶんの `live` は、翌月に `historical` へ畳まれる。**
+
+    目録には両方が残る。実測（2026-09-15）で `/equities/bars/daily` は一覧
+    230本に対しディスク上 295本だった——差の65本がこれである。
+
+    飛ばさないと、同じ `(銘柄, 日付)` を2回 `upsert` に渡す。**DB は `upsert`
+    なので正しいままだが、「書いた行数」だけが水増しされる。** その数を DB の
+    行数と突き合わせているので、**合っているのに合わないと出る。**
+    """
+
+    def _archive_two(self, tmp_path: Path, rows: list[dict[str, str]]) -> None:
+        payload = gzip.compress(_csv(rows))
+        for key in (
+            "equities/bars/daily/historical/2026/eq_bars_202608.csv.gz",
+            "equities/bars/daily/live/eq_bars_20260803.csv.gz",
+        ):
+            archive(
+                [BulkFile(key=key, last_modified="", size=len(payload))],
+                lambda _k, body=payload: body,
+                tmp_path,
+                on=TODAY,
+            )
+
+    def test_a_day_in_two_files_is_written_once(self, tmp_path) -> None:
+        self._archive_two(tmp_path, [_row("2026-08-03", "13010", 100.0)])
+
+        report = ingest(tmp_path, lambda _s, frame: len(frame))
+
+        assert report.files == 2
+        assert report.written == 1
+        assert report.repeated == 1
+
+    def test_every_symbol_of_the_same_file_still_lands(self, tmp_path) -> None:
+        """**1本の中では同じ日が何行も出る。** 読んでいる最中に移すと1行になる。"""
+        self._archive_two(
+            tmp_path,
+            [_row("2026-08-03", "13010", 100.0), _row("2026-08-03", "13020", 200.0)],
+        )
+
+        report = ingest(tmp_path, lambda _s, frame: len(frame))
+
+        assert report.written == 2
+        assert report.repeated == 2
+
+    def test_a_day_only_in_the_second_file_still_lands(self, tmp_path) -> None:
+        """**飛ばすのは重なった日だけ。** 2本目にしかない日を落とさない。"""
+        first = gzip.compress(_csv([_row("2026-08-03", "13010", 100.0)]))
+        second = gzip.compress(_csv([_row("2026-09-14", "13010", 110.0)]))
+        archive(
+            [
+                BulkFile(
+                    key="equities/bars/daily/historical/2026/eq_bars_202608.csv.gz",
+                    last_modified="",
+                    size=len(first),
+                )
+            ],
+            lambda _k: first,
+            tmp_path,
+            on=TODAY,
+        )
+        archive(
+            [
+                BulkFile(
+                    key="equities/bars/daily/live/eq_bars_20260914.csv.gz",
+                    last_modified="",
+                    size=len(second),
+                )
+            ],
+            lambda _k: second,
+            tmp_path,
+            on=TODAY,
+        )
+
+        report = ingest(tmp_path, lambda _s, frame: len(frame))
+
+        assert report.written == 2
+        assert report.repeated == 0
+
+    def test_the_summary_says_so_when_it_happened(self, tmp_path) -> None:
+        self._archive_two(tmp_path, [_row("2026-08-03", "13010", 100.0)])
+
+        assert "重なって飛ばした" in ingest(tmp_path, lambda _s, frame: len(frame)).summary()
+
+
+class TestDropCountersReachAHuman:
+    """**落とした数を集めて、誰にも見せずに捨てない。**
+
+    `skipped_code` は2箇所で数えているのに、まとめに一度も出していなかった
+    （2026-09-15）。直前に `ExtractReport.empty` で同じ形を踏んだあと、
+    静的に洗って見つかった。
+
+    **落とす件数は期間で変わる。** 5桁コードの扱いも優先株の数も、20年の
+    あいだに変わっている。**出さなければ、変わったことに気付けない。**
+    """
+
+    def test_a_code_that_is_not_four_digits_is_counted(self) -> None:
+        payload = _csv([_row("2026-08-03", "12345", 100.0)])
+
+        _frames, report = frames_from_payload(payload)
+
+        assert report.skipped_code == 1
+
+    def test_the_summary_says_how_many(self) -> None:
+        payload = _csv([_row("2026-08-03", "12345", 100.0)])
+
+        _frames, report = frames_from_payload(payload)
+
+        assert "4桁にならないコード 1" in report.summary()
+
+    def test_an_ordinary_run_says_nothing_about_it(self) -> None:
+        """**毎回出すと、普通の実行に数字が1つ増えるだけになる。**"""
+        payload = _csv([_row("2026-08-03", "13010", 100.0)])
+
+        _frames, report = frames_from_payload(payload)
+
+        assert "4桁にならない" not in report.summary()
+
+    def test_it_survives_the_whole_run(self, tmp_path) -> None:
+        """1本ぶんで数えても、**足し上げたほうに出なければ意味が無い。**"""
+        payload = gzip.compress(_csv([_row("2026-08-03", "12345", 100.0)]))
+        archive(
+            [
+                BulkFile(
+                    key="equities/bars/daily/historical/2026/eq_bars_202608.csv.gz",
+                    last_modified="",
+                    size=len(payload),
+                )
+            ],
+            lambda _k: payload,
+            tmp_path,
+            on=TODAY,
+        )
+
+        report = ingest(tmp_path, lambda _s, frame: len(frame))
+
+        assert report.skipped_code == 1
+        assert "4桁にならないコード 1" in report.summary()
+
+
+class TestTellingAConventionErrorFromOneOddSymbol:
+    """**規約の間違いなら、全部の権利落ち日がずれる。**
+
+    `j >= d` と `j > d` を取り違えれば一部だけということはない。だから
+    「少数が一致する」のは規約の話ではなく、その銘柄の事情である。
+
+    それなのに `if unapplied:` で1件でも「組み立てがずれている」と言っていた
+    （2026-09-15）。**3行上のコメントに「全件がそうなる。見るべきはそこで
+    ある」と自分で書いてあった。書いた理屈と、当てはめが食い違っていた。**
+    """
+
+    def test_a_factor_too_close_to_one_cannot_be_judged(self) -> None:
+        """実測で挙がった 2588 は係数 0.99706、その日の動き 0% だった。
+
+        **動かなかった日が引っかかっているだけ**で、掛け忘れの証拠ではない。
+        """
+        from stock_ai.data.jquants_prices import comparable
+
+        assert not comparable(0.9970588235294118)
+
+    def test_a_real_split_factor_can_be_judged(self) -> None:
+        from stock_ai.data.jquants_prices import comparable
+
+        assert comparable(0.9090909090909092)  # 10:11
+        assert comparable(0.5)  # 1:2
+
+    def test_all_of_them_matching_is_a_convention_error(self) -> None:
+        from stock_ai.data.jquants_prices import split_verdict
+
+        assert split_verdict(3656, 3656) == "規約"
+
+    def test_a_handful_is_not(self) -> None:
+        """**実測はここだった。** 3/3,656 は 0.08% である。"""
+        from stock_ai.data.jquants_prices import split_verdict
+
+        assert split_verdict(3, 3656) == "個別"
+
+    def test_none_matching_says_nothing_is_wrong(self) -> None:
+        from stock_ai.data.jquants_prices import split_verdict
+
+        assert split_verdict(0, 3656) == "なし"
+
+    def test_the_line_is_at_half_not_at_one(self) -> None:
+        """**規約の間違いなら 100% に寄る。** 半分を割っていれば「全部」ではない。"""
+        from stock_ai.data.jquants_prices import split_verdict
+
+        assert split_verdict(50, 100) == "規約"
+        assert split_verdict(49, 100) == "個別"

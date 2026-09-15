@@ -44,6 +44,18 @@ BULK_GET_URL = f"{_BASE}/bulk/get"
 BULK_ENDPOINTS: tuple[str, ...] = (
     "/equities/master",
     "/equities/bars/daily",
+    # **2026-09-15 に足した。取り逃していた。**
+    #
+    # 公式の「契約ごとに利用可能なAPIとデータ格納期間」に一括の口（`CSV`）が
+    # あり、Light 以上で取れる。**それなのに、こちらの一覧に無かった。**
+    #
+    # 同梱の参照データ（`reference_data.json` の `bulk_endpoints`）にも載って
+    # いない。だが取引カレンダーと決算発表予定日も載っていないのに取れたので、
+    # **あの一覧は完全ではない。** 公式の表のほうが広い。
+    #
+    # 格納期間は 2008/7/8〜。**2008〜2010年頃は、算出に使う株式数や財務情報が
+    # 揃っていないので Null の多い銘柄・項目がある**（公式の注記）。
+    "/equities/valuation",
     "/equities/bars/minute",
     "/equities/trades",
     "/equities/investor-types",
@@ -94,6 +106,32 @@ ARCHIVE_ADDONS: tuple[str, ...] = ("/equities/bars/minute", "/equities/trades")
 
 ARCHIVE_ENDPOINTS: tuple[str, ...] = tuple(
     endpoint for endpoint in BULK_ENDPOINTS if endpoint not in ARCHIVE_ADDONS
+)
+
+#: **先に取るもの。** 取り直せず、かつ**いま使う経路がある**ものだけ。
+#:
+#: 2026-09-15 の下見で、Premium では 3,556本・3.65GB になると分かった。
+#: **そのうち 1.74GB（48%）がデリバティブで、こちらには読み口も説も無い。**
+#: そして取得順では `/markets/margin-alert`（説#8 が要る唯一の経路）が
+#: そのデリバティブの**後ろ**にある。
+#:
+#: 途中で止まれば、**重いだけで使わないものを取り終えて、軽くて使うものが
+#: 無い**状態になる。回線が切れても電源が落ちても、そうなる。
+#:
+#: だから2周に分ける。1周目がこれで、2周目が全部である。既に取れたファイルは
+#: 取りに行かないので、2周目に無駄は出ない。
+#:
+#: **順番も意味を持たせてある。** 名簿が最初なのは、生存バイアスを直せる
+#: 唯一のもので、これが欠けると他が全部「生存者のみ」になるからである。
+CRITICAL_ENDPOINTS: tuple[str, ...] = (
+    "/equities/master",
+    "/equities/bars/daily",
+    "/markets/calendar",
+    "/markets/margin-alert",
+    "/fins/summary",
+    "/fins/details",
+    "/fins/dividend",
+    "/fins/earnings-date",
 )
 
 #: プラン別の1分あたりリクエスト上限。出典は J-Quants 同梱の

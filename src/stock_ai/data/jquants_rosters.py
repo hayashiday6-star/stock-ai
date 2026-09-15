@@ -73,7 +73,17 @@ class ExtractReport:
     """日付を読めなかった行。**0 でないなら、列名が変わった疑いがある。**"""
 
     empty: list[dt.date] = dataclasses.field(default_factory=list)
-    """絞り込みのあと1銘柄も残らなかった日付。**書かない。**"""
+    """絞り込みのあと1銘柄も残らなかった日付。**書かないが、黙らない。**
+
+    **集めていたのに、まとめに出していなかった**（2026-09-15 に気付いた）。
+    出さないと、「原本に行が無い日」と「行はあったが全部落ちた日」が、
+    どちらも同じ「名簿の無い日」に見える。**直す場所が違う。**
+
+    | | 何が起きている |
+    |---|---|
+    | ここに出る | 原本に行はある。**こちらの絞り込みが全部落とした** |
+    | ここにも出ない | 原本にその日の行が無い |
+    """
 
     failed: dict[str, str] = dataclasses.field(default_factory=dict)
 
@@ -83,6 +93,7 @@ class ExtractReport:
             f"{self.files} 本から {len(self.written)} 日ぶんを書き出し、"
             f"{len(self.skipped)} 日は既存、{self.rows:,} 行を読んだ"
             + (f"、日付を読めない行 {self.undated:,}" if self.undated else "")
+            + (f"、**1銘柄も残らなかった日 {len(self.empty)}**" if self.empty else "")
             + (f"、{len(self.failed)} 本が読めず" if self.failed else "")
         )
 
@@ -169,7 +180,12 @@ def extract(
             if not profiles:
                 # **空の名簿を書かない。** 書くと、その日に全銘柄が上場廃止
                 # したように見える。例外は出ない。
+                #
+                # **ただし黙らない。** 書かないだけにすると、「原本に行が無い
+                # 日」と区別が付かなくなる——直す場所が違うのに、どちらも
+                # 「名簿の無い日」に見える。
                 report.empty.append(date)
+                logger.warning("絞り込みのあと1銘柄も残らなかった: %s（%s）", date, key)
                 continue
             write_snapshot(out_dir, date, profiles)
             report.written.append(date)
@@ -255,6 +271,89 @@ def compare(first: Path, second: Path, limit: int = 5) -> CompareReport:
 
 
 CALENDAR_ENDPOINT = "/markets/calendar"
+
+
+@dataclasses.dataclass
+class DayDetail:
+    """ある1日について、名簿の原本に何があったか。
+
+    **「原本に行が無い」と「行はあったが絞り込みが全部落とした」を分ける。**
+    どちらも結果は「名簿の無い日」で、**直す場所が違う。**
+
+    2026-09-15 に、立会日なのに名簿の無い日が2日見つかった（2008-12-30、
+    2009-01-05。**範囲内の半日立会2日とぴったり同じ**）。まとめの件数だけでは
+    どちらか決まらず、**決めるには1日ぶんを名指しで見るしかなかった。**
+    """
+
+    on: dt.date
+    files: list[str] = dataclasses.field(default_factory=list)
+    """その日の行を持っていた原本。**空なら、原本にその日が無い。**"""
+
+    rows: int = 0
+    kept: int = 0
+    reasons: dict[str, int] = dataclasses.field(default_factory=dict)
+    """落ちた理由 → 行数。"""
+
+    examples: list[tuple[str, str]] = dataclasses.field(default_factory=list)
+    """``(銘柄, 名前)`` を数件。**件数では決まらないものを見るため。**"""
+
+    @property
+    def verdict(self) -> str:
+        """どちらなのか、ひとことで。"""
+        if not self.files:
+            return "原本にその日の行が無い"
+        if self.kept:
+            return "名簿が作れる（既に作られているはず）"
+        return "行はあるが、絞り込みが全部落とした"
+
+    def summary(self) -> str:
+        """1行のまとめ。"""
+        if not self.files:
+            return f"{self.on}: {self.verdict}"
+        return (
+            f"{self.on}: {self.verdict}"
+            f"（{len(self.files)} 本、{self.rows:,} 行、残った {self.kept:,}）"
+        )
+
+
+def day_detail(archive_dir: Path, on: dt.date, limit: int = 8) -> DayDetail:
+    """名簿の原本を1周読んで、``on`` の日に何があったかを名指しする。
+
+    **API を1回も叩かない。**
+
+    Args:
+        archive_dir: 原本の置き場所。
+        on: 見たい日。
+        limit: 例として控える銘柄の数。
+    """
+    from stock_ai.data.jquants_archive import path_for, read_manifest
+    from stock_ai.data.universe import rejection_reason
+
+    report = DayDetail(on=on)
+    for key in sorted(read_manifest(archive_dir)):
+        if endpoint_of(key) != MASTER_ENDPOINT:
+            continue
+        try:
+            rows = records_from_csv(read_archived(path_for(archive_dir, key)))
+        except Exception as exc:  # noqa: BLE001 - どこで読めないかが記録に値する
+            logger.warning("名簿の原本を読めなかった: %s: %s", key, exc)
+            continue
+        found = [row for row in rows if parse_date(row.get("Date")) == on]
+        if not found:
+            continue
+        report.files.append(key)
+        report.rows += len(found)
+        for row in found:
+            reason = rejection_reason(row)
+            if reason is None:
+                report.kept += 1
+            else:
+                report.reasons[reason] = report.reasons.get(reason, 0) + 1
+            if len(report.examples) < limit:
+                code = (row.get("Code") or "").strip()
+                name = (row.get("CoName") or row.get("Name") or "").strip()
+                report.examples.append((code, name))
+    return report
 
 
 def calendar_from_archive(archive_dir: Path) -> list[CalendarDay] | None:

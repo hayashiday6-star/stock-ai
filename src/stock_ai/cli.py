@@ -194,8 +194,14 @@ from stock_ai.data.delisted import (
     stored_dates,
 )
 from stock_ai.data.fx import FxConverter
-from stock_ai.data.jquants_archive import DEFAULT_ARCHIVE_DIR, path_for, read_manifest
+from stock_ai.data.jquants_archive import (
+    DEFAULT_ARCHIVE_DIR,
+    key_period,
+    path_for,
+    read_manifest,
+)
 from stock_ai.data.jquants_archive import archive as archive_bulk
+from stock_ai.data.jquants_archive import orphans as archive_orphans
 from stock_ai.data.jquants_archive import verify as verify_archive
 from stock_ai.data.jquants_bulk import (
     ARCHIVE_ENDPOINTS,
@@ -232,15 +238,20 @@ from stock_ai.data.jquants_filter import baseline as filter_baseline
 from stock_ai.data.jquants_filter import census as filter_census
 from stock_ai.data.jquants_filter import product_separates
 from stock_ai.data.jquants_fundamentals import JQuantsFundamentalsProvider, normalize_statements
+from stock_ai.data.jquants_indices import census as topix_census
+from stock_ai.data.jquants_indices import from_archive as topix_from_archive
+from stock_ai.data.jquants_indices import tracking_gap as topix_tracking_gap
 from stock_ai.data.jquants_markets import HOLIDAY_DIVISION, TRADING_DIVISIONS, half_days_by_year
 from stock_ai.data.jquants_markets import agreement as calendar_agreement
 from stock_ai.data.jquants_markets import census as calendar_census
+from stock_ai.data.jquants_prices import comparable as price_comparable
 from stock_ai.data.jquants_prices import frames_for as price_frames_for
 from stock_ai.data.jquants_prices import ingest as price_ingest
 from stock_ai.data.jquants_prices import join_returns as price_join_returns
 from stock_ai.data.jquants_prices import looks_unapplied as price_looks_unapplied
 from stock_ai.data.jquants_prices import probe_symbols
 from stock_ai.data.jquants_prices import split_day_returns as price_split_day_returns
+from stock_ai.data.jquants_prices import split_verdict as price_split_verdict
 from stock_ai.data.jquants_profile import JQuantsProfileProvider
 from stock_ai.data.jquants_provider import JQuantsPriceProvider
 from stock_ai.data.jquants_read import census as archive_census
@@ -255,6 +266,7 @@ from stock_ai.data.jquants_rosters import (
     trading_days_from_archive,
 )
 from stock_ai.data.jquants_rosters import compare as roster_compare
+from stock_ai.data.jquants_rosters import day_detail as roster_day_detail
 from stock_ai.data.jquants_rosters import extract as roster_extract
 from stock_ai.data.markets import split_by_market, to_yahoo_symbol
 from stock_ai.data.schema import ADJ_CLOSE, CLOSE, OPEN
@@ -2469,6 +2481,11 @@ def delisted_harvest(
         "--fill-lending",
         help="Re-request only the saved dates that carry no lending class.",
     ),
+    existing: bool = typer.Option(
+        False,
+        "--existing",
+        help="Re-request exactly the dates already saved. Ignores the date grid.",
+    ),
     prices: bool = typer.Option(
         True, "--prices/--no-prices", help="Also backfill prices for symbols the DB lacks."
     ),
@@ -2519,7 +2536,26 @@ def delisted_harvest(
     if last is None:
         raise typer.BadParameter(f"--end must be YYYY-MM-DD; got {end!r}.")
     target = Path(directory)
-    if fill_lending:
+    if existing:
+        # **「いまあるものを取り直す」は、「グリッドを回す」とは別の仕事である。**
+        #
+        # `--refetch` だけを渡すと、日付はプランから引き直される。Premium に
+        # 上げた日にそれをやって、**66枚を揃えるつもりが 2006-09-20 からの
+        # 245枚を新しく作った**（2026-09-15）。古いグリッドと新しいグリッドが
+        # 同居し、規則も2通りになった——**揃えるどころか、混ざり方が増えた。**
+        #
+        # 開始日をプランから引くのは意図した設計である（上げた日に効くように）。
+        # **間違っていたのは、それを取り直しに当てはめたことである。**
+        wanted = sorted(stored_dates(target))
+        refetch = True
+        if not wanted:
+            console.print("[yellow]名簿が1枚も無い。[/] 取り直す相手がいない。")
+            return
+        console.print(
+            f"保存済みの [bold]{len(wanted)}[/] 日ぶんを、**いまの規則で**取り直す"
+            f"（{wanted[0]} 〜 {wanted[-1]}）。[dim] 日付は増やさない。[/]"
+        )
+    elif fill_lending:
         # **取り直す対象を日付グリッドで決めない。** 日次で書かれる名簿は
         # 30日刻みに乗らないので、グリッドで回すと取り残される。実際、63件を
         # 取り直したあとに直近3日ぶんだけが残った。
@@ -3055,6 +3091,9 @@ def jquants_archive_read(
     shapes: bool = typer.Option(
         True, "--shapes/--no-shapes", help="Also show one file's columns per endpoint."
     ),
+    columns_of: str | None = typer.Option(
+        None, "--columns", help="Print every column of this endpoint, one per line."
+    ),
 ) -> None:
     """Read every archived original through its parser and count the rows.
 
@@ -3124,6 +3163,24 @@ def jquants_archive_read(
             problems.add_row(key, why[:80])
         console.print(problems)
 
+    if columns_of:
+        # **切らずに出す。** 読み口を作るには全部の列が要る。配布サンプルの
+        # 無いエンドポイント（`/equities/valuation`）は、ここでしか列を知れない。
+        wanted = "/" + columns_of.strip().lstrip("/")
+        keys = samples_per_endpoint(target).get(wanted, ())
+        if not keys:
+            console.print(f"[yellow]{wanted} の原本が無い。[/]")
+            console.print("[dim]  上の表に出ている名前をそのまま渡すこと。[/]")
+            return
+        found = archive_shape(target, keys[0])
+        if found is None:
+            console.print(f"[yellow]{wanted} を読めなかった。[/]")
+            return
+        console.print()
+        console.print(f"[bold]{wanted} の列（全 {len(found.columns)}）[/] [dim]{keys[0]}[/]")
+        for index, name in enumerate(found.columns, start=1):
+            console.print(f"  {index:2}. {name}")
+
     if not shapes:
         return
 
@@ -3137,7 +3194,11 @@ def jquants_archive_read(
             if found is None:
                 continue
             span = f"{found.first_date} 〜 {found.last_date}" if found.first_date else "—"
-            columns = ", ".join(found.columns[:5]) + ("…" if len(found.columns) > 5 else "")
+            # **表では5列で切る。** 20列を横に並べると表が壊れる。全部見たい
+            # ときは `--columns` を渡す——**読み口を作るには全部要る。**
+            columns = ", ".join(found.columns[:5]) + (
+                f"… (全 {len(found.columns)} 列)" if len(found.columns) > 5 else ""
+            )
             # **月次か日次かを名前で出す。** 1本が何日ぶんかで、20年の本数が
             # 20倍変わる。
             kind = next((name for name in ("historical", "live") if f"/{name}/" in key), "—")
@@ -3317,12 +3378,67 @@ def jquants_daily_rosters(
     # 休日にも当たり、一括には立会日しか無いので重ならない。それは欠けでは
     # ない。だが立会日なのに名簿が無い日が混じっていたら、それは本当の欠けで
     # ある。**件数では区別が付かないので、カレンダーに当てる。**
-    grid_only = sorted(set(stored_dates(Path(DEFAULT_SNAPSHOT_DIR))) - set(stored_dates(target)))
-    if grid_only:
-        holidays, gaps = explain_missing(grid_only, trading_days_from_archive(source))
+    daily = sorted(stored_dates(target))
+    grid_only = sorted(set(stored_dates(Path(DEFAULT_SNAPSHOT_DIR))) - set(daily))
+
+    # **営業日ごとの名簿が始まる前の日付を「欠け」と呼ばない。**
+    #
+    # 一括の名簿は 2008-05-07 からしか無い。30日刻みの名簿にはそれより前の
+    # 日付があり、立会日なら全部「本当の欠け」に落ちていた——実際 2008-02-12
+    # と 2008-03-13 がそう出た（2026-09-15）。**欠けているのではなく、
+    # こちらが始まっていない。**
+    #
+    # 「重なる期間だけ見る」を、同じ形で**3度目**に踏んだ。項目5・項目6 で
+    # 直したのと同じ話である。
+    before = [day for day in grid_only if daily and day < daily[0]] if daily else list(grid_only)
+    inside = [day for day in grid_only if not daily or day >= daily[0]]
+
+    if before:
+        console.print(
+            f"[dim]{len(before)} 日は、営業日ごとの名簿が始まる {daily[0]} より前"
+            "（一括の名簿は 2008-05-07 から）。**欠けではない。**[/]"
+        )
+        # **それでも、その日の名簿が存在すること自体は確かめる価値がある。**
+        # 一括が覆っていない日付を JSON 経路が返したことになる。同じ中身を
+        # 使い回しているなら、日付の違う同じ名簿が並ぶ。
+        grid_dir = Path(DEFAULT_SNAPSHOT_DIR)
+        shapes = {
+            frozenset(profile.symbol for profile in read_snapshot(snapshot_path(grid_dir, day)))
+            for day in before
+        }
+        if len(shapes) == 1 and len(before) > 1:
+            # **これは「疑い」ではなく、分かったことである（2026-09-15）。**
+            #
+            # 開始前の日付を投げても J-Quants は断らない。毎回**同じ名簿**を
+            # 返す。断ってくれるなら気付けたが、返ってくるので気付けない。
+            #
+            # 日付の違う同じ名簿を並べて差を取れば、**消えてもいない銘柄が
+            # 「消えた」になる。** 生存バイアスを直すための材料が、逆に歪みを
+            # 入れる側に回る。
+            console.print(
+                f"[yellow]その {len(before)} 日は、**中身が1種類しかない。**[/] "
+                "日付が違うのに同じ名簿である——**開始前の日付が効いていない。**"
+            )
+            console.print(
+                "[yellow]  この "
+                + "、".join(str(day) for day in before[:8])
+                + ("…" if len(before) > 8 else "")
+                + " は消してよい。[/] "
+                "[dim]名簿としては使えず、**廃止の判定に混ぜると害になる。** "
+                "日付グリッドの開始は上場銘柄一覧の開始（2008-05-07）で床を"
+                "打つようにしたので、取り直しても増えない。[/]"
+            )
+        else:
+            console.print(
+                f"[dim]  中身は {len(shapes)} 種類あり、日付ごとに違う。"
+                "**一括より前を JSON 経路が返している。**[/]"
+            )
+
+    if inside:
+        holidays, gaps = explain_missing(inside, trading_days_from_archive(source))
         if holidays and not gaps:
             console.print(
-                f"[dim]重ならなかった {len(grid_only)} 日は、**全部が非立会日**だった"
+                f"[dim]重ならなかった {len(inside)} 日は、**全部が非立会日**だった"
                 "（取引カレンダーで確認）。欠けではない。[/]"
             )
         elif gaps:
@@ -3333,7 +3449,7 @@ def jquants_daily_rosters(
             )
         else:
             console.print(
-                f"[dim]重ならなかった {len(grid_only)} 日は、取引カレンダーの原本が"
+                f"[dim]重ならなかった {len(inside)} 日は、取引カレンダーの原本が"
                 "無いので説明できない。[/]"
             )
 
@@ -3454,19 +3570,46 @@ def jquants_bulk_prices(
             # 25% 動く銘柄はあるし、分割以外の事由（併合・無償割当・合併）でも
             # 係数は立つ。規約を間違えていれば、動きは**ちょうど係数 - 1**に
             # なり、しかも**全件がそうなる。** 見るべきはそこである。
-            unapplied = [item for item in on_split if price_looks_unapplied(item[2], item[3])]
+            # **係数が1に近すぎると、判定そのものができない。** 係数 0.997 なら
+            # その日の動きが ±2% の中にありさえすれば「係数そのもの」に見える
+            # ——動かなかった日が全部引っかかる。比べられない件は別に数える。
+            checkable = [item for item in on_split if price_comparable(item[3])]
+            skipped = len(on_split) - len(checkable)
+            unapplied = [item for item in checkable if price_looks_unapplied(item[2], item[3])]
             loud = [item for item in on_split if abs(item[2]) > 0.2]
             middle = sorted(abs(item[2]) for item in on_split)[len(on_split) // 2]
-            if unapplied:
+            verdict = price_split_verdict(len(unapplied), len(checkable))
+
+            if skipped:
+                console.print(
+                    f"[dim]係数が1に近すぎて比べられない権利落ち日が {skipped:,} 件"
+                    f"（全 {len(on_split):,} 件のうち）。**一致しない、ではなく"
+                    "比べていない。**[/]"
+                )
+
+            if verdict == "規約":
+                # **全部の権利落ち日がずれる形。** `j >= d` と `j > d` の取り違え
+                # なら、一部だけということはない。
                 console.print(
                     f"[red]権利落ち日の動きが係数そのものになっている例が "
-                    f"{len(unapplied)}/{len(on_split)}。[/] "
+                    f"{len(unapplied)}/{len(checkable)}。[/] "
                     "**調整の組み立てがずれている。** "
                     + "、".join(f"{a} {b} {c:+.0%}(係数 {d})" for a, b, c, d in unapplied[:5])
                 )
+            elif verdict == "個別":
+                # **規約の間違いなら全件がそうなる。** 少数なら、その銘柄の事情
+                # である（係数の立つ日と値の付く日がずれている、など）。
+                console.print(
+                    f"[yellow]権利落ち日 {len(unapplied)}/{len(checkable):,} 件で、"
+                    f"動きが係数そのものになっている。[/]"
+                    "[dim] **全件ではないので、組み立ての規約ではない。** "
+                    "銘柄ごとの事情として1件ずつ見ること。[/]"
+                )
+                for symbol, day, change, factor in unapplied[:5]:
+                    console.print(f"  [dim]{symbol} {day} {change:+.1%}（係数 {factor:.6f}）[/]")
             else:
                 console.print(
-                    f"[green]権利落ち日 {len(on_split):,} 件は、どれも係数どおりの"
+                    f"[green]権利落ち日 {len(checkable):,} 件は、どれも係数どおりの"
                     f"ずれ方をしていない[/]（値動きの中央値 {middle:.1%}）。"
                     "[dim] 組み立ては効いている。[/]"
                 )
@@ -3476,7 +3619,13 @@ def jquants_bulk_prices(
                         "合わない**——本当に動いた日か、分割以外の事由である。[/]"
                     )
 
-    boundary = _archive_first_date(source)
+    # **取り込んだ日付そのものから取る。** ファイル名の並び順から引いていた
+    # ときは、20年ぶんを入れたのに「継ぎ目 2021-09-01」と出た（2026-09-15）。
+    # 原本は 2008-05 から覆っているので、そこが継ぎ目のはずである。
+    #
+    # 並び順は名前で決まる。向こうがファイル名の付け方を変えれば、いちばん古い
+    # ファイルがいちばん前に来なくなる。**読んだ日付を使えば、名前に依らない。**
+    boundary = min(report.dates) if report.dates else _archive_first_date(source)
     if boundary is None:
         return
     console.print()
@@ -3514,28 +3663,42 @@ def jquants_bulk_prices(
         )
 
 
-def _archive_window(directory: Path) -> tuple[dt.date, dt.date] | None:
-    """Return the first and last date the archived bars cover.
+def _archive_window(directory: Path) -> tuple[dt.date, dt.date, str, str] | None:
+    """Return the first and last date the archived bars cover, with the keys used.
 
     原本が覆う期間。**取り込みの報告と DB を突き合わせる相手**になる。
+
+    **どの原本から取ったかも返す。** 間違った1本を選んでいても、日付だけでは
+    気付けない——2026-09-15 がそうだった。
     """
     from stock_ai.data.jquants_prices import BARS_ENDPOINT
 
-    keys = [key for key in sorted(read_manifest(directory)) if endpoint_of(key) == BARS_ENDPOINT]
+    keys = [key for key in read_manifest(directory) if endpoint_of(key) == BARS_ENDPOINT]
     if not keys:
         return None
-    first = archive_shape(directory, keys[0])
-    last = archive_shape(directory, keys[-1])
+    ordered = sorted(keys, key=lambda key: (key_period(key), key))
+    first = archive_shape(directory, ordered[0])
+    last = archive_shape(directory, ordered[-1])
     if first is None or last is None or not first.first_date or not last.last_date:
         return None
     start, end = _parse_date(first.first_date), _parse_date(last.last_date)
-    return (start, end) if start and end else None
+    if not start or not end:
+        return None
+    return (start, end, ordered[0], ordered[-1])
 
 
 def _archive_first_date(directory: Path) -> dt.date | None:
     """Return the first date the archived bars cover.
 
     原本が覆い始める日。**継ぎ目はここである。**
+
+    **並び順は名前で決まる。** 向こうがファイル名の付け方を変えると、いちばん
+    古いファイルがいちばん前に来なくなる。実際そうなった——20年ぶんを入れた
+    のに「継ぎ目 2021-09-01」と出た（2026-09-15）。原本は 2008-05 から覆って
+    いる。
+
+    **取り込んだ日付が手元にあるなら、そちらを使うこと。** 名前に依らない。
+    ここは、取り込みを回さずに聞きたいときの控えである。
     """
     from stock_ai.data.jquants_prices import BARS_ENDPOINT
     from stock_ai.data.jquants_read import endpoint_of
@@ -4176,6 +4339,186 @@ def jquants_filter_census(
     console.print("[dim]20年ぶんを取った日に、同じコマンドを実行してこの行と比べること。[/]")
 
 
+@app.command(name="jquants-topix")
+def jquants_topix(
+    archive_dir: str = typer.Option(
+        str(DEFAULT_ARCHIVE_DIR), "--dir", help="Where the raw files are kept."
+    ),
+    etf: str = typer.Option(BENCHMARK, "--etf", help="ETF to compare against the index."),
+    show: int = typer.Option(8, "--show", help="How many gaps to list."),
+) -> None:
+    """Read the TOPIX index itself and compare it with the ETF we use as benchmark.
+
+    **ベンチマークに 1306（TOPIX 連動 ETF）を使っているのは、指数が手元に
+    無かったからである。** それ以上の理由は無い。
+
+    Premium で `/indices/bars/daily/topix` が開いた。2008-05 からの18年ぶんが
+    88 KB で入っている。
+
+    | | |
+    |---|---|
+    | TOPIX | 指数。信託報酬も、売買のずれも無い |
+    | 1306 | それを追う ETF。**信託報酬が毎日引かれ、追跡のずれが乗る** |
+
+    18年ぶん積み上がると小さくないはずだが、**それは見込みであって測った値では
+    ない。** 引き算をする。
+
+    **置き換えは判定のやり直しではない。** #7 のベンチマークを替えて回し直せば
+    2回目の判定になる。ここで作るのは測る道具で、使えるのはまだ判定を消費して
+    いない説（#5・#8）である。
+
+    API を1回も叩かない。
+    """
+    settings = get_settings()
+    configure_logging(settings.log_level)
+
+    frame = topix_from_archive(Path(archive_dir))
+    if frame.empty:
+        console.print(
+            "[yellow]TOPIX の原本が無い。[/]"
+            "[dim] 先に `checks\\原本をまるごと保存.bat` を実行すること。[/]"
+        )
+        raise typer.Exit(code=1)
+
+    # **穴は取引カレンダーと突き合わせて決める。** 暦の空き日数で数えていた
+    # ときは 21件出て、21件とも年末年始・GW・シルバーウィークだった。
+    trading = trading_days_from_archive(Path(archive_dir))
+    report = topix_census(frame, trading=trading)
+
+    table = Table(title="TOPIX（指数そのもの）")
+    table.add_column("見たもの")
+    table.add_column("値", justify="right")
+    table.add_row("日数", f"{report.rows:,}")
+    table.add_row("期間", f"{report.first} 〜 {report.last}")
+    table.add_row("始まりの水準", f"{frame[CLOSE].iloc[0]:,.2f}")
+    table.add_row("終わりの水準", f"{frame[CLOSE].iloc[-1]:,.2f}")
+    if report.checked:
+        table.add_row(
+            "[red]立会なのに指数が無い日[/]" if report.missing else "立会なのに指数が無い日",
+            f"{len(report.missing):,}",
+        )
+        label = "立会でないのに指数がある日"
+        table.add_row(
+            f"[yellow]{label}[/]" if report.extra else label,
+            f"{len(report.extra):,}",
+        )
+    else:
+        table.add_row("[dim]穴[/]", "[dim]カレンダーが無いので見ていない[/]")
+    console.print(table)
+
+    for label, days in (
+        ("立会なのに指数が無い", report.missing),
+        ("立会でないのに指数がある", report.extra),
+    ):
+        if days:
+            listed = "  ".join(day.isoformat() for day in days[:show])
+            console.print(f"[yellow]{label}: {len(days)} 日[/] [dim]{listed}[/]")
+    if report.checked and not report.missing and not report.extra:
+        console.print(
+            "[green]立会日と1日も食い違わない。[/]"
+            "[dim] カレンダーと指数は別の原本なので、別々のファイルが同じ日を"
+            "立会だと言っている。[/]"
+        )
+
+    database = Database()
+    with database.session() as session:
+        prices = PriceRepository(session).get_prices(etf)
+    if prices.empty:
+        console.print(
+            f"[yellow]{etf} の株価が DB に無いので、引き算は飛ばした。[/]"
+            "[dim] **比べていない、であって差が無い、ではない。**[/]"
+        )
+        console.print(report.summary())
+        return
+
+    gap = topix_tracking_gap(frame, prices[CLOSE])
+    console.print()
+    console.print(f"[bold]指数 と {etf}（重なる日だけ）[/]")
+    console.print(gap.summary())
+    if not gap.days:
+        console.print(
+            "[dim]どちらも配当を含まない前提である。片方だけ配当込みなら、"
+            "この差は信託報酬ではなく配当利回りを測ることになる。[/]"
+        )
+    elif gap.total < 0:
+        console.print(
+            f"[green]ETF は指数に {-gap.total:.1%} 届いていない[/]"
+            f"（年あたり {-gap.annual:.2%}）。"
+            "[dim] 信託報酬と追跡のずれが、この向きに出る。[/]"
+        )
+    else:
+        console.print(
+            f"[yellow]ETF が指数を {gap.total:+.1%} 上回っている[/]"
+            f"（年あたり {gap.annual:+.2%}）。"
+            "**信託報酬は ETF を削る側なので、この向きは説明が付かない。**"
+            "[dim] 片方が配当込みでないか、分割の調整がどちらかで抜けている疑い。[/]"
+        )
+
+    console.print(report.summary())
+
+
+@app.command(name="jquants-roster-day")
+def jquants_roster_day(
+    dates: list[str] = typer.Argument(None, help="YYYY-MM-DD. Repeat for several."),
+    archive_dir: str = typer.Option(
+        str(DEFAULT_ARCHIVE_DIR), "--dir", help="Where the raw files are kept."
+    ),
+) -> None:
+    """Say why a given day has no roster: no rows, or every row filtered out.
+
+    **「原本に行が無い」と「行はあったが絞り込みが全部落とした」を分ける。**
+    どちらも結果は「名簿の無い日」で、**直す場所が違う。**
+
+    2026-09-15 に、立会日なのに名簿の無い日が2日見つかった（2008-12-30、
+    2009-01-05 で、**範囲内の半日立会2日とぴったり同じ**）。まとめの件数だけ
+    ではどちらか決まらず、**1日ぶんを名指しで見るしかなかった。**
+
+    API を1回も叩かない。
+    """
+    settings = get_settings()
+    configure_logging(settings.log_level)
+
+    wanted = [_parse_date(text.strip()) for text in (dates or []) if text.strip()]
+    if not wanted or any(day is None for day in wanted):
+        raise typer.BadParameter("YYYY-MM-DD で日付を渡すこと。")
+
+    console.print(f"[dim]名簿の原本を1周読む（{len(wanted)} 日ぶんを探す）…[/]")
+    for day in wanted:
+        assert day is not None
+        found = roster_day_detail(Path(archive_dir), day)
+
+        table = Table(title=f"{day} の名簿の原本")
+        table.add_column("見たもの")
+        table.add_column("値", justify="right")
+        table.add_row("その日を持つ原本", f"{len(found.files):,}")
+        table.add_row("行", f"{found.rows:,}")
+        table.add_row("絞り込みを通った", f"{found.kept:,}")
+        for reason, count in sorted(found.reasons.items()):
+            table.add_row(f"[dim]落ちた / {reason}[/]", f"{count:,}")
+        console.print(table)
+
+        if found.examples:
+            listed = "  ".join(f"{code}({name})" if name else code for code, name in found.examples)
+            console.print(f"[dim]例: {listed}[/]")
+
+        if not found.files:
+            console.print(
+                f"[yellow]{day}: 原本にその日の行が無い。[/]"
+                "**こちらでは直せない。** 名簿の無い日として記録する。"
+            )
+        elif found.kept:
+            console.print(
+                f"[green]{day}: 名簿が作れる。[/]"
+                "[dim] 既に作られているはず。無いなら取り出しを疑う。[/]"
+            )
+        else:
+            console.print(
+                f"[red]{day}: 行はあるが、絞り込みが全部落とした。[/]"
+                "**こちら側の問題である。** 上の理由の内訳を見ること。"
+            )
+        console.print()
+
+
 @app.command(name="jquants-archive-verify")
 def jquants_archive_verify(
     directory: str = typer.Option(
@@ -4218,11 +4561,29 @@ def jquants_archive_verify(
 
     read = sum(item.bytes_written for item in manifest.values())
     if read:
+        # **「この4倍を見込め」と書いていた（2026-09-12〜15）。** 5年ぶんしか
+        # 手元に無かったときの目安で、20年を取ったいまは掛ける相手がいない。
+        # **伸ばす先が無くなった目安を残すと、読んだ人が4倍して身構える。**
         console.print(
             f"[dim]{_bytes_label(read)} を {elapsed:.1f} 秒で読み直した"
-            f"（{_bytes_label(int(read / elapsed))}/秒）。"
-            f"**20年ぶんはこの4倍を見込むこと。**[/]"
+            f"（{_bytes_label(int(read / elapsed))}/秒）。[/]"
         )
+
+    # **目録 → ディスクは `verify` が見る。** その逆（ディスクに置いたが目録に
+    # 無い）は誰も見ていなかったので、ここで数える。
+    #
+    # 一覧から消えた鍵は余りにならない——**目録は積み上がる。** 2026-09-15 に
+    # 「一覧に無い65本は目録にも無い」と読んで外した。`read_manifest` が既存を
+    # 読んでから足すので、鍵は残る。書き直すのは中身であって鍵の集合ではない。
+    extra = archive_orphans(target)
+    if extra:
+        console.print(
+            f"[yellow]目録に無いファイルが {len(extra)} 本ある。[/]"
+            "[dim] 照合の対象外で、写しには運ばれる。**消していない**——"
+            "向こうのファイル名が変わったときに、古いほうが残る。[/]"
+        )
+        for name in extra[:5]:
+            console.print(f"  [dim]{name}[/]")
 
     if not (missing or wrong_size or changed):
         console.print(f"[green]目録の {len(manifest)} 本すべてが一致している。[/]")
@@ -4564,7 +4925,8 @@ def jquants_inventory(
     # **原本が覆う期間を渡す。** DB には立花の2001年以降も入っているので、
     # 全体の行数と取り込みの報告はそもそも一致しない。期間を切って初めて
     # 比べられる。
-    window = _archive_window(Path(DEFAULT_ARCHIVE_DIR))
+    covered = _archive_window(Path(DEFAULT_ARCHIVE_DIR))
+    window = (covered[0], covered[1]) if covered else None
     coverage = audit(database, snapshots, window=window)
     left = coverage.days_left()
 
@@ -4639,15 +5001,21 @@ def jquants_inventory(
     )
     console.print(risk)
 
-    if window:
+    if covered:
         # **銘柄数だけでは、書けたことにならない。** 取り込みは「N 行を
         # 書いた」と言うが、それは upsert に渡した数である。渡したことと
         # 入ったことは別で、**入らなくても例外は出ない。**
         console.print(
-            f"[dim]原本が覆う {window[0]} 〜 {window[1]} の日足は "
+            f"[dim]原本が覆う {covered[0]} 〜 {covered[1]} の日足は "
             f"[bold]{coverage.price_rows_in_window:,}[/] 行。"
             "**一括取り込みが「書いた」と言った行数と突き合わせること。**[/]"
         )
+        # **どの原本から期間を取ったかも出す。** 間違った1本を選んでいても、
+        # 日付だけでは気付けない——2026-09-15 に、20年ぶんを入れたのに
+        # 「2021-09-01 〜」と出た。鍵の形が2通りあり、文字列で並べると新しい
+        # ほうが前に来ていた。
+        console.print(f"[dim]  期間の出どころ: {covered[2]}[/]")
+        console.print(f"[dim]              〜 {covered[3]}[/]")
 
     console.print()
     files, with_lending, lending_rows = lending_coverage(Path(DEFAULT_SNAPSHOT_DIR))
@@ -4737,6 +5105,202 @@ def jquants_inventory(
         "2026-09-03 に閉じた（docs/HYPOTHESES.md）。**再開する予定が無いなら"
         "取り直す必要は無い。** 再開しうるなら、解約前が最後の機会になる。[/]"
     )
+
+
+@app.command(name="jquants-valuation")
+def jquants_valuation(
+    directory: str = typer.Option(
+        str(DEFAULT_ARCHIVE_DIR), "--dir", help="Where the archived originals live."
+    ),
+    limit: int | None = typer.Option(None, "--limit", help="Read only the first N files."),
+) -> None:
+    """Read the archived valuation originals and check them against themselves.
+
+    **時価総額を自前で組み立てないための読み口。** 株価 × 発行済株式数 は分割
+    を跨ぐと尺度が変わる——このプロジェクトが繰り返し踏んでいる形である。
+
+    別の原本を持ち出す前に、このファイルだけで確かめる。``PER × EPS`` と
+    ``PBR × BPS`` はどちらも終値を指すので、**合わなければ列の意味がこちらの
+    想像と違う。**
+
+    取りには行かない。読むだけ。
+    """
+    from stock_ai.data.jquants_valuation import (
+        ACTUAL_COLUMNS,
+        identity_check,
+    )
+    from stock_ai.data.jquants_valuation import (
+        census as valuation_census,
+    )
+    from stock_ai.data.jquants_valuation import (
+        from_archive as valuation_from_archive,
+    )
+
+    settings = get_settings()
+    configure_logging(settings.log_level)
+
+    # **進捗は1行に収める。** 途中経過を残す形にすると、貼ったときに何十行にもなる。
+    def progress(index: int, total: int, _key: str) -> None:
+        console.print(f"読んでいる… {index}/{total}", end="\r")
+
+    frame = valuation_from_archive(Path(directory), limit=limit, progress=progress)
+    console.print(" " * 40, end="\r")
+    if frame.empty:
+        console.print("[red]原本が1本も無い。[/] `checks\\原本をまるごと保存.bat` が先。")
+        return
+
+    found = valuation_census(frame)
+    console.print(f"{len(frame):,} 銘柄日、{found.symbols:,} 銘柄、{found.first} 〜 {found.last}")
+
+    table = Table(title="年ごとに、実績の列がどれだけ埋まっているか")
+    table.add_column("年")
+    table.add_column("銘柄日", justify="right")
+    for name in ACTUAL_COLUMNS.values():
+        table.add_column(name, justify="right")
+    for year, rows in found.rows_by_year.items():
+        table.add_row(
+            str(year),
+            f"{rows:,}",
+            *(
+                f"{found.share(year, name):.0%}"
+                if found.share(year, name) >= 0.5
+                else f"[yellow]{found.share(year, name):.0%}[/]"
+                for name in ACTUAL_COLUMNS.values()
+            ),
+        )
+    console.print(table)
+
+    # **公式の注意書きを引き写さない。** 「2008〜2010 は Null が多い」と書いて
+    # あるが、どの列がどれだけ空なのかは書いていない。手元のファイルが答える。
+    thin = found.thin_years("market_cap")
+    if thin:
+        console.print(
+            "[yellow]時価総額が半分も埋まっていない年: [/]"
+            + "、".join(str(year) for year in thin)
+            + " [dim]サイズで並べる前に、ここを外すか埋めるかを決めること。[/]"
+        )
+
+    report = identity_check(frame)
+    console.print(report.summary())
+    if report.rate >= 0.99:
+        console.print(
+            "[green]PER × EPS と PBR × BPS が同じ終値を指している。[/] "
+            "[dim]列の意味は想像どおりである。**別の原本を持ち出さずに言えた。**[/]"
+        )
+    elif report.checked:
+        console.print(
+            "[red]2つの掛け算が別の終値を指している。[/] "
+            "**列の意味がこちらの想像と違う。使う前にここを説明すること。**"
+        )
+        detail = Table(title="ずれの大きいもの")
+        for column in ("日付", "銘柄", "PER × EPS", "PBR × BPS"):
+            detail.add_column(column, justify="right" if "×" in column else "left")
+        for date, symbol, left, right in report.worst:
+            detail.add_row(str(date), symbol, f"{left:,.1f}", f"{right:,.1f}")
+        console.print(detail)
+
+
+@app.command(name="jquants-plan-coverage")
+def jquants_plan_coverage(
+    to_plan: str = typer.Option("Free", "--to", help="Plan to downgrade to."),
+    directory: str = typer.Option(
+        str(DEFAULT_ARCHIVE_DIR), "--dir", help="Where the archived originals live."
+    ),
+) -> None:
+    """Say whether downgrading is safe, by endpoint, without fetching anything.
+
+    **「たぶん全部取った」で解約しない。** 公式のプラン表と、原本の目録に実際に
+    何本あるかを並べる。落とすと取れなくなり、しかも手元に1本も無いものが
+    あれば、それが止める理由になる。
+
+    取りには行かない。数えるだけ。
+    """
+    from stock_ai.data.jquants_plan import (
+        NO_HISTORY,
+        UNARCHIVABLE,
+        archivable,
+    )
+    from stock_ai.data.jquants_plan import (
+        coverage as plan_coverage,
+    )
+
+    settings = get_settings()
+    configure_logging(settings.log_level)
+
+    plan = (settings.jquants_plan or "").strip().capitalize()
+    target = to_plan.strip().capitalize()
+    report = plan_coverage(plan, Path(directory))
+
+    console.print(f"いま [bold]{plan or '不明'}[/] → 落とす先 [bold]{target}[/]")
+    console.print()
+
+    table = Table(title="原本の在庫（公式のプラン表に当てたもの）")
+    for column, justify in (
+        ("データ", "left"),
+        ("最低プラン", "left"),
+        ("本数", "right"),
+        ("大きさ", "right"),
+        ("期間", "left"),
+        (f"{target} で増やせるか", "left"),
+    ):
+        # **名前を省略しない。** `/derivatives/bars/d…` が3行並ぶと、
+        # どれが0本なのか読めない——解約の判断がその1点にかかっているのに。
+        table.add_column(column, justify=justify, overflow="fold")
+    for entry in report.entries:
+        span = f"{entry.first[:6]} 〜 {entry.last[:6]}" if entry.first else ""
+        table.add_row(
+            entry.endpoint,
+            entry.minimum_plan,
+            f"{entry.files:,}" if entry.files else "[red]0[/]",
+            f"{entry.bytes / 1_000_000:,.0f} MB" if entry.bytes else "",
+            span,
+            "はい" if archivable(target, entry.endpoint) else "[dim]いいえ[/]",
+        )
+    console.print(table)
+
+    if report.unknown_keys:
+        # **表に無い鍵が出たら、表のほうが古い。** 数えられなかったものを
+        # 黙って捨てると、在庫が実際より少なく見える。
+        console.print(
+            f"[yellow]どのエンドポイントにも当てはまらない原本が {report.unknown_keys} 本ある。[/] "
+            "**こちらの一覧のほうが古い可能性がある。**"
+        )
+
+    blockers = report.blockers(target)
+    if blockers:
+        console.print(
+            f"[red]落とす前に取りに行く先が {len(blockers)} 本ある。[/] "
+            + "、".join(entry.endpoint for entry in blockers)
+        )
+        console.print("[red]**いま落とすと、再契約するまで取れない。**[/]")
+        return
+
+    losing = report.losing(target)
+    console.print(
+        f"[green]手元に1本も無いものは無い。[/] "
+        f"{target} で増やせなくなるのは {len(losing)} 種類だが、"
+        "**どれも既に原本がある。**"
+    )
+    # **失うのは「貯めたもの」ではなく「これから取れること」である。**
+    # 再契約すればその日から戻る。ここを混ぜると、戻せる話が戻せない話に
+    # 見えてしまう。
+    console.print(
+        "[dim]落として失うのは *これから取れること* で、*貯めたもの* ではない。"
+        "原本は手元とpCloudの両方にある。再契約すればその日から増やせる。[/]"
+    )
+
+    if target == "Free":
+        console.print(
+            "[dim]Free は取引カレンダーを除いて一括が使えず、API で見える範囲も"
+            "「12週間前〜2年12週間前」になる。**日々の更新も止まる。**[/]"
+        )
+    for endpoint in sorted(NO_HISTORY):
+        console.print(
+            f"[dim]{endpoint} は全プランで直近のみ。原本が何本あっても、"
+            "過去のある日に何が予定されていたかは戻らない。[/]"
+        )
+    for name, why in UNARCHIVABLE.items():
+        console.print(f"[dim]{name}: {why} 原本に残せないので、在庫の表には出ない。[/]")
 
 
 @app.command(name="price-audit")
