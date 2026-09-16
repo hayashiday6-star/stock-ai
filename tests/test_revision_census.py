@@ -464,3 +464,73 @@ class TestTheCountersDoNotMaskEachOther:
 
         assert seen.no_forecast == 1
         assert seen.no_fiscal_year == 1
+
+
+class TestWhatFillsTheRowsWhereTheForecastIsEmpty:
+    """**33% が読めないまま先に進まない。**
+
+    どういう行が落ちているのかを出す。偏っていれば、残ったイベント集合が歪む。
+
+    **`FNC…` は単体（非連結）である。** ここは数えるだけで**読み替えない**——
+    「連結と単体を取り違える」は名指しで戒めてある形そのものである。
+    """
+
+    def test_a_non_consolidated_forecast_is_seen_but_not_used(self) -> None:
+        row = _row(_DAY, forecast=None)
+        row["FNCNP"] = "500"
+
+        _events, seen = find_upward([row])
+
+        assert seen.no_forecast == 1, "単体を連結として読んでいる"
+        assert dict(seen.missing_fields) == {"FNCNP": 1}
+
+    def test_a_row_with_nothing_at_all_is_named(self) -> None:
+        """**「どれも空」を「その他」に混ぜない。** 別の現象である。"""
+        _events, seen = find_upward([_row(_DAY, forecast=None)])
+
+        assert seen.missing_fields == {"(どれも空)": 1}
+
+    def test_a_zero_is_not_counted_as_filled(self) -> None:
+        """**0 は「値がある」ではない。** 予想の取り下げが 0 で入りうる。"""
+        row = _row(_DAY, forecast=None)
+        row["FSales"] = "0"
+
+        _events, seen = find_upward([row])
+
+        assert seen.missing_fields == {"(どれも空)": 1}
+
+    def test_several_neighbours_are_all_counted(self) -> None:
+        row = _row(_DAY, forecast=None)
+        row["FNCNP"] = "500"
+        row["FSales"] = "9000"
+
+        _events, seen = find_upward([row])
+
+        assert seen.missing_fields == {"FNCNP": 1, "FSales": 1}
+
+    def test_the_profile_is_a_share_not_just_a_count(self) -> None:
+        """**件数ではなく割合を見る。** 「1件でもあれば」で読まないため。"""
+        rows = [_row(_DAY, symbol=f"130{index}", forecast=None) for index in range(4)]
+        rows[0]["FNCNP"] = "500"
+
+        _events, seen = find_upward(rows)
+
+        profile = {name: share for name, _count, share in seen.missing_profile()}
+        assert profile["FNCNP"] == pytest.approx(0.25)
+        assert profile["(どれも空)"] == pytest.approx(0.75)
+
+    def test_the_years_are_recorded_so_a_era_bias_shows(self) -> None:
+        rows = [
+            _row(_DAY, forecast=None),
+            _row(dt.date(2010, 5, 1), symbol="1302", forecast=None),
+        ]
+
+        _events, seen = find_upward(rows)
+
+        assert seen.missing_by_year == {2010: 1, 2024: 1}
+
+    def test_nothing_missing_means_no_profile(self) -> None:
+        """**鳴りっぱなしにしない。** 全部読めていれば表は出ない。"""
+        _events, seen = find_upward([_row(_DAY, forecast=100.0)])
+
+        assert seen.missing_profile() == []

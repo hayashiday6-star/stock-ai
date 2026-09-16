@@ -61,6 +61,25 @@ FISCAL_KEYS: tuple[str, ...] = _FY_END_KEYS
 #: OOS がこれを割ったら設計を見直す（§10）。
 MIN_EVENTS_OOS = 1_000
 
+#: `FNP` が空だった行で、代わりに何が入っているかを見る列。
+#:
+#: **`FNC…` は単体（非連結）である。** `F…` は連結。**混ぜない**——「連結と
+#: 単体を取り違える」は、このプロジェクトが名指しで戒めている形そのものである。
+#: ここは**数えるだけ**で、読み替えはしない。
+NEIGHBOURS: tuple[str, ...] = (
+    "FNP",
+    "FNCNP",
+    "FOP",
+    "FNCOP",
+    "FSales",
+    "FNCSales",
+    "FEPS",
+    "FNCEPS",
+    "FDivAnn",
+    "FNP2Q",
+    "NxFNP",
+)
+
 
 @dataclasses.dataclass(frozen=True)
 class RevisionEvent:
@@ -84,12 +103,36 @@ class Readability:
     downward: int = 0
     too_small: int = 0
     upward: int = 0
+    missing_fields: dict[str, int] = dataclasses.field(default_factory=dict)
+    """`FNP` が空だった行で、代わりに埋まっていた列と件数。
+
+    **読み替えるためではない。** どういう行が落ちているのかを見るためである。
+    """
+
+    missing_by_year: dict[int, int] = dataclasses.field(default_factory=dict)
+    """`FNP` が空だった行の年ごとの件数。**時代に偏っていないかを見る。**"""
+
     keys_seen: dict[str, int] = dataclasses.field(default_factory=dict)
     """`EarnForecastRevision` の行に実際に載っていた鍵と件数。
 
     **予想が1件も読めなかったときに、ここが答える。** 「無い」のか「名前が
     違う」のかを分けられる。
     """
+
+    def missing_profile(self) -> list[tuple[str, int, float]]:
+        """`FNP` が空の行で何が埋まっていたか。**件数の多い順に、割合つき。**
+
+        **割合で見る。** 件数だけだと「1件でもあれば」で読んでしまう
+        （`CLAUDE.md`「『ゼロでない』を根拠に断定しない」）。
+        """
+        if not self.no_forecast:
+            return []
+        return [
+            (name, count, count / self.no_forecast)
+            for name, count in sorted(
+                self.missing_fields.items(), key=lambda pair: (-pair[1], pair[0])
+            )
+        ]
 
     def inventory(self, limit: int = 20) -> str:
         """`FS` に実際に載っていた鍵。**「無い」と「名前が違う」を分ける。**"""
@@ -199,6 +242,12 @@ def find_upward(
                 seen.no_fiscal_year += 1
             if forecast is None or forecast == 0.0:
                 seen.no_forecast += 1
+                seen.missing_by_year[day.year] = seen.missing_by_year.get(day.year, 0) + 1
+                filled = [
+                    name for name in NEIGHBOURS if (record.get(name) or "").strip() not in {"", "0"}
+                ]
+                for name in filled or ["(どれも空)"]:
+                    seen.missing_fields[name] = seen.missing_fields.get(name, 0) + 1
 
         if fiscal is None or forecast is None or forecast == 0.0:
             continue

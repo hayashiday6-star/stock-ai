@@ -7182,6 +7182,28 @@ def revision_census_upward(
             years.add_row(str(year), f"{count:,}")
         console.print(years)
 
+    # **33% が読めないまま先に進まない。** どういう行が落ちているのかを出す。
+    #
+    # **`FNC…` は単体（非連結）である。** `F…` は連結。ここは数えるだけで、
+    # **読み替えない**——「連結と単体を取り違える」は名指しで戒めてある形である。
+    profile = read.missing_profile()
+    if profile:
+        missing = Table(title=f"会社予想が読めなかった {read.no_forecast:,} 件の中身")
+        for column in ("代わりに埋まっていた列", "件数", "割合"):
+            missing.add_column(column, justify="left" if column.startswith("代わり") else "right")
+        for name, count, share in profile[:12]:
+            note = "（単体）" if name.startswith("FNC") else ""
+            missing.add_row(f"{name}{note}", f"{count:,}", f"{share:.0%}")
+        console.print(missing)
+        if read.missing_by_year:
+            span = sorted(read.missing_by_year)
+            console.print(
+                f"[dim]読めなかった行の年: {span[0]} 〜 {span[-1]}、"
+                f"最多は {max(read.missing_by_year, key=lambda y: read.missing_by_year[y])} 年"
+                f"（{max(read.missing_by_year.values()):,} 件）。"
+                "**時代に偏っていないかを見る。**[/]"
+            )
+
     for line in found.warnings():
         console.print(f"[yellow]{line}[/]")
 
