@@ -444,6 +444,52 @@ HIGH_SEAL = "封印する"
 HIGH_STOP = "封印しない"
 
 
+# --- 2つ目の校正（共通因子を抜く）の線 ------------------------------------
+#
+# **測る前に確定させた（2026-09-16）。** 出どころは `docs/HYPOTHESES.md`
+# 「2つ目の校正」。**見てから動かさない。**
+
+#: 動いたと言える比。**#7 が要った 1.38倍を上回る線。**
+NEUTRAL_PASS = 1.4
+
+#: 曖昧域の下端。ここから上は「もう少し」だが、**扱いは打ち切りで同じ。**
+NEUTRAL_AMBIGUOUS = 1.2
+
+NEUTRAL_PROCEED = "動いた"
+NEUTRAL_STOP = "打ち切る"
+
+
+def neutral_verdict(ratio: float | None) -> tuple[str, str]:
+    """共通因子を抜いた利得 r を、封印済みの表に当てはめる。
+
+    Args:
+        ratio: 中立版の t ÷ いまの方法の t。符号が違えば ``None``。
+
+    Returns:
+        ``(扱い, 読み方)``。
+    """
+    if ratio is None:
+        return NEUTRAL_STOP, (
+            "**符号が違うので比を返せない。** 片方が負なら「何倍良い」は意味を"
+            "持たない（2026-09-05 に合成でそうなった）。打ち切る。"
+        )
+    if ratio >= NEUTRAL_PASS:
+        return NEUTRAL_PROCEED, (
+            "**新しい説の設計に使える。** ただし #8（5.3倍要る）と #9（10倍要る）"
+            "は戻らない。戻るのは「月次・technical・効果が年3〜4%」の一角だけである。"
+        )
+    if ratio >= NEUTRAL_AMBIGUOUS:
+        return NEUTRAL_STOP, (
+            "**曖昧域。打ち切る。** 「もう少しで届くから別の因子で測り直す」は"
+            "測定後にしか出てこない理屈で、当てはまるまで測り方を変えることと"
+            "区別が付かない。"
+        )
+    return NEUTRAL_STOP, (
+        "**動かない。** 散らばりの大部分は業種でも規模でもなかった。"
+        "推定量をいじって届く距離ではない。"
+    )
+
+
 def high_verdict(estimate: float) -> tuple[str, str]:
     """IS の推定値を、封印済みの線に当てはめる。
 

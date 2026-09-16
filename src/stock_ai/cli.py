@@ -7053,6 +7053,154 @@ def _events_needed(counted: object, estimate: object, target: float, *effects: f
     )
 
 
+@app.command(name="estimator-gain")
+def estimator_gain(  # noqa: PLR0913 - 校正が固定した条件をすべて受け取る
+    factor: str = typer.Option("低ボラ", "--factor", help="Which factor to calibrate on."),
+    is_start: str = typer.Option("2009-01-01", "--is-start", help="First day of the IS window."),
+    is_end: str = typer.Option("2017-12-31", "--is-end", help="Last day of the IS window."),
+    valuation: str | None = typer.Option(None, "--valuation", help="Month-end PBR file."),
+    window: int = typer.Option(DEFAULT_WINDOW, "--window", help="Volatility window in sessions."),
+    min_symbols: int = typer.Option(MIN_SYMBOLS_PER_MONTH, "--min-symbols", help="Per month."),
+    lags: int = typer.Option(LOWVOL_LAGS, "--lags", help="Newey-West lags, in months."),
+) -> None:
+    """Measure r, the t gain from taking sector and size out of the returns.
+
+    **判定ではない。** 推定量の校正であって、説の合否ではない。見るのは IS だけ
+    である。
+
+    **1つ目の校正（分位ソート → 横断回帰）は 0.93倍で終わった。** これが2つ目
+    で、**残っている最後の手**である——どの説も市場βしか引いていない。
+
+    しきい値は測る前に確定してある（`docs/HYPOTHESES.md`「2つ目の校正」）。
+    **r ≥ 1.4 で動いた、1.2 ≤ r < 1.4 は曖昧域で打ち切り、r < 1.2 は動かない。**
+    1.4 の出どころは #7 で、**1.38倍あれば足りていた。**
+
+    **`t` 比で測る。SD 比ではない。** 推定量を変えると効果も一緒に縮むので、
+    SD 比だと改善が無料で出たように見える。
+
+    **判定済みの説を測り直すのに使わない**（2026-09-16、ユーザーの判断）。
+    答えを見た後で測り方を変えることになる。
+    """
+    from stock_ai.backtest.cross_section import beta_to_benchmark, build_estimators, neutralise
+    from stock_ai.backtest.cross_section import t_ratio as ratio_of
+    from stock_ai.backtest.factor_panel import NEEDS_VALUATION, build_panel
+    from stock_ai.backtest.power import NEUTRAL_PROCEED, estimate_power, neutral_verdict
+    from stock_ai.data.valuation_monthly import DEFAULT_PATH
+    from stock_ai.data.valuation_monthly import read as read_valuation
+
+    settings = get_settings()
+    configure_logging(settings.log_level)
+
+    begin, cut = _parse_date(is_start), _parse_date(is_end)
+    if begin is None or cut is None or begin >= cut:
+        raise typer.BadParameter("--is-start/--is-end must be YYYY-MM-DD and in order.")
+
+    frame = None
+    if factor in NEEDS_VALUATION:
+        frame = read_valuation(Path(valuation) if valuation else DEFAULT_PATH)
+        if frame.empty:
+            console.print("[red]月末の PBR が無い。[/]")
+            raise typer.Exit(code=1)
+
+    console.print("[bold yellow]これは判定ではない。[/] 推定量の校正である。")
+    console.print(
+        "[dim]しきい値は測る前に確定済み（`docs/HYPOTHESES.md`）。"
+        "**r ≥ 1.4 で動いた、1.2〜1.4 は打ち切り。** 見てから動かさない。[/]"
+    )
+    console.print()
+
+    database = Database()
+    database.create_all()
+    try:
+        panel = build_panel(
+            database,
+            factors=(factor,),
+            start=begin,
+            end=cut,
+            window=window,
+            min_symbols=min_symbols,
+            valuation=frame,
+        )
+    except ValueError as error:
+        console.print(f"[red]盤面を作れなかった: {error}[/]")
+        raise typer.Exit(code=1) from error
+
+    column = panel.column(factor)
+
+    # **月を揃える。** 中立化できない月は両方から落とす。揃っていない系列の
+    # t を比べると、推定量の差ではなく期間の差を測ることになる。
+    plain: list[list[tuple[float, float]]] = []
+    neutral: list[list[tuple[float, float]]] = []
+    bench: list[float] = []
+    skipped = 0
+    explained: list[float] = []
+    for month, (rows, meta, mark) in enumerate(
+        zip(column, panel.context, panel.benchmark, strict=True)
+    ):
+        forwards = [forward for _signal, forward in rows]
+        taken = neutralise(forwards, [item.sector for item in meta], [item.size for item in meta])
+        if taken is None:
+            skipped += 1
+            continue
+        plain.append(rows)
+        neutral.append(
+            [
+                (signal, residual)
+                for (signal, _forward), residual in zip(rows, taken.residuals, strict=True)
+            ]
+        )
+        bench.append(mark)
+        explained.append(taken.explained)
+        del month
+
+    if len(plain) < 2:
+        console.print(f"[red]中立化できた月が {len(plain)} しかない。[/]")
+        raise typer.Exit(code=1)
+
+    # (a) いまの方法 — 生のスプレッドから市場βを引く。
+    built = build_estimators(plain, bench, higher_is_better=True)
+    beta = beta_to_benchmark(built.quantile_spread, built.benchmark)
+    before = built.alpha(built.quantile_spread, beta)
+    # (b) 中立版 — 断面回帰の残差。**定数項で市場は既に抜けているので、β は
+    # 引かない。** 引くと二重に抜くことになる。
+    after_built = build_estimators(neutral, bench, higher_is_better=True)
+    after = after_built.quantile_spread
+
+    rows_out = []
+    for label, values in (("(a) 市場βだけ引く", before), ("(b) 業種・規模も抜く", after)):
+        estimate = estimate_power(values, lags=lags)
+        stderr = estimate.standard_error(len(values))
+        rows_out.append((label, estimate, fmean(values) / stderr if stderr > 0 else float("nan")))
+
+    table = Table(title=f"共通因子を抜いた利得（{factor}・IS のみ。**判定ではない**）")
+    for name in ("推定量", "月数", "1期あたりのSD", "重なりの膨張", "t"):
+        table.add_column(name, overflow="fold")
+    for label, estimate, value in rows_out:
+        table.add_row(
+            label,
+            f"{estimate.observations}",
+            f"{estimate.daily_sd:.2%}",
+            f"{estimate.inflation:.2f}x",
+            f"[bold]{value:+.2f}[/]",
+        )
+    console.print(table)
+    console.print(
+        f"[dim]業種と規模で説明できた断面の分散: 中央値 {median(explained):.0%}"
+        f"（中立化できずに落とした月 {skipped}）。**0% なら抜けていない。**[/]"
+    )
+
+    gain = ratio_of(rows_out[1][2], rows_out[0][2])
+    verdict, reading = neutral_verdict(gain)
+    console.print()
+    console.print(f"[bold]r = {gain:.2f}[/]" if gain is not None else "[bold]r は出せない[/]")
+    colour = "green" if verdict == NEUTRAL_PROCEED else "red"
+    console.print(f"[bold {colour}]{verdict}[/] {reading}")
+    console.print(
+        "[dim]**SD 比ではなく t 比である。** 推定量を変えると効果も一緒に縮む。"
+        "SD 比を見ると、改善が無料で出たように見える。[/]"
+    )
+
+
 @app.command(name="margin-census")
 def margin_census(  # noqa: PLR0913 - §2 が固定した絞り込みをすべて受け取る
     directory: str = typer.Option(

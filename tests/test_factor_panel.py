@@ -450,3 +450,82 @@ def test_passing_the_panel_column_with_the_default_orientation_buys_the_other_en
 
     for correct, flipped in zip(right.quantile_spread, wrong.quantile_spread, strict=True):
         assert flipped == pytest.approx(-correct)
+
+
+class TestThePanelCarriesWhatIsNeededToNeutralise:
+    """**signal と一緒の組に入れない。** `composite()` が全部標準化して足す。
+
+    業種を数値にして signal に混ぜると、**例外は出ないまま業種が1つの因子に
+    なる。**
+    """
+
+    def test_every_row_has_a_context_beside_it(self) -> None:
+        panel = build_panel(_database(), factors=("低ボラ",), window=60, min_symbols=10)
+
+        assert len(panel.context) == len(panel.sections)
+        for rows, meta in zip(panel.sections, panel.context, strict=True):
+            assert len(rows) == len(meta)
+
+    def test_the_size_is_a_logarithm_not_yen(self) -> None:
+        """**円のままだと 1e8 と 1e11 が同じ桁に見えない。** 回帰が最大の銘柄で決まる。"""
+        panel = build_panel(_database(), factors=("低ボラ",), window=60, min_symbols=10)
+
+        sizes = [item.size for month in panel.context for item in month]
+
+        assert sizes
+        # 売買代金 1,000 × 500,000 = 5e8 なので、対数なら 20 前後。
+        assert all(10.0 < value < 30.0 for value in sizes)
+
+    def test_the_symbols_line_up_with_the_rows(self) -> None:
+        """**ずれると、別の銘柄の業種でリターンを中立化する。** 例外は出ない。"""
+        panel = build_panel(_database(), factors=("低ボラ",), window=60, min_symbols=10)
+
+        for month in panel.context:
+            assert len({item.symbol for item in month}) == len(month)
+
+
+class TestTheCalibrationRunsEndToEnd:
+    def test_it_prints_both_estimators_and_the_ratio(self, monkeypatch) -> None:
+        """**部品が全部緑でも、繋ぎ忘れは出る。**"""
+        from typer.testing import CliRunner
+
+        from stock_ai import cli
+
+        monkeypatch.setenv("COLUMNS", "200")
+        monkeypatch.setattr(cli, "Database", lambda *a, **k: _database())
+
+        result = CliRunner().invoke(
+            cli.app,
+            [
+                "estimator-gain",
+                "--factor",
+                "低ボラ",
+                "--is-start",
+                "2022-01-03",
+                "--is-end",
+                "2024-06-28",
+                "--window",
+                "60",
+                "--min-symbols",
+                "10",
+            ],
+        )
+
+        assert result.exit_code == 0, result.output
+        assert "市場βだけ引く" in result.output
+        assert "業種・規模も抜く" in result.output
+        assert "判定ではない" in result.output
+
+    def test_a_backwards_window_is_refused(self, monkeypatch) -> None:
+        from typer.testing import CliRunner
+
+        from stock_ai import cli
+
+        monkeypatch.setattr(cli, "Database", lambda *a, **k: _database())
+
+        result = CliRunner().invoke(
+            cli.app,
+            ["estimator-gain", "--is-start", "2024-01-01", "--is-end", "2023-01-01"],
+        )
+
+        assert result.exit_code != 0

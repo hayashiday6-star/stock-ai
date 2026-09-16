@@ -280,3 +280,129 @@ def test_getting_the_orientation_wrong_buys_the_other_end_without_an_error() -> 
     flipped = sum(wrong.quantile_spread) / wrong.months
     assert correct > 0 > flipped
     assert flipped == pytest.approx(-correct)
+
+
+# --- 共通因子を抜く（2つ目の校正） ---------------------------------------------
+#
+# **判定ではない。** しきい値は `docs/HYPOTHESES.md` に測る前から書いてある。
+
+
+class TestTakingTheCommonFactorsOut:
+    def test_a_pure_sector_spread_leaves_nothing(self) -> None:
+        """**業種の賭けだけなら、抜いた後に何も残らない。**"""
+        from stock_ai.backtest.cross_section import neutralise
+
+        values = [0.10] * 10 + [-0.10] * 10
+        sectors = ["鉄鋼"] * 10 + ["電機"] * 10
+
+        taken = neutralise(values, sectors)
+
+        assert taken is not None
+        assert max(abs(value) for value in taken.residuals) < 1e-12
+        assert taken.explained == pytest.approx(1.0)
+
+    def test_dispersion_inside_a_sector_survives(self) -> None:
+        """**抜くのは業種の平均だけ。** 中身の散らばりは残る。"""
+        from stock_ai.backtest.cross_section import neutralise
+
+        values = [0.10, -0.10] * 10
+        sectors = ["鉄鋼"] * 20
+
+        taken = neutralise(values, sectors)
+
+        assert taken is not None
+        assert taken.residuals == pytest.approx(values)
+        assert taken.explained == pytest.approx(0.0)
+
+    def test_size_is_taken_out_on_top_of_the_sector(self) -> None:
+        """規模に比例する分も引かれること。"""
+        from stock_ai.backtest.cross_section import neutralise
+
+        sizes = [float(index) for index in range(20)]
+        values = [0.01 * size for size in sizes]
+        sectors = ["鉄鋼"] * 20
+
+        taken = neutralise(values, sectors, sizes)
+
+        assert taken is not None
+        assert max(abs(value) for value in taken.residuals) < 1e-12
+
+    def test_a_sector_of_one_is_counted_rather_than_dropped(self) -> None:
+        """**落とすと、その月だけ universe が変わる。** まとめて数える。"""
+        from stock_ai.backtest.cross_section import neutralise
+
+        values = [0.01 * index for index in range(21)]
+        sectors = ["鉄鋼"] * 20 + ["ただ1社の業種"]
+
+        taken = neutralise(values, sectors)
+
+        assert taken is not None
+        assert taken.dropped == 1
+        assert taken.residuals[-1] == pytest.approx(0.0)
+
+    def test_a_thin_cross_section_is_refused_rather_than_fitted(self) -> None:
+        """**銘柄が少ないと残差がほぼ 0 になる。** 消えたのではなく当てはめただけ。"""
+        from stock_ai.backtest.cross_section import neutralise
+
+        values = [0.01, -0.02, 0.03, -0.01]
+        sectors = ["A", "B", "C", "D"]
+
+        assert neutralise(values, sectors) is None
+
+    def test_a_blank_sector_is_one_group_not_many(self) -> None:
+        """**空文字を銘柄ごとに別扱いすると、全員の残差が 0 になる。**"""
+        from stock_ai.backtest.cross_section import neutralise
+
+        values = [0.01 * index for index in range(20)]
+
+        taken = neutralise(values, [""] * 20)
+
+        assert taken is not None
+        assert taken.groups == 1
+        assert taken.explained == pytest.approx(0.0)
+
+    def test_mismatched_lengths_are_an_error(self) -> None:
+        from stock_ai.backtest.cross_section import neutralise
+
+        with pytest.raises(ValueError):
+            neutralise([0.1, 0.2], ["A"])
+
+
+class TestTheCalibrationThresholdIsAppliedByCode:
+    """**人が読んで当てはめると、測定後でも線が動く。**"""
+
+    def test_a_clear_gain_proceeds(self) -> None:
+        from stock_ai.backtest.power import NEUTRAL_PROCEED, neutral_verdict
+
+        assert neutral_verdict(1.4)[0] == NEUTRAL_PROCEED
+
+    def test_the_line_sits_above_what_hypothesis_seven_needed(self) -> None:
+        """#7 は 1.38倍あれば足りていた。**その上に置いてある。**"""
+        from stock_ai.backtest.power import NEUTRAL_PASS, NEUTRAL_STOP, neutral_verdict
+
+        assert NEUTRAL_PASS > 1.38
+        assert neutral_verdict(1.38)[0] == NEUTRAL_STOP
+
+    def test_the_ambiguous_band_stops_and_says_it_will_not_be_remeasured(self) -> None:
+        from stock_ai.backtest.power import NEUTRAL_STOP, neutral_verdict
+
+        verdict, reading = neutral_verdict(1.3)
+
+        assert verdict == NEUTRAL_STOP
+        assert "測定後にしか出てこない理屈" in reading
+
+    def test_no_gain_at_all_reads_differently_but_acts_the_same(self) -> None:
+        from stock_ai.backtest.power import NEUTRAL_STOP, neutral_verdict
+
+        stop, reading = neutral_verdict(0.9)
+
+        assert stop == NEUTRAL_STOP
+        assert "動かない" in reading
+
+    def test_a_flipped_sign_gives_no_ratio_at_all(self) -> None:
+        """**片方が負なら「何倍良い」は意味を持たない。**"""
+        from stock_ai.backtest.cross_section import t_ratio
+        from stock_ai.backtest.power import NEUTRAL_STOP, neutral_verdict
+
+        assert t_ratio(0.8, -1.7) is None
+        assert neutral_verdict(None)[0] == NEUTRAL_STOP
