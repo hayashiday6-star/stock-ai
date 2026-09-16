@@ -15,22 +15,57 @@
 
 | ID | # | 説 | 種類 | 構成 | 市場 | 出典 | 事前登録 |
 |---|---|---|---|---|---|---|---|
-| `ACCUMULATION_JP` | 1 | アキュムレーション5条件 | technical | single | jp | 未記載 | [PREREG_ACCUMULATION_JP.md](PREREG_ACCUMULATION_JP.md) |
-| `PEAD_JP` | 2 | 決算後ドリフト（株価反応で並べる） | fundamental | single | jp | 未記載 | [PREREG_PEAD_JP.md](PREREG_PEAD_JP.md) |
-| `SUE_JP` | 3 | 決算後ドリフト（会社予想との差で並べる） | fundamental | single | jp | 未記載 | [PREREG_SUE_JP.md](PREREG_SUE_JP.md) |
-| `PEAD_CROWDING_JP` | 4 | 決算集中日の注意分散 | fundamental | single | jp | 未記載 | PREREG_PEAD_JP.md §7 |
-| `REVISION_JP` | 5 | 予想修正後のドリフト | fundamental | single | jp | 未記載 | 未作成 |
-| `REVERSAL_JP` | 6 | 短期リバーサル | technical | single | jp | 未記載 | [PREREG_REVERSAL_JP.md](PREREG_REVERSAL_JP.md) |
-| `LOWVOL_JP` | 7 | 低ボラティリティ | technical | single | jp | 未記載 | [PREREG_LOWVOL_JP.md](PREREG_LOWVOL_JP.md) |
-| `MARGIN_JP` | 8 | 増担保規制の発動後ドリフト | anomaly | single | jp | 未記載 | [PREREG_MARGIN_JP.md](PREREG_MARGIN_JP.md) |
+| `ACCUMULATION_JP` | 1 | アキュムレーション5条件 | technical | single | jp | ネット記事等（URL未記録） | [PREREG_ACCUMULATION_JP.md](PREREG_ACCUMULATION_JP.md) |
+| `PEAD_JP` | 2 | 決算後ドリフト（株価反応で並べる） | fundamental | single | jp | ネット記事等（URL未記録） | [PREREG_PEAD_JP.md](PREREG_PEAD_JP.md) |
+| `SUE_JP` | 3 | 決算後ドリフト（会社予想との差で並べる） | fundamental | single | jp | ネット記事等（URL未記録） | [PREREG_SUE_JP.md](PREREG_SUE_JP.md) |
+| `PEAD_CROWDING_JP` | 4 | 決算集中日の注意分散 | fundamental | single | jp | ネット記事等（URL未記録） | PREREG_PEAD_JP.md §7 |
+| `REVISION_JP` | 5 | 予想修正後のドリフト | fundamental | single | jp | ネット記事等（URL未記録） | 未作成 |
+| `REVERSAL_JP` | 6 | 短期リバーサル | technical | single | jp | ネット記事等（URL未記録） | [PREREG_REVERSAL_JP.md](PREREG_REVERSAL_JP.md) |
+| `LOWVOL_JP` | 7 | 低ボラティリティ | technical | single | jp | ネット記事等（URL未記録） | [PREREG_LOWVOL_JP.md](PREREG_LOWVOL_JP.md) |
+| `MARGIN_JP` | 8 | 増担保規制の発動後ドリフト | anomaly | single | jp | ネット記事等（URL未記録） | [PREREG_MARGIN_JP.md](PREREG_MARGIN_JP.md) |
 
-**出典が8本とも「未記載」なのは、記録が無いからである。** 事前登録には
-「文献の低ボラ超過（年0〜2%）」のような言及はあるが、**引ける形の出典は
-どこにも書かれていない。** `docs/PURPOSE.md` は登録時に出典を求めているので、
-**ここは埋めるべき欠けである。** 思い出して書くのではなく、当たり直して書く。
+**8本とも「ネット記事等（URL未記録）」である。** これが本当のところで、
+ユーザーがそう述べた（2026-09-16）——**ネット記事などで見かけた説である。**
 
-`PREREG_MARGIN_JP.md` が「似た文献から引き写さない。転記すれば『出典のある
-数字』の見た目を作ってしまう」と書いている。**その戒めが、ここにも効く。**
+### あとから論文を探して埋めない
+
+**それは、いま無い出典を作ることである。** ひな形の §0 がこう戒めている。
+
+> 「同じ設計」を緩めない。…**転記すれば「出典のある数字」の見た目をした別物
+> が §0 に入る。出典の無い数字より質が悪い**——検証できないものを、検証した
+> ように見せることになる。
+
+ネット記事で見かけた説を検証したのに、あとから見つけた論文の数字を見込み値に
+使えば、**母集団も保有期間も違う別物**が §0 に入る。**空欄のほうが正直である。**
+
+### 出典が無くても封印はできる
+
+見込み値の梯子（`PREREG_TEMPLATE.md`）は、文献値が無いときに **2段目——
+自分の IS から推定する**を用意している。**1段目が埋まらないだけで、止まらない。**
+#8 は既にそうしていて、「報告された文献値を、こちらは持っていない」と明記して
+いる。
+
+### では、これから何を書くのか
+
+論文ではなく **「誰がどこでそう言っているか」** である。俗説にとっては、
+ネット記事こそが正しい出典である。要るのは **URL ＋ 主張の一文 ＋ 見た日**
+の3つだけで、登録のときに貼れば済む。
+
+**2つのために要る。**
+
+1. **主張が後から動かないように固定する。** 結果を見てから「検証したかったのは
+   そういう意味ではない」と言い換えられなくする。`封印後に基準を変えない` の
+   親戚である。
+2. **公開レポートが成り立つように。** 「X を検証して落ちた」は、**X が誰の主張
+   なのか書けないと弱い。** 「そんな説は誰も言っていない」で終わる。
+
+### #7 の §0 には、出典の無い見込み値が入っている
+
+`PREREG_LOWVOL_JP.md` は「文献の低ボラ超過（年0〜2%）」を §0 の見込み値に
+使っている。**その年 0〜2% に出典の記録が無い。**
+
+**いまから探して後付けしない。** 上に書いた理由そのものである。判定も変えない
+——封印して回した結果である。**レポートにそう書き添えるのが正直な扱いである。**
 
 ### 判定
 

@@ -111,8 +111,18 @@ class Hypothesis:
 
     @property
     def source_recorded(self) -> bool:
-        """出典が記録されているか。"""
+        """出典が何か書かれているか。"""
         return self.source not in {"", MISSING, "—"}
+
+    @property
+    def source_traceable(self) -> bool:
+        """**そこへ行って確かめられるか。**
+
+        「記録が無い」と「たどれない」は別である。「ネット記事等（URL未記録）」
+        は出所の**種類**は記録されているが、読みに行けない。**どちらも空欄と
+        同じに扱うと、正直に書いたことが罰される。**
+        """
+        return self.source_recorded and "未記録" not in self.source
 
 
 def read_registry(path: Path) -> list[Hypothesis]:
@@ -188,8 +198,16 @@ def report_for(hypothesis: Hypothesis, section: str) -> str:
     ]
     if not hypothesis.source_recorded:
         lines += [
-            "> **出典が記録されていない。** もっともらしい文献名を補っていない——",
-            "> 転記すれば「出典のある数字」の見た目を作ってしまう。当たり直して埋める。",
+            "> **出典が何も記録されていない。**",
+            "",
+        ]
+    elif not hypothesis.source_traceable:
+        # **あとから論文を探して埋めない。** それは、いま無い出典を作ること
+        # である。空欄のほうが正直である。
+        lines += [
+            "> **出所の種類は分かっているが、たどれない。** あとから論文を探して",
+            "> 埋めていない——転記すれば「出典のある数字」の見た目をした別物が",
+            "> 入る。**空欄のほうが正直である。**",
             "",
         ]
     if not hypothesis.judged:

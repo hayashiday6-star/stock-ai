@@ -6704,7 +6704,9 @@ def hypothesis_report(
             hypothesis.identifier,
             hypothesis.kind,
             hypothesis.verdict if hypothesis.judged else f"[dim]{hypothesis.verdict}[/]",
-            "あり" if hypothesis.source_recorded else "[yellow]未記載[/]",
+            "あり"
+            if hypothesis.source_traceable
+            else ("[dim]たどれない[/]" if hypothesis.source_recorded else "[yellow]未記載[/]"),
         )
     console.print(table)
 
@@ -6713,14 +6715,21 @@ def hypothesis_report(
         f"判定を消費したのは [bold]{len(judged)}[/] 本、登録は {len(found)} 本。"
         "[dim] 多重検定はこの本数で考える（`power-budget`）。[/]"
     )
-    missing = [hypothesis for hypothesis in found if not hypothesis.source_recorded]
-    if missing:
-        # **埋めない。数える。** もっともらしい文献名を補うと、「出典のある
-        # 数字」の見た目だけができる。
+    blank = [hypothesis for hypothesis in found if not hypothesis.source_recorded]
+    if blank:
+        console.print(f"[yellow]出典が何も記録されていない説が {len(blank)} 本ある。[/]")
+    vague = [
+        hypothesis
+        for hypothesis in found
+        if hypothesis.source_recorded and not hypothesis.source_traceable
+    ]
+    if vague:
+        # **埋めない。数える。** あとから論文を探して埋めるのは、いま無い出典を
+        # 作ることである。空欄のほうが正直である。
         console.print(
-            f"[yellow]出典が記録されていない説が {len(missing)} 本ある。[/] "
-            "**`docs/PURPOSE.md` は登録時に出典を求めている。** "
-            "[dim]思い出して書くのではなく、当たり直して書くこと。[/]"
+            f"[dim]出所は分かるがたどれない説が {len(vague)} 本。"
+            "**あとから論文を探して埋めない。** これから登録するものに "
+            "URL・主張の一文・見た日を書く。[/]"
         )
 
 

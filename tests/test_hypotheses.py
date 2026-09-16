@@ -153,7 +153,7 @@ class TestNotFillingInBlanks:
         report = report_for(found[0], "## 1. ためし")
 
         assert MISSING in report
-        assert "もっともらしい文献名を補っていない" in report
+        assert "何も記録されていない" in report
 
     def test_a_recorded_source_is_not_flagged(self) -> None:
         found = read_registry_from(SAMPLE)
@@ -204,3 +204,50 @@ class TestWritingTheFiles:
         write_reports(source, tmp_path / "reports")
 
         assert target.read_text(encoding="utf-8") == first
+
+
+class TestBlankIsNotTheSameAsUntraceable:
+    """**「記録が無い」と「たどれない」は別である。**
+
+    「ネット記事等（URL未記録）」は出所の**種類**は記録されているが、読みに
+    行けない。**どちらも空欄と同じに扱うと、正直に書いたことが罰される。**
+    """
+
+    def _with_source(self, source: str) -> Hypothesis:
+        return Hypothesis("X", "1", "", "", "", "", source, "", "不合格", "", "")
+
+    def test_a_blank_source_is_neither_recorded_nor_traceable(self) -> None:
+        for blank in ("", MISSING, "—"):
+            hypothesis = self._with_source(blank)
+            assert not hypothesis.source_recorded
+            assert not hypothesis.source_traceable
+
+    def test_a_net_article_without_a_url_is_recorded_but_not_traceable(self) -> None:
+        hypothesis = self._with_source("ネット記事等（URL未記録）")
+
+        assert hypothesis.source_recorded
+        assert not hypothesis.source_traceable
+
+    def test_a_real_citation_is_both(self) -> None:
+        hypothesis = self._with_source("https://example.com/article （2026-09-16 閲覧）")
+
+        assert hypothesis.source_recorded
+        assert hypothesis.source_traceable
+
+    def test_the_report_says_not_traceable_rather_than_not_recorded(self) -> None:
+        report = report_for(self._with_source("ネット記事等（URL未記録）"), "## 1.")
+
+        assert "たどれない" in report
+        assert "何も記録されていない" not in report
+
+    def test_the_report_refuses_to_invent_a_citation(self) -> None:
+        """**あとから論文を探して埋めない。** 空欄のほうが正直である。"""
+        report = report_for(self._with_source("ネット記事等（URL未記録）"), "## 1.")
+
+        assert "空欄のほうが正直" in report
+
+    def test_the_real_registry_is_recorded_but_untraceable(self) -> None:
+        found = read_registry(REGISTRY)
+
+        assert all(h.source_recorded for h in found)
+        assert not any(h.source_traceable for h in found)
