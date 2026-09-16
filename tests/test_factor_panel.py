@@ -516,6 +516,55 @@ class TestTheCalibrationRunsEndToEnd:
         assert "業種・規模も抜く" in result.output
         assert "判定ではない" in result.output
 
+    def test_both_arms_take_the_market_out(self, monkeypatch) -> None:
+        """**片方だけ市場が残っていると、比は推定量の差を測らない。**
+
+        最初は (b) で β を引いていなかった。「定数項で市場は自動で抜ける」と
+        書いたが、**ロングショートでは定数項は相殺される**——全銘柄から同じ値を
+        引いても上位平均 − 下位平均は変わらない。低ボラの Q1−Q5 は β が負なので、
+        **(b) だけを不利にしていた**（2026-09-16）。
+        """
+        import inspect
+
+        from stock_ai import cli
+
+        body = inspect.getsource(cli.estimator_gain)
+        after = body.split("# (b) 中立版")[1]
+
+        assert "beta_to_benchmark" in after, "(b) で市場βを引いていない"
+        assert ".alpha(" in after
+
+    def test_the_ceiling_from_variance_alone_is_printed(self, monkeypatch) -> None:
+        """**天井が下端の下なら、比を見るまでもない。**
+
+        分散を x しか説明していないものを完全に抜いても、そこから来る t の改善は
+        √(1/(1−x)) を超えない。
+        """
+        from typer.testing import CliRunner
+
+        from stock_ai import cli
+
+        monkeypatch.setenv("COLUMNS", "200")
+        monkeypatch.setattr(cli, "Database", lambda *a, **k: _database())
+
+        result = CliRunner().invoke(
+            cli.app,
+            [
+                "estimator-gain",
+                "--is-start",
+                "2022-01-03",
+                "--is-end",
+                "2024-06-28",
+                "--window",
+                "60",
+                "--min-symbols",
+                "10",
+            ],
+        )
+
+        assert result.exit_code == 0, result.output
+        assert "説明できた断面の分散" in result.output
+
     def test_a_backwards_window_is_refused(self, monkeypatch) -> None:
         from typer.testing import CliRunner
 

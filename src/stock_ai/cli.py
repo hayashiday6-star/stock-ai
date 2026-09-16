@@ -7084,7 +7084,12 @@ def estimator_gain(  # noqa: PLR0913 - 校正が固定した条件をすべて�
     from stock_ai.backtest.cross_section import beta_to_benchmark, build_estimators, neutralise
     from stock_ai.backtest.cross_section import t_ratio as ratio_of
     from stock_ai.backtest.factor_panel import NEEDS_VALUATION, build_panel
-    from stock_ai.backtest.power import NEUTRAL_PROCEED, estimate_power, neutral_verdict
+    from stock_ai.backtest.power import (
+        NEUTRAL_AMBIGUOUS,
+        NEUTRAL_PROCEED,
+        estimate_power,
+        neutral_verdict,
+    )
     from stock_ai.data.valuation_monthly import DEFAULT_PATH
     from stock_ai.data.valuation_monthly import read as read_valuation
 
@@ -7161,10 +7166,19 @@ def estimator_gain(  # noqa: PLR0913 - 校正が固定した条件をすべて�
     built = build_estimators(plain, bench, higher_is_better=True)
     beta = beta_to_benchmark(built.quantile_spread, built.benchmark)
     before = built.alpha(built.quantile_spread, beta)
-    # (b) 中立版 — 断面回帰の残差。**定数項で市場は既に抜けているので、β は
-    # 引かない。** 引くと二重に抜くことになる。
+    # (b) 中立版 — 断面回帰の残差から、**さらに市場βを引く。**
+    #
+    # 最初は引いていなかった。「定数項が入るので市場は自動で抜ける」と書いたが、
+    # **ロングショートのスプレッドでは定数項は相殺される**——全銘柄から同じ値を
+    # 引いても、上位平均 − 下位平均は変わらない。**(b) だけ市場が残ったまま
+    # 比べていた**（2026-09-16）。低ボラの Q1−Q5 は β が負なので、(b) を不利に
+    # する向きだった。
+    #
+    # コミットした文書は「市場β ＋ 業種 ＋ 規模」と書いてある。**実装のほうを
+    # 合わせる。しきい値は動かさない。**
     after_built = build_estimators(neutral, bench, higher_is_better=True)
-    after = after_built.quantile_spread
+    after_beta = beta_to_benchmark(after_built.quantile_spread, after_built.benchmark)
+    after = after_built.alpha(after_built.quantile_spread, after_beta)
 
     rows_out = []
     for label, values in (("(a) 市場βだけ引く", before), ("(b) 業種・規模も抜く", after)):
@@ -7184,10 +7198,21 @@ def estimator_gain(  # noqa: PLR0913 - 校正が固定した条件をすべて�
             f"[bold]{value:+.2f}[/]",
         )
     console.print(table)
+    share = median(explained)
     console.print(
-        f"[dim]業種と規模で説明できた断面の分散: 中央値 {median(explained):.0%}"
+        f"[dim]業種と規模で説明できた断面の分散: 中央値 {share:.0%}"
         f"（中立化できずに落とした月 {skipped}）。**0% なら抜けていない。**[/]"
     )
+    # **ここが天井である。** 分散を x しか説明していないものを完全に抜いても、
+    # 分散低減から来る t の改善は √(1/(1−x)) を超えない。**比を見る前に、
+    # 届きうるかどうかがここで決まる。**
+    if 0.0 < share < 1.0:
+        ceiling = (1.0 / (1.0 - share)) ** 0.5
+        console.print(
+            f"[dim]**分散低減だけから来る t の天井は {ceiling:.2f}倍**である"
+            f"（√(1/(1−{share:.0%})））。しきい値の下端は "
+            f"{NEUTRAL_AMBIGUOUS:.1f} で、**天井がその下なら比を見るまでもない。**[/]"
+        )
 
     gain = ratio_of(rows_out[1][2], rows_out[0][2])
     verdict, reading = neutral_verdict(gain)
