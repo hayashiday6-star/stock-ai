@@ -97,6 +97,7 @@ from stock_ai.backtest.lowvol import build_series as build_lowvol_series
 from stock_ai.backtest.lowvol import verdict as lowvol_verdict
 from stock_ai.backtest.lowvol_census import VOLATILITY_WINDOWS
 from stock_ai.backtest.lowvol_census import run_census as run_lowvol_census
+from stock_ai.backtest.multiplicity import FAMILY_ALPHA, adjust, ladder
 from stock_ai.backtest.pead import (
     MIN_TURNOVER,
     ONE_WAY_COST,
@@ -6655,6 +6656,52 @@ def edinet_reach(
         console.print(f"[yellow]{failed} 日は断られた。[/] 上の理由を読む。")
 
 
+@app.command(name="power-budget")
+def power_budget(
+    alpha: float = typer.Option(
+        FAMILY_ALPHA, "--alpha", help="Family-wise two-sided level to split."
+    ),
+) -> None:
+    """Show what multiple testing costs, before a budget is chosen.
+
+    **当たりを引こうとした回数が多いほど、まぐれ当たりも増える。**
+    `docs/PURPOSE.md` の「合格判定では多重検定を考慮する」はそのことである。
+
+    ここは決めない。**代償を並べるだけ。** 1本だけ選んで出すと、その線がどこ
+    から来たのか分からなくなる。予算を増やすことの値段が読める形にしておく。
+
+    決めた予算は**事前登録に書いてから封印する。** あとから動かさないため。
+    """
+    settings = get_settings()
+    configure_logging(settings.log_level)
+
+    table = Table(title="何本試すつもりかで、合格の線がどう動くか")
+    for column, justify in (
+        ("予算（本）", "right"),
+        ("1本あたり α", "right"),
+        ("必要な t", "right"),
+        ("補正なしとの差", "right"),
+    ):
+        table.add_column(column, justify=justify)
+    for step in ladder():
+        table.add_row(
+            f"{step.budget}",
+            f"{step.alpha:.4f}",
+            f"{step.required_t:.2f}",
+            f"{step.cost_in_t:+.2f}" if step.cost_in_t else "—",
+        )
+    console.print(table)
+    console.print(
+        f"[dim]全体の有意水準は両側 {alpha:.2f}。"
+        "**すでに封印した説の線は動かさない**——判定が出たあとに基準を変える"
+        "ことになる。掛かるのは、これから封印する説だけである。[/]"
+    )
+    console.print(
+        "[dim]予算は `power-gate --budget N` に渡すと、検出できる差に効く。"
+        "**封印前に事前登録へ書くこと。**[/]"
+    )
+
+
 @app.command(name="power-gate")
 def power_gate(
     sd: float = typer.Option(..., "--sd", help="Per-period SD, in percent (e.g. 1.84)."),
@@ -6664,6 +6711,9 @@ def power_gate(
     inflation: float = typer.Option(1.0, "--inflation", help="Overlap inflation. 1.0 if none."),
     per_year: int = typer.Option(12, "--per-year", help="Periods a year. 12 monthly, 250 daily."),
     target_t: float = typer.Option(TARGET_T, "--target-t", help="t required to pass."),
+    budget: int | None = typer.Option(
+        None, "--budget", help="How many hypotheses you plan to judge in total."
+    ),
 ) -> None:
     """Decide whether a test is worth sealing at all - before it is sealed.
 
@@ -6689,6 +6739,20 @@ def power_gate(
 
     if periods < 1:
         raise typer.BadParameter(f"--periods must be at least 1; got {periods}.")
+
+    # **何本試すつもりかを、封印前に決める。**
+    #
+    # 当たりを引こうとした回数が多いほど、まぐれ当たりも増える。20本試せば、
+    # 本当は何も無くても1本は両側5%を越える。
+    #
+    # **「いま何本目か」で線を決めない。** 本数は増えるので、封印のたびに線が
+    # 動いてしまう。先に予算を決めて割れば、線は動かない。
+    if budget is not None:
+        if budget < 1:
+            raise typer.BadParameter(f"--budget must be at least 1; got {budget}.")
+        adjusted = adjust(budget)
+        console.print(f"[dim]{adjusted.summary()}[/]")
+        target_t = adjusted.required_t
 
     per_period_sd = sd / 100.0
     floor = low / 100.0 / per_year
