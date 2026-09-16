@@ -7076,8 +7076,9 @@ def revision_census_upward(
     """
     from stock_ai.backtest.pead import TURNOVER_WINDOW
     from stock_ai.backtest.revision_census import REVISION_TYPE, UPWARD_MIN, census
-    from stock_ai.data.jquants_details import parse_details
+    from stock_ai.data.jquants_bulk import records_from_csv
     from stock_ai.data.schema import VOLUME
+    from stock_ai.data.universe import four_digit_code
 
     settings = get_settings()
     configure_logging(settings.log_level)
@@ -7107,7 +7108,11 @@ def revision_census_upward(
         for index, key in enumerate(keys, start=1):
             progress.update(task, completed=index)
             try:
-                items.extend(parse_details(read_archived(path_for(source, key))))
+                # **`FS` を経由しない。** 一括 CSV では `CurFYEn` も `FNP` も
+                # **原本の列そのもの**で、`FS` には鍵が1つも入っていない
+                # （2026-09-16、72,156 件で確認）。`parse_details` は `FS` の
+                # 中身しか `values` に入れないので、そこを読むと全滅する。
+                items.extend(records_from_csv(read_archived(path_for(source, key))))
             except Exception as exc:  # noqa: BLE001 - どこで読めないかが記録に値する
                 console.print(f"[yellow]{key}: {type(exc).__name__}[/]")
 
@@ -7116,7 +7121,14 @@ def revision_census_upward(
     with database.session() as session:
         price_repo = PriceRepository(session)
         liquid: dict[tuple[str, dt.date], bool] = {}
-        symbols = sorted({row.symbol for row in items if row.doc_type == REVISION_TYPE})
+        symbols = sorted(
+            {
+                code
+                for row in items
+                if (row.get("DocType") or "").strip() == REVISION_TYPE
+                and (code := four_digit_code((row.get("Code") or "").strip())) is not None
+            }
+        )
         with Progress(
             SpinnerColumn(),
             TextColumn("[progress.description]{task.description}"),
@@ -7179,8 +7191,6 @@ def revision_census_upward(
     # 会計年度末が 72,156 件すべてで読めなかったとき、`FS` の鍵しか出して
     # いなかった（2026-09-16）。**読み口が捨てている列は、読み口からは見えない。**
     if read.rows and (read.no_fiscal_year == read.rows or read.no_forecast == read.rows):
-        from stock_ai.data.jquants_bulk import records_from_csv
-
         sample = next(iter(records_from_csv(read_archived(path_for(source, keys[0])))), {})
         console.print(
             f"[yellow]原本そのものの列: {'、'.join(sorted(sample))}。"

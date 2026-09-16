@@ -23,7 +23,6 @@ from stock_ai.backtest.revision_census import (
     census,
     find_upward,
 )
-from stock_ai.data.jquants_details import StatementDetail
 
 _FY = "2025-03-31"
 
@@ -35,23 +34,23 @@ def _row(
     forecast: float | None = 100.0,
     fiscal: str | None = _FY,
     number: str = "1",
-) -> StatementDetail:
-    values: dict[str, str] = {}
+) -> dict[str, str]:
+    """原本の1行。**`FS` の中ではなく、列そのものに値が入る。**
+
+    一括 CSV では `CurFYEn` も `FNP` も原本の列である。`FS` に入っていると
+    思って読み、72,156 件すべてで年度末が読めなかった（2026-09-16）。
+    """
+    record = {
+        "Code": f"{symbol}0",
+        "DiscDate": f"{day:%Y-%m-%d}",
+        "DiscNo": number,
+        "DocType": doc_type,
+    }
     if forecast is not None:
-        values[FORECAST_KEYS[0]] = str(forecast)
+        record[FORECAST_KEYS[0]] = str(forecast)
     if fiscal is not None:
-        values["CurFYEn"] = fiscal
-    return StatementDetail(
-        symbol=symbol,
-        disclosed_on=day,
-        disclosed_at=None,
-        number=number,
-        doc_type=doc_type,
-        period=None,
-        consolidated=None,
-        standard=None,
-        values=values,
-    )
+        record["CurFYEn"] = fiscal
+    return record
 
 
 _DAY = dt.date(2024, 5, 1)
@@ -165,7 +164,7 @@ class TestFindingTheUpwardRevisions:
     def test_the_keys_actually_present_are_recorded(self) -> None:
         """**「無い」のか「名前が違う」のかを分けられるようにする。**"""
         row = _row(_DAY, forecast=None)
-        row.values["SomethingElse"] = "1"
+        row["SomethingElse"] = "1"
 
         _events, seen = find_upward([row])
 
@@ -192,7 +191,7 @@ class TestFindingTheUpwardRevisions:
 
 class TestTheCensusFillsTheTable:
     @staticmethod
-    def _rows() -> list[StatementDetail]:
+    def _rows() -> list[dict[str, str]]:
         found = [
             _row(_DAY, symbol=symbol, doc_type="FYFinancialStatements_Consolidated_JP")
             for symbol in ("1301", "1302", "1303")
@@ -256,14 +255,14 @@ class TestTheCensusFillsTheTable:
 # **部品だけでは足りない。** `composite-gate` では部品26本が緑のまま
 # `Gate.reason` という存在しない属性が本番まで出た。
 
-_HEADER = "DiscDate,DiscTime,Code,DiscNo,DocType,FS\n"
+_HEADER = f"DiscDate,DiscTime,Code,DiscNo,DocType,{FORECAST_KEYS[0]},CurFYEn\n"
 
 
 def _csv(rows: list[tuple[dt.date, str, str, float, str]]) -> str:
+    """原本の形。**値は列そのもので、`FS` の中ではない。**"""
     body = _HEADER
     for day, symbol, doc_type, forecast, number in rows:
-        fs = "{'" + FORECAST_KEYS[0] + f"': '{forecast}', 'CurFYEn': '{_FY}'" + "}"
-        body += f'{day:%Y-%m-%d},15:30,{symbol}0,{number},{doc_type},"{fs}"\n'
+        body += f"{day:%Y-%m-%d},15:30,{symbol}0,{number},{doc_type},{forecast},{_FY}\n"
     return body
 
 
@@ -419,3 +418,49 @@ class TestTheDiagnosticDoesNotWatchOneColumn:
         from stock_ai.backtest.revision_census import Readability
 
         assert "鍵が1つも無い" in Readability(rows=1).inventory()
+
+
+class TestTheCountersDoNotMaskEachOther:
+    """**先に `continue` すると、後ろのカウンタが一度も動かない。**
+
+    年度末が 72,156 件すべてで読めなかったとき、**会社予想の欄は 0 のまま**
+    だった（2026-09-16）。予想も同じく読めていなかったのに、**0 が「読めた」に
+    見えた。** そこを根拠に「予想は全件読めました」と報告してしまった。
+    """
+
+    def test_both_failures_are_counted_on_the_same_row(self) -> None:
+        rows = [_row(_DAY, forecast=None, fiscal=None) for _ in range(5)]
+
+        _events, seen = find_upward(rows)
+
+        assert seen.rows == 5
+        assert seen.no_fiscal_year == 5
+        assert seen.no_forecast == 5, "年度末で弾かれて、予想の欄が 0 のままになっている"
+
+    def test_a_zero_in_one_column_is_not_evidence_that_it_read(self) -> None:
+        """**片方だけ全滅している形。** 0 と「読めた」を取り違えない。"""
+        rows = [_row(_DAY, forecast=100.0, fiscal=None) for _ in range(5)]
+
+        _events, seen = find_upward(rows)
+
+        assert seen.no_fiscal_year == 5
+        assert seen.no_forecast == 0
+
+    def test_the_values_are_read_from_the_columns_not_from_fs(self) -> None:
+        """**一括 CSV では `CurFYEn` も `FNP` も原本の列そのものである。**
+
+        `FS` の中に入れて渡しても読めないこと——読めてしまうなら、どちらから
+        読んでいるのか分からない。
+        """
+        buried = {
+            "Code": "13010",
+            "DiscDate": f"{_DAY:%Y-%m-%d}",
+            "DiscNo": "1",
+            "DocType": REVISION_TYPE,
+            "FS": "{'" + FORECAST_KEYS[0] + f"': '120', 'CurFYEn': '{_FY}'" + "}",
+        }
+
+        _events, seen = find_upward([buried])
+
+        assert seen.no_forecast == 1
+        assert seen.no_fiscal_year == 1

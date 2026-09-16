@@ -22,18 +22,19 @@ from __future__ import annotations
 
 import dataclasses
 import datetime as dt
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from statistics import median
 
 from stock_ai.backtest.forecast_revision import DEFAULT_MIN_CHANGE
 from stock_ai.backtest.margin_census import busiest_share
 from stock_ai.core.logging import get_logger
-from stock_ai.data.jquants_details import STATEMENT_MARKER, StatementDetail
+from stock_ai.data.jquants_details import STATEMENT_MARKER, parse_date
 from stock_ai.data.jquants_fundamentals import (
     _FORECAST_KEYS,
     _FY_END_KEYS,
     _fiscal_year_end_of,
 )
+from stock_ai.data.universe import four_digit_code
 
 logger = get_logger(__name__)
 
@@ -51,9 +52,10 @@ FORECAST_KEYS: tuple[str, ...] = _FORECAST_KEYS["net_income"]
 
 #: 会計年度末を名乗りうる鍵。同じく `jquants_fundamentals` から引く。
 #:
-#: **あちらで確認されたのは API の応答である。** 一括 CSV の `FS` に同じ名前で
-#: 入っているとは限らない——実際、入っていなかった（2026-09-16）。**確認した
-#: 場所と、使う場所は別である。**
+#: **`FS` の中を探していた。** 一括 CSV では `CurFYEn` も `FNP` も**原本の列
+#: そのもの**で、`FS` には鍵が1つも入っていない（2026-09-16、72,156 件で確認）。
+#: `jquants_fundamentals` が「実レスポンスで確認した」と書いているのは、まさに
+#: この**生の行**のことだった。**確認した場所と、読む場所を取り違えていた。**
 FISCAL_KEYS: tuple[str, ...] = _FY_END_KEYS
 
 #: OOS がこれを割ったら設計を見直す（§10）。
@@ -133,19 +135,20 @@ class Readability:
         return found
 
 
-def _forecast_of(item: StatementDetail) -> float | None:
+def _forecast_of(record: Mapping[str, str]) -> float | None:
     """会社予想の当期純利益。読めなければ ``None``。**0 を返さない。**"""
-    text = item.value(*FORECAST_KEYS)
-    if text is None or not text.strip():
-        return None
-    try:
-        return float(text)
-    except ValueError:
-        return None
+    for name in FORECAST_KEYS:
+        text = record.get(name)
+        if text is not None and text.strip():
+            try:
+                return float(text)
+            except ValueError:
+                return None
+    return None
 
 
 def find_upward(
-    items: Sequence[StatementDetail],
+    records: Sequence[Mapping[str, str]],
     min_change: float = UPWARD_MIN,
 ) -> tuple[list[RevisionEvent], Readability]:
     """上方修正のイベントを拾う。**リターンを1つも計算しない。**
@@ -157,41 +160,50 @@ def find_upward(
     問わない——決算短信が出した予想を、後の修正が上書きする形が普通である。
 
     Args:
-        items: `fins/summary` の行。順序は問わない。
+        records: `fins/summary` の生の行（列名 → 値）。順序は問わない。
         min_change: 上方修正と呼ぶ最低幅。
 
     Returns:
         ``(イベント, 読めた内訳)``。イベントは開示日の昇順。
     """
-    ordered = sorted(items, key=lambda row: (row.disclosed_on, row.symbol, row.number))
+    rows: list[tuple[dt.date, str, str, Mapping[str, str]]] = []
+    for record in records:
+        symbol = four_digit_code((record.get("Code") or "").strip())
+        day = parse_date(record.get("DiscDate"))
+        if symbol is None or day is None:
+            continue
+        rows.append((day, symbol, (record.get("DocType") or "").strip(), record))
+
+    ordered = sorted(rows, key=lambda row: (row[0], row[1], row[3].get("DiscNo") or ""))
     statement_days = {
-        (row.symbol, row.disclosed_on) for row in ordered if STATEMENT_MARKER in row.doc_type
+        (symbol, day) for day, symbol, doc_type, _ in ordered if STATEMENT_MARKER in doc_type
     }
 
     latest: dict[tuple[str, dt.date], float] = {}
     found: list[RevisionEvent] = []
     seen = Readability()
 
-    for row in ordered:
-        fiscal = _fiscal_year_end_of(row.values)
-        forecast = _forecast_of(row)
-        revision = row.doc_type == REVISION_TYPE
+    for day, symbol, doc_type, record in ordered:
+        fiscal = _fiscal_year_end_of(record)
+        forecast = _forecast_of(record)
+        revision = doc_type == REVISION_TYPE
 
+        # **列ごとに独立に数える。** 先に `continue` すると、後ろのカウンタが
+        # 一度も動かず **0 が「読めた」に見える**（2026-09-16 に実際そうなった
+        # ——年度末が全滅していたので、予想の欄は 0 のままだった）。
         if revision:
             seen.rows += 1
-            for key in row.values:
+            for key in record:
                 seen.keys_seen[key] = seen.keys_seen.get(key, 0) + 1
-
-        if fiscal is None:
-            if revision:
+            if fiscal is None:
                 seen.no_fiscal_year += 1
-            continue
-        if forecast is None or forecast == 0.0:
-            if revision:
+            if forecast is None or forecast == 0.0:
                 seen.no_forecast += 1
+
+        if fiscal is None or forecast is None or forecast == 0.0:
             continue
 
-        key = (row.symbol, fiscal)
+        key = (symbol, fiscal)
         previous = latest.get(key)
         # **先に覚える前に比べる。** 覚えてから比べると、自分自身と比べることになる。
         if revision:
@@ -205,10 +217,10 @@ def find_upward(
                     seen.upward += 1
                     found.append(
                         RevisionEvent(
-                            symbol=row.symbol,
-                            disclosed_on=row.disclosed_on,
+                            symbol=symbol,
+                            disclosed_on=day,
                             change=change,
-                            on_statement_day=(row.symbol, row.disclosed_on) in statement_days,
+                            on_statement_day=(symbol, day) in statement_days,
                         )
                     )
                 elif change <= -min_change:
@@ -279,7 +291,7 @@ class RevisionCensusReport:
 
 
 def census(
-    items: Sequence[StatementDetail],
+    records: Sequence[Mapping[str, str]],
     liquid_on: object = None,
     split_on: dt.date | None = None,
     min_change: float = UPWARD_MIN,
@@ -287,7 +299,7 @@ def census(
     """§0 の表を埋める。**リターンを1つも計算しない。**
 
     Args:
-        items: `fins/summary` の行。
+        records: `fins/summary` の生の行（列名 → 値）。
         liquid_on: ``(symbol, date) -> bool``。省略すると絞らない。
         split_on: IS と OOS の境。省略すると覆う期間の**真ん中**。
         min_change: 上方修正と呼ぶ最低幅。
@@ -295,7 +307,7 @@ def census(
     Returns:
         :class:`RevisionCensusReport`。
     """
-    events, seen = find_upward(items, min_change=min_change)
+    events, seen = find_upward(records, min_change=min_change)
     if not events:
         return RevisionCensusReport(
             0, {}, None, None, 0, float("nan"), 0, 0, 0, None, 0, 0, float("nan"), seen
