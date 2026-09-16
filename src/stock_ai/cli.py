@@ -6850,6 +6850,7 @@ def composite_gate(  # noqa: PLR0913 - 複合型のルールが固定する条�
     components: str = typer.Option(..., "--components", help="ID:factor pairs, comma separated."),
     registry: str = typer.Option("docs/HYPOTHESES.md", "--registry", help="The registry file."),
     valuation: str | None = typer.Option(None, "--valuation", help="Month-end PBR file."),
+    is_start: str = typer.Option("2009-01-01", "--is-start", help="First day of the IS window."),
     is_end: str = typer.Option("2017-12-31", "--is-end", help="Last day of the IS window."),
     oos_periods: int = typer.Option(104, "--oos-periods", help="Months the judgement will have."),
     tries: int = typer.Option(1, "--tries", help="Combinations you will try in IS. Fixed first."),
@@ -6873,6 +6874,7 @@ def composite_gate(  # noqa: PLR0913 - 複合型のルールが固定する条�
     閉じてあり、「曖昧域で財務系の再測定はしない」と書いてある。ここは複合型を
     **それ自体として登録して判定する**ための関門で、r を測り直しはしない。
     """
+    from stock_ai.backtest.antivalue import USABLE_FROM
     from stock_ai.backtest.composite import (
         Component,
         Coverage,
@@ -6896,6 +6898,11 @@ def composite_gate(  # noqa: PLR0913 - 複合型のルールが固定する条�
     cut = _parse_date(is_end)
     if cut is None:
         raise typer.BadParameter(f"--is-end must be YYYY-MM-DD; got {is_end!r}.")
+    begin = _parse_date(is_start)
+    if begin is None:
+        raise typer.BadParameter(f"--is-start must be YYYY-MM-DD; got {is_start!r}.")
+    if begin >= cut:
+        raise typer.BadParameter(f"--is-start ({begin}) must come before --is-end ({cut}).")
 
     parsed: list[Component] = []
     for chunk in components.split(","):
@@ -6909,6 +6916,16 @@ def composite_gate(  # noqa: PLR0913 - 複合型のルールが固定する条�
         console.print(f"[red]{error}[/]")
         raise typer.Exit(code=1) from error
 
+    wants_pbr = any(factor in NEEDS_VALUATION for factor in design.factors)
+    if wants_pbr:
+        # **2009年より前は使わない。** `pbr` が 92% 以上埋まるのは 2009年からで、
+        # 2008年は 63% しかない。**埋まっている銘柄だけが選ばれると断面が歪む。**
+        #
+        # 最初はここを渡し忘れていて、盤面が 2008-09 まで遡った。事前登録 §6 が
+        # 108ヶ月と決めているのに **112ヶ月**が出た（2026-09-16）。**例外は
+        # 出ない。** 月数を数えて初めて分かる。
+        begin = max(begin, USABLE_FROM)
+
     source = Path(registry)
     if not source.is_file():
         console.print(f"[red]{source} が無い。[/]")
@@ -6918,7 +6935,7 @@ def composite_gate(  # noqa: PLR0913 - 複合型のルールが固定する条�
 
     console.print("[bold yellow]これは判定ではない。[/] 封印の前に当てる関門である。")
     console.print(
-        f"[dim]IS は {cut} まで。OOS（{oos_periods}ヶ月）には1日も触れない。"
+        f"[dim]IS は {begin} 〜 {cut}。OOS（{oos_periods}ヶ月）には1日も触れない。"
         f"IS で試す通り数は {tries} と決めてある。[/]"
     )
     console.print()
@@ -6950,7 +6967,7 @@ def composite_gate(  # noqa: PLR0913 - 複合型のルールが固定する条�
         raise typer.Exit(code=1)
 
     frame = None
-    if any(factor in NEEDS_VALUATION for factor in design.factors):
+    if wants_pbr:
         frame = read_valuation(Path(valuation) if valuation else DEFAULT_PATH)
         if frame.empty:
             console.print("[red]月末の PBR が無い。[/] `checks\\月末のPBRを抜き出す.bat` が先。")
@@ -6967,14 +6984,21 @@ def composite_gate(  # noqa: PLR0913 - 複合型のルールが固定する条�
         panel = build_panel(
             database,
             factors=design.factors,
+            start=begin,
             end=cut,
             window=window,
             min_symbols=min_symbols,
             valuation=frame,
         )
+        # **比べる相手は、同じ窓で組む。** 窓が違うと「脚を足して失ったもの」
+        # ではなく「窓の差」を測る。最初はここも `start` を渡しておらず、
+        # 低ボラだけの盤面が 2002年まで遡って 184ヶ月出た。合成は 112ヶ月なので
+        # 「月が 39% 減った」と警告したが、**減ったのではなく最初から別の窓を
+        # 見ていた。**
         alone = build_panel(
             database,
             factors=design.factors[:1],
+            start=begin,
             end=cut,
             window=window,
             min_symbols=min_symbols,

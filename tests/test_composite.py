@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+import datetime as dt
 import pathlib
 
 import numpy as np
@@ -259,13 +260,24 @@ class TestTheGateRunsEndToEnd:
     """**関門が実際に当たること。** 部品が全部緑でも、繋ぎ忘れは出る。"""
 
     @staticmethod
-    def _run(tmp_path, monkeypatch, components: str, tries: int = 1):
+    def _run(tmp_path, monkeypatch, components: str, tries: int = 1, seen=None):
         from typer.testing import CliRunner
 
         from stock_ai import cli
 
         database, symbols = _database()
         monkeypatch.setattr(cli, "Database", lambda *a, **k: database)
+        if seen is not None:
+            from stock_ai.backtest import factor_panel
+
+            real = factor_panel.build_panel
+
+            def watched(*args, **kwargs):
+                seen.append((kwargs.get("start"), kwargs.get("end")))
+                return real(*args, **kwargs)
+
+            monkeypatch.setattr(cli, "build_panel", watched, raising=False)
+            monkeypatch.setattr(factor_panel, "build_panel", watched)
         return CliRunner().invoke(
             cli.app,
             [
@@ -274,6 +286,8 @@ class TestTheGateRunsEndToEnd:
                 components,
                 "--valuation",
                 _valuation_file(tmp_path, symbols),
+                "--is-start",
+                "2014-01-01",
                 "--is-end",
                 "2016-12-31",
                 "--window",
@@ -308,6 +322,62 @@ class TestTheGateRunsEndToEnd:
 
         assert result.exit_code == 1
         assert "件数と流動性の内訳" not in result.output
+
+    def test_the_window_is_the_one_the_prereg_fixed(self, tmp_path, monkeypatch) -> None:
+        """**渡し忘れても例外は出ない。** 月数を数えて初めて分かる。
+
+        実際に出た（2026-09-16）。事前登録 §6 は 2009-01〜2017-12 の 108ヶ月と
+        決めているのに、盤面は 2008-09 まで遡って **112ヶ月**を返していた。
+        """
+        seen: list = []
+
+        result = self._run(tmp_path, monkeypatch, _registered_pair(), seen=seen)
+
+        assert result.exit_code == 0, result.output
+        assert seen, "build_panel が呼ばれていない"
+        assert all(start == dt.date(2014, 1, 1) for start, _end in seen), seen
+
+    def test_the_leg_on_its_own_is_built_on_the_same_window(self, tmp_path, monkeypatch) -> None:
+        """**窓が違うと「脚を足して失ったもの」ではなく「窓の差」を測る。**
+
+        揃えずに出したことがある——合成 112ヶ月、脚だけ 184ヶ月で「月が 39%
+        減った」と警告した。**減ったのではなく、最初から別の窓だった。**
+        """
+        seen: list = []
+
+        self._run(tmp_path, monkeypatch, _registered_pair(), seen=seen)
+
+        assert len(seen) == 2, seen
+        # **`None` どうしでも一致してしまう。** 渡していないことを一致と読まない。
+        assert seen[0][0] is not None, "そもそも窓を渡していない"
+        assert seen[0] == seen[1], "合成と脚だけで窓が違う"
+
+    def test_a_backwards_window_is_refused(self, tmp_path, monkeypatch) -> None:
+        from typer.testing import CliRunner
+
+        from stock_ai import cli
+
+        database, symbols = _database()
+        monkeypatch.setattr(cli, "Database", lambda *a, **k: database)
+
+        result = CliRunner().invoke(
+            cli.app,
+            [
+                "composite-gate",
+                "--components",
+                _registered_pair(),
+                "--valuation",
+                _valuation_file(tmp_path, symbols),
+                "--is-start",
+                "2016-01-01",
+                "--is-end",
+                "2015-01-01",
+            ],
+        )
+
+        assert result.exit_code != 0
+        # **「知らない引数」でも 0 以外になる。** 理由のほうを見る。
+        assert "before" in result.output
 
     def test_a_single_kind_bundle_is_flagged_but_not_blocked(self, tmp_path, monkeypatch) -> None:
         """**禁止ではない。** ただし種類をまたぐ複合が手つかずなことは言う。"""

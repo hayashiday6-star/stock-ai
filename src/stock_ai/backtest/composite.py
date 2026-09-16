@@ -154,7 +154,13 @@ class Coverage:
     excluded_discontinuity: int
     excluded_no_pbr: int
     months_single: int
-    """同じ期間で、脚を1本だけにしたときの月数。**減り具合の分母。**"""
+    """**同じ窓で**、脚を1本だけにしたときの月数。**減り具合の分母。**
+
+    **窓を揃えないと、これは比較にならない。** 揃えずに出したことがある——
+    合成が 2009年から 112ヶ月、脚だけが 2002年から 184ヶ月で、「月が 39%
+    減った」と警告した。**減ったのではなく、最初から別の窓を見ていた**
+    （2026-09-16）。例外は出ない。月数を数えて初めて分かる。
+    """
     median_symbols_single: int
 
     @property
@@ -183,8 +189,8 @@ class Coverage:
             )
         if self.month_loss > 0.2:
             found.append(
-                f"**月が {self.month_loss:.0%} 減った。** 判定に使える期数が"
-                "そのぶん短くなる。§0 の期数を減らして当て直すこと。"
+                f"**月が {self.month_loss:.0%} 減った。** OOS でも同じ割合で減るなら、"
+                "判定に使える期数はそのぶん少ない。**§0 をその期数で当て直すこと。**"
             )
         if self.excluded_no_pbr > 0 and self.median_symbols_single > 0:
             found.append(
