@@ -16,7 +16,13 @@ from __future__ import annotations
 
 import pytest
 
-from stock_ai.backtest.multiplicity import FAMILY_ALPHA, adjust, ladder, required_t
+from stock_ai.backtest.multiplicity import (
+    FAMILY_ALPHA,
+    HYPOTHESIS_BUDGET,
+    adjust,
+    ladder,
+    required_t,
+)
 from stock_ai.backtest.power import TARGET_T
 
 
@@ -83,3 +89,37 @@ class TestTheLadderMakesTheChoiceVisible:
         assert "10" in text
         assert "2.81" in text
         assert "1.96" in text
+
+
+class TestTheBudgetThisProjectChose:
+    """**予算 20 本、両側 5%。2026-09-16 に決めた。**
+
+    判定を消費したのが 5 本、登録して未判定が 3 本。複合型は組み合わせ1通りに
+    つき1本なので、本数はこれから速く増える。20 ならあと 12 本ぶん残る。
+
+    **小さく取ると、超えた日に予算を取り直すことになる。** それは線を動かす
+    ことで、このプロジェクトがいちばん嫌う形である。
+    """
+
+    def test_the_budget_is_twenty(self) -> None:
+        assert HYPOTHESIS_BUDGET == 20
+
+    def test_it_lands_just_above_three(self) -> None:
+        """**高い線である。** 文献のアノマリーの多くは §0 を通らない。"""
+        assert 3.0 < required_t(HYPOTHESIS_BUDGET) < 3.05
+
+    def test_it_leaves_room_beyond_what_is_already_registered(self) -> None:
+        """登録済み 8 本を使い切っていないこと。**超えた日に取り直さないため。**"""
+        assert HYPOTHESIS_BUDGET > 8
+
+    def test_loosening_means_raising_alpha_not_shrinking_the_budget(self) -> None:
+        """**予算を縮めるのは「何本試すつもりか」を偽ること。**
+
+        α を上げるのは「どれだけの誤りを許すか」を決め直すことで、そちらは
+        正直に書ける。どちらも線を下げるが、意味が違う。
+        """
+        honest = required_t(HYPOTHESIS_BUDGET, alpha=0.10)
+        dishonest = required_t(5, alpha=FAMILY_ALPHA)
+
+        assert honest < required_t(HYPOTHESIS_BUDGET)
+        assert dishonest < required_t(HYPOTHESIS_BUDGET)

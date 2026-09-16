@@ -97,7 +97,12 @@ from stock_ai.backtest.lowvol import build_series as build_lowvol_series
 from stock_ai.backtest.lowvol import verdict as lowvol_verdict
 from stock_ai.backtest.lowvol_census import VOLATILITY_WINDOWS
 from stock_ai.backtest.lowvol_census import run_census as run_lowvol_census
-from stock_ai.backtest.multiplicity import FAMILY_ALPHA, adjust, ladder
+from stock_ai.backtest.multiplicity import (
+    FAMILY_ALPHA,
+    HYPOTHESIS_BUDGET,
+    adjust,
+    ladder,
+)
 from stock_ai.backtest.pead import (
     MIN_TURNOVER,
     ONE_WAY_COST,
@@ -6816,6 +6821,23 @@ def power_gate(
         adjusted = adjust(budget)
         console.print(f"[dim]{adjusted.summary()}[/]")
         target_t = adjusted.required_t
+        if budget != HYPOTHESIS_BUDGET:
+            console.print(
+                f"[yellow]このプロジェクトが決めた予算は {HYPOTHESIS_BUDGET} 本である。[/] "
+                "**違う予算で封印するなら、その理由を事前登録に書くこと。**"
+            )
+    elif target_t == TARGET_T:
+        # **黙って線を変えない。黙って忘れさせもしない。**
+        #
+        # 既定を 3.02 にすると、封印済みの事前登録を再現しようとした人が、
+        # 当時と違う答えを受け取る。かといって何も言わないと、多重検定を
+        # 決めたこと自体が忘れられる。
+        console.print(f"[yellow]予算を渡していない。この線（t≥{TARGET_T}）は補正なしである。[/]")
+        console.print(
+            f"[dim]これから封印するなら `--budget {HYPOTHESIS_BUDGET}`"
+            f"（t≥{adjust(HYPOTHESIS_BUDGET).required_t:.2f}）。"
+            "補正なしは、封印済みのものを再現するときだけ。[/]"
+        )
 
     per_period_sd = sd / 100.0
     floor = low / 100.0 / per_year
