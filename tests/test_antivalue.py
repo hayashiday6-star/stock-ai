@@ -208,3 +208,108 @@ class TestTheWindowIsWhatThePreregSaid:
         assert series.months == []
         assert series.skipped_thin > 0
         assert "比べていない" in series.summary()
+
+
+class TestTheCommandRefusesBelowTheCommittedFloor:
+    """**線は測る前にコミットした。** 下回ったら、封印しない。
+
+    事前登録 `docs/PREREG_ANTIVALUE_JP.md` に「費用引き後で年 1.0% を下回ったら
+    封印しない」と書いてある。**書いてあるだけでは止まらない。** 止まるのは
+    ここである。
+
+    そして**組み立てを1本通す。** 部品（並び・先読み・名簿・入れ替わり）は
+    上で13本試したが、CLI が名簿を配線し忘れていれば、そのどれも鳴らない。
+    """
+
+    @staticmethod
+    def _database(drift_of, count: int = 120) -> tuple[Database, list[str]]:
+        """銘柄番号ごとに向きを変えられる価格。**PBR の順と連動させる。**"""
+        database = Database("sqlite:///:memory:")
+        database.create_all()
+        symbols = [f"{1300 + index:04d}" for index in range(count)]
+        with database.session() as session:
+            repo = PriceRepository(session)
+            repo.upsert_prices("1306", _frame(seed=999), market="JP")
+            for index, symbol in enumerate(symbols):
+                repo.upsert_prices(
+                    symbol, _frame(seed=index, drift=drift_of(index, count)), market="JP"
+                )
+        return database, symbols
+
+    @classmethod
+    def _run(cls, tmp_path, monkeypatch, drift_of):
+        from typer.testing import CliRunner
+
+        from stock_ai import cli
+
+        database, symbols = cls._database(drift_of)
+        path = tmp_path / "valuation_monthly.csv.gz"
+        frame = _valuation(symbols)
+        for column in ("per", "bps", "market_cap"):
+            frame[column] = 1.0
+        frame.to_csv(path, index=False, compression="gzip")
+
+        asked: list[str] = []
+
+        def fake_membership(directory):
+            asked.append(str(directory))
+            return {day.date(): set(symbols) for day in _INDEX}
+
+        monkeypatch.setattr(cli, "Database", lambda *a, **k: database)
+        monkeypatch.setattr(cli, "membership", fake_membership)
+
+        result = CliRunner().invoke(
+            cli.app,
+            [
+                "antivalue-estimate",
+                "--valuation",
+                str(path),
+                "--rosters",
+                str(tmp_path / "rosters"),
+                "--is-end",
+                "2009-12-31",
+            ],
+        )
+        return result, asked
+
+    @staticmethod
+    def _proverb_holds(index: int, count: int) -> float:
+        """割高（PBR の高いほう）ほど上がる。**格言が正しい世界。**"""
+        return 0.002 if index >= count // 2 else -0.002
+
+    @staticmethod
+    def _proverb_fails(index: int, count: int) -> float:
+        """割安ほど上がる。**世間の常識どおりの世界。**"""
+        return -0.002 if index >= count // 2 else 0.002
+
+    def test_a_losing_is_window_is_not_sealed(self, tmp_path, monkeypatch) -> None:
+        """格言と逆向きに出た回。**線を下回れば、封印しない。**"""
+        result, _ = self._run(tmp_path, monkeypatch, self._proverb_fails)
+
+        assert result.exit_code == 0, result.output
+        assert "封印しない" in result.output
+        assert "1.0%" in result.output
+        assert "ゲートである" not in result.output
+
+    def test_a_winning_is_window_goes_on_to_the_gate(self, tmp_path, monkeypatch) -> None:
+        """**線を上回っても、そこで封印ではない。** 次が §0 のゲートである。"""
+        result, _ = self._run(tmp_path, monkeypatch, self._proverb_holds)
+
+        assert result.exit_code == 0, result.output
+        assert "封印しない" not in result.output
+        assert "ゲートである" in result.output
+        assert "power-gate" in result.output
+        assert "--budget 20" in result.output
+
+    def test_the_rosters_are_read_rather_than_assumed(self, tmp_path, monkeypatch) -> None:
+        """**渡さないと生存バイアスが入る。** CLI が配線を落としていないこと。"""
+        _, asked = self._run(tmp_path, monkeypatch, self._proverb_holds)
+
+        assert asked == [str(tmp_path / "rosters")]
+
+    def test_the_out_of_sample_window_is_never_touched(self, tmp_path, monkeypatch) -> None:
+        """**判定は一度きりである。** IS を測るのに OOS を読まない。"""
+        result, _ = self._run(tmp_path, monkeypatch, self._proverb_holds)
+
+        assert "2009-12-31" in result.output
+        assert "OOS" in result.output

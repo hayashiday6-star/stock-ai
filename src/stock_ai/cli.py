@@ -16,7 +16,7 @@ import time
 from collections import Counter
 from collections.abc import Callable
 from pathlib import Path
-from statistics import median, stdev
+from statistics import fmean, median, stdev, variance
 
 import pandas as pd
 import typer
@@ -5442,6 +5442,112 @@ def jquants_row_audit(
             "**廃止銘柄に、原本以外から入った行がある。** "
             "[dim]名簿の廃止判定か、取り込み経路のどちらかを疑うこと。[/]"
         )
+
+
+@app.command(name="antivalue-estimate")
+def antivalue_estimate(
+    rosters: str = typer.Option(
+        str(DEFAULT_SNAPSHOT_DIR), "--rosters", help="Where the dated rosters live."
+    ),
+    valuation: str | None = typer.Option(None, "--valuation", help="Month-end PBR file."),
+    is_end: str = typer.Option("2017-12-31", "--is-end", help="Last day of the IS window."),
+    oos_periods: int = typer.Option(104, "--oos-periods", help="Months the judgement will have."),
+) -> None:
+    """Measure the IS window for #9, so the gate table can be filled - not judge it.
+
+    **段2（自分の IS から推定する）の材料を出す。** 文献値を持っていないので、
+    見込みはここから置く。事前登録 `docs/PREREG_ANTIVALUE_JP.md` を見ること。
+
+    出すのは3つ。**1期あたりのSD**（検出できる差を決める）、**入れ替わり率**
+    （費用を決める）、**効果の推定**（封印するかどうかを決める）。
+
+    **判定ではない。** IS は 2009-01〜2017-12 で、OOS（2018-01〜2026-08）には
+    1日も触れない。
+    """
+    from stock_ai.backtest.antivalue import build_series as antivalue_series
+    from stock_ai.backtest.multiplicity import HYPOTHESIS_BUDGET, required_t
+    from stock_ai.backtest.power import autocovariances, long_run_variance
+    from stock_ai.data.valuation_monthly import DEFAULT_PATH
+    from stock_ai.data.valuation_monthly import read as read_valuation
+
+    settings = get_settings()
+    configure_logging(settings.log_level)
+
+    cut = _parse_date(is_end)
+    if cut is None:
+        raise typer.BadParameter(f"--is-end must be YYYY-MM-DD; got {is_end!r}.")
+
+    frame = read_valuation(Path(valuation) if valuation else DEFAULT_PATH)
+    if frame.empty:
+        console.print("[red]月末の PBR が無い。[/] `checks\\月末のPBRを抜き出す.bat` が先。")
+        raise typer.Exit(code=1)
+
+    snapshots = membership(Path(rosters))
+    if not snapshots:
+        console.print("[red]名簿が無い。[/] **渡さないと生存バイアスが入る。**")
+        raise typer.Exit(code=1)
+
+    database = Database()
+    database.create_all()
+    console.print(f"[dim]IS は {cut} まで。OOS には1日も触れない。[/]")
+    series = antivalue_series(database, frame, end=cut, snapshots=snapshots)
+    console.print(series.summary())
+    if not series.months:
+        raise typer.Exit(code=1)
+
+    spread = series.spread()
+    # **費用を引いてから見る。** 「取引コスト込みのリターンで判定する」
+    # （docs/PURPOSE.md）。実行できない大きさを見込みに置かないため。
+    cost = series.cost_per_month()
+    net = [value - cost for value in spread]
+
+    estimate = long_run_variance(autocovariances(net, lags=3))
+    plain = variance(net) if len(net) > 1 else 0.0
+    inflation = math.sqrt(estimate / plain) if plain > 0 else float("nan")
+    mean = fmean(net)
+    stderr = math.sqrt(estimate / len(net)) if len(net) else float("nan")
+
+    table = Table(title="§0 に入れる材料（IS から。判定ではない）")
+    for column in ("項目", "値", "どこから"):
+        table.add_column(column, overflow="fold")
+    table.add_row("1期あたりのSD", f"{math.sqrt(plain) * 100:.2f}%", "IS の月次、費用引き後")
+    table.add_row("重なりの膨張", f"{inflation:.2f}x", "Newey-West(3) と素の分散の比。実測")
+    table.add_row("判定に使える期数", f"{oos_periods}", "OOS の月数。**全期間ではない**")
+    table.add_row("入れ替わり", f"{series.turnover():.1%}／月", "実測。#7 の値は写していない")
+    table.add_row("費用", f"年 {cost * 12:.2%}", "往復 0.40% × 入れ替わり")
+    console.print(table)
+
+    low, high = mean - 1.96 * stderr, mean + 1.96 * stderr
+    console.print(
+        f"[bold]IS の効果（費用引き後）: 年 {mean * 12:+.2%}[/] "
+        f"[dim]（95% の幅 年 {low * 12:+.2%} 〜 {high * 12:+.2%}）[/]"
+    )
+
+    # **測る前にコミットした線である。** 動かさない。
+    floor = 0.01
+    console.print()
+    if mean * 12 < floor:
+        console.print(
+            f"[red]封印しない。[/] IS の推定 年 {mean * 12:+.2%} が、"
+            f"**測る前にコミットした線 年 {floor:.1%} を下回った。**"
+        )
+        console.print(
+            "[dim]事前登録 §0 にそう書いてある。**下回ったら、検出できても"
+            "実行できない。** 線は動かさない。[/]"
+        )
+        return
+
+    console.print(f"[green]線（年 {floor:.1%}）は上回った。[/] 次は §0 のゲートである。")
+    console.print(
+        "[dim]uv run stock-ai power-gate "
+        f"--sd {math.sqrt(plain) * 100:.2f} --periods {oos_periods} "
+        f"--low {low * 12 * 100:.2f} --high {high * 12 * 100:.2f} "
+        f"--inflation {inflation:.2f} --budget {HYPOTHESIS_BUDGET}[/]"
+    )
+    console.print(
+        f"[dim]必要な t は {required_t(HYPOTHESIS_BUDGET):.2f}（予算 {HYPOTHESIS_BUDGET} 本）。"
+        "補正なしの 2.0 ではない。[/]"
+    )
 
 
 @app.command(name="valuation-monthly")
