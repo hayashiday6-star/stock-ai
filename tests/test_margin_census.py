@@ -374,3 +374,51 @@ class TestTheCensusRunsEndToEnd:
 
         assert result.exit_code == 1
         assert "§2 の件数センサス" not in result.output
+
+
+class TestTheSplitIsByPeriodNotByCount:
+    """**§0 の期数は OOS のイベント数である。** 全期間ではない。
+
+    全期間で計算すると、IS で推定した効果を全期間の検出力と比べることになる
+    ——**尺度の違う2つを組み合わせる、繰り返し踏んでいる形そのもの。**
+    """
+
+    @staticmethod
+    def _alerts() -> list[MarginAlert]:
+        """前半に1件、後半に3件。**件数で割れば 2 対 2 になる形。**"""
+        found: list[MarginAlert] = []
+        plan = [("1301", 0, 1), ("1302", 40, 41), ("1303", 42, 43), ("1304", 44, 45)]
+        for symbol, off, on in plan:
+            found.append(_alert(symbol, _CALENDAR[off], False))
+            found.append(_alert(symbol, _CALENDAR[on], True))
+            found.append(_alert(symbol, _CALENDAR[on + 2], False))
+        return found
+
+    def test_the_split_follows_the_calendar_not_the_events(self) -> None:
+        found = census(self._alerts(), _CALENDAR)
+
+        assert found.events_is == 1
+        assert found.events_oos == 3
+
+    def test_the_two_halves_add_up_to_what_survived_the_filters(self) -> None:
+        """**足して合わないなら、どこかで落としている。**"""
+        found = census(self._alerts(), _CALENDAR, liquid_on=lambda s, on: s != "1304")
+
+        assert found.events_is + found.events_oos == found.after_liquidity
+
+    def test_an_explicit_split_is_honoured(self) -> None:
+        found = census(self._alerts(), _CALENDAR, split_on=_CALENDAR[43])
+
+        assert found.events_is == 3
+        assert found.events_oos == 1
+
+    def test_a_thin_out_of_sample_is_warned_about(self) -> None:
+        """**1,000 件という線は 2026-09-05 に書いてある。**"""
+        found = census(self._alerts(), _CALENDAR)
+
+        assert any("OOS のイベント" in line for line in found.warnings())
+
+    def test_the_lending_filter_is_warned_about_when_it_halves_the_set(self) -> None:
+        found = census(self._alerts(), _CALENDAR, lending_on=lambda s, on: s == "1302")
+
+        assert any("貸借に絞って" in line for line in found.warnings())

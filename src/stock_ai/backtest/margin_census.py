@@ -158,6 +158,19 @@ class MarginCensus:
     resolved: int
     censored: int
     release_days_median: int | None
+    split_on: dt.date | None = None
+    """IS と OOS の境。**この日までが IS。**"""
+
+    events_is: int = 0
+    """**絞り込んだ後の** IS のイベント数。見込みと分散を推定する側。"""
+
+    events_oos: int = 0
+    """**絞り込んだ後の** OOS のイベント数。
+
+    **§0 の「検出できる差」はこれで計算する。** 全期間で計算すると、IS で
+    推定した効果を全期間の検出力と比べることになる——**尺度の違う2つを
+    組み合わせる、このプロジェクトが繰り返している形そのものである。**
+    """
 
     @property
     def censored_share(self) -> float:
@@ -201,6 +214,18 @@ class MarginCensus:
             found.append(
                 f"貸借区分が読めなかったイベントが {self.lending_unknown:,} 件ある。"
                 "**「貸借でない」には数えていない。**"
+            )
+        if self.events_oos and self.events_oos < 1_000:
+            found.append(
+                f"**OOS のイベントが {self.events_oos:,} 件しかない。** "
+                "2026-09-05 に出した結論は「短い窓で、独立なイベントが 1,000 件"
+                "以上あるもの」だった。**検出できる差がそのぶん大きくなる。**"
+            )
+        if self.after_lending < self.events // 2:
+            found.append(
+                f"**貸借に絞って {1 - self.after_lending / self.events:.0%} 落ちた。** "
+                "空売りできない銘柄でショートを検証しないための絞りだが、"
+                "**件数はここでいちばん減る。**"
             )
         if self.after_liquidity < self.after_lending:
             lost = self.after_lending - self.after_liquidity
@@ -315,6 +340,7 @@ def census(  # noqa: PLR0913 - §2 が固定した絞り込みをすべて受け
     liquid_on: object = None,
     start: dt.date | None = None,
     end: dt.date | None = None,
+    split_on: dt.date | None = None,
     reason: str = "Restricted",
 ) -> MarginCensus:
     """§2 の表を埋める。**リターンを1つも計算しない。**
@@ -327,6 +353,7 @@ def census(  # noqa: PLR0913 - §2 が固定した絞り込みをすべて受け
         liquid_on: ``(symbol, date) -> bool`` 。省略すると絞らない。
         start: この日より前の発動を数えない。
         end: この日より後の発動を数えない。
+        split_on: IS と OOS の境。省略すると、覆う期間の**真ん中**。
         reason: 見る旗。
 
     Returns:
@@ -339,6 +366,11 @@ def census(  # noqa: PLR0913 - §2 が固定した絞り込みをすべて受け
     ]
     if not found:
         return MarginCensus(0, {}, None, None, 0, float("nan"), 0, 0, 0, 0, 0, 0, None)
+
+    # **境は「原本が覆う期間の前半／後半」**（事前登録 §6）。**件数の半分では
+    # ない。** 件数で割ると、イベントの多い時期がそのまま境を動かす。
+    covered = (found[0].onset, found[-1].onset)
+    split = split_on or covered[0] + (covered[1] - covered[0]) / 2
 
     per_day: dict[dt.date, int] = {}
     by_year: dict[int, int] = {}
@@ -387,6 +419,9 @@ def census(  # noqa: PLR0913 - §2 が固定した絞り込みをすべて受け
         resolved=len(resolved),
         censored=censored,
         release_days_median=int(median(resolved)) if resolved else None,
+        split_on=split,
+        events_is=sum(1 for spell in liquid if spell.onset <= split),
+        events_oos=sum(1 for spell in liquid if spell.onset > split),
     )
     logger.info(
         "増担保センサス: 発動 %d 件、貸借 %d 件、流動性通過 %d 件、窓 %d 営業日",

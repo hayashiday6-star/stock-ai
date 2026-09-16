@@ -6970,6 +6970,8 @@ def margin_census(  # noqa: PLR0913 - §2 が固定した絞り込みをすべ�
     table.add_row("貸借銘柄に絞った後", f"{found.after_lending:,}")
     table.add_row("うち貸借区分が読めなかった", f"{found.lending_unknown:,}")
     table.add_row("流動性の下限を通した後", f"{found.after_liquidity:,}")
+    table.add_row("　うち IS（推定に使う）", f"{found.events_is:,}")
+    table.add_row("[bold]　うち OOS（判定。§0 の期数）[/]", f"[bold]{found.events_oos:,}[/]")
     table.add_row("解除まで測れた", f"{found.resolved:,}")
     table.add_row("解除日が分からない", f"{found.censored:,}")
     days = found.release_days_median
@@ -6992,6 +6994,10 @@ def margin_census(  # noqa: PLR0913 - §2 が固定した絞り込みをすべ�
         console.print(f"[yellow]{line}[/]")
 
     console.print()
+    console.print(
+        f"[dim]IS と OOS の境は {found.split_on}（原本が覆う期間の真ん中。**件数の"
+        "半分ではない**）。[/]"
+    )
     console.print(
         "[dim]窓は式から出る——中央値と 20営業日の小さいほう。**見てから選び直さない。**"
         " 次は散らばりの実測（§0）で、そこで初めてリターンを触る。[/]"
