@@ -136,7 +136,7 @@ class AntiValueSeries:
         )
 
 
-def _pbr_by_month(frame: pd.DataFrame) -> dict[tuple[str, pd.Period], tuple[dt.date, float]]:
+def pbr_by_month(frame: pd.DataFrame) -> dict[tuple[str, pd.Period], tuple[dt.date, float]]:
     """（銘柄, 月）→（その月末の日付, PBR）。
 
     **月で引く。日付そのものでは引かない。** 月の途中で上場廃止になった銘柄の
@@ -155,6 +155,27 @@ def _pbr_by_month(frame: pd.DataFrame) -> dict[tuple[str, pd.Period], tuple[dt.d
     ):
         found[(symbol, month)] = (date, float(pbr))
     return found
+
+
+def pbr_on(
+    pbr_of: dict[tuple[str, pd.Period], tuple[dt.date, float]],
+    symbol: str,
+    on: dt.date,
+) -> float | None:
+    """組み替え日 ``on`` の時点で使ってよい PBR。無ければ ``None``。
+
+    **組み替え日より後の PBR を使わない。** 先読みである。月で引いておいて
+    日付で弾くのは、月の途中で上場廃止になった銘柄を落とさないためである
+    （:func:`pbr_by_month` の理由と同じ）。
+
+    **この関門は1箇所にしか無い。** 呼ぶ側で書き直すと、片方だけ先読みを
+    通す形になりうる。
+    """
+    found = pbr_of.get((symbol, pd.Period(on, freq="M")))
+    if found is None:
+        return None
+    pbr_date, pbr = found
+    return None if pbr_date > on else pbr
 
 
 def build_series(  # noqa: PLR0913 - 事前登録が固定した条件をすべて受け取る
@@ -194,7 +215,7 @@ def build_series(  # noqa: PLR0913 - 事前登録が固定した条件をすべ�
     from stock_ai.database.repository import list_securities
 
     floor = USABLE_FROM if start is None else max(start, USABLE_FROM)
-    pbr_of = _pbr_by_month(valuation)
+    pbr_of = pbr_by_month(valuation)
 
     with database.session() as session:
         price_repo = PriceRepository(session)
@@ -230,14 +251,8 @@ def build_series(  # noqa: PLR0913 - 事前登録が固定した条件をすべ�
                     symbol, on, ordered_snapshots, snapshots, False, set()
                 ):
                     continue
-                month = pd.Period(on, freq="M")
-                found = pbr_of.get((symbol, month))
-                if found is None:
-                    no_pbr += 1
-                    continue
-                pbr_date, pbr = found
-                # **組み替え日より後の PBR を使わない。** 先読みである。
-                if pbr_date > on:
+                pbr = pbr_on(pbr_of, symbol, on)
+                if pbr is None:
                     no_pbr += 1
                     continue
 

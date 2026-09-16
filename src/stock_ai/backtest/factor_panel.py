@@ -31,7 +31,9 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 
 import numpy as np
+import pandas as pd
 
+from stock_ai.backtest.antivalue import pbr_by_month, pbr_on
 from stock_ai.backtest.lowvol import (
     DEFAULT_WINDOW,
     MIN_SYMBOLS_PER_MONTH,
@@ -64,9 +66,18 @@ FACTOR_HISTORY: dict[str, int] = {
     "低ボラ": DEFAULT_WINDOW,
     "モメンタム": MOMENTUM_WINDOW,
     "短期リバーサル": REVERSAL_WINDOW,
+    # **バリューは価格の履歴を要らない。** 月末の PBR を1点引くだけである。
+    # 0 にすると `position < history` の検査が効かなくなるので 1 を置く。
+    "バリュー": 1,
 }
 
 DEFAULT_FACTORS: tuple[str, ...] = ("低ボラ", "モメンタム", "短期リバーサル")
+
+#: `pbr` が要る因子。**渡されていなければ黙って外さず、例外にする。**
+#:
+#: 2026-09-05 に束ねたのは3本とも `technical` だった。`fundamental` が1本も
+#: 入っていない。**種類をまたぐ複合が手つかずで残っている**ので、その1本目。
+NEEDS_VALUATION: frozenset[str] = frozenset({"バリュー"})
 
 
 @dataclass(frozen=True)
@@ -88,6 +99,8 @@ class Panel:
     excluded_discontinuity: int = 0
     excluded_no_history: int = 0
     excluded_thin: int = 0
+    excluded_no_pbr: int = 0
+    """PBR が無い（または 0 以下）ので外した銘柄月。**0 で埋めていない。**"""
 
     def column(self, factor: str) -> list[list[tuple[float, float]]]:
         """1因子だけを取り出して、``(signal, 翌月リターン)`` の断面にする。
@@ -161,6 +174,7 @@ def build_panel(
     window: int = DEFAULT_WINDOW,
     min_turnover: float = MIN_TURNOVER,
     min_symbols: int = MIN_SYMBOLS_PER_MONTH,
+    valuation: pd.DataFrame | None = None,
 ) -> Panel:
     """複数因子の月次断面を、`lowvol` と同じフィルタで作る。
 
@@ -175,12 +189,15 @@ def build_panel(
         window: 低ボラの測定窓。
         min_turnover: 流動性の下限。
         min_symbols: 分位を作るのに必要な最低銘柄数。
+        valuation: 月末の PBR（`valuation_monthly.read` が返す表）。
+            **バリューを載せるなら必須。** 渡されていなければ例外にする。
 
     Returns:
         月ごとの断面。
 
     Raises:
-        ValueError: 知らない因子、ベンチマークの価格が無い、組み替え日が無い。
+        ValueError: 知らない因子、バリューなのに `valuation` が無い、
+            ベンチマークの価格が無い、組み替え日が無い。
     """
     chosen = tuple(factors)
     unknown = [name for name in chosen if name not in FACTOR_HISTORY]
@@ -188,6 +205,13 @@ def build_panel(
         raise ValueError(f"知らない因子: {unknown}。使えるのは {sorted(FACTOR_HISTORY)}。")
     if not chosen:
         raise ValueError("因子が1つも指定されていない。")
+
+    # **黙って外さない。** 渡し忘れたまま動くと、頼んだ因子より1本少ない合成が
+    # 出る。**例外は出ないので、数字を見ても気付けない。**
+    needed = [name for name in chosen if name in NEEDS_VALUATION]
+    if needed and (valuation is None or valuation.empty):
+        raise ValueError(f"{needed} には月末の PBR が要る。`--valuation` を渡すこと。")
+    pbr_of = pbr_by_month(valuation) if valuation is not None else {}
 
     history = max(window if name == "低ボラ" else FACTOR_HISTORY[name] for name in chosen)
 
@@ -222,7 +246,7 @@ def build_panel(
         # 市場を絞る引数は無い。** `lowvol` と同じ呼び方にそろえる。
         targets = symbols or [sym for sym, market in list_securities(session) if market == "JP"]
         buckets: dict[int, list[tuple[tuple[float, ...], float]]] = {i: [] for i, _ in usable}
-        no_history = thin = discontinuous = 0
+        no_history = thin = discontinuous = no_pbr = 0
 
         for symbol in targets:
             raw = price_repo.get_raw_prices(symbol)
@@ -273,7 +297,16 @@ def build_panel(
                     no_history += 1
                     continue
 
-                signals = _signals(chosen, sample, window, close, position)
+                value: float | None = None
+                if needed:
+                    value = pbr_on(pbr_of, symbol, calendar[position].date())
+                    if value is None or value <= 0.0:
+                        # **0 や負の PBR を埋めない。** 債務超過は「限りなく
+                        # 割安」ではない。数えて外す。
+                        no_pbr += 1
+                        continue
+
+                signals = _signals(chosen, sample, window, close, position, value)
                 if signals is None:
                     no_history += 1
                     continue
@@ -308,6 +341,7 @@ def build_panel(
         excluded_discontinuity=discontinuous,
         excluded_no_history=no_history,
         excluded_thin=thin,
+        excluded_no_pbr=no_pbr,
     )
     logger.info(
         "因子盤面: %s、%d ヶ月、1ヶ月あたり中央値 %d 銘柄",
@@ -318,12 +352,13 @@ def build_panel(
     return panel
 
 
-def _signals(
+def _signals(  # noqa: PLR0913 - 因子ごとに要る材料が違う
     factors: tuple[str, ...],
     sample: np.ndarray,
     window: int,
     close: np.ndarray,
     position: int,
+    pbr: float | None = None,
 ) -> tuple[float, ...] | None:
     """1銘柄・1ヶ月ぶんの signal の組。**大きいほど買う側にそろえる。**
 
@@ -352,6 +387,21 @@ def _signals(
                 return None
             # **符号を反転する。** 直近が下げた銘柄を買う側にする。
             values.append(-float(latest / past - 1.0))
+        elif name == "バリュー":
+            if pbr is None or pbr <= 0.0:  # pragma: no cover - build_panel が先に弾く
+                return None
+            # **対数を取ってから符号を反転する。**
+            #
+            # 生の PBR は右に長い裾を持つ（1 前後に集まり、上は 100 を超える）。
+            # そのまま z スコアにすると、**上位の数銘柄が重みを独占する。**
+            # 対数にすると「何倍割安か」で読めて、裾が効かなくなる。
+            #
+            # **反転するのは「低PBR を買う」向きに固定するためである。**
+            # #9 は逆向き（割安は割安のまま）の説で、**§0 で閉じている。**
+            # ここで向きを固定するのは、合成を封印する前に決めておくためで、
+            # #9 の IS を見て決めたのではない——「低PBR を買う」は世間で言う
+            # バリューそのものである。
+            values.append(-float(np.log(pbr)))
         else:  # pragma: no cover - build_panel が先に弾く
             raise ValueError(f"知らない因子: {name}")
     return tuple(values)
