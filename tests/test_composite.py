@@ -308,6 +308,9 @@ class TestTheGateRunsEndToEnd:
         assert "§0 に入れる材料" in result.output
         assert "脚ごとの単独" in result.output
         assert "1 本" in result.output
+        # **合成の t を、読む側に逆算させない。**
+        assert "IS では:" in result.output
+        assert "最良の単独" in result.output
 
     def test_an_unregistered_leg_stops_it(self, tmp_path, monkeypatch) -> None:
         """**登録が無い脚は、何を主張しているのかが文書に残らない。**"""

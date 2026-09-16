@@ -6875,10 +6875,12 @@ def composite_gate(  # noqa: PLR0913 - 複合型のルールが固定する条�
     **それ自体として登録して判定する**ための関門で、r を測り直しはしない。
     """
     from stock_ai.backtest.antivalue import USABLE_FROM
+    from stock_ai.backtest.composite import PASS as COMPOSITE_PASS
     from stock_ai.backtest.composite import (
         Component,
         Coverage,
         Design,
+        beats_best,
         kinds,
         over_budget,
         single_kind,
@@ -7075,9 +7077,12 @@ def composite_gate(  # noqa: PLR0913 - 複合型のルールが固定する条�
     console.print(zero)
 
     # --- 規則4の比較対象: 脚ごとの単独（同じ盤面） ---------------------------
-    singles = Table(title="脚ごとの単独（**同じ盤面・同じ月**）")
+    composite_t = mean / stderr if stderr > 0 else float("nan")
+    singles = Table(title="合成と、脚ごとの単独（**同じ盤面・同じ月**）")
     for column in ("脚", "説", "IS の t（α）"):
         singles.add_column(column, overflow="fold")
+    singles.add_row("[bold]合成[/]", "—", f"[bold]{composite_t:+.2f}[/]")
+    leg_t_of: dict[str, float] = {}
     for component in design.components:
         column = panel.column(component.factor)
         leg = build_estimators(column, panel.benchmark, higher_is_better=True)
@@ -7087,12 +7092,24 @@ def composite_gate(  # noqa: PLR0913 - 複合型のルールが固定する条�
         leg_beta = beta_to_benchmark(leg.quantile_spread, leg.benchmark)
         leg_net = leg.alpha(leg.quantile_spread, leg_beta)
         leg_power = estimate_power(leg_net, lags=lags)
-        leg_t = fmean(leg_net) / leg_power.standard_error(len(leg_net))
-        singles.add_row(component.factor, component.hypothesis_id, f"{leg_t:+.2f}")
+        leg_t_of[component.factor] = fmean(leg_net) / leg_power.standard_error(len(leg_net))
+        singles.add_row(
+            component.factor, component.hypothesis_id, f"{leg_t_of[component.factor]:+.2f}"
+        )
     console.print(singles)
+
+    # **合成の t を、読む側に計算させない。**
+    #
+    # 最初は脚だけを刷って、合成は見込みの幅から逆算するしかなかった。
+    # **出した数字を自分で見る**（`CLAUDE.md`）。並べておけば目に入る。
+    if leg_t_of:
+        margin, reason = beats_best(composite_t, leg_t_of)
+        colour = "green" if margin == COMPOSITE_PASS else "yellow"
+        console.print(f"[{colour}]IS では: {reason}[/]")
     console.print(
-        "[dim]**この表は合格線であって、脚の判定ではない。** 合格には「最良の単独を"
-        "上回る」ことが要る（`docs/PURPOSE.md`）。当てるのは OOS の判定である。[/]"
+        "[dim]**これは合格線であって、判定ではない。** 合格には「最良の単独を"
+        "上回る」ことが要る（`docs/PURPOSE.md`）が、当てるのは **OOS** である。"
+        "IS で上回っていることは、OOS で上回ることを意味しない。[/]"
     )
 
     # --- 規則5 と §0 の当てはめ ----------------------------------------------
@@ -7344,18 +7361,36 @@ def power_gate(
                 f"{count - periods:+,}" if count > periods else "足りている",
             )
         console.print(needed)
-        factor = required_improvement(detectable, floor)
         console.print()
-        console.print(
-            f"期数を増やせないなら、**推定量を [bold]{factor:.2f} 倍[/]"
-            "改善するしかない**（見込みの下限で通すために）。"
-        )
-        console.print(
-            "[dim]その改善は **t の比**で測る。SD の比ではない。分位スプレッドは"
-            "断面が正規なら ``2.8 × 1σチルト`` にあたり、**推定量を変えると SD も"
-            "効果も一緒に縮む。** SD 比を掛けたところに文献の分位スプレッドの"
-            "効果量を当てると、2.8倍の改善が無料で出たように見える。[/dim]"
-        )
+        if floor <= 0:
+            # **下限が 0 以下なら「何倍改善すれば通る」は計算できない。**
+            #
+            # 負の数を何倍しても正にはならない。ここで落ちていた——
+            # `required_improvement` が例外を投げ、traceback がそのまま出た
+            # （2026-09-16、#11）。**下限が 0 をまたぐのは珍しい形ではない。**
+            # 段2 で自分の IS から見込みを置けば、効かない設計では普通に起きる。
+            console.print(
+                "[yellow]**「推定量を何倍改善すれば通るか」は計算できない。**[/] "
+                f"見込みの下限が 年 {low:.1f}% で、0 をまたいでいる。"
+            )
+            console.print(
+                "[dim]倍率は「下限を検出できる差まで持ち上げる比」である。"
+                "**下限が負なら、持ち上げる先が無い。** 下限が 0 をまたぐのは"
+                "「効果が小さい」ではなく、**向きすら決まっていない**ということ"
+                "である。改善の倍率ではなく、設計そのものを見ること。[/dim]"
+            )
+        else:
+            factor = required_improvement(detectable, floor)
+            console.print(
+                f"期数を増やせないなら、**推定量を [bold]{factor:.2f} 倍[/]"
+                "改善するしかない**（見込みの下限で通すために）。"
+            )
+            console.print(
+                "[dim]その改善は **t の比**で測る。SD の比ではない。分位スプレッドは"
+                "断面が正規なら ``2.8 × 1σチルト`` にあたり、**推定量を変えると SD も"
+                "効果も一緒に縮む。** SD 比を掛けたところに文献の分位スプレッドの"
+                "効果量を当てると、2.8倍の改善が無料で出たように見える。[/dim]"
+            )
 
     console.print(
         "[dim]このゲートは平均を見ない。**「効果がありそうだから通す」は書けない。**[/dim]"
