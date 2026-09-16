@@ -5444,6 +5444,46 @@ def jquants_row_audit(
         )
 
 
+@app.command(name="valuation-monthly")
+def valuation_monthly(
+    directory: str = typer.Option(
+        str(DEFAULT_ARCHIVE_DIR), "--dir", help="Where the archived originals live."
+    ),
+    into: str | None = typer.Option(None, "--into", help="Where to write the file."),
+) -> None:
+    """Pull month-end PBR out of the originals, into one small file.
+
+    **必要なのは月末の1点だけである。** 1,588万銘柄日を毎回読むと数分かかる。
+    200ヶ月 × 3,500銘柄なら数 MB に収まり、**原本から作り直せる。**
+
+    **暦の月末を探さない。** 月の途中で上場廃止になった銘柄は、その日が最後の
+    観測である。暦で引くと、その銘柄がその月から丸ごと消える。
+
+    取りには行かない。読んで書くだけ。
+    """
+    from stock_ai.data.valuation_monthly import DEFAULT_PATH, build
+
+    settings = get_settings()
+    configure_logging(settings.log_level)
+
+    def progress(index: int, total: int, _key: str) -> None:
+        console.print(f"読んでいる… {index}/{total}", end="\r")
+
+    target = Path(into) if into else DEFAULT_PATH
+    report = build(Path(directory), target, progress)
+    console.print(" " * 40, end="\r")
+    console.print(report.summary())
+    if not report.rows:
+        raise typer.Exit(code=1)
+
+    size = target.stat().st_size / 1_000_000
+    console.print(f"[green]{target} に書いた（{size:.1f} MB）。[/]")
+    console.print(
+        "[dim]**生成物である。手で直さない。** 原本から作り直せるので、"
+        "食い違ったら捨てて作り直す。[/]"
+    )
+
+
 @app.command(name="jquants-plan-coverage")
 def jquants_plan_coverage(
     to_plan: str = typer.Option("Free", "--to", help="Plan to downgrade to."),
