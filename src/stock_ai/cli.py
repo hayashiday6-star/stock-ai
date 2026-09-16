@@ -6873,7 +6873,7 @@ def margin_power(  # noqa: PLR0913 - §0 が固定した条件をすべて受け
     from stock_ai.backtest.margin_census import census, event_returns, lending_index, spells
     from stock_ai.backtest.multiplicity import HYPOTHESIS_BUDGET, required_t
     from stock_ai.backtest.pead import TURNOVER_WINDOW
-    from stock_ai.backtest.power import estimate_power, gate
+    from stock_ai.backtest.power import estimate_power, gate, trimmed_variance
     from stock_ai.backtest.reversal import COST_ROUND_TRIP
     from stock_ai.data.jquants_margin import from_archive as margin_from_archive
     from stock_ai.data.schema import VOLUME
@@ -6974,8 +6974,14 @@ def margin_power(  # noqa: PLR0913 - §0 が固定した条件をすべて受け
     table = Table(title="§0 に入れる材料（IS から。判定ではない）")
     for column in ("項目", "値", "どこから"):
         table.add_column(column, overflow="fold")
+    trimmed, dropped = trimmed_variance(take, fraction=0.01)
     table.add_row("値動きの取れたイベント日", f"{len(values):,}", "IS のみ")
     table.add_row("1イベントあたりのSD", f"{estimate.daily_sd:.2%}", "費用引き後のショート")
+    table.add_row(
+        "上位1%を除いたSD",
+        f"{trimmed**0.5:.2%}",
+        f"{dropped} 件を除いた。**外れ値で膨らんでいないか**",
+    )
     table.add_row("重なりの膨張", f"{estimate.inflation:.2f}x", f"Newey-West({window})。実測")
     table.add_row("判定に使える期数", f"{counted.events_oos:,}", "**OOS のイベント数**")
     table.add_row("検出できる差", f"{detectable:.2%}", f"t≥{target:.2f}・1イベントあたり")
@@ -6999,12 +7005,52 @@ def margin_power(  # noqa: PLR0913 - §0 が固定した条件をすべて受け
             "**費用を超えるだけの線を置くと、#7 が入った帯にまっすぐ入る。** "
             "線は動かさない。[/]"
         )
+        _events_needed(counted, estimate, target, committed, detectable)
         return
 
     console.print(f"[green]線（{committed:.1%}）は上回った。[/] 次は §0 のゲートである。")
     decision = gate(detectable, floor_estimate, mean + 1.645 * stderr)
     colour = "green" if decision.passed else "red"
     console.print(f"[bold {colour}]{decision.verdict}[/] {decision.reading}")
+    if not decision.passed:
+        _events_needed(counted, estimate, target, committed, detectable)
+
+
+def _events_needed(counted: object, estimate: object, target: float, *effects: float) -> None:
+    """Say how many events the design would need - not just that it is short.
+
+    **「検出力不足」で終わらせない。** 事前登録 §0 がそう定めている——
+    「年あたりのイベント数で割れば、必要な年数になる」。**年数にすれば、手元の
+    年数と引き算ができる。**
+    """
+    from stock_ai.backtest.power import periods_needed
+
+    span = (counted.last - counted.first).days / 365.25 if counted.first else 0.0  # type: ignore[attr-defined]
+    per_year = counted.after_liquidity / span if span > 0 else 0.0  # type: ignore[attr-defined]
+    if per_year <= 0:
+        return
+
+    console.print()
+    table = Table(title="この設計で検出するのに要るイベント数")
+    for column in ("検出したい効果", "要るイベント", "年数", "いまとの差"):
+        table.add_column(column, justify="left" if column == "検出したい効果" else "right")
+    for effect in sorted({round(value, 6) for value in effects if value > 0}):
+        count = periods_needed(estimate.daily_sd, estimate.inflation, effect, target)  # type: ignore[attr-defined]
+        table.add_row(
+            f"1イベント {effect:.2%}",
+            f"{count:,}",
+            f"{count / per_year:,.0f}年",
+            f"{count - counted.events_oos:+,}"  # type: ignore[attr-defined]
+            if count > counted.events_oos  # type: ignore[attr-defined]
+            else "足りている",
+        )
+    console.print(table)
+    console.print(
+        f"[dim]手元は 1年あたり {per_year:.1f} 件（絞り込んだ後、"
+        f"{span:.1f}年で {counted.after_liquidity:,} 件）。"  # type: ignore[attr-defined]
+        "**いちばん減らしているのは貸借の絞りだが、空売りできない銘柄で"
+        "ショートを検証しないための絞りなので動かさない。**[/]"
+    )
 
 
 @app.command(name="margin-census")
