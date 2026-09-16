@@ -90,6 +90,34 @@ class AntiValueSeries:
                     changes.append(1.0 - len(now & before) / len(before))
         return float(np.mean(changes)) if changes else 0.0
 
+    def beta_to_benchmark(self) -> float:
+        """スプレッドのベンチマークに対する β（最小二乗）。
+
+        **ロング・ショートでも β は 0 ではない。** 両端の分位の感応度が違えば
+        差にも市場が残る。割安な側は感応度が高いことが多いので、**市場が動いた
+        月はスプレッドが一方向に出る。** その上下動が分散のほとんどを作り、
+        検出力を食う。
+
+        `cross_section.beta_to_benchmark` を呼ぶ。**同じ処理を2つ書かない。**
+
+        Raises:
+            ValueError: 月が2つ未満、またはベンチマークが動かない。
+        """
+        from stock_ai.backtest.cross_section import beta_to_benchmark
+
+        return beta_to_benchmark(self.spread(), self.benchmark)
+
+    def alpha(self, beta: float) -> list[float]:
+        """スプレッド − β×ベンチマーク。
+
+        β は外から渡す。**この系列自身から推定した β を判定期間に当てると、
+        判定期間の情報でその期間を調整することになる**（#7 §7-2 と同じ）。
+        IS の推定では IS の β を当ててよいが、**判定では IS で固定した値を渡す。**
+        """
+        return [
+            value - beta * bench for value, bench in zip(self.spread(), self.benchmark, strict=True)
+        ]
+
     def cost_per_month(self) -> float:
         """月あたりの費用。**実測した入れ替わり率から出す。**"""
         return ROUND_TRIP_COST * self.turnover()

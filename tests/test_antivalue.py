@@ -18,8 +18,14 @@ import datetime as dt
 
 import numpy as np
 import pandas as pd
+import pytest
 
-from stock_ai.backtest.antivalue import ROUND_TRIP_COST, USABLE_FROM, build_series
+from stock_ai.backtest.antivalue import (
+    ROUND_TRIP_COST,
+    USABLE_FROM,
+    AntiValueSeries,
+    build_series,
+)
 from stock_ai.backtest.pead import Period
 from stock_ai.data.schema import ADJ_CLOSE, CLOSE, HIGH, LOW, OPEN, VOLUME
 from stock_ai.database.engine import Database
@@ -210,6 +216,64 @@ class TestTheWindowIsWhatThePreregSaid:
         assert "比べていない" in series.summary()
 
 
+class TestTheMarketIsTakenOutBeforeMeasuringTheSpread:
+    """**ロング・ショートでも β は 0 ではない。**
+
+    §0 の SD を生の差で測っていた。事前登録 §5 は「β を引いた α も併記する」と
+    書いてある。**書いてあるのに落としていた。** 割安な側は市場への感応度が
+    高いことが多いので、市場が動いた月はスプレッドが一方向に出る。**その上下動
+    が分散のほとんどを作り、検出力を食う。**
+    """
+
+    @staticmethod
+    def _series(spread_of) -> AntiValueSeries:
+        """スプレッドとベンチマークだけを持つ系列を組む。"""
+        bench = [0.05, -0.04, 0.03, -0.02, 0.06, -0.05, 0.01, -0.03, 0.04, -0.01]
+        quantiles = [(0.0, 0.0, 0.0, 0.0, spread_of(value)) for value in bench]
+        return AntiValueSeries(
+            months=[dt.date(2009, month, 28) for month in range(1, 11)],
+            quantiles=quantiles,
+            members=[(frozenset(), frozenset())] * len(bench),
+            counts=[500] * len(bench),
+            benchmark=bench,
+            skipped_thin=0,
+            skipped_no_pbr=0,
+        )
+
+    def test_a_spread_that_is_only_market_has_a_beta_of_one(self) -> None:
+        series = self._series(lambda bench: bench)
+
+        assert series.beta_to_benchmark() == pytest.approx(1.0)
+
+    def test_taking_the_market_out_leaves_almost_nothing(self) -> None:
+        """**分散のほとんどが市場だったなら、α はその分だけ小さくなる。**"""
+        series = self._series(lambda bench: bench)
+
+        alpha = series.alpha(series.beta_to_benchmark())
+
+        assert max(abs(value) for value in alpha) < 1e-9
+
+    def test_a_spread_with_no_market_in_it_is_left_alone(self) -> None:
+        """**β を引くことが、いつでも分散を下げるわけではない。**"""
+        fixed = [0.01, 0.01, 0.01, 0.01, 0.01, 0.01, 0.01, 0.01, 0.01, 0.01]
+        series = self._series(lambda bench: 0.01)
+        assert series.spread() == pytest.approx(fixed)
+
+        alpha = series.alpha(series.beta_to_benchmark())
+
+        assert alpha == pytest.approx(fixed)
+
+    def test_the_same_least_squares_is_not_written_twice(self) -> None:
+        """正本は `cross_section.beta_to_benchmark` である。**呼ぶ側で書き直さない。**"""
+        from stock_ai.backtest.cross_section import beta_to_benchmark
+
+        series = self._series(lambda bench: 2.0 * bench + 0.01)
+
+        assert series.beta_to_benchmark() == pytest.approx(
+            beta_to_benchmark(series.spread(), series.benchmark)
+        )
+
+
 class TestTheCommandRefusesBelowTheCommittedFloor:
     """**線は測る前にコミットした。** 下回ったら、封印しない。
 
@@ -313,3 +377,11 @@ class TestTheCommandRefusesBelowTheCommittedFloor:
 
         assert "2009-12-31" in result.output
         assert "OOS" in result.output
+
+    def test_alpha_is_printed_beside_the_raw_spread(self, tmp_path, monkeypatch) -> None:
+        """**事前登録 §5 が「併記する」と書いている。** 片方だけ出さない。"""
+        result, _ = self._run(tmp_path, monkeypatch, self._proverb_holds)
+
+        assert "α" in result.output
+        assert "β" in result.output
+        assert "検出できる差" in result.output

@@ -16,7 +16,7 @@ import time
 from collections import Counter
 from collections.abc import Callable
 from pathlib import Path
-from statistics import fmean, median, stdev, variance
+from statistics import fmean, median, stdev
 
 import pandas as pd
 import typer
@@ -5466,7 +5466,7 @@ def antivalue_estimate(
     """
     from stock_ai.backtest.antivalue import build_series as antivalue_series
     from stock_ai.backtest.multiplicity import HYPOTHESIS_BUDGET, required_t
-    from stock_ai.backtest.power import autocovariances, long_run_variance
+    from stock_ai.backtest.power import estimate_power
     from stock_ai.data.valuation_monthly import DEFAULT_PATH
     from stock_ai.data.valuation_monthly import read as read_valuation
 
@@ -5495,32 +5495,70 @@ def antivalue_estimate(
     if not series.months:
         raise typer.Exit(code=1)
 
-    spread = series.spread()
     # **費用を引いてから見る。** 「取引コスト込みのリターンで判定する」
     # （docs/PURPOSE.md）。実行できない大きさを見込みに置かないため。
     cost = series.cost_per_month()
-    net = [value - cost for value in spread]
 
-    estimate = long_run_variance(autocovariances(net, lags=3))
-    plain = variance(net) if len(net) > 1 else 0.0
-    inflation = math.sqrt(estimate / plain) if plain > 0 else float("nan")
-    mean = fmean(net)
-    stderr = math.sqrt(estimate / len(net)) if len(net) else float("nan")
+    # **2通りで測る。生の差と、β を引いた α。**
+    #
+    # 事前登録 §5 が「β を引いた α も併記する」と書いてある。**最初はそこを
+    # 落として生の差だけで出していた。** ロング・ショートでも β は 0 ではなく、
+    # 割安な側は感応度が高いことが多いので、市場が動いた月はスプレッドが
+    # 一方向に出る。**その上下動が分散のほとんどを作り、検出力を食う。**
+    #
+    # どちらが小さいかは測るまで分からない。**両方出して、どちらで設計するか
+    # を数字を見てから決める——ただし決めるのは封印の前である。**
+    beta = series.beta_to_benchmark()
+    measured = {
+        "生の差": [value - cost for value in series.spread()],
+        "α（β を引いた）": [value - cost for value in series.alpha(beta)],
+    }
 
     table = Table(title="§0 に入れる材料（IS から。判定ではない）")
-    for column in ("項目", "値", "どこから"):
+    for column in ("項目", "生の差", "α（β を引いた）", "どこから"):
         table.add_column(column, overflow="fold")
-    table.add_row("1期あたりのSD", f"{math.sqrt(plain) * 100:.2f}%", "IS の月次、費用引き後")
-    table.add_row("重なりの膨張", f"{inflation:.2f}x", "Newey-West(3) と素の分散の比。実測")
-    table.add_row("判定に使える期数", f"{oos_periods}", "OOS の月数。**全期間ではない**")
-    table.add_row("入れ替わり", f"{series.turnover():.1%}／月", "実測。#7 の値は写していない")
-    table.add_row("費用", f"年 {cost * 12:.2%}", "往復 0.40% × 入れ替わり")
+
+    target = required_t(HYPOTHESIS_BUDGET)
+    stats: dict[str, tuple[float, float, float, float, float]] = {}
+    for label, values in measured.items():
+        estimate = estimate_power(values, lags=3)
+        stats[label] = (
+            estimate.daily_sd,
+            estimate.inflation,
+            fmean(values),
+            estimate.standard_error(len(values)),
+            # **判定に使える期数で当てる。** IS の 106ヶ月ではない。
+            estimate.detectable(oos_periods, target_t=target),
+        )
+
+    raw, adjusted = stats["生の差"], stats["α（β を引いた）"]
+    table.add_row("1期あたりのSD", f"{raw[0]:.2%}", f"{adjusted[0]:.2%}", "IS の月次、費用引き後")
+    table.add_row(
+        "重なりの膨張", f"{raw[1]:.2f}x", f"{adjusted[1]:.2f}x", "Newey-West(3) と素の分散の比"
+    )
+    table.add_row(
+        "検出できる差",
+        f"年 {raw[4] * 12:.1%}",
+        f"年 {adjusted[4] * 12:.1%}",
+        f"t≥{target:.2f}・{oos_periods}期",
+    )
+    table.add_row("判定に使える期数", f"{oos_periods}", "—", "OOS の月数。**全期間ではない**")
+    table.add_row("入れ替わり", f"{series.turnover():.1%}／月", "—", "実測。#7 の値は写していない")
+    table.add_row("費用", f"年 {cost * 12:.2%}", "—", "往復 0.40% × 入れ替わり")
+    table.add_row("β", f"{beta:+.2f}", "—", "スプレッドの、指数に対する感応度。IS で推定")
     console.print(table)
 
+    mean, stderr = raw[2], raw[3]
     low, high = mean - 1.96 * stderr, mean + 1.96 * stderr
     console.print(
-        f"[bold]IS の効果（費用引き後）: 年 {mean * 12:+.2%}[/] "
+        f"[bold]IS の効果（生の差・費用引き後）: 年 {mean * 12:+.2%}[/] "
         f"[dim]（95% の幅 年 {low * 12:+.2%} 〜 {high * 12:+.2%}）[/]"
+    )
+    console.print(
+        f"[dim]α でも併記する: 年 {adjusted[2] * 12:+.2%}"
+        f"（95% の幅 年 {(adjusted[2] - 1.96 * adjusted[3]) * 12:+.2%} 〜 "
+        f"{(adjusted[2] + 1.96 * adjusted[3]) * 12:+.2%}）。"
+        f"**線を当てるのは生の差のほうである**——§10 が「分位差」と書いている。[/]"
     )
 
     # **測る前にコミットした線である。** 動かさない。
@@ -5540,9 +5578,9 @@ def antivalue_estimate(
     console.print(f"[green]線（年 {floor:.1%}）は上回った。[/] 次は §0 のゲートである。")
     console.print(
         "[dim]uv run stock-ai power-gate "
-        f"--sd {math.sqrt(plain) * 100:.2f} --periods {oos_periods} "
+        f"--sd {raw[0] * 100:.2f} --periods {oos_periods} "
         f"--low {low * 12 * 100:.2f} --high {high * 12 * 100:.2f} "
-        f"--inflation {inflation:.2f} --budget {HYPOTHESIS_BUDGET}[/]"
+        f"--inflation {raw[1]:.2f} --budget {HYPOTHESIS_BUDGET}[/]"
     )
     console.print(
         f"[dim]必要な t は {required_t(HYPOTHESIS_BUDGET):.2f}（予算 {HYPOTHESIS_BUDGET} 本）。"
