@@ -31,6 +31,7 @@ from stock_ai.core.logging import get_logger
 from stock_ai.data.jquants_details import STATEMENT_MARKER, StatementDetail
 from stock_ai.data.jquants_fundamentals import (
     _FORECAST_KEYS,
+    _FY_END_KEYS,
     _fiscal_year_end_of,
 )
 
@@ -47,6 +48,13 @@ REVISION_TYPE = "EarnForecastRevision"
 
 #: 見る科目。`jquants_fundamentals` が実レスポンスで確認した名前を引く。
 FORECAST_KEYS: tuple[str, ...] = _FORECAST_KEYS["net_income"]
+
+#: 会計年度末を名乗りうる鍵。同じく `jquants_fundamentals` から引く。
+#:
+#: **あちらで確認されたのは API の応答である。** 一括 CSV の `FS` に同じ名前で
+#: 入っているとは限らない——実際、入っていなかった（2026-09-16）。**確認した
+#: 場所と、使う場所は別である。**
+FISCAL_KEYS: tuple[str, ...] = _FY_END_KEYS
 
 #: OOS がこれを割ったら設計を見直す（§10）。
 MIN_EVENTS_OOS = 1_000
@@ -81,28 +89,41 @@ class Readability:
     違う」のかを分けられる。
     """
 
+    def inventory(self, limit: int = 20) -> str:
+        """`FS` に実際に載っていた鍵。**「無い」と「名前が違う」を分ける。**"""
+        if not self.keys_seen:
+            return "`FS` に鍵が1つも無い。"
+        ordered = sorted(self.keys_seen.items(), key=lambda pair: (-pair[1], pair[0]))
+        names = "、".join(f"{key}({count:,})" for key, count in ordered[:limit])
+        tail = f" ほか {len(ordered) - limit} 個" if len(ordered) > limit else ""
+        return f"実際に載っていた鍵: {names}{tail}。"
+
     def warnings(self) -> list[str]:
         """気付かなくても目に入るべきこと。"""
         found: list[str] = []
         if not self.rows:
             found.append(f"**`{REVISION_TYPE}` の行が1件も無い。** 原本を読めていない。")
             return found
-        if self.no_forecast == self.rows:
-            names = ", ".join(sorted(self.keys_seen)[:12]) or "(空)"
-            found.append(
-                f"**会社予想を1件も読めなかった。** 探した名前は {FORECAST_KEYS}。"
-                f"実際に載っていた鍵: {names}。**「無い」ではなく「名前が違う」を疑う。**"
-            )
-        elif self.no_forecast:
-            found.append(
-                f"会社予想を読めなかった行が {self.no_forecast:,} 件ある"
-                f"（{self.no_forecast / self.rows:.0%}）。**0 に落としていない。**"
-            )
-        if self.no_fiscal_year:
-            found.append(
-                f"会計年度末を読めなかった行が {self.no_fiscal_year:,} 件ある。"
-                "**年度をまたいだ比較をしないために要る。**"
-            )
+        # **列ごとに、全滅したかどうかを見る。**
+        #
+        # 最初は会社予想の列にしか鍵の一覧を出していなかった。予想は読めたのに
+        # **会計年度末が 72,156 件すべてで読めず**、一覧は出なかった
+        # （2026-09-16）。**表に出ていることと、目に入ることは別である。**
+        # 見張りは、見ている列を絞らない。
+        for label, missing, names in (
+            ("会社予想", self.no_forecast, FORECAST_KEYS),
+            ("会計年度末", self.no_fiscal_year, FISCAL_KEYS),
+        ):
+            if missing == self.rows:
+                found.append(
+                    f"**{label}を1件も読めなかった。** 探した名前は {names}。"
+                    f"{self.inventory()} **「無い」ではなく「名前が違う」を疑う。**"
+                )
+            elif missing:
+                found.append(
+                    f"{label}を読めなかった行が {missing:,} 件ある"
+                    f"（{missing / self.rows:.0%}）。**0 に落としていない。**"
+                )
         if self.no_previous:
             found.append(
                 f"前回の予想が無くて比べられなかった行が {self.no_previous:,} 件ある"

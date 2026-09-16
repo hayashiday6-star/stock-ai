@@ -367,3 +367,55 @@ class TestTheCensusRunsEndToEnd:
 
         assert result.exit_code == 1
         assert "件数センサス" not in result.output
+
+
+class TestTheDiagnosticDoesNotWatchOneColumn:
+    """**表に出ていることと、目に入ることは別である。**
+
+    最初は会社予想の列にしか鍵の一覧を出していなかった。予想は読めたのに
+    **会計年度末が 72,156 件すべてで読めず、一覧は出なかった**（2026-09-16）。
+    **見張りは、見ている列を絞らない。**
+    """
+
+    def test_a_wholesale_fiscal_year_failure_lists_the_keys(self) -> None:
+        rows = [_row(_DAY, forecast=100.0, fiscal=None) for _ in range(3)]
+
+        _events, seen = find_upward(rows)
+
+        assert seen.no_fiscal_year == 3
+        lines = seen.warnings()
+        assert any("会計年度末を1件も読めなかった" in line for line in lines)
+        assert any(FORECAST_KEYS[0] in line for line in lines), "載っていた鍵が出ていない"
+
+    def test_a_wholesale_forecast_failure_still_lists_the_keys(self) -> None:
+        """**片方だけ直して、もう片方を壊さない。**"""
+        rows = [_row(_DAY, forecast=None, fiscal=_FY) for _ in range(3)]
+
+        _events, seen = find_upward(rows)
+
+        assert any("会社予想を1件も読めなかった" in line for line in seen.warnings())
+
+    def test_a_partial_failure_reads_as_a_share_not_as_absent(self) -> None:
+        rows = [
+            _row(_DAY, symbol="1301", forecast=100.0),
+            _row(_later(1), symbol="1302", forecast=None),
+        ]
+
+        _events, seen = find_upward(rows)
+
+        lines = seen.warnings()
+        assert any("会社予想を読めなかった行が 1 件" in line for line in lines)
+        assert not any("1件も読めなかった" in line for line in lines)
+
+    def test_the_inventory_is_ordered_by_how_often_a_key_appears(self) -> None:
+        """**多い鍵から出す。** 珍しい鍵が先頭に来ると、本命が埋もれる。"""
+        from stock_ai.backtest.revision_census import Readability
+
+        seen = Readability(rows=3, keys_seen={"rare": 1, "common": 9})
+
+        assert seen.inventory().index("common") < seen.inventory().index("rare")
+
+    def test_an_empty_fs_says_so_rather_than_printing_nothing(self) -> None:
+        from stock_ai.backtest.revision_census import Readability
+
+        assert "鍵が1つも無い" in Readability(rows=1).inventory()

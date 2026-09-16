@@ -7173,6 +7173,20 @@ def revision_census_upward(
     for line in found.warnings():
         console.print(f"[yellow]{line}[/]")
 
+    # **`FS` の外も見せる。** 探しているものが `FS` に無いとき、`FS` の鍵を
+    # いくら並べても答えにならない。原本そのものの列名を出す。
+    #
+    # 会計年度末が 72,156 件すべてで読めなかったとき、`FS` の鍵しか出して
+    # いなかった（2026-09-16）。**読み口が捨てている列は、読み口からは見えない。**
+    if read.rows and (read.no_fiscal_year == read.rows or read.no_forecast == read.rows):
+        from stock_ai.data.jquants_bulk import records_from_csv
+
+        sample = next(iter(records_from_csv(read_archived(path_for(source, keys[0])))), {})
+        console.print(
+            f"[yellow]原本そのものの列: {'、'.join(sorted(sample))}。"
+            "**`FS` の中だけを探していないか。**[/]"
+        )
+
     console.print()
     console.print(
         f"[dim]IS と OOS の境は {found.split_on}（原本が覆う期間の真ん中）。"
