@@ -324,7 +324,7 @@ def lending_index(directory: Path) -> LendingIndex:
     return LendingIndex(changes, (days[0], days[-1]))
 
 
-def _busiest_share(counts: Sequence[int]) -> float:
+def busiest_share(counts: Sequence[int]) -> float:
     """上位1割の日が占める割合。**日数が10未満なら 1.0（全部が上位）。**"""
     if not counts:
         return float("nan")
@@ -411,7 +411,7 @@ def census(  # noqa: PLR0913 - §2 が固定した絞り込みをすべて受け
         first=found[0].onset,
         last=found[-1].onset,
         days_with_events=len(per_day),
-        busiest_share=_busiest_share(list(per_day.values())),
+        busiest_share=busiest_share(list(per_day.values())),
         same_day_median=int(median(per_day.values())),
         after_lending=len(lending),
         lending_unknown=unknown,

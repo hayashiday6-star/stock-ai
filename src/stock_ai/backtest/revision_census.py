@@ -1,0 +1,322 @@
+"""#5 上方修正 — 件数センサス。**リターンを1つも計算しない。**
+
+事前登録 `docs/PREREG_REVISION_JP.md` §0 の表を埋める。
+
+### 名前を当てずっぽうで書かない
+
+`FNP`（会社予想の当期純利益）と会計年度末の綴りは、**このモジュールで決めない。**
+`jquants_fundamentals` が「実レスポンスで存在を確認した名前しか置かない」と
+書いて持っているので、そこから引く。
+
+**同じ轍が既に1度ある**——推測の略記だけを並べて「該当なし」を返し続け、
+`fiscal_year_end` が一度も埋まらなかった。
+
+### 読めなかったものを 0 にしない
+
+予想が読めない行、前回の予想が無い行、会計年度末が読めない行は、**それぞれ
+数えて出す。** まとめて「修正なし」に落とすと、**読めていないことが「修正が
+無かった」に化ける。**
+"""
+
+from __future__ import annotations
+
+import dataclasses
+import datetime as dt
+from collections.abc import Sequence
+from statistics import median
+
+from stock_ai.backtest.forecast_revision import DEFAULT_MIN_CHANGE
+from stock_ai.backtest.margin_census import busiest_share
+from stock_ai.core.logging import get_logger
+from stock_ai.data.jquants_details import STATEMENT_MARKER, StatementDetail
+from stock_ai.data.jquants_fundamentals import (
+    _FORECAST_KEYS,
+    _fiscal_year_end_of,
+)
+
+logger = get_logger(__name__)
+
+#: 上方修正と呼ぶ最低幅。**この登録のために決めた数字ではない。**
+#:
+#: `forecast_revision.DEFAULT_MIN_CHANGE` を引く。決め打つと、その 5% が
+#: どこから来たのかを書けない。
+UPWARD_MIN = DEFAULT_MIN_CHANGE
+
+#: 予想修正を表す書類種別。**業績予想だけ。** 配当予想は §9 で外してある。
+REVISION_TYPE = "EarnForecastRevision"
+
+#: 見る科目。`jquants_fundamentals` が実レスポンスで確認した名前を引く。
+FORECAST_KEYS: tuple[str, ...] = _FORECAST_KEYS["net_income"]
+
+#: OOS がこれを割ったら設計を見直す（§10）。
+MIN_EVENTS_OOS = 1_000
+
+
+@dataclasses.dataclass(frozen=True)
+class RevisionEvent:
+    """1件の上方修正。**リターンは持たない。**"""
+
+    symbol: str
+    disclosed_on: dt.date
+    change: float
+    on_statement_day: bool
+    """同じ銘柄・同じ日に決算短信があったか。**§2 で外す側。**"""
+
+
+@dataclasses.dataclass
+class Readability:
+    """読めたもの・読めなかったものの内訳。**0 に落とさず数える。**"""
+
+    rows: int = 0
+    no_forecast: int = 0
+    no_fiscal_year: int = 0
+    no_previous: int = 0
+    downward: int = 0
+    too_small: int = 0
+    upward: int = 0
+    keys_seen: dict[str, int] = dataclasses.field(default_factory=dict)
+    """`EarnForecastRevision` の行に実際に載っていた鍵と件数。
+
+    **予想が1件も読めなかったときに、ここが答える。** 「無い」のか「名前が
+    違う」のかを分けられる。
+    """
+
+    def warnings(self) -> list[str]:
+        """気付かなくても目に入るべきこと。"""
+        found: list[str] = []
+        if not self.rows:
+            found.append(f"**`{REVISION_TYPE}` の行が1件も無い。** 原本を読めていない。")
+            return found
+        if self.no_forecast == self.rows:
+            names = ", ".join(sorted(self.keys_seen)[:12]) or "(空)"
+            found.append(
+                f"**会社予想を1件も読めなかった。** 探した名前は {FORECAST_KEYS}。"
+                f"実際に載っていた鍵: {names}。**「無い」ではなく「名前が違う」を疑う。**"
+            )
+        elif self.no_forecast:
+            found.append(
+                f"会社予想を読めなかった行が {self.no_forecast:,} 件ある"
+                f"（{self.no_forecast / self.rows:.0%}）。**0 に落としていない。**"
+            )
+        if self.no_fiscal_year:
+            found.append(
+                f"会計年度末を読めなかった行が {self.no_fiscal_year:,} 件ある。"
+                "**年度をまたいだ比較をしないために要る。**"
+            )
+        if self.no_previous:
+            found.append(
+                f"前回の予想が無くて比べられなかった行が {self.no_previous:,} 件ある"
+                f"（{self.no_previous / self.rows:.0%}）。"
+                "**原本の先頭は「そこで変わった」ではなく「そこから見え始めた」。**"
+            )
+        return found
+
+
+def _forecast_of(item: StatementDetail) -> float | None:
+    """会社予想の当期純利益。読めなければ ``None``。**0 を返さない。**"""
+    text = item.value(*FORECAST_KEYS)
+    if text is None or not text.strip():
+        return None
+    try:
+        return float(text)
+    except ValueError:
+        return None
+
+
+def find_upward(
+    items: Sequence[StatementDetail],
+    min_change: float = UPWARD_MIN,
+) -> tuple[list[RevisionEvent], Readability]:
+    """上方修正のイベントを拾う。**リターンを1つも計算しない。**
+
+    同じ会計年度の中でだけ比べる。**年度をまたいだ比較は「修正」ではなく、
+    別の期の話である。**
+
+    比べる相手は、その銘柄・その年度で**直前に見えた予想**である。書類種別は
+    問わない——決算短信が出した予想を、後の修正が上書きする形が普通である。
+
+    Args:
+        items: `fins/summary` の行。順序は問わない。
+        min_change: 上方修正と呼ぶ最低幅。
+
+    Returns:
+        ``(イベント, 読めた内訳)``。イベントは開示日の昇順。
+    """
+    ordered = sorted(items, key=lambda row: (row.disclosed_on, row.symbol, row.number))
+    statement_days = {
+        (row.symbol, row.disclosed_on) for row in ordered if STATEMENT_MARKER in row.doc_type
+    }
+
+    latest: dict[tuple[str, dt.date], float] = {}
+    found: list[RevisionEvent] = []
+    seen = Readability()
+
+    for row in ordered:
+        fiscal = _fiscal_year_end_of(row.values)
+        forecast = _forecast_of(row)
+        revision = row.doc_type == REVISION_TYPE
+
+        if revision:
+            seen.rows += 1
+            for key in row.values:
+                seen.keys_seen[key] = seen.keys_seen.get(key, 0) + 1
+
+        if fiscal is None:
+            if revision:
+                seen.no_fiscal_year += 1
+            continue
+        if forecast is None or forecast == 0.0:
+            if revision:
+                seen.no_forecast += 1
+            continue
+
+        key = (row.symbol, fiscal)
+        previous = latest.get(key)
+        # **先に覚える前に比べる。** 覚えてから比べると、自分自身と比べることになる。
+        if revision:
+            if previous is None:
+                seen.no_previous += 1
+            else:
+                # **前回予想を分母にする。** 負の予想（赤字見込み）から
+                # 正に変わる形もあるので、絶対値で割る——負で割ると符号が反転する。
+                change = (forecast - previous) / abs(previous)
+                if change >= min_change:
+                    seen.upward += 1
+                    found.append(
+                        RevisionEvent(
+                            symbol=row.symbol,
+                            disclosed_on=row.disclosed_on,
+                            change=change,
+                            on_statement_day=(row.symbol, row.disclosed_on) in statement_days,
+                        )
+                    )
+                elif change <= -min_change:
+                    seen.downward += 1
+                else:
+                    seen.too_small += 1
+        latest[key] = forecast
+
+    return found, seen
+
+
+@dataclasses.dataclass(frozen=True)
+class RevisionCensusReport:
+    """§0 の表。**リターンは入っていない。**"""
+
+    events: int
+    by_year: dict[int, int]
+    first: dt.date | None
+    last: dt.date | None
+    days_with_events: int
+    busiest_share: float
+    same_day_median: int
+    on_statement_day: int
+    after_liquidity: int
+    split_on: dt.date | None
+    events_is: int
+    events_oos: int
+    change_median: float
+    readability: Readability
+
+    @property
+    def standalone(self) -> int:
+        """決算と別の日に出たもの。**§2 で残す側。**"""
+        return self.events - self.on_statement_day
+
+    def summary(self) -> str:
+        """1行のまとめ。"""
+        if not self.events:
+            return "上方修正が1件も無い。**数えていない。**"
+        return (
+            f"上方修正 {self.events:,} 件（{self.first} 〜 {self.last}）。"
+            f"決算と同じ日が {self.on_statement_day:,} 件で、**外して残るのが "
+            f"{self.standalone:,} 件**。流動性を通すと {self.after_liquidity:,} 件。"
+        )
+
+    def warnings(self) -> list[str]:
+        """気付かなくても目に入るべきこと。**表を読ませない。**"""
+        found = list(self.readability.warnings())
+        if not self.events:
+            return found
+        if self.busiest_share > 0.40:
+            found.append(
+                f"**上位1割の日が全体の {self.busiest_share:.0%} を占める。** "
+                "同じ日に固まると独立な観測が減り、標準誤差が膨らむ。"
+            )
+        if self.events_oos and self.events_oos < MIN_EVENTS_OOS:
+            found.append(
+                f"**OOS のイベントが {self.events_oos:,} 件しかない。** "
+                f"§10 の中止条件（{MIN_EVENTS_OOS:,} 件）を割っている。設計を見直すこと。"
+            )
+        if self.after_liquidity < self.standalone:
+            lost = self.standalone - self.after_liquidity
+            found.append(
+                f"流動性の下限で {lost:,} 件落ちた"
+                f"（{lost / self.standalone:.0%}）。**イベント型は件数が命である。**"
+            )
+        return found
+
+
+def census(
+    items: Sequence[StatementDetail],
+    liquid_on: object = None,
+    split_on: dt.date | None = None,
+    min_change: float = UPWARD_MIN,
+) -> RevisionCensusReport:
+    """§0 の表を埋める。**リターンを1つも計算しない。**
+
+    Args:
+        items: `fins/summary` の行。
+        liquid_on: ``(symbol, date) -> bool``。省略すると絞らない。
+        split_on: IS と OOS の境。省略すると覆う期間の**真ん中**。
+        min_change: 上方修正と呼ぶ最低幅。
+
+    Returns:
+        :class:`RevisionCensusReport`。
+    """
+    events, seen = find_upward(items, min_change=min_change)
+    if not events:
+        return RevisionCensusReport(
+            0, {}, None, None, 0, float("nan"), 0, 0, 0, None, 0, 0, float("nan"), seen
+        )
+
+    # **決算と同じ日は外す**（§2）。#2・#3 と同じ日付集合を使わないため。
+    kept = [event for event in events if not event.on_statement_day]
+    liquid = [
+        event for event in kept if liquid_on is None or liquid_on(event.symbol, event.disclosed_on)
+    ]
+
+    per_day: dict[dt.date, int] = {}
+    by_year: dict[int, int] = {}
+    for event in liquid:
+        per_day[event.disclosed_on] = per_day.get(event.disclosed_on, 0) + 1
+        by_year[event.disclosed_on.year] = by_year.get(event.disclosed_on.year, 0) + 1
+
+    covered = (events[0].disclosed_on, events[-1].disclosed_on)
+    split = split_on or covered[0] + (covered[1] - covered[0]) / 2
+
+    report = RevisionCensusReport(
+        events=len(events),
+        by_year=dict(sorted(by_year.items())),
+        first=covered[0],
+        last=covered[1],
+        days_with_events=len(per_day),
+        busiest_share=busiest_share(list(per_day.values())) if per_day else float("nan"),
+        same_day_median=int(median(per_day.values())) if per_day else 0,
+        on_statement_day=sum(1 for event in events if event.on_statement_day),
+        after_liquidity=len(liquid),
+        split_on=split,
+        events_is=sum(1 for event in liquid if event.disclosed_on <= split),
+        events_oos=sum(1 for event in liquid if event.disclosed_on > split),
+        change_median=median([event.change for event in liquid]) if liquid else float("nan"),
+        readability=seen,
+    )
+    logger.info(
+        "上方修正センサス: %d 件、決算と別の日 %d 件、流動性通過 %d 件（IS %d / OOS %d）",
+        report.events,
+        report.standalone,
+        report.after_liquidity,
+        report.events_is,
+        report.events_oos,
+    )
+    return report

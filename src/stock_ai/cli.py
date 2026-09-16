@@ -7053,6 +7053,133 @@ def _events_needed(counted: object, estimate: object, target: float, *effects: f
     )
 
 
+@app.command(name="revision-census")
+def revision_census_upward(
+    directory: str = typer.Option(
+        str(DEFAULT_ARCHIVE_DIR), "--dir", help="Where the archived originals live."
+    ),
+    min_turnover: float = typer.Option(MIN_TURNOVER, "--min-turnover", help="Liquidity floor."),
+    limit: int | None = typer.Option(None, "--limit", help="Read only the first N originals."),
+) -> None:
+    """Count the upward forecast revisions - no return is computed here.
+
+    **#5 の §0 の表を埋める。**
+
+    **リターンを1つも計算しない。** だから判定を消費しない。
+
+    **決算と同じ日に出た修正は外す**（§2）。#2・#3 と同じ日付集合を使わない
+    ためで、**それが再開の前提そのものである。**
+
+    読めなかったものを 0 に落とさない。会社予想が読めない行、前回の予想が無い
+    行、会計年度末が読めない行は**それぞれ数えて出す。** まとめて「修正なし」に
+    すると、**読めていないことが「修正が無かった」に化ける。**
+    """
+    from stock_ai.backtest.pead import TURNOVER_WINDOW
+    from stock_ai.backtest.revision_census import REVISION_TYPE, UPWARD_MIN, census
+    from stock_ai.data.jquants_details import parse_details
+    from stock_ai.data.schema import VOLUME
+
+    settings = get_settings()
+    configure_logging(settings.log_level)
+
+    source = Path(directory)
+    keys = [key for key in sorted(read_manifest(source)) if endpoint_of(key) == "/fins/summary"]
+    if limit is not None:
+        keys = keys[:limit]
+    if not keys:
+        console.print(
+            f"[red]{source} に `/fins/summary` の原本が無い。[/] "
+            "**一括で保存したはずのものである。**"
+        )
+        raise typer.Exit(code=1)
+
+    console.print("[dim]リターンは1つも計算しない。判定は消費しない。[/]")
+    items = []
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        BarColumn(),
+        TaskProgressColumn(),
+        TimeRemainingColumn(),
+        console=console,
+    ) as progress:
+        task = progress.add_task("原本を読む", total=len(keys))
+        for index, key in enumerate(keys, start=1):
+            progress.update(task, completed=index)
+            try:
+                items.extend(parse_details(read_archived(path_for(source, key))))
+            except Exception as exc:  # noqa: BLE001 - どこで読めないかが記録に値する
+                console.print(f"[yellow]{key}: {type(exc).__name__}[/]")
+
+    database = Database()
+    database.create_all()
+    with database.session() as session:
+        price_repo = PriceRepository(session)
+        liquid: dict[tuple[str, dt.date], bool] = {}
+        symbols = sorted({row.symbol for row in items if row.doc_type == REVISION_TYPE})
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            BarColumn(),
+            TaskProgressColumn(),
+            TimeRemainingColumn(),
+            console=console,
+        ) as progress:
+            task = progress.add_task("売買代金を読む", total=len(symbols))
+            for index, symbol in enumerate(symbols, start=1):
+                progress.update(task, completed=index)
+                raw = price_repo.get_raw_prices(symbol)
+                if raw.empty:
+                    continue
+                rolling = (
+                    (raw[CLOSE] * raw[VOLUME]).rolling(TURNOVER_WINDOW).mean().shift(1).dropna()
+                )
+                for stamp, value in rolling.items():
+                    liquid[(symbol, stamp.date())] = bool(value >= min_turnover)
+
+    found = census(items, liquid_on=lambda symbol, on: liquid.get((symbol, on), False))
+    console.print(found.summary())
+
+    read = found.readability
+    table = Table(title="§0 の件数センサス（**リターンは入っていない**）")
+    for column in ("測るもの", "値"):
+        table.add_column(column, overflow="fold")
+    table.add_row(f"`{REVISION_TYPE}` の行", f"{read.rows:,}")
+    table.add_row("　会社予想が読めなかった", f"{read.no_forecast:,}")
+    table.add_row("　会計年度末が読めなかった", f"{read.no_fiscal_year:,}")
+    table.add_row("　前回の予想が無い", f"{read.no_previous:,}")
+    table.add_row(f"　下方修正（−{UPWARD_MIN:.0%} 以下）", f"{read.downward:,}")
+    table.add_row(f"　幅が小さい（±{UPWARD_MIN:.0%} 未満）", f"{read.too_small:,}")
+    table.add_row(f"[bold]　上方修正（+{UPWARD_MIN:.0%} 以上）[/]", f"[bold]{read.upward:,}[/]")
+    table.add_row("うち決算と同じ日（**外す**）", f"{found.on_statement_day:,}")
+    table.add_row("決算と別の日", f"{found.standalone:,}")
+    table.add_row("流動性の下限を通した後", f"{found.after_liquidity:,}")
+    table.add_row("　うち IS（推定に使う）", f"{found.events_is:,}")
+    table.add_row("[bold]　うち OOS（判定。§0 の期数）[/]", f"[bold]{found.events_oos:,}[/]")
+    table.add_row("イベントのあった日", f"{found.days_with_events:,}")
+    table.add_row("上位1割の日の占有", f"{found.busiest_share:.0%}")
+    table.add_row("同じ日に重なる修正（中央値）", f"{found.same_day_median:,}")
+    table.add_row("修正幅（中央値）", f"{found.change_median:+.1%}")
+    console.print(table)
+
+    if found.by_year:
+        years = Table(title="年ごとの上方修正（**平均だけ見ない**）")
+        for column in ("年", "件数"):
+            years.add_column(column, justify="right")
+        for year, count in found.by_year.items():
+            years.add_row(str(year), f"{count:,}")
+        console.print(years)
+
+    for line in found.warnings():
+        console.print(f"[yellow]{line}[/]")
+
+    console.print()
+    console.print(
+        f"[dim]IS と OOS の境は {found.split_on}（原本が覆う期間の真ん中）。"
+        "次は散らばりの実測（§0）で、そこで初めてリターンを触る。[/]"
+    )
+
+
 @app.command(name="estimator-gain")
 def estimator_gain(  # noqa: PLR0913 - 校正が固定した条件をすべて受け取る
     factor: str = typer.Option("低ボラ", "--factor", help="Which factor to calibrate on."),
