@@ -6845,6 +6845,159 @@ def edinet_reach(
         console.print(f"[yellow]{failed} 日は断られた。[/] 上の理由を読む。")
 
 
+@app.command(name="margin-census")
+def margin_census(  # noqa: PLR0913 - §2 が固定した絞り込みをすべて受け取る
+    directory: str = typer.Option(
+        str(DEFAULT_ARCHIVE_DIR), "--dir", help="Where the archived originals live."
+    ),
+    rosters: str = typer.Option(
+        str(DAILY_SNAPSHOT_DIR), "--rosters", help="Dated rosters, for the lending flag."
+    ),
+    benchmark: str = typer.Option(BENCHMARK, "--benchmark", help="Sets the calendar."),
+    min_turnover: float = typer.Option(MIN_TURNOVER, "--min-turnover", help="Liquidity floor."),
+    limit: int | None = typer.Option(None, "--limit", help="Read only the first N originals."),
+) -> None:
+    """Count the margin-restriction events - no return is computed here.
+
+    **#8 の §2 の表と、§3 の保有窓を埋める。**
+
+    窓はここで**機械的に決まる**——「規制が解けるまでの営業日数の中央値、上限
+    20営業日」。事前登録 §3 の一行そのものを `window_from` が持っている。
+    **中央値を見てから窓を選び直さない。**
+
+    **リターンを1つも計算しない。** だから判定を消費しない。
+
+    貸借区分は**その日の値**で引く。「いま貸借銘柄か」で引くと、2026-09-08 に
+    踏んだ形（市場区分を最後に見えた姿で引いた）と同じになる。**名簿が届いて
+    いない日は「貸借でない」ではなく「分からない」**として数える。
+    """
+    from stock_ai.backtest.margin_census import census, lending_index
+    from stock_ai.backtest.pead import TURNOVER_WINDOW
+    from stock_ai.data.jquants_margin import from_archive as margin_from_archive
+    from stock_ai.data.schema import VOLUME
+
+    settings = get_settings()
+    configure_logging(settings.log_level)
+
+    source = Path(directory)
+    if not source.is_dir():
+        console.print(f"[red]{source} が無い。[/] **原本が要る。** 取りには行かない。")
+        raise typer.Exit(code=1)
+
+    console.print("[dim]リターンは1つも計算しない。判定は消費しない。[/]")
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        BarColumn(),
+        TaskProgressColumn(),
+        TimeRemainingColumn(),
+        console=console,
+    ) as progress:
+        task = progress.add_task("原本を読む", total=None)
+
+        def step(index: int, total: int, key: str) -> None:
+            progress.update(task, total=total, completed=index)
+
+        alerts = margin_from_archive(source, limit=limit, progress=step)
+
+    if not alerts:
+        console.print(
+            f"[red]{source} に `/markets/margin-alert` の原本が無い。[/] "
+            "**Premium の週に取ったはずのものである。** `checks\\解約前の棚卸し.bat` で確かめる。"
+        )
+        raise typer.Exit(code=1)
+
+    database = Database()
+    database.create_all()
+    with database.session() as session:
+        price_repo = PriceRepository(session)
+        bench = price_repo.get_raw_prices(benchmark)
+        if bench.empty:
+            console.print(f"[red]ベンチマーク {benchmark!r} の価格が無い。[/] 暦を決められない。")
+            raise typer.Exit(code=1)
+        calendar = [stamp.date() for stamp in bench.index]
+
+        # **流動性は、その日までの実測で引く。** イベント日を含めると、その日の
+        # 出来高を知っていることになる。
+        liquid: dict[tuple[str, dt.date], bool] = {}
+        symbols = sorted({alert.symbol for alert in alerts})
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            BarColumn(),
+            TaskProgressColumn(),
+            TimeRemainingColumn(),
+            console=console,
+        ) as progress:
+            task = progress.add_task("売買代金を読む", total=len(symbols))
+            for index, symbol in enumerate(symbols, start=1):
+                progress.update(task, completed=index)
+                raw = price_repo.get_raw_prices(symbol)
+                if raw.empty:
+                    continue
+                rolling = (
+                    (raw[CLOSE] * raw[VOLUME]).rolling(TURNOVER_WINDOW).mean().shift(1).dropna()
+                )
+                for stamp, value in rolling.items():
+                    liquid[(symbol, stamp.date())] = bool(value >= min_turnover)
+
+    lending = lending_index(Path(rosters))
+
+    def liquid_on(symbol: str, on: dt.date) -> bool:
+        return liquid.get((symbol, on), False)
+
+    found = census(alerts, calendar, lending_on=lending, liquid_on=liquid_on)
+    console.print(found.summary())
+
+    if lending.covers is None:
+        console.print(
+            "[red]名簿が1枚も無い。[/] **貸借区分で絞れていない。** "
+            "`checks\\営業日ごとの名簿を作る.bat` が先。"
+        )
+    else:
+        console.print(
+            f"[dim]名簿が覆うのは {lending.covers[0]} 〜 {lending.covers[1]}。"
+            "**その前の発動は、貸借かどうかが分からない。**[/]"
+        )
+
+    table = Table(title="§2 の件数センサス（**リターンは入っていない**）")
+    for column in ("測るもの", "値"):
+        table.add_column(column, overflow="fold")
+    table.add_row("発動イベント数（全期間）", f"{found.events:,}")
+    table.add_row("イベントのあった日", f"{found.days_with_events:,}")
+    table.add_row("上位1割の日の占有", f"{found.busiest_share:.0%}")
+    table.add_row("同じ日に重なる発動（中央値）", f"{found.same_day_median:,}")
+    table.add_row("貸借銘柄に絞った後", f"{found.after_lending:,}")
+    table.add_row("うち貸借区分が読めなかった", f"{found.lending_unknown:,}")
+    table.add_row("流動性の下限を通した後", f"{found.after_liquidity:,}")
+    table.add_row("解除まで測れた", f"{found.resolved:,}")
+    table.add_row("解除日が分からない", f"{found.censored:,}")
+    days = found.release_days_median
+    table.add_row(
+        "[bold]規制が解けるまでの営業日（中央値）[/]",
+        f"[bold]{days if days is not None else '測れない'}[/]",
+    )
+    table.add_row("[bold]§3 の保有窓 N[/]", f"[bold]{found.window} 営業日[/]")
+    console.print(table)
+
+    if found.by_year:
+        years = Table(title="年ごとの発動件数（**平均だけ見ない**）")
+        for column in ("年", "件数"):
+            years.add_column(column, justify="right")
+        for year, count in found.by_year.items():
+            years.add_row(str(year), f"{count:,}")
+        console.print(years)
+
+    for line in found.warnings():
+        console.print(f"[yellow]{line}[/]")
+
+    console.print()
+    console.print(
+        "[dim]窓は式から出る——中央値と 20営業日の小さいほう。**見てから選び直さない。**"
+        " 次は散らばりの実測（§0）で、そこで初めてリターンを触る。[/]"
+    )
+
+
 @app.command(name="composite-gate")
 def composite_gate(  # noqa: PLR0913 - 複合型のルールが固定する条件をすべて受け取る
     components: str = typer.Option(..., "--components", help="ID:factor pairs, comma separated."),

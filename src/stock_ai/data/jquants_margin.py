@@ -37,6 +37,7 @@ from __future__ import annotations
 import ast
 import dataclasses
 import datetime as dt
+from pathlib import Path
 
 from stock_ai.core.logging import get_logger
 from stock_ai.data.jquants_bulk import records_from_csv
@@ -227,6 +228,47 @@ def parse_alerts(payload: bytes) -> list[MarginAlert]:
             )
         )
     return alerts
+
+
+#: 原本のエンドポイント。
+MARGIN_ALERT_ENDPOINT = "/markets/margin-alert"
+
+
+def from_archive(
+    directory: Path,
+    endpoint: str = MARGIN_ALERT_ENDPOINT,
+    limit: int | None = None,
+    progress: object = None,
+) -> list[MarginAlert]:
+    """保存した原本を読んで、1つの並びにする。**取りには行かない。**
+
+    同じ銘柄日が2本のファイルに入ることがある。**重なったぶんは落とす**——
+    残すと、同じ公表日が2度数えられ、:func:`onsets` が旗の立ち下がりを
+    見失う。
+
+    Args:
+        directory: 原本の置き場所。
+        endpoint: 読むエンドポイント。
+        limit: 先頭から何本読むか。省略すると全部。
+        progress: 1本読むごとに呼ばれる。
+
+    Returns:
+        公表日の昇順。**同じ（銘柄, 公表日）は1つだけ。**
+    """
+    from stock_ai.data.jquants_archive import path_for, read_manifest
+    from stock_ai.data.jquants_read import endpoint_of, read_archived
+
+    keys = sorted(key for key in read_manifest(directory) if endpoint_of(key) == endpoint)
+    if limit is not None:
+        keys = keys[:limit]
+
+    seen: dict[tuple[str, dt.date], MarginAlert] = {}
+    for index, key in enumerate(keys, start=1):
+        if callable(progress):
+            progress(index, len(keys), key)
+        for alert in parse_alerts(read_archived(path_for(directory, key))):
+            seen.setdefault((alert.symbol, alert.published), alert)
+    return sorted(seen.values(), key=lambda row: (row.published, row.symbol))
 
 
 def onsets(alerts: list[MarginAlert], reason: str = "Restricted") -> list[tuple[str, dt.date]]:
