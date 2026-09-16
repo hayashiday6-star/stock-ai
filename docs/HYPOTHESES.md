@@ -9,16 +9,45 @@
 
 ## 一覧
 
-| # | 説 | 種類 | 構成 | 市場 | 判定 | ひとことで言うと | 事前登録 |
+### 登録
+
+**ID は `reports/<ID>/` の名前になる。** 事前登録があるものはその綴りを使う。
+
+| ID | # | 説 | 種類 | 構成 | 市場 | 出典 | 事前登録 |
 |---|---|---|---|---|---|---|---|
-| 1 | アキュムレーション5条件 | technical | single | jp | **検証不能** | 現象は見つかったが、自分が買える銘柄では起きていなかった | [PREREG_ACCUMULATION_JP.md](PREREG_ACCUMULATION_JP.md) |
-| 2 | 決算後ドリフト（株価反応で並べる） | fundamental | single | jp | **不合格** | IS で弱く出た効果が、OOS で符号ごと反転した | [PREREG_PEAD_JP.md](PREREG_PEAD_JP.md) |
-| 3 | 決算後ドリフト（会社予想との差で並べる） | fundamental | single | jp | **不合格** | IS で最も良い形が出たが、OOS でやはり反転した | [PREREG_SUE_JP.md](PREREG_SUE_JP.md) |
-| 4 | 決算集中日の注意分散 | fundamental | single | jp | 未判定（親が落ちたため回さず） | 親の説が落ちたので、規則により判定しなかった | PREREG_PEAD_JP.md §7 |
-| 5 | 予想修正後のドリフト | fundamental | single | jp | 未判定（再設計できる） | 止めた理由が誤りだった（修正は決算と別の日に出ていた） | 未作成 |
-| 6 | 短期リバーサル | technical | single | jp | **不合格** | 下げた銘柄が反発するどころか、最も低かった | [PREREG_REVERSAL_JP.md](PREREG_REVERSAL_JP.md) |
-| 7 | 低ボラティリティ | technical | single | jp | **不合格**（帯に入った） | 値動きの穏やかな銘柄群が、リスク調整後で上回るか | [PREREG_LOWVOL_JP.md](PREREG_LOWVOL_JP.md) |
-| 8 | 増担保規制の発動後ドリフト | anomaly | single | jp | 未判定（未封印・§0 作成中） | 規制で強制的に売らされる人が出る側を取れるか | [PREREG_MARGIN_JP.md](PREREG_MARGIN_JP.md) |
+| `ACCUMULATION_JP` | 1 | アキュムレーション5条件 | technical | single | jp | 未記載 | [PREREG_ACCUMULATION_JP.md](PREREG_ACCUMULATION_JP.md) |
+| `PEAD_JP` | 2 | 決算後ドリフト（株価反応で並べる） | fundamental | single | jp | 未記載 | [PREREG_PEAD_JP.md](PREREG_PEAD_JP.md) |
+| `SUE_JP` | 3 | 決算後ドリフト（会社予想との差で並べる） | fundamental | single | jp | 未記載 | [PREREG_SUE_JP.md](PREREG_SUE_JP.md) |
+| `PEAD_CROWDING_JP` | 4 | 決算集中日の注意分散 | fundamental | single | jp | 未記載 | PREREG_PEAD_JP.md §7 |
+| `REVISION_JP` | 5 | 予想修正後のドリフト | fundamental | single | jp | 未記載 | 未作成 |
+| `REVERSAL_JP` | 6 | 短期リバーサル | technical | single | jp | 未記載 | [PREREG_REVERSAL_JP.md](PREREG_REVERSAL_JP.md) |
+| `LOWVOL_JP` | 7 | 低ボラティリティ | technical | single | jp | 未記載 | [PREREG_LOWVOL_JP.md](PREREG_LOWVOL_JP.md) |
+| `MARGIN_JP` | 8 | 増担保規制の発動後ドリフト | anomaly | single | jp | 未記載 | [PREREG_MARGIN_JP.md](PREREG_MARGIN_JP.md) |
+
+**出典が8本とも「未記載」なのは、記録が無いからである。** 事前登録には
+「文献の低ボラ超過（年0〜2%）」のような言及はあるが、**引ける形の出典は
+どこにも書かれていない。** `docs/PURPOSE.md` は登録時に出典を求めているので、
+**ここは埋めるべき欠けである。** 思い出して書くのではなく、当たり直して書く。
+
+`PREREG_MARGIN_JP.md` が「似た文献から引き写さない。転記すれば『出典のある
+数字』の見た目を作ってしまう」と書いている。**その戒めが、ここにも効く。**
+
+### 判定
+
+| ID | 判定 | 封印日 | ひとことで言うと |
+|---|---|---|---|
+| `ACCUMULATION_JP` | **検証不能** | 未記載 | 現象は見つかったが、自分が買える銘柄では起きていなかった |
+| `PEAD_JP` | **不合格** | 未記載 | IS で弱く出た効果が、OOS で符号ごと反転した |
+| `SUE_JP` | **不合格** | 未記載 | IS で最も良い形が出たが、OOS でやはり反転した |
+| `PEAD_CROWDING_JP` | 未判定（親が落ちたため回さず） | — | 親の説が落ちたので、規則により判定しなかった |
+| `REVISION_JP` | 未判定（再設計できる） | — | 止めた理由が誤りだった（修正は決算と別の日に出ていた） |
+| `REVERSAL_JP` | **不合格** | 未記載 | 下げた銘柄が反発するどころか、最も低かった |
+| `LOWVOL_JP` | **不合格**（帯に入った） | 未記載 | 値動きの穏やかな銘柄群が、リスク調整後で上回るか |
+| `MARGIN_JP` | 未判定（未封印・§0 作成中） | — | 規制で強制的に売らされる人が出る側を取れるか |
+
+**封印日も記録が無い。** 事前登録には判定の日（#7 なら 2026-09-05）は書いて
+あるが、**封印した日とは別である。** 遡って推測しない。これから封印するもの
+から書く。
 
 **判定は4つしか無い**——`合格` / `不合格` / `検出できず` / `検証不能`
 （`docs/PURPOSE.md`）。`未判定` で始まる欄は**判定ではなく状態**である。封印前の

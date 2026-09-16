@@ -6656,6 +6656,69 @@ def edinet_reach(
         console.print(f"[yellow]{failed} 日は断られた。[/] 上の理由を読む。")
 
 
+@app.command(name="hypothesis-report")
+def hypothesis_report(
+    registry: str = typer.Option("docs/HYPOTHESES.md", "--registry", help="The registry file."),
+    into: str = typer.Option("reports", "--into", help="Where reports/<ID>/ go."),
+) -> None:
+    """Write reports/<ID>/ for every hypothesis, judged or not.
+
+    **判定に関係なく出す**（`docs/PURPOSE.md`）。不合格も成果である。
+
+    **書き直さない。** 構造のある項目は表から、経緯は `HYPOTHESES.md` の節を
+    そのまま切り出して並べる。元を直せばレポートも直る——二重管理を作らない。
+
+    **空欄を埋めない。** 出典が「未記載」ならレポートにもそう出る。
+    """
+    from stock_ai.hypotheses import read_registry, write_reports
+
+    settings = get_settings()
+    configure_logging(settings.log_level)
+
+    source = Path(registry)
+    if not source.is_file():
+        console.print(f"[red]{source} が無い。[/]")
+        raise typer.Exit(code=1)
+
+    found = read_registry(source)
+    if not found:
+        console.print(
+            f"[red]{source} から1本も読めなかった。[/] "
+            "**「### 登録」の表が見つからないか、形が変わっている。**"
+        )
+        raise typer.Exit(code=1)
+
+    written = write_reports(source, Path(into))
+    console.print(f"{len(written)} 本ぶんを {into}/<ID>/README.md に書いた。")
+
+    table = Table(title="説ごとの状態")
+    for column in ("ID", "種類", "判定", "出典"):
+        table.add_column(column, overflow="fold")
+    for hypothesis in found:
+        table.add_row(
+            hypothesis.identifier,
+            hypothesis.kind,
+            hypothesis.verdict if hypothesis.judged else f"[dim]{hypothesis.verdict}[/]",
+            "あり" if hypothesis.source_recorded else "[yellow]未記載[/]",
+        )
+    console.print(table)
+
+    judged = [hypothesis for hypothesis in found if hypothesis.judged]
+    console.print(
+        f"判定を消費したのは [bold]{len(judged)}[/] 本、登録は {len(found)} 本。"
+        "[dim] 多重検定はこの本数で考える（`power-budget`）。[/]"
+    )
+    missing = [hypothesis for hypothesis in found if not hypothesis.source_recorded]
+    if missing:
+        # **埋めない。数える。** もっともらしい文献名を補うと、「出典のある
+        # 数字」の見た目だけができる。
+        console.print(
+            f"[yellow]出典が記録されていない説が {len(missing)} 本ある。[/] "
+            "**`docs/PURPOSE.md` は登録時に出典を求めている。** "
+            "[dim]思い出して書くのではなく、当たり直して書くこと。[/]"
+        )
+
+
 @app.command(name="power-budget")
 def power_budget(
     alpha: float = typer.Option(
