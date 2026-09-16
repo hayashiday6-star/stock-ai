@@ -15,6 +15,7 @@ from stock_ai.hypotheses import (
     MISSING,
     VERDICTS,
     Hypothesis,
+    _plain,
     read_registry,
     read_table,
     report_for,
@@ -206,6 +207,30 @@ class TestWritingTheFiles:
         assert target.read_text(encoding="utf-8") == first
 
 
+class TestALinkDoesNotLoseItsDestination:
+    """**出典の要は、そこへ行けることである。**
+
+    最初は `[文字](URL)` を文字だけにしていた。**URL が黙って消え**、たどれ
+    ない出典を「たどれる」と表示していた（2026-09-16、テストが捕まえた）。
+    行き先を捨てたら、残るのは出典の見た目だけである。
+    """
+
+    def test_a_url_survives_flattening(self) -> None:
+        rows = read_table(
+            "### x\n\n| 出典 |\n|---|\n| [名前](https://example.com/a) |\n",
+            "### x",
+        )
+
+        assert "https://example.com/a" in _plain(rows[0]["出典"])
+
+    def test_a_self_referencing_link_is_not_doubled(self) -> None:
+        """`[PREREG_X.md](PREREG_X.md)` を2度書かない。"""
+        assert _plain("[PREREG_X.md](PREREG_X.md)") == "PREREG_X.md"
+
+    def test_bold_is_still_stripped(self) -> None:
+        assert _plain("**不合格**") == "不合格"
+
+
 class TestBlankIsNotTheSameAsUntraceable:
     """**「記録が無い」と「たどれない」は別である。**
 
@@ -246,8 +271,16 @@ class TestBlankIsNotTheSameAsUntraceable:
 
         assert "空欄のほうが正直" in report
 
-    def test_the_real_registry_is_recorded_but_untraceable(self) -> None:
-        found = read_registry(REGISTRY)
+    def test_every_registered_hypothesis_says_something_about_its_source(self) -> None:
+        """**空欄を残さない。** 「ネット記事等（URL未記録）」も答えである。"""
+        assert all(h.source_recorded for h in read_registry(REGISTRY))
 
-        assert all(h.source_recorded for h in found)
-        assert not any(h.source_traceable for h in found)
+    def test_the_first_hypothesis_registered_with_a_real_source_kept_it(self) -> None:
+        """`ANTIVALUE_JP` が、出典つきで登録した最初の1本である（2026-09-16）。
+
+        **ここが空に戻ったら、出典を書く習慣が消えたということである。**
+        """
+        found = {h.identifier: h for h in read_registry(REGISTRY)}
+
+        assert found["ANTIVALUE_JP"].source_traceable
+        assert "jsda.or.jp" in found["ANTIVALUE_JP"].source

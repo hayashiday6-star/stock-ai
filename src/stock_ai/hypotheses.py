@@ -48,10 +48,25 @@ def _cells(line: str) -> list[str]:
     return [cell.strip() for cell in found.group(1).split("|")]
 
 
+def _keep_link(found: re.Match[str]) -> str:
+    """リンクを平らにする。**行き先が別なら、それも残す。**
+
+    最初は文字のほうだけ残していた。**出典の URL が黙って消えた**——
+    `[日本証券業協会…](https://…)` が「日本証券業協会…」だけになり、
+    **たどれない出典を「たどれる」と表示していた**（2026-09-16、テストが
+    捕まえた）。
+
+    出典の要は**そこへ行けること**である。行き先を捨てたら、残ったのは
+    出典の見た目だけになる。
+    """
+    text, target = found.group(1), found.group(2)
+    return text if text == target else f"{text} <{target}>"
+
+
 def _plain(cell: str) -> str:
-    """飾りを外して中身だけにする。**リンクは文字のほうを残す。**"""
+    """飾りを外して中身だけにする。**リンクの行き先は捨てない。**"""
     text = _BOLD.sub(r"\1", cell)
-    text = _LINK.sub(r"\1", text)
+    text = _LINK.sub(_keep_link, text)
     return text.replace("`", "").strip()
 
 
