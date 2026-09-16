@@ -42,6 +42,7 @@ from dataclasses import dataclass, field
 import numpy as np
 
 from stock_ai.backtest.lowvol_census import formation_dates
+from stock_ai.backtest.monthly_grid import build_grid
 from stock_ai.backtest.pead import MIN_TURNOVER, TURNOVER_WINDOW, Period
 from stock_ai.backtest.reversal import BENCHMARK, MAX_SESSION_MOVE
 from stock_ai.backtest.reversal_census import QUANTILES
@@ -312,30 +313,9 @@ def build_series(
         calendar = bench.index
         bench_open = bench[OPEN].to_numpy(dtype=float)
         formations = formation_dates(calendar)
-        if len(formations) < 2:
-            raise ValueError("組み替え日が2つ未満。月次リバランスを作れない。")
-
-        # **``end`` は「この日より後のデータを1つも使わない」という意味である。**
-        #
-        # 組み替え日だけで切ると、その月の保有期間が ``end`` を越えて伸びる。
-        # 実際 2013-12-31 で切ったつもりの推定期間は、最後の1ヶ月の**リターンが
-        # 2014年1月まで**入っていた——判定期間の最初の月である。1/138 の重みで
-        # しかないが、止め具が漏れていること自体が問題なので、退場日まで見る。
-        usable = [
-            (index, position)
-            for index, position in enumerate(formations[:-1])
-            if period.contains(calendar[position].date())
-            and (start is None or calendar[position].date() >= start)
-            and (
-                end is None
-                or (
-                    formations[index + 1] + 1 < len(calendar)
-                    and calendar[formations[index + 1] + 1].date() <= end
-                )
-            )
-        ]
-        if not usable:
-            raise ValueError("指定した期間に組み替え日が1つも無い。")
+        # **暦は1箇所で決める。** #9 も同じ組み替えを使う。2つ持つと、片方だけ
+        # 直したときに気付けない。`end` の止め具（退場日まで見る）もそこにある。
+        usable = build_grid(calendar, formations, period, start, end).usable
 
         ordered_snapshots = sorted(snapshots) if snapshots else []
         latest = snapshots[ordered_snapshots[-1]] if ordered_snapshots else set()
