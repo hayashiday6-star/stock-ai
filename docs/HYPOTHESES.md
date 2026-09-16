@@ -19,7 +19,7 @@
 | `PEAD_JP` | 2 | 決算後ドリフト（株価反応で並べる） | fundamental | single | jp | ネット記事等（URL未記録） | [PREREG_PEAD_JP.md](PREREG_PEAD_JP.md) |
 | `SUE_JP` | 3 | 決算後ドリフト（会社予想との差で並べる） | fundamental | single | jp | ネット記事等（URL未記録） | [PREREG_SUE_JP.md](PREREG_SUE_JP.md) |
 | `PEAD_CROWDING_JP` | 4 | 決算集中日の注意分散 | fundamental | single | jp | ネット記事等（URL未記録） | PREREG_PEAD_JP.md §7 |
-| `REVISION_JP` | 5 | 予想修正後のドリフト | fundamental | single | jp | ネット記事等（URL未記録） | 未作成 |
+| `REVISION_JP` | 5 | 予想修正後のドリフト（**上方のみ**） | fundamental | single | jp | ネット記事等（URL未記録） | [PREREG_REVISION_JP.md](PREREG_REVISION_JP.md) |
 | `REVERSAL_JP` | 6 | 短期リバーサル | technical | single | jp | ネット記事等（URL未記録） | [PREREG_REVERSAL_JP.md](PREREG_REVERSAL_JP.md) |
 | `LOWVOL_JP` | 7 | 低ボラティリティ | technical | single | jp | ネット記事等（URL未記録） | [PREREG_LOWVOL_JP.md](PREREG_LOWVOL_JP.md) |
 | `MARGIN_JP` | 8 | 増担保規制の発動後ドリフト | anomaly | single | jp | ネット記事等（URL未記録） | [PREREG_MARGIN_JP.md](PREREG_MARGIN_JP.md) |
@@ -78,7 +78,7 @@
 | `PEAD_JP` | **不合格** | 未記載 | IS で弱く出た効果が、OOS で符号ごと反転した |
 | `SUE_JP` | **不合格** | 未記載 | IS で最も良い形が出たが、OOS でやはり反転した |
 | `PEAD_CROWDING_JP` | 未判定（親が落ちたため回さず） | — | 親の説が落ちたので、規則により判定しなかった |
-| `REVISION_JP` | 未判定（再設計できる） | — | 止めた理由が誤りだった（修正は決算と別の日に出ていた） |
+| `REVISION_JP` | 未判定（**再開・§0 を測る前**） | — | 止めた理由が誤りだった（修正は決算と別の日に出ていた） |
 | `REVERSAL_JP` | **不合格** | 未記載 | 下げた銘柄が反発するどころか、最も低かった |
 | `LOWVOL_JP` | **不合格**（帯に入った） | 未記載 | 値動きの穏やかな銘柄群が、リスク調整後で上回るか |
 | `MARGIN_JP` | 未判定（**§0 で止めた・封印せず**） | — | 規制で強制的に売らされる人が出る側を取れるか |
