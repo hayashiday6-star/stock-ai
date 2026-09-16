@@ -94,3 +94,24 @@ def build_grid(
     if not usable:
         raise ValueError("指定した期間に組み替え日が1つも無い。")
     return MonthlyGrid(calendar=calendar, formations=formations, usable=usable)
+
+
+def listed_on(  # noqa: PLR0913 - 名簿の判定に必要な材料をすべて受け取る
+    symbol: str,
+    on: dt.date,
+    ordered: list[dt.date],
+    snapshots: dict[dt.date, set[str]] | None,
+    survivors_only: bool,
+    latest: set[str],
+) -> bool:
+    """``on`` の時点で ``symbol`` が上場していたか。
+
+    **その日以前で最も新しい名簿だけを見る。** 未来の名簿を混ぜると、まだ
+    上場していない銘柄を過去の分位に入れることになる。
+    """
+    if survivors_only:
+        return symbol in latest
+    if snapshots is None:
+        return True
+    usable = [when for when in ordered if when <= on]
+    return bool(usable) and symbol in snapshots[usable[-1]]

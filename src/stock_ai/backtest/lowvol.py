@@ -42,7 +42,7 @@ from dataclasses import dataclass, field
 import numpy as np
 
 from stock_ai.backtest.lowvol_census import formation_dates
-from stock_ai.backtest.monthly_grid import build_grid
+from stock_ai.backtest.monthly_grid import build_grid, listed_on
 from stock_ai.backtest.pead import MIN_TURNOVER, TURNOVER_WINDOW, Period
 from stock_ai.backtest.reversal import BENCHMARK, MAX_SESSION_MOVE
 from stock_ai.backtest.reversal_census import QUANTILES
@@ -353,7 +353,7 @@ def build_series(
                 returns[1:] = close[1:] / close[:-1] - 1.0
 
             for index, position in usable:
-                if ordered_snapshots and not _listed(
+                if ordered_snapshots and not listed_on(
                     symbol,
                     calendar[position].date(),
                     ordered_snapshots,
@@ -438,24 +438,3 @@ def build_series(
     )
     logger.info("低ボラ月次系列: %s", series.summary())
     return series
-
-
-def _listed(  # noqa: PLR0913 - 名簿の判定に必要な材料をすべて受け取る
-    symbol: str,
-    on: dt.date,
-    ordered: list[dt.date],
-    snapshots: dict[dt.date, set[str]] | None,
-    survivors_only: bool,
-    latest: set[str],
-) -> bool:
-    """``on`` の時点で ``symbol`` が上場していたか。
-
-    **その日以前で最も新しい名簿だけを見る。** 未来の名簿を混ぜると、まだ
-    上場していない銘柄を過去の分位に入れることになる。
-    """
-    if survivors_only:
-        return symbol in latest
-    if snapshots is None:
-        return True
-    usable = [when for when in ordered if when <= on]
-    return bool(usable) and symbol in snapshots[usable[-1]]
