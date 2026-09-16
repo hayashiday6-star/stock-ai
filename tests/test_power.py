@@ -321,3 +321,75 @@ def test_the_two_stopping_bands_read_differently_but_act_the_same() -> None:
 
     assert ambiguous[0] == clearly_short[0]
     assert ambiguous[1] != clearly_short[1]
+
+
+def test_the_gate_command_survives_a_floor_that_straddles_zero() -> None:
+    """**下限が 0 をまたぐのは、珍しい形ではない。**
+
+    段2 で自分の IS から見込みを置けば、効かない設計では普通に起きる。そこで
+    `required_improvement` が例外を投げ、**traceback がそのまま出ていた**
+    （2026-09-16、#11 の低ボラ × バリュー）。
+
+    倍率は「下限を検出できる差まで持ち上げる比」なので、下限が負なら持ち上げる
+    先が無い。**計算できないと言うのが正しく、落ちるのは正しくない。**
+    """
+    from typer.testing import CliRunner
+
+    from stock_ai.cli import app
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "power-gate",
+            "--sd",
+            "4.46",
+            "--periods",
+            "104",
+            "--low",
+            "-7.5",
+            "--high",
+            "11.8",
+            "--inflation",
+            "0.95",
+            "--budget",
+            "20",
+        ],
+    )
+
+    # **2 は「通さない」である。** 落ちたときの 1 と区別が付くこと。
+    assert result.exit_code == 2, result.output
+    assert "Traceback" not in result.output
+    assert "計算できない" in result.output
+    # **要る期数の表は、正の効果についてはちゃんと出ること。**
+    assert "要る期数" in result.output
+
+
+def test_the_gate_command_still_gives_the_ratio_when_the_floor_is_positive() -> None:
+    """上の分岐が、正の下限まで飲み込んでいないこと。**片側だけ見ない。**"""
+    from typer.testing import CliRunner
+
+    from stock_ai.cli import app
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "power-gate",
+            "--sd",
+            "4.46",
+            "--periods",
+            "104",
+            "--low",
+            "2.0",
+            "--high",
+            "11.8",
+            "--inflation",
+            "0.95",
+            "--budget",
+            "20",
+        ],
+    )
+
+    assert result.exit_code == 2, result.output
+    assert "Traceback" not in result.output
+    assert "計算できない" not in result.output
+    assert "倍" in result.output

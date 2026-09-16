@@ -68,8 +68,8 @@ logger = get_logger(__name__)
 #: `S33`（33業種）を探す列名。名簿の版によって綴りが違う。
 SECTOR_FIELDS = ("S33", "Sec33Cd", "Sector33Code")
 
-#: 商品区分を探す列名。
-PRODUCT_FIELDS = ("ProdCat", "ProductCategory", "ProdCatNm")
+#: 商品区分を探す列名。**正本は universe 側にある。** ここで書き直さない。
+from stock_ai.data.universe import PRODUCT_FIELDS  # noqa: E402
 
 
 def _first(row: dict[str, str], fields: tuple[str, ...]) -> str:

@@ -28,6 +28,7 @@ from stock_ai.backtest.factor_panel import (
     FACTOR_HISTORY,
     MOMENTUM_SKIP,
     MOMENTUM_WINDOW,
+    NEEDS_VALUATION,
     REVERSAL_WINDOW,
     Panel,
     _signals,
@@ -196,7 +197,13 @@ def test_the_required_history_comes_from_the_factors_asked_for() -> None:
     assert FACTOR_HISTORY["低ボラ"] == 250
     assert FACTOR_HISTORY["モメンタム"] == MOMENTUM_WINDOW
     assert FACTOR_HISTORY["低ボラ"] < FACTOR_HISTORY["モメンタム"]
-    assert set(DEFAULT_FACTORS) == set(FACTOR_HISTORY)
+    assert set(DEFAULT_FACTORS) <= set(FACTOR_HISTORY)
+    # **既定から外れてよいのは、材料が別に要る因子だけ。**
+    #
+    # 元は「既定＝既知のすべて」で見ていた。バリューは月末の PBR が要るので
+    # 既定に入れられない。**そこで等号を外すと、次に足した因子が黙って既定から
+    # 漏れても誰も気付かない。** 外れてよい理由のほうを書いておく。
+    assert set(FACTOR_HISTORY) - set(DEFAULT_FACTORS) == set(NEEDS_VALUATION)
 
 
 # --- 組み立てを実際に通す ------------------------------------------------------
@@ -262,8 +269,128 @@ def test_build_panel_with_one_factor_needs_less_history() -> None:
 
 
 def test_build_panel_refuses_a_factor_it_does_not_know() -> None:
-    with pytest.raises(ValueError):
-        build_panel(_database(), factors=("バリュー",), window=60, min_symbols=10)
+    """**「バリュー」で見ていた。** 足した日から、これは既知の因子である。
+
+    落ちなくなったのではなく、**落ちる理由が変わった**——知らない因子ではなく、
+    月末の PBR が無いから落ちる。同じ緑のまま中身が入れ替わる形なので、
+    知らないままの名前に替える。
+    """
+    with pytest.raises(ValueError, match="知らない因子"):
+        build_panel(_database(), factors=("クオリティ",), window=60, min_symbols=10)
+
+
+def _valuation(symbols: list[str], pbr_of=None) -> pd.DataFrame:
+    """月末ごとの PBR。既定は銘柄番号が大きいほど割高。"""
+    rows = []
+    months = pd.Series(_INDEX).dt.to_period("M").unique()
+    for month in months:
+        last = max(day for day in _INDEX if day.to_period("M") == month)
+        for index, symbol in enumerate(symbols):
+            rows.append(
+                {
+                    "date": last.date(),
+                    "symbol": symbol,
+                    "pbr": pbr_of(index) if pbr_of else 0.5 + index * 0.1,
+                }
+            )
+    return pd.DataFrame(rows)
+
+
+def _symbols(count: int = 20) -> list[str]:
+    return [f"{7200 + index:04d}" for index in range(count)]
+
+
+class TestValueIsTheFirstFactorFromAnotherKind:
+    """**2026-09-05 に束ねた3本は、3本とも `technical` だった。**
+
+    `fundamental` が1本も入っていない。種類をまたぐ複合が手つかずで残っている
+    ので、その1本目がこれである。
+
+    固定するのは、**間違えても例外が出ない**点である——向き（低PBR を買う）、
+    裾の扱い（対数）、材料の渡し忘れ、先読み、そして 0 以下の PBR。
+    """
+
+    def test_a_cheaper_symbol_scores_higher(self) -> None:
+        """**「低PBR を買う」向きに固定する。** 盤面の約束は「大きいほど買う側」。"""
+        sample = np.full(300, 0.0)
+        close = np.array(_closes(400, rising=True))
+
+        cheap = _signals(("バリュー",), sample, 250, close, 300, 0.5)
+        dear = _signals(("バリュー",), sample, 250, close, 300, 5.0)
+
+        assert cheap is not None and dear is not None
+        assert cheap[0] > dear[0]
+
+    def test_the_tail_is_taken_out_with_a_log(self) -> None:
+        """**生の PBR は右に長い裾を持つ。** そのまま足すと上位数銘柄が重みを独占する。
+
+        対数なら「2倍割安」と「2倍割高」が同じ距離になる。生値だと 0.5 と 2.0 の
+        距離は 1.5、2.0 と 8.0 の距離は 6.0 で、**割高な側だけが効く。**
+        """
+        sample = np.full(300, 0.0)
+        close = np.array(_closes(400, rising=True))
+
+        def value(pbr: float) -> float:
+            built = _signals(("バリュー",), sample, 250, close, 300, pbr)
+            assert built is not None
+            return built[0]
+
+        assert value(0.5) - value(1.0) == pytest.approx(value(1.0) - value(2.0))
+        assert value(2.0) - value(4.0) == pytest.approx(value(4.0) - value(8.0))
+
+    def test_the_panel_refuses_to_run_without_the_month_end_pbr(self) -> None:
+        """**黙って外さない。** 頼んだ因子より1本少ない合成は、例外を出さない。"""
+        with pytest.raises(ValueError, match="月末の PBR"):
+            build_panel(_database(), factors=("低ボラ", "バリュー"), window=60, min_symbols=10)
+
+    def test_the_panel_runs_when_the_pbr_is_handed_over(self) -> None:
+        panel = build_panel(
+            _database(),
+            factors=("低ボラ", "バリュー"),
+            window=60,
+            min_symbols=10,
+            valuation=_valuation(_symbols()),
+        )
+
+        assert panel.months
+        assert panel.factors == ("低ボラ", "バリュー")
+        assert all(len(signals) == 2 for signals, _f in panel.sections[0])
+
+    def test_a_symbol_with_no_pbr_is_counted_rather_than_filled(self) -> None:
+        """**0 で埋めない。** 埋めると「情報が無い」が「限りなく割安」に化ける。"""
+        half = _symbols()[:10]
+
+        panel = build_panel(
+            _database(),
+            factors=("バリュー",),
+            window=60,
+            min_symbols=5,
+            valuation=_valuation(half),
+        )
+
+        assert panel.excluded_no_pbr > 0
+        assert all(len(month) <= len(half) for month in panel.sections)
+
+    def test_a_pbr_of_zero_or_less_is_dropped(self) -> None:
+        """**債務超過は「限りなく割安」ではない。** 対数も取れない。"""
+        panel = build_panel(
+            _database(),
+            factors=("バリュー",),
+            window=60,
+            min_symbols=1,
+            valuation=_valuation(_symbols(), lambda index: 0.0 if index < 10 else 1.0),
+        )
+
+        assert panel.excluded_no_pbr > 0
+        assert all(len(month) <= 10 for month in panel.sections)
+
+    def test_the_lookahead_guard_is_the_one_in_antivalue(self) -> None:
+        """**関門は1箇所にしか無い。** 呼ぶ側で書き直すと、片方だけ先読みを通す。"""
+        import inspect
+
+        from stock_ai.backtest import factor_panel
+
+        assert "pbr_on" in inspect.getsource(factor_panel.build_panel)
 
 
 def test_build_panel_refuses_an_empty_factor_list() -> None:

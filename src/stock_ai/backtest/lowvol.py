@@ -42,6 +42,7 @@ from dataclasses import dataclass, field
 import numpy as np
 
 from stock_ai.backtest.lowvol_census import formation_dates
+from stock_ai.backtest.monthly_grid import build_grid, listed_on
 from stock_ai.backtest.pead import MIN_TURNOVER, TURNOVER_WINDOW, Period
 from stock_ai.backtest.reversal import BENCHMARK, MAX_SESSION_MOVE
 from stock_ai.backtest.reversal_census import QUANTILES
@@ -312,30 +313,9 @@ def build_series(
         calendar = bench.index
         bench_open = bench[OPEN].to_numpy(dtype=float)
         formations = formation_dates(calendar)
-        if len(formations) < 2:
-            raise ValueError("組み替え日が2つ未満。月次リバランスを作れない。")
-
-        # **``end`` は「この日より後のデータを1つも使わない」という意味である。**
-        #
-        # 組み替え日だけで切ると、その月の保有期間が ``end`` を越えて伸びる。
-        # 実際 2013-12-31 で切ったつもりの推定期間は、最後の1ヶ月の**リターンが
-        # 2014年1月まで**入っていた——判定期間の最初の月である。1/138 の重みで
-        # しかないが、止め具が漏れていること自体が問題なので、退場日まで見る。
-        usable = [
-            (index, position)
-            for index, position in enumerate(formations[:-1])
-            if period.contains(calendar[position].date())
-            and (start is None or calendar[position].date() >= start)
-            and (
-                end is None
-                or (
-                    formations[index + 1] + 1 < len(calendar)
-                    and calendar[formations[index + 1] + 1].date() <= end
-                )
-            )
-        ]
-        if not usable:
-            raise ValueError("指定した期間に組み替え日が1つも無い。")
+        # **暦は1箇所で決める。** #9 も同じ組み替えを使う。2つ持つと、片方だけ
+        # 直したときに気付けない。`end` の止め具（退場日まで見る）もそこにある。
+        usable = build_grid(calendar, formations, period, start, end).usable
 
         ordered_snapshots = sorted(snapshots) if snapshots else []
         latest = snapshots[ordered_snapshots[-1]] if ordered_snapshots else set()
@@ -373,7 +353,7 @@ def build_series(
                 returns[1:] = close[1:] / close[:-1] - 1.0
 
             for index, position in usable:
-                if ordered_snapshots and not _listed(
+                if ordered_snapshots and not listed_on(
                     symbol,
                     calendar[position].date(),
                     ordered_snapshots,
@@ -458,24 +438,3 @@ def build_series(
     )
     logger.info("低ボラ月次系列: %s", series.summary())
     return series
-
-
-def _listed(  # noqa: PLR0913 - 名簿の判定に必要な材料をすべて受け取る
-    symbol: str,
-    on: dt.date,
-    ordered: list[dt.date],
-    snapshots: dict[dt.date, set[str]] | None,
-    survivors_only: bool,
-    latest: set[str],
-) -> bool:
-    """``on`` の時点で ``symbol`` が上場していたか。
-
-    **その日以前で最も新しい名簿だけを見る。** 未来の名簿を混ぜると、まだ
-    上場していない銘柄を過去の分位に入れることになる。
-    """
-    if survivors_only:
-        return symbol in latest
-    if snapshots is None:
-        return True
-    usable = [when for when in ordered if when <= on]
-    return bool(usable) and symbol in snapshots[usable[-1]]

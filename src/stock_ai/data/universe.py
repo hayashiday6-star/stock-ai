@@ -208,7 +208,44 @@ def _is_operating_company(record: dict[str, Any]) -> bool:
 NO_CODE = "4桁の証券コードにならない"
 UNTRADABLE = "買えない市場"
 FUND = "投信・ETF・REIT など"
+FOREIGN = "外国会社の株式"
 OFF_SEGMENT = "別の区分"
+
+
+#: 商品区分を探す列名。**`jquants_filter` もここから引く。**
+PRODUCT_FIELDS = ("ProdCat", "ProductCategory", "ProdCatNm")
+
+#: 外国会社の株式に付く商品区分。
+#:
+#: **公表された対応表から取ったのではない。** 2026-09-16 に、この区分の付く
+#: 30銘柄を全部並べて名前で判断した——ザ・ダウ・ケミカル・カンパニー、
+#: バイエル・アクツィーエンゲゼルシャフト、ビーピー・ピーエルシー、ポスコ、
+#: アルカテル・ルーセント、ワイ・ティー・エル・コーポレーション・バーハッド …
+#: **30件すべてが外国会社だった。**
+#:
+#: 逆向き（外国会社にこの区分以外が付く）は確かめていない。`checks\
+#: この商品区分は何か.bat` に区分を渡せば、いつでも中身を並べ直せる。
+FOREIGN_PRODUCT = "021"
+
+
+def _is_domestic(record: dict[str, Any]) -> bool:
+    """外国会社の株式でないか。
+
+    東証に上場している外国会社は、日本株の戦略に混ぜると次の形で効く。
+
+    - **日本での売買が薄い。** 本国市場が主で、東証は従である
+    - 会計基準が違う
+    - **本国市場の値動きを翌日なぞるだけ**になりうる
+
+    30銘柄なので影響は小さいが、**小さいことと正しいことは別である。**
+
+    区分そのものが無い行は**残す。** 向こうが列名を変えたときに universe が
+    空になるほうが高く付く——`_is_operating_company` と同じ考え方である。
+    """
+    product = _text(record, *PRODUCT_FIELDS)
+    if product is None:
+        return True
+    return product != FOREIGN_PRODUCT
 
 
 def rejection_reason(record: dict[str, Any], segment: Segment = Segment.ALL) -> str | None:
@@ -229,6 +266,11 @@ def rejection_reason(record: dict[str, Any], segment: Segment = Segment.ALL) -> 
         return UNTRADABLE
     if not _is_operating_company(record):
         return FUND
+    # **最後に見る。** 外国会社の株式は、符号も市場も普通の会社と同じで、
+    # 事業会社でもある。前に置くと、他の理由で落ちる行まで「外国株」と
+    # 呼ぶことになり、理由の件数が意味を失う。
+    if not _is_domestic(record):
+        return FOREIGN
     return None
 
 

@@ -901,3 +901,86 @@ def test_a_price_rate_limit_stops_the_run_instead_of_failing_every_symbol(
     # 429 を受けてからの要求は、再試行1回ぶんだけ。残り全部を叩かない。
     assert provider.calls <= 7
     assert len(report.failed) <= 1
+
+
+class TestForeignCompaniesLeaveTheUniverse:
+    """東証に上場している**外国会社の株式**を、日本株の戦略に混ぜない。
+
+    2026-09-16 に `ProdCat 021` の中身を全部並べた。30銘柄すべてが外国会社
+    だった——ザ・ダウ・ケミカル・カンパニー、バイエル、ビーピー・ピーエルシー、
+    ポスコ、アルカテル・ルーセント …
+
+    混ぜると、日本での売買が薄い／会計基準が違う／**本国市場を翌日なぞるだけ**
+    になりうる。30銘柄なので影響は小さいが、**小さいことと正しいことは別。**
+    """
+
+    def _row(self, **overrides) -> dict:
+        row = {
+            "Code": "13010",
+            "CompanyName": "テスト",
+            "MarketCodeName": "プライム",
+            "S33": "0050",
+            "ProdCat": "011",
+        }
+        row.update(overrides)
+        return row
+
+    def test_a_foreign_listing_is_rejected_with_its_own_reason(self) -> None:
+        from stock_ai.data.universe import FOREIGN, rejection_reason
+
+        assert rejection_reason(self._row(ProdCat="021")) == FOREIGN
+
+    def test_a_domestic_listing_is_kept(self) -> None:
+        from stock_ai.data.universe import rejection_reason
+
+        assert rejection_reason(self._row()) is None
+
+    def test_a_row_without_the_column_is_kept(self) -> None:
+        """**列名が変わったときに universe を空にしない。**
+
+        `_is_operating_company` と同じ考え方である。外国株が1件紛れるほうが、
+        全部消えるより安い。
+        """
+        from stock_ai.data.universe import rejection_reason
+
+        row = self._row()
+        del row["ProdCat"]
+
+        assert rejection_reason(row) is None
+
+    def test_a_fund_is_named_a_fund_not_a_foreign_listing(self) -> None:
+        """**順番を変えない。** 前に置くと、理由の件数が意味を失う。"""
+        from stock_ai.data.universe import FUND, rejection_reason
+
+        assert rejection_reason(self._row(S33="9999", ProdCat="021")) == FUND
+
+    def test_an_unusable_code_is_named_first(self) -> None:
+        from stock_ai.data.universe import NO_CODE, rejection_reason
+
+        assert rejection_reason(self._row(Code="", ProdCat="021")) == NO_CODE
+
+    def test_the_reason_reaches_the_roster_comparison(self) -> None:
+        """**説明器も同じ関数を使う。**
+
+        項目5 の「理由を言えないもの 0」は、四本値にあって名簿に無い銘柄を
+        `rejection_reason` で説明できることに拠っている。ここに足した理由が
+        届かなければ、外した 30銘柄が**説明の付かない食い違い**に化ける。
+        """
+        from stock_ai.data.jquants_consistency import reasons_by_date
+        from stock_ai.data.universe import FOREIGN
+
+        payload = (
+            "Date,Code,CompanyName,MarketCodeName,S33,ProdCat\n"
+            "2024-06-03,48500,ザ・ダウ・ケミカル・カンパニー,プライム,0050,021\n"
+        ).encode()
+
+        found = reasons_by_date(payload)
+        reasons = next(iter(found.values()))
+
+        assert reasons["4850"] == FOREIGN
+
+    def test_the_product_field_names_have_one_home(self) -> None:
+        """**同じ処理を2つ書かない。** `jquants_filter` は universe から引く。"""
+        from stock_ai.data import jquants_filter, universe
+
+        assert jquants_filter.PRODUCT_FIELDS is universe.PRODUCT_FIELDS

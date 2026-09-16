@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import hashlib
 import pathlib
 import re
 
@@ -20,6 +21,13 @@ from stock_ai.backtest.pead import Period
 from stock_ai.data.schema import ADJ_CLOSE, CLOSE, HIGH, LOW, OPEN, VOLUME
 from stock_ai.database.engine import Database
 from stock_ai.database.repository import PriceRepository
+
+#: 共通化の前の `build_series` が出した、`long_short()` の一覧のダイジェスト。
+#:
+#: **2026-09-16 に現状を写したものである。** 「正しい値」ではなく「変わって
+#: いないこと」しか主張しない。#7 は封印して判定まで済んでいるので、経路が
+#: 動けば記録が再現しなくなる。
+PINNED_SPREAD_DIGEST = "409676092f42fdec3f11decf5bf5ff8852e383b03049c02e11451756d078e406"
 
 _BARS = 400
 _INDEX = pd.bdate_range("2024-01-01", periods=_BARS, name="date")
@@ -323,3 +331,44 @@ def test_detectable_comes_from_the_beta_adjusted_row_not_the_raw_one() -> None:
 
     assert f"{DETECTABLE * 100:.2f}%" in adjusted
     assert f"{DETECTABLE * 100:.2f}%" not in raw
+
+
+class TestTheJudgedNumbersDoNotMove:
+    """**#7 は封印して判定まで済んでいる。** その経路の値を釘で留める。
+
+    `build_series` を他の説（`ANTIVALUE_JP` は PBR で並べる）と共通化する予定
+    がある。**共通化で丸め1つでもずれると、#7 の記録が再現しなくなる。**
+
+    テストが通ることと、値が同じことは別である。**ここは値そのものを見る。**
+    共通化のあとにこれが落ちたら、共通化をやめて別に書く。
+
+    数字は 2026-09-16 に、共通化の前の実装から取った。**期待値として先に
+    書いたのではなく、現状を写したものである**——だから「正しい値」ではなく
+    「変わっていないこと」しか主張しない。
+    """
+
+    def _pinned(self):
+        series = _series(_database(_universe()))
+        return series.long_short()
+
+    def test_the_spread_has_one_value_per_month(self) -> None:
+        assert len(self._pinned()) > 0
+
+    def test_every_month_is_reproducible_to_twelve_places(self) -> None:
+        """**同じ入力なら同じ出力。** 乱数の種が固定してあるので動かない。"""
+        first = self._pinned()
+        second = self._pinned()
+
+        assert first == pytest.approx(second, abs=1e-12)
+
+    def test_the_spread_matches_what_the_sealed_path_produced(self) -> None:
+        """**共通化の前後で、この一覧が1つも動かないこと。**"""
+        pinned = self._pinned()
+        digest = hashlib.sha256(
+            ",".join(f"{value:.12f}" for value in pinned).encode("ascii")
+        ).hexdigest()
+
+        assert digest == PINNED_SPREAD_DIGEST, (
+            f"#7 の経路が変わった。共通化をやめるか、変えた理由を書くこと。"
+            f" いまの値: {[round(v, 6) for v in pinned[:5]]} …（全 {len(pinned)} 件）"
+        )
