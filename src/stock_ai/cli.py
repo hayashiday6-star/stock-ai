@@ -6845,6 +6845,244 @@ def edinet_reach(
         console.print(f"[yellow]{failed} 日は断られた。[/] 上の理由を読む。")
 
 
+@app.command(name="composite-gate")
+def composite_gate(  # noqa: PLR0913 - 複合型のルールが固定する条件をすべて受け取る
+    components: str = typer.Option(..., "--components", help="ID:factor pairs, comma separated."),
+    registry: str = typer.Option("docs/HYPOTHESES.md", "--registry", help="The registry file."),
+    valuation: str | None = typer.Option(None, "--valuation", help="Month-end PBR file."),
+    is_end: str = typer.Option("2017-12-31", "--is-end", help="Last day of the IS window."),
+    oos_periods: int = typer.Option(104, "--oos-periods", help="Months the judgement will have."),
+    tries: int = typer.Option(1, "--tries", help="Combinations you will try in IS. Fixed first."),
+    window: int = typer.Option(DEFAULT_WINDOW, "--window", help="Volatility window in sessions."),
+    min_symbols: int = typer.Option(MIN_SYMBOLS_PER_MONTH, "--min-symbols", help="Per month."),
+    lags: int = typer.Option(LOWVOL_LAGS, "--lags", help="Newey-West lags, in months."),
+) -> None:
+    """Apply the composite rules as a gate, before anything is sealed.
+
+    **判定ではない。** `docs/PURPOSE.md`「複合型のルール」を、文章ではなく
+    **落ちる関門**にして当てる。人が読んで当てはめると、封印の前でも基準が動く。
+
+    当てるのは6つ。**構成要素が登録済みか／IS で試す通り数を超えていないか／
+    件数と流動性がどこまで落ちたか／§0 を通るか／種類が1つに偏っていないか／
+    1通りを1本として数えること。**
+
+    **合格条件「最良の構成要素単独を上回る」は、ここでは当てない。** それは
+    OOS の判定で当たる。ここで出すのは IS の材料だけである。
+
+    **`composite-gain` とは別物である。** あちらの r は 2026-09-05 に測って
+    閉じてあり、「曖昧域で財務系の再測定はしない」と書いてある。ここは複合型を
+    **それ自体として登録して判定する**ための関門で、r を測り直しはしない。
+    """
+    from stock_ai.backtest.composite import (
+        Component,
+        Coverage,
+        Design,
+        kinds,
+        over_budget,
+        single_kind,
+        unregistered,
+    )
+    from stock_ai.backtest.cross_section import beta_to_benchmark, build_estimators
+    from stock_ai.backtest.factor_panel import NEEDS_VALUATION, build_panel
+    from stock_ai.backtest.multiplicity import HYPOTHESIS_BUDGET, required_t
+    from stock_ai.backtest.power import estimate_power, gate
+    from stock_ai.data.valuation_monthly import DEFAULT_PATH
+    from stock_ai.data.valuation_monthly import read as read_valuation
+    from stock_ai.hypotheses import read_registry
+
+    settings = get_settings()
+    configure_logging(settings.log_level)
+
+    cut = _parse_date(is_end)
+    if cut is None:
+        raise typer.BadParameter(f"--is-end must be YYYY-MM-DD; got {is_end!r}.")
+
+    parsed: list[Component] = []
+    for chunk in components.split(","):
+        name, _, factor = chunk.strip().partition(":")
+        if not name or not factor:
+            raise typer.BadParameter(f"--components wants ID:factor pairs; got {chunk!r}.")
+        parsed.append(Component(name.strip(), factor.strip()))
+    try:
+        design = Design(tuple(parsed), (1.0,) * len(parsed), tries_in_is=tries)
+    except ValueError as error:
+        console.print(f"[red]{error}[/]")
+        raise typer.Exit(code=1) from error
+
+    source = Path(registry)
+    if not source.is_file():
+        console.print(f"[red]{source} が無い。[/]")
+        raise typer.Exit(code=1)
+    known = read_registry(source)
+    kind_of = {item.identifier: item.kind for item in known}
+
+    console.print("[bold yellow]これは判定ではない。[/] 封印の前に当てる関門である。")
+    console.print(
+        f"[dim]IS は {cut} まで。OOS（{oos_periods}ヶ月）には1日も触れない。"
+        f"IS で試す通り数は {tries} と決めてある。[/]"
+    )
+    console.print()
+
+    # --- 規則1: 構成要素は登録済みか -----------------------------------------
+    missing = unregistered(design, [item.identifier for item in known])
+    if missing:
+        console.print(
+            f"[red]封印しない。[/] 登録が無い構成要素がある: {missing}。"
+            "**その脚が何を主張しているのかが文書に残らない。**"
+        )
+        raise typer.Exit(code=1)
+
+    spread_of_kinds = kinds(design, kind_of)
+    console.print(
+        "[green]構成要素は全部登録済み。[/] 種類の内訳: "
+        + "、".join(f"{key} {count}" for key, count in sorted(spread_of_kinds.items()))
+    )
+    if single_kind(design, kind_of):
+        console.print(
+            "[yellow]種類が1つしか入っていない。[/] "
+            "**2026-09-05 に束ねた3本も3本とも technical だった。** "
+            "禁止ではないが、種類をまたぐ複合が手つかずのままになる。"
+        )
+
+    # --- 規則2: IS で試す通り数 ----------------------------------------------
+    if over_budget(design, tries):  # pragma: no cover - tries は自分自身
+        console.print("[red]封印しない。[/] IS で決めた通り数を超えている。")
+        raise typer.Exit(code=1)
+
+    frame = None
+    if any(factor in NEEDS_VALUATION for factor in design.factors):
+        frame = read_valuation(Path(valuation) if valuation else DEFAULT_PATH)
+        if frame.empty:
+            console.print("[red]月末の PBR が無い。[/] `checks\\月末のPBRを抜き出す.bat` が先。")
+            raise typer.Exit(code=1)
+
+    database = Database()
+    database.create_all()
+
+    # --- 規則3: 単独も、同じ盤面から取る -------------------------------------
+    #
+    # **盤面を1つしか作らない。** 別々に組むと、比が「合成の利得」ではなく
+    # 「universe の差」を含む。
+    try:
+        panel = build_panel(
+            database,
+            factors=design.factors,
+            end=cut,
+            window=window,
+            min_symbols=min_symbols,
+            valuation=frame,
+        )
+        alone = build_panel(
+            database,
+            factors=design.factors[:1],
+            end=cut,
+            window=window,
+            min_symbols=min_symbols,
+            valuation=frame,
+        )
+    except ValueError as error:
+        console.print(f"[red]盤面を作れなかった: {error}[/]")
+        raise typer.Exit(code=1) from error
+
+    # --- 規則6: 件数と流動性の内訳 -------------------------------------------
+    coverage = Coverage(
+        months=len(panel.months),
+        median_symbols=int(median([len(month) for month in panel.sections]))
+        if panel.sections
+        else 0,
+        excluded_thin=panel.excluded_thin,
+        excluded_no_history=panel.excluded_no_history,
+        excluded_discontinuity=panel.excluded_discontinuity,
+        excluded_no_pbr=panel.excluded_no_pbr,
+        months_single=len(alone.months),
+        median_symbols_single=int(median([len(month) for month in alone.sections]))
+        if alone.sections
+        else 0,
+    )
+    table = Table(title="件数と流動性の内訳（**AND条件は件数が急減する**）")
+    for column in ("項目", "合成", f"{design.factors[0]} だけ"):
+        table.add_column(column, overflow="fold")
+    table.add_row("月数", f"{coverage.months}", f"{coverage.months_single}")
+    table.add_row(
+        "1ヶ月あたり銘柄（中央値）",
+        f"{coverage.median_symbols:,}",
+        f"{coverage.median_symbols_single:,}",
+    )
+    table.add_row("流動性で外した銘柄月", f"{panel.excluded_thin:,}", "—")
+    table.add_row("履歴が足りない銘柄月", f"{panel.excluded_no_history:,}", "—")
+    table.add_row("不連続で外した銘柄月", f"{panel.excluded_discontinuity:,}", "—")
+    table.add_row("PBR が無い銘柄月", f"{panel.excluded_no_pbr:,}", "—")
+    console.print(table)
+    for line in coverage.warnings():
+        console.print(f"[yellow]{line}[/]")
+
+    if not panel.months:
+        console.print("[red]封印しない。[/] 月が1つも残っていない。**比べていない。**")
+        raise typer.Exit(code=1)
+
+    # --- 規則4の材料: 合成と、脚ごとの単独を、同じ盤面から -------------------
+    #
+    # **向きは「大きいほど買う側」。** 既定のままだと分位5を買う。例外は出ない
+    # （2026-09-05 に実際に出て行った形）。
+    built = build_estimators(panel.composite(), panel.benchmark, higher_is_better=True)
+    if built.months < 2:
+        console.print("[red]封印しない。[/] 断面がばらつく月が2つ未満。")
+        raise typer.Exit(code=1)
+    beta = beta_to_benchmark(built.quantile_spread, built.benchmark)
+    net = built.alpha(built.quantile_spread, beta)
+
+    target = required_t(HYPOTHESIS_BUDGET)
+    estimate = estimate_power(net, lags=lags)
+    detectable = estimate.detectable(oos_periods, target_t=target)
+    mean = fmean(net)
+    stderr = estimate.standard_error(len(net))
+    low, high = mean - 1.96 * stderr, mean + 1.96 * stderr
+
+    zero = Table(title="§0 に入れる材料（IS から。判定ではない）")
+    for column in ("項目", "1期あたり", "年あたり"):
+        zero.add_column(column, overflow="fold")
+    zero.add_row("1期あたりのSD（α）", f"{estimate.daily_sd:.2%}", "—")
+    zero.add_row("重なりの膨張", f"{estimate.inflation:.2f}x", "—")
+    zero.add_row("判定に使える期数", f"{oos_periods}", f"{oos_periods / 12:.1f}年")
+    zero.add_row("検出できる差", f"{detectable:.3%}", f"年 {detectable * 12:.1%}")
+    zero.add_row("見込みの下限", f"{low:.3%}", f"年 {low * 12:+.1%}")
+    zero.add_row("見込みの上限", f"{high:.3%}", f"年 {high * 12:+.1%}")
+    zero.add_row("β", f"{beta:+.2f}", "IS で推定")
+    console.print(zero)
+
+    # --- 規則4の比較対象: 脚ごとの単独（同じ盤面） ---------------------------
+    singles = Table(title="脚ごとの単独（**同じ盤面・同じ月**）")
+    for column in ("脚", "説", "IS の t（α）"):
+        singles.add_column(column, overflow="fold")
+    for component in design.components:
+        column = panel.column(component.factor)
+        leg = build_estimators(column, panel.benchmark, higher_is_better=True)
+        if leg.months < 2:
+            singles.add_row(component.factor, component.hypothesis_id, "測れない")
+            continue
+        leg_beta = beta_to_benchmark(leg.quantile_spread, leg.benchmark)
+        leg_net = leg.alpha(leg.quantile_spread, leg_beta)
+        leg_power = estimate_power(leg_net, lags=lags)
+        leg_t = fmean(leg_net) / leg_power.standard_error(len(leg_net))
+        singles.add_row(component.factor, component.hypothesis_id, f"{leg_t:+.2f}")
+    console.print(singles)
+    console.print(
+        "[dim]**この表は合格線であって、脚の判定ではない。** 合格には「最良の単独を"
+        "上回る」ことが要る（`docs/PURPOSE.md`）。当てるのは OOS の判定である。[/]"
+    )
+
+    # --- 規則5 と §0 の当てはめ ----------------------------------------------
+    console.print()
+    decision = gate(detectable, low, high)
+    colour = "green" if decision.passed else "red"
+    console.print(f"[bold {colour}]{decision.verdict}[/] {decision.reading}")
+    console.print(
+        f"[dim]必要な t は {target:.2f}（予算 {HYPOTHESIS_BUDGET} 本）。"
+        f"この複合は累計に **{design.counts_as} 本**として数える"
+        "——構成要素の数ではない。[/]"
+    )
+
+
 @app.command(name="hypothesis-report")
 def hypothesis_report(
     registry: str = typer.Option("docs/HYPOTHESES.md", "--registry", help="The registry file."),
