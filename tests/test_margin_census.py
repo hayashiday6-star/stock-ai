@@ -422,3 +422,143 @@ class TestTheSplitIsByPeriodNotByCount:
         found = census(self._alerts(), _CALENDAR, lending_on=lambda s, on: s == "1302")
 
         assert any("貸借に絞って" in line for line in found.warnings())
+
+
+class TestTheEventReturnsFollowTheTradingRule:
+    """§4 が固定した入り方——**D の翌営業日の寄付きで入り、N 日後の終値で降りる。**
+
+    **D の終値では入れない。** 公表は 16:30 頃で、その日の引けには間に合わない。
+    ここを1日早く置くと、**まだ公表されていない日の値動きを使う。**
+    """
+
+    @staticmethod
+    def _database(
+        index,
+        closes: dict[str, list[float]],
+        opens: dict[str, list[float]] | None = None,
+    ):
+        import pandas as pd
+
+        from stock_ai.data.schema import ADJ_CLOSE, CLOSE, HIGH, LOW, OPEN, VOLUME
+        from stock_ai.database.engine import Database
+        from stock_ai.database.repository import PriceRepository
+
+        database = Database("sqlite:///:memory:")
+        database.create_all()
+        with database.session() as session:
+            repo = PriceRepository(session)
+            for symbol, close in closes.items():
+                start = (opens or {}).get(symbol, close)
+                repo.upsert_prices(
+                    symbol,
+                    pd.DataFrame(
+                        {
+                            OPEN: start,
+                            HIGH: close,
+                            LOW: close,
+                            CLOSE: close,
+                            ADJ_CLOSE: close,
+                            VOLUME: [1_000_000.0] * len(close),
+                        },
+                        index=index,
+                    ),
+                    market="JP",
+                )
+        return database
+
+    def test_a_stock_that_falls_against_a_flat_market_gives_a_negative_excess(self) -> None:
+        import pandas as pd
+
+        from stock_ai.backtest.margin_census import event_returns
+
+        index = pd.bdate_range("2020-01-06", periods=30, name="date")
+        flat = [100.0] * 30
+        falling = [100.0 if position <= 1 else 90.0 for position in range(30)]
+        database = self._database(index, {"1306": flat, "1301": falling})
+
+        values = event_returns(database, [("1301", index[0].date())], holding=5)
+
+        assert len(values) == 1
+        assert values[0] == pytest.approx(-0.10)
+
+    def test_entry_is_the_day_after_not_the_event_day(self) -> None:
+        """**公表日の引けに動いても、それは取れない。**
+
+        イベント日 D の終値だけを叩き落とし、D+1 以降は水平にする。D の終値で
+        入れていればその下げが入り、翌日の寄付きで入っていれば入らない。
+        """
+        import pandas as pd
+
+        from stock_ai.backtest.margin_census import event_returns
+
+        index = pd.bdate_range("2020-01-06", periods=30, name="date")
+        flat = [100.0] * 30
+        # D=index[3]。その日の終値だけ 80、翌日以降は 100 に戻る。
+        shaped = [80.0 if position == 3 else 100.0 for position in range(30)]
+        database = self._database(index, {"1306": flat, "1301": shaped})
+
+        values = event_returns(database, [("1301", index[3].date())], holding=5)
+
+        assert values[0] == pytest.approx(0.0)
+
+    def test_the_same_day_is_one_equal_weighted_observation(self) -> None:
+        """**まとめないと、発動が重なった日だけ重みが増える。**"""
+        import pandas as pd
+
+        from stock_ai.backtest.margin_census import event_returns
+
+        index = pd.bdate_range("2020-01-06", periods=30, name="date")
+        flat = [100.0] * 30
+        down = [100.0 if position <= 1 else 90.0 for position in range(30)]
+        up = [100.0 if position <= 1 else 110.0 for position in range(30)]
+        database = self._database(index, {"1306": flat, "1301": down, "1302": up})
+
+        values = event_returns(
+            database,
+            [("1301", index[0].date()), ("1302", index[0].date())],
+            holding=5,
+        )
+
+        assert len(values) == 1
+        assert values[0] == pytest.approx(0.0)
+
+    def test_an_event_after_the_cut_is_not_used(self) -> None:
+        """**OOS には1日も触れない。**"""
+        import pandas as pd
+
+        from stock_ai.backtest.margin_census import event_returns
+
+        index = pd.bdate_range("2020-01-06", periods=30, name="date")
+        flat = [100.0] * 30
+        database = self._database(index, {"1306": flat, "1301": flat})
+
+        early = index[0].date()
+        late = index[10].date()
+        values = event_returns(database, [("1301", early), ("1301", late)], holding=5, until=early)
+
+        assert len(values) == 1
+
+    def test_an_event_too_close_to_the_end_is_dropped_rather_than_shortened(self) -> None:
+        """**窓が足りないイベントを短い窓で測らない。** 混ぜると窓が2つになる。"""
+        import pandas as pd
+
+        from stock_ai.backtest.margin_census import event_returns
+
+        index = pd.bdate_range("2020-01-06", periods=10, name="date")
+        flat = [100.0] * 10
+        database = self._database(index, {"1306": flat, "1301": flat})
+
+        values = event_returns(database, [("1301", index[8].date())], holding=5)
+
+        assert values == []
+
+    def test_a_window_of_zero_is_refused(self) -> None:
+        import pandas as pd
+
+        from stock_ai.backtest.margin_census import event_returns
+
+        index = pd.bdate_range("2020-01-06", periods=10, name="date")
+        database = self._database(index, {"1306": [100.0] * 10})
+
+        with pytest.raises(ValueError):
+            event_returns(database, [], holding=0)

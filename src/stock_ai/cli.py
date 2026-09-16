@@ -6845,6 +6845,168 @@ def edinet_reach(
         console.print(f"[yellow]{failed} 日は断られた。[/] 上の理由を読む。")
 
 
+@app.command(name="margin-power")
+def margin_power(  # noqa: PLR0913 - §0 が固定した条件をすべて受け取る
+    directory: str = typer.Option(
+        str(DEFAULT_ARCHIVE_DIR), "--dir", help="Where the archived originals live."
+    ),
+    rosters: str = typer.Option(
+        str(DAILY_SNAPSHOT_DIR), "--rosters", help="Dated rosters, for the lending flag."
+    ),
+    benchmark: str = typer.Option(BENCHMARK, "--benchmark", help="Sets the calendar."),
+    min_turnover: float = typer.Option(MIN_TURNOVER, "--min-turnover", help="Liquidity floor."),
+    holding: int | None = typer.Option(None, "--holding", help="Override the window from §3."),
+    limit: int | None = typer.Option(None, "--limit", help="Read only the first N originals."),
+) -> None:
+    """Measure the IS spread for #8, so the gate can be applied.
+
+    **判定ではない。** 見るのは IS（原本が覆う期間の前半）だけで、OOS には
+    1日も触れない。
+
+    出すのは §0 の空欄——**1イベントあたりのSD**、**重なりの膨張**、そして
+    **見込み**である。保有窓は `margin-census` と同じ式から出る。
+
+    **測る前にコミットした線がある**（事前登録 §0）——「IS の1イベントあたり
+    平均超過リターンの片側95%下限が **1.2%** を下回ったら封印しない」。
+    往復費用 0.4% の3倍である。**下回ればここで終わる。線は動かさない。**
+    """
+    from stock_ai.backtest.margin_census import census, event_returns, lending_index, spells
+    from stock_ai.backtest.multiplicity import HYPOTHESIS_BUDGET, required_t
+    from stock_ai.backtest.pead import TURNOVER_WINDOW
+    from stock_ai.backtest.power import estimate_power, gate
+    from stock_ai.backtest.reversal import COST_ROUND_TRIP
+    from stock_ai.data.jquants_margin import from_archive as margin_from_archive
+    from stock_ai.data.schema import VOLUME
+
+    settings = get_settings()
+    configure_logging(settings.log_level)
+
+    source = Path(directory)
+    if not source.is_dir():
+        console.print(f"[red]{source} が無い。[/] **原本が要る。**")
+        raise typer.Exit(code=1)
+
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        BarColumn(),
+        TaskProgressColumn(),
+        TimeRemainingColumn(),
+        console=console,
+    ) as progress:
+        task = progress.add_task("原本を読む", total=None)
+
+        def step(index: int, total: int, key: str) -> None:
+            progress.update(task, total=total, completed=index)
+
+        alerts = margin_from_archive(source, limit=limit, progress=step)
+
+    if not alerts:
+        console.print(f"[red]{source} に `/markets/margin-alert` の原本が無い。[/]")
+        raise typer.Exit(code=1)
+
+    database = Database()
+    database.create_all()
+    with database.session() as session:
+        price_repo = PriceRepository(session)
+        bench = price_repo.get_raw_prices(benchmark)
+        if bench.empty:
+            console.print(f"[red]ベンチマーク {benchmark!r} の価格が無い。[/]")
+            raise typer.Exit(code=1)
+        calendar = [stamp.date() for stamp in bench.index]
+        liquid: dict[tuple[str, dt.date], bool] = {}
+        for symbol in sorted({alert.symbol for alert in alerts}):
+            raw = price_repo.get_raw_prices(symbol)
+            if raw.empty:
+                continue
+            rolling = (raw[CLOSE] * raw[VOLUME]).rolling(TURNOVER_WINDOW).mean().shift(1).dropna()
+            for stamp, value in rolling.items():
+                liquid[(symbol, stamp.date())] = bool(value >= min_turnover)
+
+    lending = lending_index(Path(rosters))
+    counted = census(
+        alerts,
+        calendar,
+        lending_on=lending,
+        liquid_on=lambda symbol, on: liquid.get((symbol, on), False),
+    )
+    if not counted.events_is:
+        console.print("[red]IS に使えるイベントが無い。[/] `margin-census` を先に見ること。")
+        raise typer.Exit(code=1)
+
+    window = holding or counted.window
+    if holding is not None:
+        console.print(
+            f"[yellow]窓を {holding} に上書きした。[/] "
+            "**§3 の式から出る窓は "
+            f"{counted.window} である。上書きしたまま封印しない。**"
+        )
+
+    console.print(
+        f"[dim]IS は {counted.split_on} まで（{counted.events_is} 件）。"
+        f"OOS（{counted.events_oos} 件）には1日も触れない。窓は {window} 営業日。[/]"
+    )
+
+    kept = [
+        (spell.symbol, spell.onset)
+        for spell in spells(alerts)
+        if lending(spell.symbol, spell.onset) and liquid.get((spell.symbol, spell.onset), False)
+    ]
+    values = event_returns(
+        database, kept, holding=window, benchmark=benchmark, until=counted.split_on
+    )
+    if len(values) < 2:
+        console.print(f"[red]値動きの取れたイベントが {len(values)} 件しかない。[/]")
+        raise typer.Exit(code=1)
+
+    # **ショートの取り高に直す。** 仮説は超過リターンが負だと言っている
+    # （§1）。符号の反転はここ1箇所だけで行う。費用は往復 0.4%（§4）。
+    take = [-value - COST_ROUND_TRIP for value in values]
+
+    estimate = estimate_power(take, lags=window)
+    target = required_t(HYPOTHESIS_BUDGET)
+    mean = fmean(take)
+    stderr = estimate.standard_error(len(take))
+    # **片側95%。** 事前登録 §0 が片側で書いている。
+    floor_estimate = mean - 1.645 * stderr
+    detectable = estimate.detectable(counted.events_oos, target_t=target)
+
+    table = Table(title="§0 に入れる材料（IS から。判定ではない）")
+    for column in ("項目", "値", "どこから"):
+        table.add_column(column, overflow="fold")
+    table.add_row("値動きの取れたイベント日", f"{len(values):,}", "IS のみ")
+    table.add_row("1イベントあたりのSD", f"{estimate.daily_sd:.2%}", "費用引き後のショート")
+    table.add_row("重なりの膨張", f"{estimate.inflation:.2f}x", f"Newey-West({window})。実測")
+    table.add_row("判定に使える期数", f"{counted.events_oos:,}", "**OOS のイベント数**")
+    table.add_row("検出できる差", f"{detectable:.2%}", f"t≥{target:.2f}・1イベントあたり")
+    table.add_row("費用", f"{COST_ROUND_TRIP:.2%}", "往復。#6 の実測値を引く")
+    console.print(table)
+
+    console.print(
+        f"[bold]IS の取り高（費用引き後・ショート）: 1イベント {mean:+.2%}[/] "
+        f"[dim]（片側95%の下限 {floor_estimate:+.2%}）[/]"
+    )
+
+    console.print()
+    committed = 3 * COST_ROUND_TRIP
+    if floor_estimate < committed:
+        console.print(
+            f"[red]封印しない。[/] 片側95%の下限 {floor_estimate:+.2%} が、"
+            f"**測る前にコミットした線 {committed:.1%} を下回った。**"
+        )
+        console.print(
+            "[dim]事前登録 §0 にそう書いてある（往復費用 0.4% の3倍）。"
+            "**費用を超えるだけの線を置くと、#7 が入った帯にまっすぐ入る。** "
+            "線は動かさない。[/]"
+        )
+        return
+
+    console.print(f"[green]線（{committed:.1%}）は上回った。[/] 次は §0 のゲートである。")
+    decision = gate(detectable, floor_estimate, mean + 1.645 * stderr)
+    colour = "green" if decision.passed else "red"
+    console.print(f"[bold {colour}]{decision.verdict}[/] {decision.reading}")
+
+
 @app.command(name="margin-census")
 def margin_census(  # noqa: PLR0913 - §2 が固定した絞り込みをすべて受け取る
     directory: str = typer.Option(
