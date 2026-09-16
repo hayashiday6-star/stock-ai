@@ -9,6 +9,8 @@
 
 from __future__ import annotations
 
+import pathlib
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -29,8 +31,28 @@ from stock_ai.data.schema import ADJ_CLOSE, CLOSE, HIGH, LOW, OPEN, VOLUME
 from stock_ai.database.engine import Database
 from stock_ai.database.repository import PriceRepository
 
+
+def _registered_pair() -> str:
+    """`.bat` が既定で渡す組を、`.ps1` から読む。
+
+    **押される組を、そのまま試す。** ここに文字列を書き写すと、`.ps1` の
+    既定だけ変わったときに**テストは緑のまま**になる。
+    """
+    import re
+
+    body = (
+        pathlib.Path(__file__)
+        .resolve()
+        .parent.parent.joinpath("scripts", "composite-gate.ps1")
+        .read_text(encoding="utf-8")
+    )
+    found = re.search(r"\[string\]\$Components\s*=\s*'([^']+)'", body)
+    assert found, "composite-gate.ps1 の -Components 既定を読めない"
+    return found.group(1)
+
+
 _LOW = Component("LOWVOL_JP", "低ボラ")
-_VALUE = Component("ANTIVALUE_JP", "バリュー")
+_VALUE = Component("VALUE_JP", "バリュー")
 
 
 def _design(components=(_LOW, _VALUE), tries: int = 1) -> Design:
@@ -65,10 +87,10 @@ class TestTheLegsHaveToBeRegistered:
     def test_an_unregistered_leg_is_named(self) -> None:
         missing = unregistered(_design(), ["LOWVOL_JP"])
 
-        assert missing == ["ANTIVALUE_JP"]
+        assert missing == ["VALUE_JP"]
 
     def test_registered_legs_leave_nothing(self) -> None:
-        assert unregistered(_design(), ["LOWVOL_JP", "ANTIVALUE_JP"]) == []
+        assert unregistered(_design(), ["LOWVOL_JP", "VALUE_JP"]) == []
 
 
 class TestTheKindsAreCountedRatherThanAssumed:
@@ -83,7 +105,7 @@ class TestTheKindsAreCountedRatherThanAssumed:
         assert kinds(design, kind_of) == {"technical": 2}
 
     def test_crossing_kinds_is_seen(self) -> None:
-        kind_of = {"LOWVOL_JP": "technical", "ANTIVALUE_JP": "fundamental"}
+        kind_of = {"LOWVOL_JP": "technical", "VALUE_JP": "fundamental"}
 
         assert not single_kind(_design(), kind_of)
         assert kinds(_design(), kind_of) == {"technical": 1, "fundamental": 1}
@@ -264,7 +286,7 @@ class TestTheGateRunsEndToEnd:
         )
 
     def test_a_cross_kind_composite_reaches_the_gate(self, tmp_path, monkeypatch) -> None:
-        result = self._run(tmp_path, monkeypatch, "LOWVOL_JP:低ボラ,ANTIVALUE_JP:バリュー")
+        result = self._run(tmp_path, monkeypatch, _registered_pair())
 
         assert result.exit_code == 0, result.output
         assert "構成要素は全部登録済み" in result.output
