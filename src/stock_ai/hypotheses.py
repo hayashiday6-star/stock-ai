@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import dataclasses
 import re
+from collections.abc import Sequence
 from pathlib import Path
 
 from stock_ai.core.logging import get_logger
@@ -31,6 +32,12 @@ from stock_ai.core.logging import get_logger
 logger = get_logger(__name__)
 
 #: 記録が無いことを表す語。**空欄と区別する。**
+#: 構成の欄がこれを含む行は、**予算に数えない**。
+#:
+#: 陰性対照（乱数）が唯一の使い道である。**説ではないので、当たりを引こうと
+#: した回数に入らない。**
+CONTROL = "control"
+
 MISSING = "未記載"
 
 #: 判定として認める語。**これ以外は状態である**（`docs/PURPOSE.md`）。
@@ -125,6 +132,18 @@ class Hypothesis:
         return any(self.verdict.startswith(word) for word in VERDICTS)
 
     @property
+    def counted(self) -> bool:
+        """多重検定の予算に数えるか。
+
+        **陰性対照は数えない。** 世界について何も主張していないので、
+        「当たりを引こうとした回数」に入らない——補正が数えたいのはそれである。
+
+        **構成の欄で見分ける。** 判定の欄ではない——対照にも判定は出るので、
+        そこで分けると**対照の合格が本物の合格に混ざる。**
+        """
+        return CONTROL not in self.composition
+
+    @property
     def source_recorded(self) -> bool:
         """出典が何か書かれているか。"""
         return self.source not in {"", MISSING, "—"}
@@ -138,6 +157,22 @@ class Hypothesis:
         同じに扱うと、正直に書いたことが罰される。**
         """
         return self.source_recorded and "未記録" not in self.source
+
+
+def consumed(found: Sequence[Hypothesis]) -> list[Hypothesis]:
+    """判定を消費した説。**陰性対照は入らない。**
+
+    **数える場所を1つにする。** `judged` と `counted` を呼ぶ側で組み合わせると、
+    **1箇所忘れただけで対照の判定が本物の本数に混ざる。** 実際に混ざった——
+    対照を足した日に、最初に数えたテストが 6 を返した（2026-09-17）。
+
+    Args:
+        found: 登録の一覧。
+
+    Returns:
+        予算に数える説のうち、判定の出たもの。
+    """
+    return [item for item in found if item.counted and item.judged]
 
 
 def read_registry(path: Path) -> list[Hypothesis]:

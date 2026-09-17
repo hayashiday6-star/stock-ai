@@ -135,6 +135,7 @@ from stock_ai.backtest.power import (
     required_improvement,
     trimmed_variance,
 )
+from stock_ai.backtest.rehearsal import SEED as REHEARSAL_SEED
 from stock_ai.backtest.report import metrics_frame
 from stock_ai.backtest.reversal import (
     BENCHMARK,
@@ -2129,8 +2130,12 @@ def revision_power(  # noqa: PLR0913 - §0 が固定した条件をすべて受�
     窓は **20営業日**（§3・§4）。**#8 のように機構から出る説ではない**ので、
     #3・#6 と揃えてある。**リターンを見て決めていない。**
     """
-    from stock_ai.backtest.event_window import event_returns
-    from stock_ai.backtest.multiplicity import HYPOTHESIS_BUDGET, required_t
+    from stock_ai.backtest.event_window import event_sample
+    from stock_ai.backtest.multiplicity import (
+        HYPOTHESIS_BUDGET,
+        MEASURED_INFLATION_EVENT,
+        calibrated_t,
+    )
     from stock_ai.backtest.pead import TURNOVER_WINDOW
     from stock_ai.backtest.power import (
         estimate_power,
@@ -2227,9 +2232,13 @@ def revision_power(  # noqa: PLR0913 - §0 が固定した条件をすべて受�
         for event in events
         if not event.on_statement_day and liquid_on(event.symbol, event.disclosed_on)
     ]
-    values = event_returns(
+    sample = event_sample(
         database, kept, holding=holding, benchmark=benchmark, until=counted.split_on
     )
+    values = sample.values
+    # **捨てた件数を黙って捨てない。** 引いた件数のうち何件が、どの理由で
+    # 落ちたのかを出す。上場廃止で落ちる分は**悪く終わった側に偏る。**
+    _report_event_disposition(sample, title="窓を当てた結果（IS のみ・件数）")
     if len(values) < 2:
         console.print(f"[red]値動きの取れたイベント日が {len(values)} しかない。[/]")
         raise typer.Exit(code=1)
@@ -2239,7 +2248,9 @@ def revision_power(  # noqa: PLR0913 - §0 が固定した条件をすべて受�
     take = [value - COST_ROUND_TRIP for value in values]
 
     estimate = estimate_power(take, lags=holding)
-    target = required_t(HYPOTHESIS_BUDGET)
+    # **イベント型の管は別に測ってある**（`MEASURED_INFLATION_EVENT`）。
+    # 月次の 1.12 をここに当てるのは、測った根拠の無い厳しさになる。
+    target = calibrated_t(HYPOTHESIS_BUDGET, inflation=MEASURED_INFLATION_EVENT)
     mean = fmean(take)
     stderr = estimate.standard_error(len(take))
     # **片側95%。** 事前登録 §0 が片側で書いている。
@@ -5678,7 +5689,12 @@ def antivalue_estimate(
     1日も触れない。
     """
     from stock_ai.backtest.antivalue import build_series as antivalue_series
-    from stock_ai.backtest.multiplicity import HYPOTHESIS_BUDGET, required_t
+    from stock_ai.backtest.multiplicity import (
+        HYPOTHESIS_BUDGET,
+        MEASURED_INFLATION,
+        calibrated_t,
+        required_t,
+    )
     from stock_ai.backtest.power import estimate_power
     from stock_ai.data.valuation_monthly import DEFAULT_PATH
     from stock_ai.data.valuation_monthly import read as read_valuation
@@ -5731,7 +5747,7 @@ def antivalue_estimate(
     for column in ("項目", "生の差", "α（β を引いた）", "どこから"):
         table.add_column(column, overflow="fold")
 
-    target = required_t(HYPOTHESIS_BUDGET)
+    target = calibrated_t(HYPOTHESIS_BUDGET)
     stats: dict[str, tuple[float, float, float, float, float]] = {}
     for label, values in measured.items():
         estimate = estimate_power(values, lags=3)
@@ -5796,7 +5812,9 @@ def antivalue_estimate(
         f"--inflation {raw[1]:.2f} --budget {HYPOTHESIS_BUDGET}[/]"
     )
     console.print(
-        f"[dim]必要な t は {required_t(HYPOTHESIS_BUDGET):.2f}（予算 {HYPOTHESIS_BUDGET} 本）。"
+        f"[dim]必要な t は {calibrated_t(HYPOTHESIS_BUDGET):.2f}"
+        f"（予算 {HYPOTHESIS_BUDGET} 本の {required_t(HYPOTHESIS_BUDGET):.2f} に、"
+        f"対照で測った膨張 {MEASURED_INFLATION:.2f} を掛けた）。"
         "補正なしの 2.0 ではない。[/]"
     )
 
@@ -6897,6 +6915,61 @@ def _report_daily_spread(series: object) -> None:
     )
 
 
+#: 窓がイベントを処分する先。**足すと引いた件数になる。**
+#:
+#: 数える側と出す側の両方がここを見る。**片方に足してもう片方に足し忘れると、
+#: 合計が合わなくなって `EventSample` が落ちる。**
+_DISPOSITIONS = (
+    "used",
+    "no_prices",
+    "ended_early",
+    "too_recent",
+    "bad_leg",
+    "no_benchmark",
+)
+
+#: 処分の日本語。**表の並びは `_DISPOSITIONS` と同じ順。**
+_DISPOSITION_LABELS = {
+    "used": "使えた",
+    "no_prices": "価格が無い",
+    "ended_early": "上場廃止・停止で窓が切れた",
+    "too_recent": "期間の端で窓が足りない",
+    "bad_leg": "入る値か降りる値が欠測",
+    "no_benchmark": "指数に対応する日が無い",
+}
+
+
+def _report_event_disposition(sample: object, *, title: str) -> None:
+    """Print what the event window kept and what it threw away.
+
+    **捨てた件数を黙って捨てない**（2026-09-17）。#5・#8・陰性対照が同じ窓を
+    使うので、**出す形も1つだけ置く。** 呼ぶ側で書き直すと、片方だけ直る。
+
+    Args:
+        sample: :class:`~stock_ai.backtest.event_window.EventSample`。
+        title: 表の見出し。
+    """
+    table = Table(title=title)
+    for column in ("処分", "件数", "割合"):
+        table.add_column(column, overflow="fold")
+    drawn = sample.drawn  # type: ignore[attr-defined]
+    for key in _DISPOSITIONS:
+        count = getattr(sample, key)
+        share = count / drawn if drawn else 0.0
+        table.add_row(_DISPOSITION_LABELS[key], f"{count:,}", f"{share:.1%}")
+    table.add_row("[bold]引いた合計[/]", f"[bold]{drawn:,}[/]", "100.0%")
+    console.print(table)
+
+    # **銘柄側と指数側を別に出す。** 超過だけを見ていると、「銘柄が上がった」
+    # のか「引く相手が上がらなかった」のかが分からない。
+    console.print(
+        f"[dim]銘柄側 {sample.stock_leg:+.2%}、指数側 {sample.bench_leg:+.2%}"  # type: ignore[attr-defined]
+        f"、差 {sample.stock_leg - sample.bench_leg:+.2%}（1日あたり、窓ぶん）。[/]"  # type: ignore[attr-defined]
+    )
+    for line in sample.warnings():  # type: ignore[attr-defined]
+        console.print(f"[yellow]{line}[/]")
+
+
 def _oos_session_count(database: Database, benchmark: str, holding: int) -> int:
     """Count the sessions the OOS test will have. Counts days, never values."""
     with database.session() as session:
@@ -7083,8 +7156,13 @@ def margin_power(  # noqa: PLR0913 - §0 が固定した条件をすべて受け
     平均超過リターンの片側95%下限が **1.2%** を下回ったら封印しない」。
     往復費用 0.4% の3倍である。**下回ればここで終わる。線は動かさない。**
     """
-    from stock_ai.backtest.margin_census import census, event_returns, lending_index, spells
-    from stock_ai.backtest.multiplicity import HYPOTHESIS_BUDGET, required_t
+    from stock_ai.backtest.event_window import event_sample
+    from stock_ai.backtest.margin_census import census, lending_index, spells
+    from stock_ai.backtest.multiplicity import (
+        HYPOTHESIS_BUDGET,
+        MEASURED_INFLATION_EVENT,
+        calibrated_t,
+    )
     from stock_ai.backtest.pead import TURNOVER_WINDOW
     from stock_ai.backtest.power import estimate_power, gate, trimmed_variance
     from stock_ai.backtest.reversal import COST_ROUND_TRIP
@@ -7165,9 +7243,12 @@ def margin_power(  # noqa: PLR0913 - §0 が固定した条件をすべて受け
         for spell in spells(alerts)
         if lending(spell.symbol, spell.onset) and liquid.get((spell.symbol, spell.onset), False)
     ]
-    values = event_returns(
+    sample = event_sample(
         database, kept, holding=window, benchmark=benchmark, until=counted.split_on
     )
+    values = sample.values
+    # **捨てた件数を黙って捨てない**（2026-09-17）。
+    _report_event_disposition(sample, title="窓を当てた結果（IS のみ・件数）")
     if len(values) < 2:
         console.print(f"[red]値動きの取れたイベントが {len(values)} 件しかない。[/]")
         raise typer.Exit(code=1)
@@ -7177,7 +7258,9 @@ def margin_power(  # noqa: PLR0913 - §0 が固定した条件をすべて受け
     take = [-value - COST_ROUND_TRIP for value in values]
 
     estimate = estimate_power(take, lags=window)
-    target = required_t(HYPOTHESIS_BUDGET)
+    # **イベント型の管は別に測ってある**（`MEASURED_INFLATION_EVENT`）。
+    # 月次の 1.12 をここに当てるのは、測った根拠の無い厳しさになる。
+    target = calibrated_t(HYPOTHESIS_BUDGET, inflation=MEASURED_INFLATION_EVENT)
     mean = fmean(take)
     stderr = estimate.standard_error(len(take))
     # **片側95%。** 事前登録 §0 が片側で書いている。
@@ -7442,6 +7525,649 @@ def revision_census_upward(
     console.print(
         f"[dim]IS と OOS の境は {found.split_on}（原本が覆う期間の真ん中）。"
         "次は散らばりの実測（§0）で、そこで初めてリターンを触る。[/]"
+    )
+
+
+@app.command(name="passing")
+def passing(
+    into: str | None = typer.Option(None, "--write", help="Regenerate docs/PASSING.md."),
+) -> None:
+    """Show what a passing hypothesis would have to return, and the five rules.
+
+    **数字を書き写さない。** 線が変われば要るリターンも全部変わる——実際
+    2026-09-17 に 3.02 → 3.39 に動いた。**書き写した数字は、古いまま
+    もっともらしく見え続ける。** ここは測った散らばりから、そのつど計算する。
+
+    `--write` を付けると `docs/PASSING.md` を作り直す。**あの文書は生成物で
+    ある。** 手で直すと、どちらが本当か分からなくなる。
+    """
+    from stock_ai.backtest.multiplicity import (
+        HYPOTHESIS_BUDGET,
+        MEASURED_INFLATION,
+        calibrated_t,
+        required_t,
+    )
+    from stock_ai.backtest.passing import CONDITIONS, SHAPES
+
+    settings = get_settings()
+    configure_logging(settings.log_level)
+
+    target = calibrated_t(HYPOTHESIS_BUDGET)
+    lines = _passing_lines(target, SHAPES, CONDITIONS, HYPOTHESIS_BUDGET, MEASURED_INFLATION)
+
+    table = Table(title="合格に要るリターン（**いまの線から計算した値**）")
+    for column in ("設計", "1期あたりのSD", "合格に要る大きさ", "どこに書いてあるか"):
+        table.add_column(column, overflow="fold")
+    for shape in SHAPES:
+        annual = shape.required_annual(target)
+        need = f"年 {annual:.1%}" if annual else f"1{shape.unit} {shape.required(target):.2%}"
+        table.add_row(shape.name, f"{shape.sd:.2%}／{shape.unit}", f"[bold]{need}[/]", shape.source)
+    console.print(table)
+    console.print(
+        f"[dim]線は `t ≥ {target:.2f}`（予算 {HYPOTHESIS_BUDGET} 本の "
+        f"{required_t(HYPOTHESIS_BUDGET):.2f} に、対照で測った膨張 "
+        f"{MEASURED_INFLATION:.2f} を掛けた）。**指数に対して、手数料を引いた後で、"
+        f"{SHAPES[0].periods / 12:.1f}年つづける。**[/]"
+    )
+    console.print(
+        "[dim]イベント型は**年率に直さない**——資金をどれだけ張るかを決める必要が"
+        "あり、事前登録にその指定が無い。決めずに掛けると、**根拠の無い年率が出る。**[/]"
+    )
+
+    console.print()
+    for heading, body in CONDITIONS:
+        console.print(f"[bold]{heading}[/]")
+        console.print(f"  {body}")
+        console.print()
+
+    if into:
+        target_path = Path(into)
+        target_path.parent.mkdir(parents=True, exist_ok=True)
+        target_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        console.print(f"[green]{target_path} を書き直した。[/] **この文書は生成物である。**")
+
+
+def _passing_lines(
+    target: float,
+    shapes: object,
+    conditions: object,
+    budget: int,
+    inflation: float,
+) -> list[str]:
+    """Build docs/PASSING.md from the same values the console shows.
+
+    **2つ書かない。** コンソールと文書で別々に組み立てると、片方だけ直したときに
+    食い違う。
+    """
+    from stock_ai.backtest.multiplicity import required_t
+
+    lines = [
+        "# 合格の条件と、合格に要るリターン",
+        "",
+        "**この文書は生成物である。** 手で直さない——`uv run stock-ai passing --write "
+        "docs/PASSING.md` が作り直す。",
+        "",
+        "**数字を書き写していない。** 線が変われば要るリターンも全部変わる。実際、"
+        "2026-09-17 に 3.02 → 3.39 に動いた。**書き写した数字は、古いまま"
+        "もっともらしく見え続ける。**",
+        "",
+        "## 1. 合格に要るリターン",
+        "",
+        f"線は **`t ≥ {target:.2f}`**（予算 {budget} 本の {required_t(budget):.2f} に、"
+        f"陰性対照で測った膨張 {inflation:.2f} を掛けた）。",
+        "",
+        "| 設計 | 1期あたりのSD | **合格に要る大きさ** | どこに書いてあるか |",
+        "|---|---|---|---|",
+    ]
+    for shape in shapes:  # type: ignore[attr-defined]
+        annual = shape.required_annual(target)
+        need = f"年 {annual:.1%}" if annual else f"1{shape.unit} {shape.required(target):.2%}"
+        lines.append(
+            f"| {shape.name} | {shape.sd:.2%}／{shape.unit} | **{need}** | {shape.source} |"
+        )
+    lines += [
+        "",
+        "これは、",
+        "",
+        "- **指数に対して**（指数と同じだけ上がっても 0 である）",
+        "- **手数料を引いた後で**（往復 0.4% を引いた残り）",
+        f"- **{shapes[0].periods / 12:.1f}年つづけて**",  # type: ignore[index]
+        "",
+        "という意味である。",
+        "",
+        "**イベント型は年率に直していない。** 資金をどれだけ張るかを決める必要が"
+        "あり、事前登録にその指定が無い。**決めずに掛けると、根拠の無い年率が出る。**",
+        "",
+        "## 2. 合格の条件",
+        "",
+        "> **先に紙に書いたとおりに売買して、手数料を引いた後で、指数を"
+        f"年 {shapes[0].required_annual(target):.1%} 以上"  # type: ignore[index]
+        "（設計によってはもっと）上回り、それが続き、しかもまぐれでは説明できないこと。**",
+        "",
+    ]
+    for heading, body in conditions:  # type: ignore[attr-defined]
+        lines += [f"### {heading}", "", body, ""]
+    return lines
+
+
+@app.command(name="rehearsal-events")
+def rehearsal_events(  # noqa: PLR0913 - イベント型と同じ条件をすべて受け取る
+    benchmark: str = typer.Option(BENCHMARK, "--benchmark", help="Sets the calendar."),
+    holding: int = typer.Option(20, "--holding", help="Sessions held, as the event designs use."),
+    events: int = typer.Option(2_000, "--events", help="How many events to draw each run."),
+    seed: int = typer.Option(REHEARSAL_SEED, "--seed", help="Fixed, so the run reproduces."),
+    repeat: int = typer.Option(400, "--repeat", help="Draws, for calibration."),
+    start: str = typer.Option("2009-01-01", "--start", help="First day events may land on."),
+    end: str = typer.Option("2026-08-31", "--end", help="Last day events may land on."),
+) -> None:
+    """Calibrate the event-type pipe - the one #8 and #5 actually use.
+
+    **説ではない。陰性対照である。** 予算に数えない。
+
+    **月次の盤面で測った 1.12 は、ここには当てはまらないかもしれない。**
+    #8・#5 は系列がイベント日ごとで、Newey-West のラグも保有日数に取ってある。
+    **別の管には別の数字がありうる。**
+
+    乱数で選んだ日と銘柄を、`event_window.event_returns` に通す——**#8・#5 が
+    使っている関数そのもの**である。別の管を作ったら、確かめたことにならない。
+
+    **日の固まり方は本物に合わせていない。** 同じ日数・同じ件数で、中身だけを
+    乱数にしている。**本物より固まっていなければ、膨張はここより大きく出る。**
+    """
+    from stock_ai.backtest.event_window import EventSample, event_sample
+    from stock_ai.backtest.multiplicity import (
+        HYPOTHESIS_BUDGET,
+        MEASURED_INFLATION,
+        calibrated_t,
+    )
+    from stock_ai.backtest.power import estimate_power
+    from stock_ai.backtest.rehearsal import calibrate, placebo_events
+    from stock_ai.database.repository import list_securities
+
+    settings = get_settings()
+    configure_logging(settings.log_level)
+
+    begin, finish = _parse_date(start), _parse_date(end)
+    if begin is None or finish is None or begin >= finish:
+        raise typer.BadParameter("--start は --end より前のこと。")
+    if repeat < 1 or events < 2:
+        raise typer.BadParameter("--repeat は 1 以上、--events は 2 以上。")
+
+    console.print("[bold yellow]これは説ではない。陰性対照である。[/]")
+    console.print(
+        "[dim]#8・#5 が使っているイベント窓の関数そのものに通す。"
+        "**月次で測った膨張が、ここにも当てはまるとは限らない。**[/]"
+    )
+    console.print()
+
+    database = Database()
+    database.create_all()
+    with database.session() as session:
+        price_repo = PriceRepository(session)
+        bench = price_repo.get_raw_prices(benchmark)
+        if bench.empty:
+            console.print(f"[red]ベンチマーク {benchmark!r} の価格が無い。[/]")
+            raise typer.Exit(code=1)
+        days = [stamp.date() for stamp in bench.index if begin <= stamp.date() <= finish]
+        symbols = [sym for sym, market in list_securities(session) if market == "JP"]
+
+    if len(days) < holding + 2 or not symbols:
+        console.print(f"[red]日が {len(days)}、銘柄が {len(symbols)} では測れない。[/]")
+        raise typer.Exit(code=1)
+
+    console.print(
+        f"[dim]{days[0]} 〜 {days[-1]}（{len(days):,} 営業日）、{len(symbols):,} 銘柄から"
+        f"毎回 {events:,} 件を引く。窓は {holding} 営業日。種 {seed}。[/]"
+    )
+
+    scores: list[float] = []
+    # **400回ぶんの処分を足し上げる。** 1回ぶんでは件数が小さすぎて、
+    # 上場廃止で落ちる割合が読めない。
+    tally: dict[str, object] = {"values": [], "truncated": [], "drawn": 0}
+    tally.update(dict.fromkeys(_DISPOSITIONS, 0))
+    legs: list[tuple[float, float]] = []
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        BarColumn(),
+        TaskProgressColumn(),
+        TimeRemainingColumn(),
+        console=console,
+    ) as progress:
+        task = progress.add_task("種を変えて回す", total=repeat)
+        for index in range(repeat):
+            progress.update(task, completed=index + 1)
+            drawn = placebo_events(days, symbols, events, seed=seed + index)
+            sample = event_sample(database, drawn, holding=holding, benchmark=benchmark)
+            tally["drawn"] += sample.drawn
+            for key in _DISPOSITIONS:
+                tally[key] += getattr(sample, key)
+            tally["values"].extend(sample.values)
+            tally["truncated"].extend(sample.truncated)
+            legs.append((sample.stock_leg, sample.bench_leg))
+            values = sample.values
+            if len(values) < 2:
+                continue
+            estimate = estimate_power(values, lags=holding)
+            stderr = estimate.standard_error(len(values))
+            if stderr > 0:
+                scores.append(fmean(values) / stderr)
+
+    target = calibrated_t(HYPOTHESIS_BUDGET)
+    found = calibrate(scores, target)
+    if not found.runs:
+        console.print("[red]1回も測れなかった。[/]")
+        raise typer.Exit(code=1)
+
+    table = Table(title=f"イベント型の管での `t` の形（{found.runs} 回）")
+    for column in ("項目", "実測", "帰無なら"):
+        table.add_column(column, overflow="fold")
+    table.add_row("t の SD", f"[bold]{found.spread:.2f}[/]", "1.00")
+    table.add_row("t の平均", f"{found.mean:+.2f}", "0.00")
+    table.add_row("|t| ≥ 1.96", f"{found.plain_share:.1%}", "5.0%")
+    table.add_row("いちばん大きい t", f"{found.worst:+.2f}", "—")
+    console.print(table)
+
+    console.print(
+        f"[dim]月次の盤面で測った膨張は {MEASURED_INFLATION:.2f}、**ここは "
+        f"{found.spread:.2f}。** 線は {target:.2f}（**1.0 を下回らせない**——補正は"
+        "足りない分を足すためのもので、割り引くためのものではない）。[/]"
+    )
+    for line in found.warnings():
+        console.print(f"[yellow]{line}[/]")
+
+    # **散らばりではなく、中心のずれを見る。**
+    #
+    # 最初は SD しか警告にしていなかった。**`t` の平均が +0.49 出ているのに、
+    # 表の1行に出しただけで素通りさせた**（2026-09-17）。そして「イベント型には
+    # 別の数字を当てるべき」と、**線を緩める向き**に促した。
+    #
+    # **散らばりが素直でも、中心がずれていれば判定は歪む。**
+    total = EventSample(
+        stock_leg=fmean([leg for leg, _mark in legs]) if legs else float("nan"),
+        bench_leg=fmean([mark for _leg, mark in legs]) if legs else float("nan"),
+        **tally,  # type: ignore[arg-type]
+    )
+    _report_event_disposition(total, title=f"窓が捨てた件数（{found.runs} 回の合計）")
+
+    # **+0.49 の出どころを、2つに分けて読む。**
+    #
+    # (A) 引く相手が時価総額加重の指数で、引くほうは一様抽選（実質等加重）。
+    #     小型が勝っていれば、情報ゼロでも平均はプラスになる。
+    # (B) 上場廃止で窓が切れたイベントが落ちる。落ちるのは悪く終わった側。
+    #
+    # **(B) は測れる**——落ちた割合と、落ちた側を足の在るところまでで測った
+    # 超過との差である。残りは (A) に当たる。
+    lifted = total.survivorship_bias()
+    if lifted is not None:
+        gap = (total.stock_leg - total.bench_leg) - lifted
+        console.print(
+            f"[dim]差 {total.stock_leg - total.bench_leg:+.2%} のうち、"
+            f"上場廃止で落ちた分の押し上げが **{lifted:+.2%}**。"
+            f"残る **{gap:+.2%}** は、引く相手が時価総額加重であることに当たる。[/]"
+        )
+    else:
+        console.print(
+            "[yellow]**落ちた側の超過を1件も測れていない。** "
+            "上場廃止の押し上げが測れないので、差の出どころを分けられない。[/]"
+        )
+
+    if abs(found.mean) > 0.20:
+        console.print(
+            f"[red]**帰無の下で `t` の平均が {found.mean:+.2f} ある**（0.00 のはず）。[/] "
+            "乱数で選んだ銘柄と日を持つだけで、指数に系統的に勝っている。"
+            "**散らばりではなく中心のずれで、線を動かしても直らない。**"
+        )
+        console.print(
+            "[dim]いちばん疑わしいのは、窓の途中で価格が途切れるイベントが"
+            "**entry か exit を取れずに落ちる**ことである。**落ちるのは悪く終わった"
+            "側に偏る。** 同じフィルタが #5・#8 にも掛かっている。[/]"
+        )
+
+
+@app.command(name="rehearsal")
+def rehearsal(  # noqa: PLR0913 - 本物と同じ条件をすべて受け取る
+    is_start: str = typer.Option("2009-01-01", "--is-start", help="First day of the IS window."),
+    is_end: str = typer.Option("2017-12-31", "--is-end", help="Last day of the IS window."),
+    oos_end: str = typer.Option("2026-08-31", "--oos-end", help="Last day of the OOS window."),
+    seed: int = typer.Option(REHEARSAL_SEED, "--seed", help="Fixed, so the run reproduces."),
+    repeat: int = typer.Option(1, "--repeat", help="Draw this many signals, for calibration."),
+    window: int = typer.Option(DEFAULT_WINDOW, "--window", help="Volatility window in sessions."),
+    min_symbols: int = typer.Option(MIN_SYMBOLS_PER_MONTH, "--min-symbols", help="Per month."),
+    lags: int = typer.Option(LOWVOL_LAGS, "--lags", help="Newey-West lags, in months."),
+) -> None:
+    """Run a random signal through the whole pipe - the negative control.
+
+    **説ではない。** 乱数の signal は世界について何も主張していないので、
+    **多重検定の予算に入らない。** `§0` も通さない——§0 は「一度きりの判定を
+    弱い設計に使わない」ための関門で、**判定を消費しないものには守るものが無い。**
+
+    **signal だけを乱数にする。** 月も universe もリターンも本物のままである。
+    全部を乱数にすると、重なりも自己相関も消えて、**いちばん確かめたい部分が
+    消える。**
+
+    問いは1つ。**何も無いときに、この仕組みは合格を出すか。** 出したら仕組みが
+    壊れている。
+
+    `--repeat` を付けると、種を変えて回して **`t` の分布**を出す。帰無なら SD は
+    1.0 のはずで、**1.15 なら補正は足りていない。** 1回では分からない——
+    `t ≥ 3.02` を越える確率は 0.125% で、400回の期待値が 0.5 回だからである。
+    """
+    from stock_ai.backtest.cross_section import beta_to_benchmark, build_estimators
+    from stock_ai.backtest.factor_panel import build_panel
+    from stock_ai.backtest.multiplicity import (
+        HYPOTHESIS_BUDGET,
+        MEASURED_INFLATION,
+        calibrated_t,
+        required_t,
+    )
+    from stock_ai.backtest.power import estimate_power
+    from stock_ai.backtest.rehearsal import calibrate, oos_seed, placebo_sections
+
+    settings = get_settings()
+    configure_logging(settings.log_level)
+
+    begin, cut, finish = _parse_date(is_start), _parse_date(is_end), _parse_date(oos_end)
+    if begin is None or cut is None or finish is None or not begin < cut < finish:
+        raise typer.BadParameter("--is-start < --is-end < --oos-end のこと。")
+    if repeat < 1:
+        raise typer.BadParameter("--repeat must be at least 1.")
+
+    target = calibrated_t(HYPOTHESIS_BUDGET)
+    console.print("[bold yellow]これは説ではない。陰性対照である。[/]")
+    console.print(
+        "[dim]乱数の signal を、**本物と同じ管**に通す。別の管を作ったら、"
+        "確かめたことにならない。**予算には数えない。**[/]"
+    )
+    console.print()
+
+    database = Database()
+    database.create_all()
+
+    def panel_for(start: dt.date, end: dt.date):
+        return build_panel(
+            database,
+            factors=("低ボラ",),
+            start=start,
+            end=end,
+            window=window,
+            min_symbols=min_symbols,
+        )
+
+    try:
+        inside = panel_for(begin, cut)
+        outside = panel_for(cut + dt.timedelta(days=1), finish)
+    except ValueError as error:
+        console.print(f"[red]盤面を作れなかった: {error}[/]")
+        raise typer.Exit(code=1) from error
+
+    def score(panel, draw: int) -> float:
+        """Score one placebo draw through the same path a real factor takes."""
+        built = build_estimators(
+            placebo_sections(panel.sections, seed=draw),
+            panel.benchmark,
+            higher_is_better=True,
+        )
+        if built.months < 2:
+            return float("nan")
+        beta = beta_to_benchmark(built.quantile_spread, built.benchmark)
+        values = built.alpha(built.quantile_spread, beta)
+        estimate = estimate_power(values, lags=lags)
+        stderr = estimate.standard_error(len(values))
+        return fmean(values) / stderr if stderr > 0 else float("nan")
+
+    console.print(
+        f"[dim]IS {begin} 〜 {cut}（{len(inside.months)}ヶ月）、"
+        f"OOS {cut} 〜 {finish}（{len(outside.months)}ヶ月）。"
+        f"種は IS {seed} / OOS {oos_seed(seed)}（**同じ流れを使わない**）。[/]"
+    )
+
+    # --- 1回だけ、端から端まで ----------------------------------------------
+    # **同じ種を両方に使わない。** 乱数の流れが共有されると、2つが独立な引きに
+    # ならない。最初はそうしていて、IS +1.24・OOS +1.29 が揃って見えた——
+    # **偶然か共有のせいかを区別できなかった**（2026-09-17）。
+    inside_t = score(inside, seed)
+    outside_t = score(outside, oos_seed(seed))
+
+    table = Table(title="陰性対照を端から端まで（**説ではない**）")
+    for column in ("段", "何をしたか", "結果"):
+        table.add_column(column, overflow="fold")
+    table.add_row("IS", "乱数 signal で分位を組み、α の t を出す", f"t {inside_t:+.2f}")
+    table.add_row("封印", "**§0 は通さない**（判定を消費しないので守るものが無い）", "—")
+    table.add_row("OOS", "**一度だけ**回す", f"[bold]t {outside_t:+.2f}[/]")
+    table.add_row(
+        "判定",
+        f"合格は `t ≥ {target:.2f}`"
+        f"（素の線 {required_t(HYPOTHESIS_BUDGET):.2f} × 測った膨張 {MEASURED_INFLATION:.2f}）",
+        "",
+    )
+    console.print(table)
+
+    passed = outside_t >= target
+    if passed:
+        console.print(
+            f"[bold red]合格が出た。[/] **仕組みが壊れている。** "
+            f"乱数の signal に `t {outside_t:+.2f}` が出るのは、"
+            "起きるとしても 0.125% のはずである。**種を変えて確かめること。**"
+        )
+    else:
+        console.print(
+            "[green]不合格。[/] **何も無いところに合格は出なかった。** "
+            "これが 4本の「封印せず」より強い保証になる——"
+            "**関門ではなく、判定そのものを通した結果である。**"
+        )
+
+    if repeat < 2:
+        console.print()
+        console.print(
+            "[dim]**1回では校正できない。** `t ≥ 3.02` を越える確率は 0.125% で、"
+            "400回の期待値が 0.5 回である。`-Repeat 400` で `t` の分布を見ること。[/]"
+        )
+        return
+
+    # --- 何度も回して、t の形を見る ------------------------------------------
+    scores: list[float] = []
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        BarColumn(),
+        TaskProgressColumn(),
+        TimeRemainingColumn(),
+        console=console,
+    ) as progress:
+        task = progress.add_task("種を変えて回す", total=repeat)
+        for index in range(repeat):
+            progress.update(task, completed=index + 1)
+            scores.append(score(outside, oos_seed(seed) + index))
+
+    found = calibrate(scores, target)
+    shape = Table(title=f"帰無の下での `t` の形（{found.runs} 回）")
+    for column in ("項目", "実測", "帰無なら"):
+        shape.add_column(column, overflow="fold")
+    shape.add_row("t の SD", f"[bold]{found.spread:.2f}[/]", "1.00")
+    shape.add_row("t の平均", f"{found.mean:+.2f}", "0.00")
+    shape.add_row("|t| ≥ 1.96", f"{found.plain_share:.1%}", "5.0%")
+    shape.add_row(f"|t| ≥ {target:.2f}", f"{found.strict_share:.2%}", "0.25%")
+    shape.add_row("いちばん大きい t", f"{found.worst:+.2f}", "—")
+    console.print(shape)
+
+    console.print(
+        f"[dim]実測の散らばりの下では、`t ≥ {target:.2f}` は本当は "
+        f"**両側 {found.implied_level(target):.2%}** に当たる（設計は 0.25%）。[/]"
+    )
+    for line in found.warnings():
+        console.print(f"[yellow]{line}[/]")
+    if found.calibrated and not found.warnings():
+        console.print(
+            "[green]`t` は素直に効いている。[/] **判定の線は、見かけどおりの意味を持つ。**"
+        )
+
+
+@app.command(name="value-reconcile")
+def value_reconcile(  # noqa: PLR0913 - 揃える条件をすべて受け取る
+    rosters: str = typer.Option(
+        str(DEFAULT_SNAPSHOT_DIR), "--rosters", help="Where the dated rosters live."
+    ),
+    valuation: str | None = typer.Option(None, "--valuation", help="Month-end PBR file."),
+    is_start: str = typer.Option("2009-01-01", "--is-start", help="First day of the IS window."),
+    is_end: str = typer.Option("2017-12-31", "--is-end", help="Last day of the IS window."),
+    window: int = typer.Option(DEFAULT_WINDOW, "--window", help="Volatility window in sessions."),
+    min_symbols: int = typer.Option(MIN_SYMBOLS_PER_MONTH, "--min-symbols", help="Per month."),
+    lags: int = typer.Option(3, "--lags", help="Newey-West lags, in months."),
+) -> None:
+    """Find out why the IS value spread reads t=2.26 one way and t=0.76 another.
+
+    **判定ではない。** 同じ IS（2009-01〜2017-12）のバリューを2度測って、
+    `t` が **2.26**（#9、`antivalue-estimate`）と **+0.76**（#11、
+    `composite-gate` の脚）に割れた。**universe と推定量が違うだけである。**
+
+    **2つの推定が3倍食い違っているとき、信じるべきはその不安定さのほうで、
+    高いほうの数字ではない。** どちらが効いているのかを、1つずつ動かして出す。
+
+    **最初に両端を再現する。** 再現できなければそこで止まる——揃っていない2つを
+    比べても、差は「推定量の差」ではなく「フィルタの差」になる。
+
+    **判定を消費しない。** 見るのは IS だけで、効果ではなく**どこで数字が動くか**
+    を測っている。
+    """
+    from stock_ai.backtest.antivalue import build_series as antivalue_series
+    from stock_ai.backtest.cross_section import beta_to_benchmark, build_estimators
+    from stock_ai.backtest.factor_panel import build_panel
+    from stock_ai.backtest.power import estimate_power
+    from stock_ai.data.valuation_monthly import DEFAULT_PATH
+    from stock_ai.data.valuation_monthly import read as read_valuation
+
+    settings = get_settings()
+    configure_logging(settings.log_level)
+
+    begin, cut = _parse_date(is_start), _parse_date(is_end)
+    if begin is None or cut is None or begin >= cut:
+        raise typer.BadParameter("--is-start/--is-end must be YYYY-MM-DD and in order.")
+
+    frame = read_valuation(Path(valuation) if valuation else DEFAULT_PATH)
+    if frame.empty:
+        console.print("[red]月末の PBR が無い。[/]")
+        raise typer.Exit(code=1)
+    snapshots = membership(Path(rosters))
+    if not snapshots:
+        console.print("[red]名簿が無い。[/] **渡さないと生存バイアスが入る。**")
+        raise typer.Exit(code=1)
+
+    console.print("[bold yellow]これは判定ではない。[/] 食い違いの出どころを探している。")
+    console.print(
+        "[dim]同じ IS を2度測って t が 2.26 と 0.76 に割れた。"
+        "**信じるべきはその不安定さのほうである。**[/]"
+    )
+    console.print()
+
+    database = Database()
+    database.create_all()
+
+    def score(values: list[float]) -> float:
+        """Newey-West t for a monthly series - the sign is left as given."""
+        if len(values) < 2:
+            return float("nan")
+        estimate = estimate_power(values, lags=lags)
+        stderr = estimate.standard_error(len(values))
+        return fmean(values) / stderr if stderr > 0 else float("nan")
+
+    # --- #9 の経路 -----------------------------------------------------------
+    #
+    # **向きはバリュー（低PBR を買う）にそろえる。** `spread()` は #9 の格言の
+    # 向き（高PBR − 低PBR）なので、符号を反転する。**反転はここ1箇所。**
+    series = antivalue_series(database, frame, start=begin, end=cut, snapshots=snapshots)
+    if not series.months:
+        console.print("[red]#9 の経路で月が1つも作れなかった。[/]")
+        raise typer.Exit(code=1)
+    cost = series.cost_per_month()
+    beta = series.beta_to_benchmark()
+    nine_raw = [-value for value in series.spread()]
+    nine_alpha = [-value for value in series.alpha(beta)]
+
+    # --- 盤面の経路 ----------------------------------------------------------
+    panels: dict[str, object] = {}
+    for label, factors in (
+        ("盤面（低ボラ＋バリュー）", ("低ボラ", "バリュー")),
+        ("盤面（バリューだけ）", ("バリュー",)),
+    ):
+        try:
+            panels[label] = build_panel(
+                database,
+                factors=factors,
+                start=begin,
+                end=cut,
+                window=window,
+                min_symbols=min_symbols,
+                valuation=frame,
+            )
+        except ValueError as error:
+            console.print(f"[yellow]{label}: 作れなかった（{error}）[/]")
+
+    rows: list[tuple[str, int, float, float]] = []
+    rows.append(
+        (
+            "#9 の universe（PBR ファイル＋名簿）",
+            len(series.months),
+            score(nine_raw),
+            score(nine_alpha),
+        )
+    )
+    for label, panel in panels.items():
+        built = build_estimators(
+            panel.column("バリュー"),
+            panel.benchmark,
+            higher_is_better=True,  # type: ignore[attr-defined]
+        )
+        if built.months < 2:
+            continue
+        panel_beta = beta_to_benchmark(built.quantile_spread, built.benchmark)
+        rows.append(
+            (
+                label,
+                built.months,
+                score(built.quantile_spread),
+                score(built.alpha(built.quantile_spread, panel_beta)),
+            )
+        )
+
+    # --- 検算 ----------------------------------------------------------------
+    #
+    # **揃っていない2つを比べても、差はフィルタの差になる。** 先に両端を出す。
+    console.print("[bold]検算：両端を再現できるか。[/]")
+    nine_with_cost = score([value - cost for value in nine_raw])
+    # **比べる相手を間違えない。** #9 の出力から導いた +2.26 は**格言の向き**
+    # （高PBR − 低PBR）の t である。バリュー向きに反転すると費用が逆向きの
+    # 引き算になり、平均だけ 2×cost ぶん小さくなる（SD は動かない）。
+    # **期待値は +2.03 である**（2026-09-17 に書き間違えていた）。
+    console.print(
+        f"[dim]#9（バリュー向き・費用引き後）: t {nine_with_cost:+.2f}"
+        "（**期待値 +2.03**。#9 の出力の +2.26 は格言の向きで、"
+        "反転すると費用の引き算も向きが変わる）[/]"
+    )
+    for label, _months, _raw, alpha_t in rows:
+        if label.startswith("盤面（低ボラ"):
+            console.print(
+                f"[dim]#11（α・費用引き前）: t {alpha_t:+.2f}（**#11 の出力は +0.76**）[/]"
+            )
+    console.print()
+
+    table = Table(title="バリューの t が、どこで動くか（IS のみ。**判定ではない**）")
+    for column in ("universe", "月数", "生のスプレッド", "α（β を引く）"):
+        table.add_column(column, overflow="fold")
+    for label, months, raw_t, alpha_t in rows:
+        table.add_row(label, f"{months}", f"{raw_t:+.2f}", f"{alpha_t:+.2f}")
+    console.print(table)
+    console.print(
+        f"[dim]表は**すべて費用引き前**にそろえてある（費用は月 {cost:.3%}、"
+        f"年 {cost * 12:.2%}）。上の検算だけ、それぞれ元の流儀で出している。"
+        f"β は #9 の経路で {beta:+.2f}。[/]"
+    )
+
+    console.print()
+    console.print(
+        "[dim]**横に動けば推定量が、縦に動けば universe が効いている。** "
+        "どちらでも大きく動くなら、**効果は設計の選び方に対して頑健でない**——"
+        "それ自体が効果に対する反証寄りの情報である。[/]"
     )
 
 
@@ -7820,7 +8546,10 @@ def composite_gate(  # noqa: PLR0913 - 複合型のルールが固定する条�
     )
     from stock_ai.backtest.cross_section import beta_to_benchmark, build_estimators
     from stock_ai.backtest.factor_panel import NEEDS_VALUATION, build_panel
-    from stock_ai.backtest.multiplicity import HYPOTHESIS_BUDGET, required_t
+    from stock_ai.backtest.multiplicity import (
+        HYPOTHESIS_BUDGET,
+        calibrated_t,
+    )
     from stock_ai.backtest.power import estimate_power, gate
     from stock_ai.data.valuation_monthly import DEFAULT_PATH
     from stock_ai.data.valuation_monthly import read as read_valuation
@@ -7989,7 +8718,7 @@ def composite_gate(  # noqa: PLR0913 - 複合型のルールが固定する条�
     beta = beta_to_benchmark(built.quantile_spread, built.benchmark)
     net = built.alpha(built.quantile_spread, beta)
 
-    target = required_t(HYPOTHESIS_BUDGET)
+    target = calibrated_t(HYPOTHESIS_BUDGET)
     estimate = estimate_power(net, lags=lags)
     detectable = estimate.detectable(oos_periods, target_t=target)
     mean = fmean(net)
@@ -8070,7 +8799,7 @@ def hypothesis_report(
 
     **空欄を埋めない。** 出典が「未記載」ならレポートにもそう出る。
     """
-    from stock_ai.hypotheses import read_registry, write_reports
+    from stock_ai.hypotheses import consumed, read_registry, write_reports
 
     settings = get_settings()
     configure_logging(settings.log_level)
@@ -8105,9 +8834,14 @@ def hypothesis_report(
         )
     console.print(table)
 
-    judged = [hypothesis for hypothesis in found if hypothesis.judged]
+    # **陰性対照は予算に数えない。** 世界について何も主張していないので、
+    # 「当たりを引こうとした回数」に入らない——補正が数えたいのはそれである。
+    counted = [hypothesis for hypothesis in found if hypothesis.counted]
+    judged = consumed(found)
+    controls = len(found) - len(counted)
+    extra = f"（ほかに陰性対照が {controls} 本。**予算に数えない**）" if controls else ""
     console.print(
-        f"判定を消費したのは [bold]{len(judged)}[/] 本、登録は {len(found)} 本。"
+        f"判定を消費したのは [bold]{len(judged)}[/] 本、登録は {len(counted)} 本{extra}。"
         "[dim] 多重検定はこの本数で考える（`power-budget`）。[/]"
     )
     blank = [hypothesis for hypothesis in found if not hypothesis.source_recorded]
