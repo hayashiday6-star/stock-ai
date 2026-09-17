@@ -7459,6 +7459,128 @@ def revision_census_upward(
     )
 
 
+@app.command(name="passing")
+def passing(
+    into: str | None = typer.Option(None, "--write", help="Regenerate docs/PASSING.md."),
+) -> None:
+    """Show what a passing hypothesis would have to return, and the five rules.
+
+    **数字を書き写さない。** 線が変われば要るリターンも全部変わる——実際
+    2026-09-17 に 3.02 → 3.39 に動いた。**書き写した数字は、古いまま
+    もっともらしく見え続ける。** ここは測った散らばりから、そのつど計算する。
+
+    `--write` を付けると `docs/PASSING.md` を作り直す。**あの文書は生成物で
+    ある。** 手で直すと、どちらが本当か分からなくなる。
+    """
+    from stock_ai.backtest.multiplicity import (
+        HYPOTHESIS_BUDGET,
+        MEASURED_INFLATION,
+        calibrated_t,
+        required_t,
+    )
+    from stock_ai.backtest.passing import CONDITIONS, SHAPES
+
+    settings = get_settings()
+    configure_logging(settings.log_level)
+
+    target = calibrated_t(HYPOTHESIS_BUDGET)
+    lines = _passing_lines(target, SHAPES, CONDITIONS, HYPOTHESIS_BUDGET, MEASURED_INFLATION)
+
+    table = Table(title="合格に要るリターン（**いまの線から計算した値**）")
+    for column in ("設計", "1期あたりのSD", "合格に要る大きさ", "どこに書いてあるか"):
+        table.add_column(column, overflow="fold")
+    for shape in SHAPES:
+        annual = shape.required_annual(target)
+        need = f"年 {annual:.1%}" if annual else f"1{shape.unit} {shape.required(target):.2%}"
+        table.add_row(shape.name, f"{shape.sd:.2%}／{shape.unit}", f"[bold]{need}[/]", shape.source)
+    console.print(table)
+    console.print(
+        f"[dim]線は `t ≥ {target:.2f}`（予算 {HYPOTHESIS_BUDGET} 本の "
+        f"{required_t(HYPOTHESIS_BUDGET):.2f} に、対照で測った膨張 "
+        f"{MEASURED_INFLATION:.2f} を掛けた）。**指数に対して、手数料を引いた後で、"
+        f"{SHAPES[0].periods / 12:.1f}年つづける。**[/]"
+    )
+    console.print(
+        "[dim]イベント型は**年率に直さない**——資金をどれだけ張るかを決める必要が"
+        "あり、事前登録にその指定が無い。決めずに掛けると、**根拠の無い年率が出る。**[/]"
+    )
+
+    console.print()
+    for heading, body in CONDITIONS:
+        console.print(f"[bold]{heading}[/]")
+        console.print(f"  {body}")
+        console.print()
+
+    if into:
+        target_path = Path(into)
+        target_path.parent.mkdir(parents=True, exist_ok=True)
+        target_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        console.print(f"[green]{target_path} を書き直した。[/] **この文書は生成物である。**")
+
+
+def _passing_lines(
+    target: float,
+    shapes: object,
+    conditions: object,
+    budget: int,
+    inflation: float,
+) -> list[str]:
+    """Build docs/PASSING.md from the same values the console shows.
+
+    **2つ書かない。** コンソールと文書で別々に組み立てると、片方だけ直したときに
+    食い違う。
+    """
+    from stock_ai.backtest.multiplicity import required_t
+
+    lines = [
+        "# 合格の条件と、合格に要るリターン",
+        "",
+        "**この文書は生成物である。** 手で直さない——`uv run stock-ai passing --write "
+        "docs/PASSING.md` が作り直す。",
+        "",
+        "**数字を書き写していない。** 線が変われば要るリターンも全部変わる。実際、"
+        "2026-09-17 に 3.02 → 3.39 に動いた。**書き写した数字は、古いまま"
+        "もっともらしく見え続ける。**",
+        "",
+        "## 1. 合格に要るリターン",
+        "",
+        f"線は **`t ≥ {target:.2f}`**（予算 {budget} 本の {required_t(budget):.2f} に、"
+        f"陰性対照で測った膨張 {inflation:.2f} を掛けた）。",
+        "",
+        "| 設計 | 1期あたりのSD | **合格に要る大きさ** | どこに書いてあるか |",
+        "|---|---|---|---|",
+    ]
+    for shape in shapes:  # type: ignore[attr-defined]
+        annual = shape.required_annual(target)
+        need = f"年 {annual:.1%}" if annual else f"1{shape.unit} {shape.required(target):.2%}"
+        lines.append(
+            f"| {shape.name} | {shape.sd:.2%}／{shape.unit} | **{need}** | {shape.source} |"
+        )
+    lines += [
+        "",
+        "これは、",
+        "",
+        "- **指数に対して**（指数と同じだけ上がっても 0 である）",
+        "- **手数料を引いた後で**（往復 0.4% を引いた残り）",
+        f"- **{shapes[0].periods / 12:.1f}年つづけて**",  # type: ignore[index]
+        "",
+        "という意味である。",
+        "",
+        "**イベント型は年率に直していない。** 資金をどれだけ張るかを決める必要が"
+        "あり、事前登録にその指定が無い。**決めずに掛けると、根拠の無い年率が出る。**",
+        "",
+        "## 2. 合格の条件",
+        "",
+        "> **先に紙に書いたとおりに売買して、手数料を引いた後で、指数を"
+        f"年 {shapes[0].required_annual(target):.1%} 以上"  # type: ignore[index]
+        "（設計によってはもっと）上回り、それが続き、しかもまぐれでは説明できないこと。**",
+        "",
+    ]
+    for heading, body in conditions:  # type: ignore[attr-defined]
+        lines += [f"### {heading}", "", body, ""]
+    return lines
+
+
 @app.command(name="rehearsal-events")
 def rehearsal_events(  # noqa: PLR0913 - イベント型と同じ条件をすべて受け取る
     benchmark: str = typer.Option(BENCHMARK, "--benchmark", help="Sets the calendar."),
