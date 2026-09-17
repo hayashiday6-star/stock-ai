@@ -259,8 +259,8 @@ class TestTheEventTypeControlUsesTheSamePipe:
 
         body = inspect.getsource(cli.rehearsal_events)
 
-        assert "from stock_ai.backtest.event_window import event_returns" in body
-        assert "event_returns(database, drawn" in body
+        assert "from stock_ai.backtest.event_window import EventSample, event_sample" in body
+        assert "event_sample(database, drawn" in body
 
     def test_it_says_so_when_the_two_pipes_disagree(self) -> None:
         import inspect

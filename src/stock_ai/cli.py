@@ -2130,7 +2130,7 @@ def revision_power(  # noqa: PLR0913 - §0 が固定した条件をすべて受�
     窓は **20営業日**（§3・§4）。**#8 のように機構から出る説ではない**ので、
     #3・#6 と揃えてある。**リターンを見て決めていない。**
     """
-    from stock_ai.backtest.event_window import event_returns
+    from stock_ai.backtest.event_window import event_sample
     from stock_ai.backtest.multiplicity import (
         HYPOTHESIS_BUDGET,
         MEASURED_INFLATION_EVENT,
@@ -2232,9 +2232,13 @@ def revision_power(  # noqa: PLR0913 - §0 が固定した条件をすべて受�
         for event in events
         if not event.on_statement_day and liquid_on(event.symbol, event.disclosed_on)
     ]
-    values = event_returns(
+    sample = event_sample(
         database, kept, holding=holding, benchmark=benchmark, until=counted.split_on
     )
+    values = sample.values
+    # **捨てた件数を黙って捨てない。** 引いた件数のうち何件が、どの理由で
+    # 落ちたのかを出す。上場廃止で落ちる分は**悪く終わった側に偏る。**
+    _report_event_disposition(sample, title="窓を当てた結果（IS のみ・件数）")
     if len(values) < 2:
         console.print(f"[red]値動きの取れたイベント日が {len(values)} しかない。[/]")
         raise typer.Exit(code=1)
@@ -6911,6 +6915,61 @@ def _report_daily_spread(series: object) -> None:
     )
 
 
+#: 窓がイベントを処分する先。**足すと引いた件数になる。**
+#:
+#: 数える側と出す側の両方がここを見る。**片方に足してもう片方に足し忘れると、
+#: 合計が合わなくなって `EventSample` が落ちる。**
+_DISPOSITIONS = (
+    "used",
+    "no_prices",
+    "ended_early",
+    "too_recent",
+    "bad_leg",
+    "no_benchmark",
+)
+
+#: 処分の日本語。**表の並びは `_DISPOSITIONS` と同じ順。**
+_DISPOSITION_LABELS = {
+    "used": "使えた",
+    "no_prices": "価格が無い",
+    "ended_early": "上場廃止・停止で窓が切れた",
+    "too_recent": "期間の端で窓が足りない",
+    "bad_leg": "入る値か降りる値が欠測",
+    "no_benchmark": "指数に対応する日が無い",
+}
+
+
+def _report_event_disposition(sample: object, *, title: str) -> None:
+    """Print what the event window kept and what it threw away.
+
+    **捨てた件数を黙って捨てない**（2026-09-17）。#5・#8・陰性対照が同じ窓を
+    使うので、**出す形も1つだけ置く。** 呼ぶ側で書き直すと、片方だけ直る。
+
+    Args:
+        sample: :class:`~stock_ai.backtest.event_window.EventSample`。
+        title: 表の見出し。
+    """
+    table = Table(title=title)
+    for column in ("処分", "件数", "割合"):
+        table.add_column(column, overflow="fold")
+    drawn = sample.drawn  # type: ignore[attr-defined]
+    for key in _DISPOSITIONS:
+        count = getattr(sample, key)
+        share = count / drawn if drawn else 0.0
+        table.add_row(_DISPOSITION_LABELS[key], f"{count:,}", f"{share:.1%}")
+    table.add_row("[bold]引いた合計[/]", f"[bold]{drawn:,}[/]", "100.0%")
+    console.print(table)
+
+    # **銘柄側と指数側を別に出す。** 超過だけを見ていると、「銘柄が上がった」
+    # のか「引く相手が上がらなかった」のかが分からない。
+    console.print(
+        f"[dim]銘柄側 {sample.stock_leg:+.2%}、指数側 {sample.bench_leg:+.2%}"  # type: ignore[attr-defined]
+        f"、差 {sample.stock_leg - sample.bench_leg:+.2%}（1日あたり、窓ぶん）。[/]"  # type: ignore[attr-defined]
+    )
+    for line in sample.warnings():  # type: ignore[attr-defined]
+        console.print(f"[yellow]{line}[/]")
+
+
 def _oos_session_count(database: Database, benchmark: str, holding: int) -> int:
     """Count the sessions the OOS test will have. Counts days, never values."""
     with database.session() as session:
@@ -7097,7 +7156,8 @@ def margin_power(  # noqa: PLR0913 - §0 が固定した条件をすべて受け
     平均超過リターンの片側95%下限が **1.2%** を下回ったら封印しない」。
     往復費用 0.4% の3倍である。**下回ればここで終わる。線は動かさない。**
     """
-    from stock_ai.backtest.margin_census import census, event_returns, lending_index, spells
+    from stock_ai.backtest.event_window import event_sample
+    from stock_ai.backtest.margin_census import census, lending_index, spells
     from stock_ai.backtest.multiplicity import (
         HYPOTHESIS_BUDGET,
         MEASURED_INFLATION_EVENT,
@@ -7183,9 +7243,12 @@ def margin_power(  # noqa: PLR0913 - §0 が固定した条件をすべて受け
         for spell in spells(alerts)
         if lending(spell.symbol, spell.onset) and liquid.get((spell.symbol, spell.onset), False)
     ]
-    values = event_returns(
+    sample = event_sample(
         database, kept, holding=window, benchmark=benchmark, until=counted.split_on
     )
+    values = sample.values
+    # **捨てた件数を黙って捨てない**（2026-09-17）。
+    _report_event_disposition(sample, title="窓を当てた結果（IS のみ・件数）")
     if len(values) < 2:
         console.print(f"[red]値動きの取れたイベントが {len(values)} 件しかない。[/]")
         raise typer.Exit(code=1)
@@ -7611,7 +7674,7 @@ def rehearsal_events(  # noqa: PLR0913 - イベント型と同じ条件をすべ
     **日の固まり方は本物に合わせていない。** 同じ日数・同じ件数で、中身だけを
     乱数にしている。**本物より固まっていなければ、膨張はここより大きく出る。**
     """
-    from stock_ai.backtest.event_window import event_returns
+    from stock_ai.backtest.event_window import EventSample, event_sample
     from stock_ai.backtest.multiplicity import (
         HYPOTHESIS_BUDGET,
         MEASURED_INFLATION,
@@ -7658,6 +7721,11 @@ def rehearsal_events(  # noqa: PLR0913 - イベント型と同じ条件をすべ
     )
 
     scores: list[float] = []
+    # **400回ぶんの処分を足し上げる。** 1回ぶんでは件数が小さすぎて、
+    # 上場廃止で落ちる割合が読めない。
+    tally: dict[str, object] = {"values": [], "truncated": [], "drawn": 0}
+    tally.update(dict.fromkeys(_DISPOSITIONS, 0))
+    legs: list[tuple[float, float]] = []
     with Progress(
         SpinnerColumn(),
         TextColumn("[progress.description]{task.description}"),
@@ -7670,7 +7738,14 @@ def rehearsal_events(  # noqa: PLR0913 - イベント型と同じ条件をすべ
         for index in range(repeat):
             progress.update(task, completed=index + 1)
             drawn = placebo_events(days, symbols, events, seed=seed + index)
-            values = event_returns(database, drawn, holding=holding, benchmark=benchmark)
+            sample = event_sample(database, drawn, holding=holding, benchmark=benchmark)
+            tally["drawn"] += sample.drawn
+            for key in _DISPOSITIONS:
+                tally[key] += getattr(sample, key)
+            tally["values"].extend(sample.values)
+            tally["truncated"].extend(sample.truncated)
+            legs.append((sample.stock_leg, sample.bench_leg))
+            values = sample.values
             if len(values) < 2:
                 continue
             estimate = estimate_power(values, lags=holding)
@@ -7708,6 +7783,35 @@ def rehearsal_events(  # noqa: PLR0913 - イベント型と同じ条件をすべ
     # 別の数字を当てるべき」と、**線を緩める向き**に促した。
     #
     # **散らばりが素直でも、中心がずれていれば判定は歪む。**
+    total = EventSample(
+        stock_leg=fmean([leg for leg, _mark in legs]) if legs else float("nan"),
+        bench_leg=fmean([mark for _leg, mark in legs]) if legs else float("nan"),
+        **tally,  # type: ignore[arg-type]
+    )
+    _report_event_disposition(total, title=f"窓が捨てた件数（{found.runs} 回の合計）")
+
+    # **+0.49 の出どころを、2つに分けて読む。**
+    #
+    # (A) 引く相手が時価総額加重の指数で、引くほうは一様抽選（実質等加重）。
+    #     小型が勝っていれば、情報ゼロでも平均はプラスになる。
+    # (B) 上場廃止で窓が切れたイベントが落ちる。落ちるのは悪く終わった側。
+    #
+    # **(B) は測れる**——落ちた割合と、落ちた側を足の在るところまでで測った
+    # 超過との差である。残りは (A) に当たる。
+    lifted = total.survivorship_bias()
+    if lifted is not None:
+        gap = (total.stock_leg - total.bench_leg) - lifted
+        console.print(
+            f"[dim]差 {total.stock_leg - total.bench_leg:+.2%} のうち、"
+            f"上場廃止で落ちた分の押し上げが **{lifted:+.2%}**。"
+            f"残る **{gap:+.2%}** は、引く相手が時価総額加重であることに当たる。[/]"
+        )
+    else:
+        console.print(
+            "[yellow]**落ちた側の超過を1件も測れていない。** "
+            "上場廃止の押し上げが測れないので、差の出どころを分けられない。[/]"
+        )
+
     if abs(found.mean) > 0.20:
         console.print(
             f"[red]**帰無の下で `t` の平均が {found.mean:+.2f} ある**（0.00 のはず）。[/] "

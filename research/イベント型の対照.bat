@@ -8,26 +8,35 @@ rem ASCII only - cmd.exe reads a .bat in the console codepage, not UTF-8.
 rem The Japanese belongs in the .ps1, which carries a UTF-8 BOM.
 
 echo ==================================================
-echo   stock-ai : calibrate the EVENT pipe
+echo   stock-ai : where the event pipe's tilt comes from
 echo ==================================================
 echo.
-echo The monthly control came back with a t spread of 1.12
-echo instead of 1.00, so the verdict line was three times
-echo looser than designed. That number was measured on the
-echo monthly panel.
+echo The first run of this control settled the spread: the
+echo event pipe's t has an SD of 0.94, close to the 1.00 it
+echo should have. That part is fine.
 echo.
-echo Hypotheses 8 and 5 do not use that pipe. Their series
-echo is one point per event day and the Newey-West lag is
-echo the holding period. A different pipe can have a
-echo different number.
+echo What it also showed, and what matters more, is a MEAN
+echo of +0.49. Random symbols on random days, held twenty
+echo sessions, beat the index. With no information at all.
 echo.
-echo This draws random days and symbols and pushes them
-echo through event_window.event_returns - the very function
-echo those two hypotheses call. Building a parallel path
-echo would prove nothing about the real one.
+echo There are two ways that happens, and they call for
+echo opposite fixes:
 echo.
-echo   spread near 1.12   the monthly figure carries over
-echo   spread far from it the event designs need their own
+echo   A  the index is cap weighted, the draw is uniform.
+echo      If small names won, the mean is positive and no
+echo      code is wrong - the wrong thing is being
+echo      subtracted.
+echo   B  events whose window runs past the last quote are
+echo      dropped. Delistings end badly, so dropping them
+echo      lifts what is left.
+echo.
+echo This run now counts every event it throws away, by
+echo reason, and measures the dropped side as far as its
+echo quotes go. That splits the +0.49 into B, which it can
+echo measure, and A, which is the rest.
+echo.
+echo Same function hypotheses 8 and 5 call. Building a
+echo parallel path would prove nothing about the real one.
 echo.
 echo Not a claim, not counted against the budget, and no
 echo judgement is spent.
@@ -43,7 +52,7 @@ echo.
 if not "%CODE%"=="0" (
   echo Did not finish. Paste the output above.
 ) else (
-  echo Done. Paste the table and the lines below it.
+  echo Done. Paste both tables and the lines below them.
 )
 echo.
 pause
