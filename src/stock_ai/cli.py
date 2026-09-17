@@ -2131,7 +2131,10 @@ def revision_power(  # noqa: PLR0913 - §0 が固定した条件をすべて受�
     #3・#6 と揃えてある。**リターンを見て決めていない。**
     """
     from stock_ai.backtest.event_window import event_returns
-    from stock_ai.backtest.multiplicity import HYPOTHESIS_BUDGET, required_t
+    from stock_ai.backtest.multiplicity import (
+        HYPOTHESIS_BUDGET,
+        calibrated_t,
+    )
     from stock_ai.backtest.pead import TURNOVER_WINDOW
     from stock_ai.backtest.power import (
         estimate_power,
@@ -2240,7 +2243,7 @@ def revision_power(  # noqa: PLR0913 - §0 が固定した条件をすべて受�
     take = [value - COST_ROUND_TRIP for value in values]
 
     estimate = estimate_power(take, lags=holding)
-    target = required_t(HYPOTHESIS_BUDGET)
+    target = calibrated_t(HYPOTHESIS_BUDGET)
     mean = fmean(take)
     stderr = estimate.standard_error(len(take))
     # **片側95%。** 事前登録 §0 が片側で書いている。
@@ -5679,7 +5682,12 @@ def antivalue_estimate(
     1日も触れない。
     """
     from stock_ai.backtest.antivalue import build_series as antivalue_series
-    from stock_ai.backtest.multiplicity import HYPOTHESIS_BUDGET, required_t
+    from stock_ai.backtest.multiplicity import (
+        HYPOTHESIS_BUDGET,
+        MEASURED_INFLATION,
+        calibrated_t,
+        required_t,
+    )
     from stock_ai.backtest.power import estimate_power
     from stock_ai.data.valuation_monthly import DEFAULT_PATH
     from stock_ai.data.valuation_monthly import read as read_valuation
@@ -5732,7 +5740,7 @@ def antivalue_estimate(
     for column in ("項目", "生の差", "α（β を引いた）", "どこから"):
         table.add_column(column, overflow="fold")
 
-    target = required_t(HYPOTHESIS_BUDGET)
+    target = calibrated_t(HYPOTHESIS_BUDGET)
     stats: dict[str, tuple[float, float, float, float, float]] = {}
     for label, values in measured.items():
         estimate = estimate_power(values, lags=3)
@@ -5797,7 +5805,9 @@ def antivalue_estimate(
         f"--inflation {raw[1]:.2f} --budget {HYPOTHESIS_BUDGET}[/]"
     )
     console.print(
-        f"[dim]必要な t は {required_t(HYPOTHESIS_BUDGET):.2f}（予算 {HYPOTHESIS_BUDGET} 本）。"
+        f"[dim]必要な t は {calibrated_t(HYPOTHESIS_BUDGET):.2f}"
+        f"（予算 {HYPOTHESIS_BUDGET} 本の {required_t(HYPOTHESIS_BUDGET):.2f} に、"
+        f"対照で測った膨張 {MEASURED_INFLATION:.2f} を掛けた）。"
         "補正なしの 2.0 ではない。[/]"
     )
 
@@ -7085,7 +7095,10 @@ def margin_power(  # noqa: PLR0913 - §0 が固定した条件をすべて受け
     往復費用 0.4% の3倍である。**下回ればここで終わる。線は動かさない。**
     """
     from stock_ai.backtest.margin_census import census, event_returns, lending_index, spells
-    from stock_ai.backtest.multiplicity import HYPOTHESIS_BUDGET, required_t
+    from stock_ai.backtest.multiplicity import (
+        HYPOTHESIS_BUDGET,
+        calibrated_t,
+    )
     from stock_ai.backtest.pead import TURNOVER_WINDOW
     from stock_ai.backtest.power import estimate_power, gate, trimmed_variance
     from stock_ai.backtest.reversal import COST_ROUND_TRIP
@@ -7178,7 +7191,7 @@ def margin_power(  # noqa: PLR0913 - §0 が固定した条件をすべて受け
     take = [-value - COST_ROUND_TRIP for value in values]
 
     estimate = estimate_power(take, lags=window)
-    target = required_t(HYPOTHESIS_BUDGET)
+    target = calibrated_t(HYPOTHESIS_BUDGET)
     mean = fmean(take)
     stderr = estimate.standard_error(len(take))
     # **片側95%。** 事前登録 §0 が片側で書いている。
@@ -7446,6 +7459,128 @@ def revision_census_upward(
     )
 
 
+@app.command(name="rehearsal-events")
+def rehearsal_events(  # noqa: PLR0913 - イベント型と同じ条件をすべて受け取る
+    benchmark: str = typer.Option(BENCHMARK, "--benchmark", help="Sets the calendar."),
+    holding: int = typer.Option(20, "--holding", help="Sessions held, as the event designs use."),
+    events: int = typer.Option(2_000, "--events", help="How many events to draw each run."),
+    seed: int = typer.Option(REHEARSAL_SEED, "--seed", help="Fixed, so the run reproduces."),
+    repeat: int = typer.Option(400, "--repeat", help="Draws, for calibration."),
+    start: str = typer.Option("2009-01-01", "--start", help="First day events may land on."),
+    end: str = typer.Option("2026-08-31", "--end", help="Last day events may land on."),
+) -> None:
+    """Calibrate the event-type pipe - the one #8 and #5 actually use.
+
+    **説ではない。陰性対照である。** 予算に数えない。
+
+    **月次の盤面で測った 1.12 は、ここには当てはまらないかもしれない。**
+    #8・#5 は系列がイベント日ごとで、Newey-West のラグも保有日数に取ってある。
+    **別の管には別の数字がありうる。**
+
+    乱数で選んだ日と銘柄を、`event_window.event_returns` に通す——**#8・#5 が
+    使っている関数そのもの**である。別の管を作ったら、確かめたことにならない。
+
+    **日の固まり方は本物に合わせていない。** 同じ日数・同じ件数で、中身だけを
+    乱数にしている。**本物より固まっていなければ、膨張はここより大きく出る。**
+    """
+    from stock_ai.backtest.event_window import event_returns
+    from stock_ai.backtest.multiplicity import (
+        HYPOTHESIS_BUDGET,
+        MEASURED_INFLATION,
+        calibrated_t,
+        required_t,
+    )
+    from stock_ai.backtest.power import estimate_power
+    from stock_ai.backtest.rehearsal import calibrate, placebo_events
+    from stock_ai.database.repository import list_securities
+
+    settings = get_settings()
+    configure_logging(settings.log_level)
+
+    begin, finish = _parse_date(start), _parse_date(end)
+    if begin is None or finish is None or begin >= finish:
+        raise typer.BadParameter("--start は --end より前のこと。")
+    if repeat < 1 or events < 2:
+        raise typer.BadParameter("--repeat は 1 以上、--events は 2 以上。")
+
+    console.print("[bold yellow]これは説ではない。陰性対照である。[/]")
+    console.print(
+        "[dim]#8・#5 が使っているイベント窓の関数そのものに通す。"
+        "**月次で測った膨張が、ここにも当てはまるとは限らない。**[/]"
+    )
+    console.print()
+
+    database = Database()
+    database.create_all()
+    with database.session() as session:
+        price_repo = PriceRepository(session)
+        bench = price_repo.get_raw_prices(benchmark)
+        if bench.empty:
+            console.print(f"[red]ベンチマーク {benchmark!r} の価格が無い。[/]")
+            raise typer.Exit(code=1)
+        days = [stamp.date() for stamp in bench.index if begin <= stamp.date() <= finish]
+        symbols = [sym for sym, market in list_securities(session) if market == "JP"]
+
+    if len(days) < holding + 2 or not symbols:
+        console.print(f"[red]日が {len(days)}、銘柄が {len(symbols)} では測れない。[/]")
+        raise typer.Exit(code=1)
+
+    console.print(
+        f"[dim]{days[0]} 〜 {days[-1]}（{len(days):,} 営業日）、{len(symbols):,} 銘柄から"
+        f"毎回 {events:,} 件を引く。窓は {holding} 営業日。種 {seed}。[/]"
+    )
+
+    scores: list[float] = []
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        BarColumn(),
+        TaskProgressColumn(),
+        TimeRemainingColumn(),
+        console=console,
+    ) as progress:
+        task = progress.add_task("種を変えて回す", total=repeat)
+        for index in range(repeat):
+            progress.update(task, completed=index + 1)
+            drawn = placebo_events(days, symbols, events, seed=seed + index)
+            values = event_returns(database, drawn, holding=holding, benchmark=benchmark)
+            if len(values) < 2:
+                continue
+            estimate = estimate_power(values, lags=holding)
+            stderr = estimate.standard_error(len(values))
+            if stderr > 0:
+                scores.append(fmean(values) / stderr)
+
+    target = calibrated_t(HYPOTHESIS_BUDGET)
+    found = calibrate(scores, target)
+    if not found.runs:
+        console.print("[red]1回も測れなかった。[/]")
+        raise typer.Exit(code=1)
+
+    table = Table(title=f"イベント型の管での `t` の形（{found.runs} 回）")
+    for column in ("項目", "実測", "帰無なら"):
+        table.add_column(column, overflow="fold")
+    table.add_row("t の SD", f"[bold]{found.spread:.2f}[/]", "1.00")
+    table.add_row("t の平均", f"{found.mean:+.2f}", "0.00")
+    table.add_row("|t| ≥ 1.96", f"{found.plain_share:.1%}", "5.0%")
+    table.add_row("いちばん大きい t", f"{found.worst:+.2f}", "—")
+    console.print(table)
+
+    console.print(
+        f"[dim]月次の盤面で測った膨張は {MEASURED_INFLATION:.2f} だった。"
+        f"**ここは {found.spread:.2f}。** 素の線 {required_t(HYPOTHESIS_BUDGET):.2f} に"
+        f"これを掛けると **{required_t(HYPOTHESIS_BUDGET) * found.spread:.2f}** になる"
+        f"（いま当てている線は {target:.2f}）。[/]"
+    )
+    for line in found.warnings():
+        console.print(f"[yellow]{line}[/]")
+    if abs(found.spread - MEASURED_INFLATION) > 0.10:
+        console.print(
+            "[yellow]**月次の値と 0.10 以上ずれている。** "
+            "イベント型には別の数字を当てるべきである。[/]"
+        )
+
+
 @app.command(name="rehearsal")
 def rehearsal(  # noqa: PLR0913 - 本物と同じ条件をすべて受け取る
     is_start: str = typer.Option("2009-01-01", "--is-start", help="First day of the IS window."),
@@ -7476,7 +7611,12 @@ def rehearsal(  # noqa: PLR0913 - 本物と同じ条件をすべて受け取る
     """
     from stock_ai.backtest.cross_section import beta_to_benchmark, build_estimators
     from stock_ai.backtest.factor_panel import build_panel
-    from stock_ai.backtest.multiplicity import HYPOTHESIS_BUDGET, required_t
+    from stock_ai.backtest.multiplicity import (
+        HYPOTHESIS_BUDGET,
+        MEASURED_INFLATION,
+        calibrated_t,
+        required_t,
+    )
     from stock_ai.backtest.power import estimate_power
     from stock_ai.backtest.rehearsal import calibrate, oos_seed, placebo_sections
 
@@ -7489,7 +7629,7 @@ def rehearsal(  # noqa: PLR0913 - 本物と同じ条件をすべて受け取る
     if repeat < 1:
         raise typer.BadParameter("--repeat must be at least 1.")
 
-    target = required_t(HYPOTHESIS_BUDGET)
+    target = calibrated_t(HYPOTHESIS_BUDGET)
     console.print("[bold yellow]これは説ではない。陰性対照である。[/]")
     console.print(
         "[dim]乱数の signal を、**本物と同じ管**に通す。別の管を作ったら、"
@@ -7551,7 +7691,12 @@ def rehearsal(  # noqa: PLR0913 - 本物と同じ条件をすべて受け取る
     table.add_row("IS", "乱数 signal で分位を組み、α の t を出す", f"t {inside_t:+.2f}")
     table.add_row("封印", "**§0 は通さない**（判定を消費しないので守るものが無い）", "—")
     table.add_row("OOS", "**一度だけ**回す", f"[bold]t {outside_t:+.2f}[/]")
-    table.add_row("判定", f"合格は `t ≥ {target:.2f}`（予算 {HYPOTHESIS_BUDGET} 本）", "")
+    table.add_row(
+        "判定",
+        f"合格は `t ≥ {target:.2f}`"
+        f"（素の線 {required_t(HYPOTHESIS_BUDGET):.2f} × 測った膨張 {MEASURED_INFLATION:.2f}）",
+        "",
+    )
     console.print(table)
 
     passed = outside_t >= target
@@ -8157,7 +8302,10 @@ def composite_gate(  # noqa: PLR0913 - 複合型のルールが固定する条�
     )
     from stock_ai.backtest.cross_section import beta_to_benchmark, build_estimators
     from stock_ai.backtest.factor_panel import NEEDS_VALUATION, build_panel
-    from stock_ai.backtest.multiplicity import HYPOTHESIS_BUDGET, required_t
+    from stock_ai.backtest.multiplicity import (
+        HYPOTHESIS_BUDGET,
+        calibrated_t,
+    )
     from stock_ai.backtest.power import estimate_power, gate
     from stock_ai.data.valuation_monthly import DEFAULT_PATH
     from stock_ai.data.valuation_monthly import read as read_valuation
@@ -8326,7 +8474,7 @@ def composite_gate(  # noqa: PLR0913 - 複合型のルールが固定する条�
     beta = beta_to_benchmark(built.quantile_spread, built.benchmark)
     net = built.alpha(built.quantile_spread, beta)
 
-    target = required_t(HYPOTHESIS_BUDGET)
+    target = calibrated_t(HYPOTHESIS_BUDGET)
     estimate = estimate_power(net, lags=lags)
     detectable = estimate.detectable(oos_periods, target_t=target)
     mean = fmean(net)

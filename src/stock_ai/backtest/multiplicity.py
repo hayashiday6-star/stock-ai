@@ -86,6 +86,28 @@ class Adjustment:
         )
 
 
+#: 帰無の下で `t` がどれだけ膨らむか。**測った値である。**
+#:
+#: 陰性対照を 400 回回して **SD 1.12**（1.00 のはず）だった（2026-09-17、
+#: `research\陰性対照を400回.bat`）。Newey-West の標準誤差が 100ヶ月程度では
+#: 小さめに出る——標準誤差が小さければ `t` は大きくなる。
+#:
+#: **これで `t ≥ 3.02` は 0.25% のつもりで、実際は 0.71% だった。3倍甘い。**
+#:
+#: **測って厳しくしている。** 結果を見てから緩めるのが禁じ手であって、こちらは
+#: その逆である。しかも**説のデータではなく、対照から出た数**である。
+#:
+#: **月次・α・低ボラ universe で測った値である。** イベント型（#8・#5）は系列も
+#: ラグも違うので、**同じ数字とは限らない。** そちらは別に測る。
+MEASURED_INFLATION = 1.12
+
+#: 膨張を測った回数。**3件しか出ない裾ではなく、SD を見ている。**
+#:
+#: 400 回なら SD の誤差は ±0.04 程度で、1.12 は 1.00 から明確に離れている。
+#: 同じ回の `|t| ≥ 3.02` は 400 回中 **3 回**で、**その行からは何も言えない。**
+INFLATION_RUNS = 400
+
+
 def required_t(budget: int, alpha: float = FAMILY_ALPHA) -> float:
     """``budget`` 本に ``alpha`` を割ったときの、両側の臨界値。
 
@@ -103,6 +125,32 @@ def required_t(budget: int, alpha: float = FAMILY_ALPHA) -> float:
     if not 0.0 < alpha < 1.0:
         raise ValueError(f"alpha must be between 0 and 1; got {alpha}.")
     return NormalDist().inv_cdf(1.0 - alpha / budget / 2.0)
+
+
+def calibrated_t(
+    budget: int,
+    alpha: float = FAMILY_ALPHA,
+    inflation: float = MEASURED_INFLATION,
+) -> float:
+    """実測の膨張を掛けた、**封印に使う線**。
+
+    `required_t` は「`t` が素直に効いているなら」の値である。**効いていな
+    かった**——陰性対照で SD 1.12 が出た（`MEASURED_INFLATION`）。
+
+    **今後の封印にだけ当てる。** 封印済みの説の線は動かさない（#7 は
+    `t ≥ 2.0` のままである）。
+
+    Args:
+        budget: 試すつもりの本数。
+        alpha: 全体の有意水準。
+        inflation: 帰無の下での `t` の SD。**1.0 なら `required_t` と同じ。**
+
+    Raises:
+        ValueError: ``inflation`` が 0 以下。
+    """
+    if inflation <= 0:
+        raise ValueError(f"inflation must be positive; got {inflation}.")
+    return required_t(budget, alpha) * inflation
 
 
 def adjust(budget: int, alpha: float = FAMILY_ALPHA) -> Adjustment:

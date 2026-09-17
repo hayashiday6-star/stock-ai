@@ -187,3 +187,136 @@ class TestTheTwoHalvesAreDrawnIndependently:
 
         assert "score(inside, seed)" in body
         assert "score(outside, oos_seed(seed))" in body
+
+
+class TestTheEventTypeControlUsesTheSamePipe:
+    """**月次で測った 1.12 が、イベント型に当てはまるとは限らない。**
+
+    #8・#5 は系列がイベント日ごとで、Newey-West のラグも保有日数に取ってある。
+    **別の管には別の数字がありうる。**
+    """
+
+    @staticmethod
+    def _days(count: int = 50):
+        import datetime as dt
+
+        return [dt.date(2020, 1, 6) + dt.timedelta(days=offset) for offset in range(count)]
+
+    def test_the_draw_reproduces_from_its_seed(self) -> None:
+        from stock_ai.backtest.rehearsal import placebo_events
+
+        days = self._days()
+
+        assert placebo_events(days, ["1301", "1302"], 20, seed=3) == placebo_events(
+            days, ["1301", "1302"], 20, seed=3
+        )
+
+    def test_a_different_seed_draws_differently(self) -> None:
+        from stock_ai.backtest.rehearsal import placebo_events
+
+        days = self._days()
+
+        assert placebo_events(days, ["1301", "1302"], 20, seed=3) != placebo_events(
+            days, ["1301", "1302"], 20, seed=4
+        )
+
+    def test_it_draws_the_number_asked_for(self) -> None:
+        from stock_ai.backtest.rehearsal import placebo_events
+
+        assert len(placebo_events(self._days(), ["1301"], 37, seed=1)) == 37
+
+    def test_the_same_day_can_come_up_twice(self) -> None:
+        """**本物も同じ日に複数出る。** 重複を禁じると、固まり方が本物と変わる。"""
+        from stock_ai.backtest.rehearsal import placebo_events
+
+        drawn = placebo_events(self._days(count=3), ["1301", "1302"], 60, seed=1)
+
+        assert len(drawn) > len(set(drawn))
+
+    def test_it_only_picks_from_what_it_was_given(self) -> None:
+        from stock_ai.backtest.rehearsal import placebo_events
+
+        days = self._days()
+        drawn = placebo_events(days, ["1301", "1302"], 40, seed=1)
+
+        assert {symbol for symbol, _day in drawn} <= {"1301", "1302"}
+        assert {day for _symbol, day in drawn} <= set(days)
+
+    def test_an_empty_pool_is_an_error_not_an_empty_draw(self) -> None:
+        """**「引けなかった」を「イベントが無い」に化けさせない。**"""
+        from stock_ai.backtest.rehearsal import placebo_events
+
+        with pytest.raises(ValueError):
+            placebo_events([], ["1301"], 10)
+        with pytest.raises(ValueError):
+            placebo_events(self._days(), [], 10)
+
+    def test_the_command_calls_the_real_event_window(self) -> None:
+        """**別の管を作ったら、確かめたことにならない。**"""
+        import inspect
+
+        from stock_ai import cli
+
+        body = inspect.getsource(cli.rehearsal_events)
+
+        assert "from stock_ai.backtest.event_window import event_returns" in body
+        assert "event_returns(database, drawn" in body
+
+    def test_it_says_so_when_the_two_pipes_disagree(self) -> None:
+        import inspect
+
+        from stock_ai import cli
+
+        body = inspect.getsource(cli.rehearsal_events)
+
+        assert "別の数字を当てるべき" in body
+
+
+class TestTheCalibratedLineIsUsedEverywhere:
+    """**測って厳しくした線を、1箇所でも忘れると意味が無い。**"""
+
+    def test_the_calibrated_line_is_above_the_plain_one(self) -> None:
+        from stock_ai.backtest.multiplicity import (
+            HYPOTHESIS_BUDGET,
+            calibrated_t,
+            required_t,
+        )
+
+        assert calibrated_t(HYPOTHESIS_BUDGET) > required_t(HYPOTHESIS_BUDGET)
+
+    def test_an_inflation_of_one_changes_nothing(self) -> None:
+        from stock_ai.backtest.multiplicity import calibrated_t, required_t
+
+        assert calibrated_t(20, inflation=1.0) == pytest.approx(required_t(20))
+
+    def test_a_zero_inflation_is_refused(self) -> None:
+        from stock_ai.backtest.multiplicity import calibrated_t
+
+        with pytest.raises(ValueError):
+            calibrated_t(20, inflation=0.0)
+
+    def test_no_gate_still_uses_the_uncalibrated_line(self) -> None:
+        """**素の線で判定している場所が残っていないこと。**
+
+        `required_t` は表示（素の線がいくつだったか）にだけ使ってよい。
+        """
+        import pathlib
+        import re
+
+        body = pathlib.Path("src/stock_ai/cli.py").read_text(encoding="utf-8")
+        assigned = re.findall(r"target = (\w+)\(HYPOTHESIS_BUDGET\)", body)
+
+        assert assigned, "判定の線を置いている場所が見つからない"
+        assert set(assigned) == {"calibrated_t"}, assigned
+
+    def test_the_measured_inflation_says_where_it_came_from(self) -> None:
+        """**出典の無い数字を書かない。** 400回の対照から出た値である。"""
+        import inspect
+
+        from stock_ai.backtest import multiplicity
+
+        source = inspect.getsource(multiplicity)
+
+        assert "陰性対照" in source
+        assert "400" in source
+        assert "月次・α・低ボラ universe" in source

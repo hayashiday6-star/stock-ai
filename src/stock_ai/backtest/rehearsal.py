@@ -32,6 +32,7 @@
 from __future__ import annotations
 
 import dataclasses
+import datetime as dt
 import math
 from collections.abc import Sequence
 from statistics import fmean, stdev
@@ -95,6 +96,46 @@ def placebo_sections(
             ]
         )
     return built
+
+
+def placebo_events(
+    days: Sequence[dt.date],
+    symbols: Sequence[str],
+    count: int,
+    seed: int = SEED,
+) -> list[tuple[str, dt.date]]:
+    """日と銘柄を乱数で選んで、イベントの並びを作る。**イベント型の管の対照。**
+
+    月次の盤面で測った膨張（`MEASURED_INFLATION`）は、**イベント型には当ては
+    まらないかもしれない。** #8・#5 は系列がイベント日ごとで、Newey-West の
+    ラグも保有日数に取ってある。**別の管には別の数字がありうる。**
+
+    **日の固まり方は本物に合わせない。** 合わせたければ本物のイベント日を
+    渡す——ここは「同じ日数・同じ件数で、中身だけ乱数」を作る。
+
+    Args:
+        days: 選んでよい日。
+        symbols: 選んでよい銘柄。
+        count: 作るイベント数。
+        seed: 乱数の種。
+
+    Returns:
+        ``(銘柄, 日)``。**重複しうる**——本物も同じ日に複数出る。
+
+    Raises:
+        ValueError: 日か銘柄が空、または ``count`` が 1 未満。
+    """
+    if not days or not symbols:
+        raise ValueError("日か銘柄が空では、イベントを作れない。")
+    if count < 1:
+        raise ValueError(f"count must be at least 1; got {count}.")
+    rng = np.random.default_rng(seed)
+    picked_days = rng.integers(0, len(days), size=count)
+    picked_symbols = rng.integers(0, len(symbols), size=count)
+    return [
+        (symbols[int(symbol)], days[int(day)])
+        for day, symbol in zip(picked_days, picked_symbols, strict=True)
+    ]
 
 
 @dataclasses.dataclass(frozen=True)
