@@ -25,6 +25,7 @@ from collections.abc import Sequence
 from pathlib import Path
 from statistics import median
 
+from stock_ai.backtest.event_window import event_returns
 from stock_ai.core.logging import get_logger
 from stock_ai.data.jquants_margin import REGULATION_RELEASED, MarginAlert, onsets
 
@@ -163,6 +164,16 @@ class MarginCensus:
 
     events_is: int = 0
     """**絞り込んだ後の** IS のイベント数。見込みと分散を推定する側。"""
+
+    days_is: int = 0
+    days_oos: int = 0
+    """**独立な観測は「日」である。** 同じ日の発動は等加重の1つにまとめるので、
+    系列の長さはイベント数ではなく**日数**になる。
+
+    **件数で割ると n を水増しする。** #5 では 1,827 件が 831 日にまとまって
+    いて、検出できる差が **1.48倍甘く出ていた**（2026-09-17）。#8 は同じ日に
+    重なる発動の中央値が 1 なので差は小さいが、**形は同じである。**
+    """
 
     events_oos: int = 0
     """**絞り込んだ後の** OOS のイベント数。
@@ -324,7 +335,7 @@ def lending_index(directory: Path) -> LendingIndex:
     return LendingIndex(changes, (days[0], days[-1]))
 
 
-def _busiest_share(counts: Sequence[int]) -> float:
+def busiest_share(counts: Sequence[int]) -> float:
     """上位1割の日が占める割合。**日数が10未満なら 1.0（全部が上位）。**"""
     if not counts:
         return float("nan")
@@ -411,7 +422,7 @@ def census(  # noqa: PLR0913 - §2 が固定した絞り込みをすべて受け
         first=found[0].onset,
         last=found[-1].onset,
         days_with_events=len(per_day),
-        busiest_share=_busiest_share(list(per_day.values())),
+        busiest_share=busiest_share(list(per_day.values())),
         same_day_median=int(median(per_day.values())),
         after_lending=len(lending),
         lending_unknown=unknown,
@@ -422,6 +433,8 @@ def census(  # noqa: PLR0913 - §2 が固定した絞り込みをすべて受け
         split_on=split,
         events_is=sum(1 for spell in liquid if spell.onset <= split),
         events_oos=sum(1 for spell in liquid if spell.onset > split),
+        days_is=len({spell.onset for spell in liquid if spell.onset <= split}),
+        days_oos=len({spell.onset for spell in liquid if spell.onset > split}),
     )
     logger.info(
         "増担保センサス: 発動 %d 件、貸借 %d 件、流動性通過 %d 件、窓 %d 営業日",
@@ -433,93 +446,8 @@ def census(  # noqa: PLR0913 - §2 が固定した絞り込みをすべて受け
     return result
 
 
-def event_returns(
-    database: object,
-    events: Sequence[tuple[str, dt.date]],
-    holding: int,
-    benchmark: str = "1306",
-    until: dt.date | None = None,
-) -> list[float]:
-    """発動イベントごとの**超過リターン**を、公表日ごとにまとめて返す。
-
-    事前登録 §4 のとおり——**公表日 D の翌営業日の寄付き**で入り、
-    ``holding`` 営業日後の終値で降りる。同じ期間のベンチマークを引く。
-
-    **D の終値では入れない。** 公表は 16:30 頃で、その日の引けには間に合わない。
-    `AppDate` を D に置くのも同じ理由で禁じてある（§4）。
-
-    **同じ日の発動は等加重の1つにまとめる。** まとめないと、発動が重なった日
-    だけ重みが増え、独立でない観測を独立として数えることになる。
-
-    **符号はそのまま返す。** 仮説は負を期待するが、ここで反転させない——
-    反転を2箇所に置くと、どちらで反転したのか分からなくなる。
-
-    Args:
-        database: 価格の保存先。
-        events: ``(銘柄, 公表日)``。**絞り込みは済んでいる前提。**
-        holding: 保有営業日数（§3 の N）。
-        benchmark: 控除するベンチマーク。
-        until: この日までのイベントだけ使う。**降りる日が越えてもよい**——
-            イベントが IS にあるかどうかで切る。境目を落とすと端が薄くなる。
-
-    Returns:
-        公表日ごとの超過リターン。**古い順。**
-
-    Raises:
-        ValueError: ``holding`` が 1 未満、またはベンチマークの価格が無い。
-    """
-    import pandas as pd
-
-    from stock_ai.data.schema import CLOSE, OPEN, split_adjusted
-    from stock_ai.database.repository import PriceRepository
-
-    if holding < 1:
-        raise ValueError(f"holding must be at least 1; got {holding}.")
-
-    wanted: dict[str, list[dt.date]] = {}
-    for symbol, day in events:
-        if until is None or day <= until:
-            wanted.setdefault(symbol, []).append(day)
-
-    by_day: dict[dt.date, list[float]] = {}
-    with database.session() as session:  # type: ignore[attr-defined]
-        prices = PriceRepository(session)
-        bench = split_adjusted(prices.get_raw_prices(benchmark))
-        if bench.empty:
-            raise ValueError(f"ベンチマーク {benchmark!r} の価格が無い。")
-        bench_open = bench[OPEN].to_numpy(dtype=float)
-        bench_close = bench[CLOSE].to_numpy(dtype=float)
-        bench_at = {stamp.date(): index for index, stamp in enumerate(bench.index)}
-
-        for symbol, days in wanted.items():
-            raw = prices.get_raw_prices(symbol)
-            if raw.empty:
-                continue
-            adjusted = split_adjusted(raw)
-            index = adjusted.index
-            at = {stamp.date(): position for position, stamp in enumerate(index)}
-            opens = adjusted[OPEN].to_numpy(dtype=float)
-            close = adjusted[CLOSE].to_numpy(dtype=float)
-
-            for when in days:
-                position = at.get(when)
-                if position is None or position + holding >= len(index):
-                    continue
-                entry, leave = opens[position + 1], close[position + holding]
-                if not (entry > 0) or not (leave > 0):
-                    continue
-                if pd.isna(entry) or pd.isna(leave):
-                    continue
-                # ベンチマークは**同じ日付**で取る。位置で取ると、その銘柄に
-                # 足の無い日があったぶんだけずれる。
-                mark = bench_at.get(index[position + 1].date())
-                out = bench_at.get(index[position + holding].date())
-                if mark is None or out is None:
-                    continue
-                if not (bench_open[mark] > 0) or not (bench_close[out] > 0):
-                    continue
-                by_day.setdefault(when, []).append(
-                    (leave / entry) - (bench_close[out] / bench_open[mark])
-                )
-
-    return [sum(values) / len(values) for _day, values in sorted(by_day.items())]
+#: **正本は `event_window` にある。** 呼ぶ側で書き直さない。
+#:
+#: #5（上方修正）が同じ形を使うので、説をまたいで1つだけ置いた。ここは名前を
+#: 残すためだけの再輸出である。
+__all__ = ["event_returns"]

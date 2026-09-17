@@ -29,6 +29,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import math
 from collections.abc import Sequence
 from dataclasses import dataclass, field
@@ -263,6 +264,107 @@ def build_estimators(
         benchmark=kept_bench,
         skipped_flat=skipped,
     )
+
+
+#: 断面回帰で残差を取るのに要る最低銘柄数（説明変数の数に対する余裕）。
+#:
+#: **業種ダミーの数だけ自由度を食う。** 銘柄が少ないと残差がほぼ 0 になり、
+#: 「散らばりが消えた」ように見える。**消えたのではなく、当てはめただけである。**
+MIN_ROWS_PER_PARAMETER = 5
+
+
+@dataclasses.dataclass(frozen=True)
+class Neutralised:
+    """断面から共通因子を抜いた残り。**抜いた中身を数えて持つ。**"""
+
+    residuals: list[float]
+    groups: int
+    """使った業種の数。"""
+    dropped: int
+    """業種が1銘柄しかなく、まとめた銘柄数。**その業種の残差は 0 になる。**"""
+
+    explained: float
+    """共通因子で説明できた分散の割合。**0 なら抜けていない。**"""
+
+
+def neutralise(
+    values: Sequence[float],
+    groups: Sequence[str],
+    sizes: Sequence[float] | None = None,
+) -> Neutralised | None:
+    """断面のリターンから、業種と規模を抜いた残差を返す。
+
+    **市場は自動で抜ける。** 定数項が入るので、断面平均がそのまま引かれる。
+    ロングショートのスプレッドでは市場はもともとほぼ相殺しているが、
+    ここで改めて引くことになる。
+
+    **業種は平均で抜く。** ダミー変数の最小二乗は、業種ごとの平均を引くのと
+    同じである。規模を足すと、業種内で規模に比例する分も引かれる。
+
+    **1銘柄しかない業種は、その銘柄の残差が必ず 0 になる。** 自分自身の平均を
+    引くからである。**落とすのではなく、まとめて数える**——落とすと、その月
+    だけ universe が変わる。
+
+    Args:
+        values: 断面のリターン。
+        groups: 同じ並びの業種。空文字は「不明」として1つの業種にまとめる。
+        sizes: 同じ並びの規模（対数）。省略すると業種だけで抜く。
+
+    Returns:
+        :class:`Neutralised`。銘柄が足りなければ ``None``。
+
+    Raises:
+        ValueError: 長さが揃っていない。
+    """
+    count = len(values)
+    if len(groups) != count or (sizes is not None and len(sizes) != count):
+        raise ValueError("断面の長さが揃っていない。")
+    if count < 2:
+        return None
+
+    labels = [name.strip() or "不明" for name in groups]
+    members: dict[str, list[int]] = {}
+    for position, label in enumerate(labels):
+        members.setdefault(label, []).append(position)
+
+    # **自由度を数える。** 業種の数＋規模の1本＋定数項。足りなければ抜かない。
+    parameters = len(members) + (1 if sizes is not None else 0)
+    if count < parameters * MIN_ROWS_PER_PARAMETER:
+        return None
+
+    # 業種ごとの平均を引く。**ダミーの最小二乗と同じ。**
+    residuals = list(values)
+    alone = 0
+    for positions in members.values():
+        mean = sum(values[position] for position in positions) / len(positions)
+        for position in positions:
+            residuals[position] = values[position] - mean
+        if len(positions) == 1:
+            alone += 1
+
+    if sizes is not None:
+        # **規模は業種内で中心化してから当てる。** 中心化しないと、業種平均を
+        # もう一度引くことになり、二重に抜ける。
+        centred = list(sizes)
+        for positions in members.values():
+            mean = sum(sizes[position] for position in positions) / len(positions)
+            for position in positions:
+                centred[position] = sizes[position] - mean
+        denominator = sum(value * value for value in centred)
+        if denominator > MIN_DISPERSION:
+            slope = (
+                sum(residual * value for residual, value in zip(residuals, centred, strict=True))
+                / denominator
+            )
+            residuals = [
+                residual - slope * value for residual, value in zip(residuals, centred, strict=True)
+            ]
+
+    mean = sum(values) / count
+    total = sum((value - mean) ** 2 for value in values)
+    left = sum(value * value for value in residuals)
+    explained = 1.0 - left / total if total > MIN_DISPERSION else 0.0
+    return Neutralised(residuals, len(members), alone, explained)
 
 
 def t_ratio(new: float, old: float) -> float | None:

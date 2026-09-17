@@ -26,6 +26,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import datetime as dt
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -44,7 +45,7 @@ from stock_ai.backtest.reversal import BENCHMARK, MAX_SESSION_MOVE
 from stock_ai.core.logging import get_logger
 from stock_ai.data.schema import CLOSE, OPEN, VOLUME, split_adjusted
 from stock_ai.database.engine import Database
-from stock_ai.database.repository import PriceRepository, list_securities
+from stock_ai.database.repository import PriceRepository, get_profile, list_securities
 
 logger = get_logger(__name__)
 
@@ -81,6 +82,21 @@ NEEDS_VALUATION: frozenset[str] = frozenset({"バリュー"})
 
 
 @dataclass(frozen=True)
+class Context:
+    """1銘柄・1ヶ月ぶんの、signal ではない属性。
+
+    **共通因子を抜くのに要る。** signal と一緒の組に入れないのは、
+    `composite()` が signal を全部標準化して足してしまうからである——
+    業種を数値にして足すと、**例外は出ないまま業種が1つの因子になる。**
+    """
+
+    symbol: str
+    sector: str
+    size: float
+    """20営業日平均売買代金の対数。**円のままだと桁で回帰が効かない。**"""
+
+
+@dataclass(frozen=True)
 class Panel:
     """月ごとの断面。**因子は signal の組で持つ。**
 
@@ -101,6 +117,13 @@ class Panel:
     excluded_thin: int = 0
     excluded_no_pbr: int = 0
     """PBR が無い（または 0 以下）ので外した銘柄月。**0 で埋めていない。**"""
+
+    context: list[list[Context]] = dataclasses.field(default_factory=list)
+    """`sections` と同じ並びの、銘柄・業種・規模。
+
+    **同じ並びであることが要る。** ずれると、別の銘柄の業種でリターンを
+    中立化することになる。**例外は出ない。**
+    """
 
     def column(self, factor: str) -> list[list[tuple[float, float]]]:
         """1因子だけを取り出して、``(signal, 翌月リターン)`` の断面にする。
@@ -246,6 +269,8 @@ def build_panel(
         # 市場を絞る引数は無い。** `lowvol` と同じ呼び方にそろえる。
         targets = symbols or [sym for sym, market in list_securities(session) if market == "JP"]
         buckets: dict[int, list[tuple[tuple[float, ...], float]]] = {i: [] for i, _ in usable}
+        meta: dict[int, list[Context]] = {i: [] for i, _ in usable}
+        sector_of = {symbol: (get_profile(session, symbol) or None) for symbol in targets}
         no_history = thin = discontinuous = no_pbr = 0
 
         for symbol in targets:
@@ -311,10 +336,21 @@ def build_panel(
                     no_history += 1
                     continue
                 buckets[index].append((signals, float(opens[exit_at] / opens[entry] - 1.0)))
+                profile = sector_of.get(symbol)
+                meta[index].append(
+                    Context(
+                        symbol=symbol,
+                        sector=(getattr(profile, "sector", "") or ""),
+                        # **対数にする。** 円のままだと 1e8 と 1e11 が同じ桁に
+                        # 見えず、回帰が最大の銘柄だけで決まる。
+                        size=float(np.log(level)) if level > 0 else 0.0,
+                    )
+                )
 
     months: list[dt.date] = []
     bench_returns: list[float] = []
     sections: list[list[tuple[tuple[float, ...], float]]] = []
+    context: list[list[Context]] = []
     thin_month = 0
     for index, position in usable:
         members = buckets[index]
@@ -330,6 +366,7 @@ def build_panel(
         months.append(calendar[position].date())
         bench_returns.append(float(leave / entry - 1.0))
         sections.append(members)
+        context.append(meta[index])
 
     panel = Panel(
         factors=chosen,
@@ -342,6 +379,7 @@ def build_panel(
         excluded_no_history=no_history,
         excluded_thin=thin,
         excluded_no_pbr=no_pbr,
+        context=context,
     )
     logger.info(
         "因子盤面: %s、%d ヶ月、1ヶ月あたり中央値 %d 銘柄",

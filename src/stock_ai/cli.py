@@ -2107,6 +2107,219 @@ def pead_run(
         )
 
 
+@app.command(name="revision-power")
+def revision_power(  # noqa: PLR0913 - §0 が固定した条件をすべて受け取る
+    directory: str = typer.Option(
+        str(DEFAULT_ARCHIVE_DIR), "--dir", help="Where the archived originals live."
+    ),
+    benchmark: str = typer.Option(BENCHMARK, "--benchmark", help="Sets the calendar."),
+    min_turnover: float = typer.Option(MIN_TURNOVER, "--min-turnover", help="Liquidity floor."),
+    holding: int = typer.Option(20, "--holding", help="Sessions held, fixed by the prereg."),
+    limit: int | None = typer.Option(None, "--limit", help="Read only the first N originals."),
+) -> None:
+    """Measure the IS spread for #5, so the gate can be applied.
+
+    **判定ではない。** 見るのは IS（原本が覆う期間の前半）だけで、OOS には
+    1日も触れない。
+
+    **測る前にコミットした線がある**（事前登録 §0）——「IS の1イベントあたり
+    平均超過リターンの片側95%下限が **1.2%** を下回ったら封印しない」。
+    往復費用 0.4% の3倍である。**下回ればここで終わる。線は動かさない。**
+
+    窓は **20営業日**（§3・§4）。**#8 のように機構から出る説ではない**ので、
+    #3・#6 と揃えてある。**リターンを見て決めていない。**
+    """
+    from stock_ai.backtest.event_window import event_returns
+    from stock_ai.backtest.multiplicity import HYPOTHESIS_BUDGET, required_t
+    from stock_ai.backtest.pead import TURNOVER_WINDOW
+    from stock_ai.backtest.power import (
+        estimate_power,
+        gate,
+        periods_needed,
+        trimmed_variance,
+    )
+    from stock_ai.backtest.reversal import COST_ROUND_TRIP
+    from stock_ai.backtest.revision_census import REVISION_TYPE, census, find_upward
+    from stock_ai.data.jquants_bulk import records_from_csv
+    from stock_ai.data.schema import VOLUME
+    from stock_ai.data.universe import four_digit_code
+
+    settings = get_settings()
+    configure_logging(settings.log_level)
+
+    source = Path(directory)
+    keys = [key for key in sorted(read_manifest(source)) if endpoint_of(key) == "/fins/summary"]
+    if limit is not None:
+        keys = keys[:limit]
+    if not keys:
+        console.print(f"[red]{source} に `/fins/summary` の原本が無い。[/]")
+        raise typer.Exit(code=1)
+
+    items = []
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        BarColumn(),
+        TaskProgressColumn(),
+        TimeRemainingColumn(),
+        console=console,
+    ) as progress:
+        task = progress.add_task("原本を読む", total=len(keys))
+        for index, key in enumerate(keys, start=1):
+            progress.update(task, completed=index)
+            try:
+                items.extend(records_from_csv(read_archived(path_for(source, key))))
+            except Exception as exc:  # noqa: BLE001 - どこで読めないかが記録に値する
+                console.print(f"[yellow]{key}: {type(exc).__name__}[/]")
+
+    database = Database()
+    database.create_all()
+    with database.session() as session:
+        price_repo = PriceRepository(session)
+        if price_repo.get_raw_prices(benchmark).empty:
+            console.print(f"[red]ベンチマーク {benchmark!r} の価格が無い。[/]")
+            raise typer.Exit(code=1)
+        liquid: dict[tuple[str, dt.date], bool] = {}
+        symbols = sorted(
+            {
+                code
+                for row in items
+                if (row.get("DocType") or "").strip() == REVISION_TYPE
+                and (code := four_digit_code((row.get("Code") or "").strip())) is not None
+            }
+        )
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            BarColumn(),
+            TaskProgressColumn(),
+            TimeRemainingColumn(),
+            console=console,
+        ) as progress:
+            task = progress.add_task("売買代金を読む", total=len(symbols))
+            for index, symbol in enumerate(symbols, start=1):
+                progress.update(task, completed=index)
+                raw = price_repo.get_raw_prices(symbol)
+                if raw.empty:
+                    continue
+                rolling = (
+                    (raw[CLOSE] * raw[VOLUME]).rolling(TURNOVER_WINDOW).mean().shift(1).dropna()
+                )
+                for stamp, value in rolling.items():
+                    liquid[(symbol, stamp.date())] = bool(value >= min_turnover)
+
+    def liquid_on(symbol: str, on: dt.date) -> bool:
+        return liquid.get((symbol, on), False)
+
+    counted = census(items, liquid_on=liquid_on)
+    if not counted.events_is:
+        console.print("[red]IS に使えるイベントが無い。[/] `revision-census` を先に見ること。")
+        raise typer.Exit(code=1)
+
+    console.print(
+        f"[dim]IS は {counted.split_on} まで（{counted.events_is:,} 件）。"
+        f"OOS（{counted.events_oos:,} 件）には1日も触れない。窓は {holding} 営業日。[/]"
+    )
+
+    events, _seen = find_upward(items)
+    kept = [
+        (event.symbol, event.disclosed_on)
+        for event in events
+        if not event.on_statement_day and liquid_on(event.symbol, event.disclosed_on)
+    ]
+    values = event_returns(
+        database, kept, holding=holding, benchmark=benchmark, until=counted.split_on
+    )
+    if len(values) < 2:
+        console.print(f"[red]値動きの取れたイベント日が {len(values)} しかない。[/]")
+        raise typer.Exit(code=1)
+
+    # **ロングである。** 仮説は超過リターンが正だと言っている（§1）ので、
+    # 符号は反転しない。費用は往復 0.4%（§4）。
+    take = [value - COST_ROUND_TRIP for value in values]
+
+    estimate = estimate_power(take, lags=holding)
+    target = required_t(HYPOTHESIS_BUDGET)
+    mean = fmean(take)
+    stderr = estimate.standard_error(len(take))
+    # **片側95%。** 事前登録 §0 が片側で書いている。
+    floor_estimate = mean - 1.645 * stderr
+    # **独立な観測は「日」である。** 系列は日ごとの等加重バスケットなので、
+    # 件数で割ると n を水増しする。IS は 1,827 件が 831 日にまとまっていた
+    # ——2.2倍で、検出できる差は平方根ぶん **1.48倍甘く出ていた**（2026-09-17）。
+    periods = counted.days_oos or counted.events_oos
+    detectable = estimate.detectable(periods, target_t=target)
+    trimmed, dropped = trimmed_variance(take, fraction=0.01)
+
+    table = Table(title="§0 に入れる材料（IS から。判定ではない）")
+    for column in ("項目", "値", "どこから"):
+        table.add_column(column, overflow="fold")
+    table.add_row("値動きの取れたイベント日", f"{len(values):,}", "IS のみ")
+    table.add_row("1イベントあたりのSD", f"{estimate.daily_sd:.2%}", "費用引き後のロング")
+    table.add_row(
+        "上位1%を除いたSD",
+        f"{trimmed**0.5:.2%}",
+        f"{dropped} 件を除いた。**外れ値で膨らんでいないか**",
+    )
+    table.add_row("重なりの膨張", f"{estimate.inflation:.2f}x", f"Newey-West({holding})。実測")
+    table.add_row(
+        "判定に使える期数",
+        f"{periods:,}",
+        f"**OOS の {counted.events_oos:,} 件が固まった日数。件数ではない**",
+    )
+    table.add_row("検出できる差", f"{detectable:.2%}", f"t≥{target:.2f}・1イベントあたり")
+    table.add_row("費用", f"{COST_ROUND_TRIP:.2%}", "往復。#6 の実測値を引く")
+    console.print(table)
+
+    console.print(
+        f"[bold]IS の取り高（費用引き後・ロング）: 1イベント {mean:+.2%}[/] "
+        f"[dim]（片側95%の下限 {floor_estimate:+.2%}）[/]"
+    )
+
+    console.print()
+    committed = 3 * COST_ROUND_TRIP
+    if floor_estimate < committed:
+        console.print(
+            f"[red]封印しない。[/] 片側95%の下限 {floor_estimate:+.2%} が、"
+            f"**測る前にコミットした線 {committed:.1%} を下回った。**"
+        )
+        console.print(
+            "[dim]事前登録 §0 にそう書いてある（往復費用 0.4% の3倍）。"
+            "**費用を超えるだけの線を置くと、#7 が入った帯にまっすぐ入る。** "
+            "線は動かさない。[/]"
+        )
+    else:
+        console.print(f"[green]線（{committed:.1%}）は上回った。[/] 次は §0 のゲートである。")
+        decision = gate(detectable, floor_estimate, mean + 1.645 * stderr)
+        colour = "green" if decision.passed else "red"
+        console.print(f"[bold {colour}]{decision.verdict}[/] {decision.reading}")
+        if decision.passed:
+            return
+
+    # **「検出力不足」で終わらせない。** 何イベントあれば足りるかを出す。
+    span = (counted.last - counted.first).days / 365.25 if counted.first else 0.0
+    per_year = counted.after_liquidity / span if span > 0 else 0.0
+    if per_year <= 0:
+        return
+    console.print()
+    needed = Table(title="この設計で検出するのに要るイベント数")
+    for column in ("検出したい効果", "要るイベント", "年数", "いまとの差"):
+        needed.add_column(column, justify="left" if column == "検出したい効果" else "right")
+    for effect in sorted({round(value, 6) for value in (committed, detectable) if value > 0}):
+        count = periods_needed(estimate.daily_sd, estimate.inflation, effect, target)
+        needed.add_row(
+            f"1イベント {effect:.2%}",
+            f"{count:,}",
+            f"{count / per_year:,.0f}年",
+            f"{count - periods:+,}" if count > periods else "足りている",
+        )
+    console.print(needed)
+    console.print(
+        f"[dim]手元は 1年あたり {per_year:.0f} 件（絞り込んだ後、{span:.1f}年で "
+        f"{counted.after_liquidity:,} 件）。**データはここから増えない。**[/]"
+    )
+
+
 @app.command(name="revision-census")
 def revision_census(
     symbols: list[str] | None = typer.Argument(None, help="JP codes; omit for every stored one."),
@@ -6969,7 +7182,9 @@ def margin_power(  # noqa: PLR0913 - §0 が固定した条件をすべて受け
     stderr = estimate.standard_error(len(take))
     # **片側95%。** 事前登録 §0 が片側で書いている。
     floor_estimate = mean - 1.645 * stderr
-    detectable = estimate.detectable(counted.events_oos, target_t=target)
+    # **独立な観測は「日」である**（2026-09-17 に #5 で見つけた形）。
+    periods = counted.days_oos or counted.events_oos
+    detectable = estimate.detectable(periods, target_t=target)
 
     table = Table(title="§0 に入れる材料（IS から。判定ではない）")
     for column in ("項目", "値", "どこから"):
@@ -6983,7 +7198,11 @@ def margin_power(  # noqa: PLR0913 - §0 が固定した条件をすべて受け
         f"{dropped} 件を除いた。**外れ値で膨らんでいないか**",
     )
     table.add_row("重なりの膨張", f"{estimate.inflation:.2f}x", f"Newey-West({window})。実測")
-    table.add_row("判定に使える期数", f"{counted.events_oos:,}", "**OOS のイベント数**")
+    table.add_row(
+        "判定に使える期数",
+        f"{periods:,}",
+        f"**OOS の {counted.events_oos:,} 件が固まった日数。件数ではない**",
+    )
     table.add_row("検出できる差", f"{detectable:.2%}", f"t≥{target:.2f}・1イベントあたり")
     table.add_row("費用", f"{COST_ROUND_TRIP:.2%}", "往復。#6 の実測値を引く")
     console.print(table)
@@ -7005,7 +7224,7 @@ def margin_power(  # noqa: PLR0913 - §0 が固定した条件をすべて受け
             "**費用を超えるだけの線を置くと、#7 が入った帯にまっすぐ入る。** "
             "線は動かさない。[/]"
         )
-        _events_needed(counted, estimate, target, committed, detectable)
+        _events_needed(counted, estimate, target, periods, committed, detectable)
         return
 
     console.print(f"[green]線（{committed:.1%}）は上回った。[/] 次は §0 のゲートである。")
@@ -7013,10 +7232,12 @@ def margin_power(  # noqa: PLR0913 - §0 が固定した条件をすべて受け
     colour = "green" if decision.passed else "red"
     console.print(f"[bold {colour}]{decision.verdict}[/] {decision.reading}")
     if not decision.passed:
-        _events_needed(counted, estimate, target, committed, detectable)
+        _events_needed(counted, estimate, target, periods, committed, detectable)
 
 
-def _events_needed(counted: object, estimate: object, target: float, *effects: float) -> None:
+def _events_needed(
+    counted: object, estimate: object, target: float, periods: int, *effects: float
+) -> None:
     """Say how many events the design would need - not just that it is short.
 
     **「検出力不足」で終わらせない。** 事前登録 §0 がそう定めている——
@@ -7040,9 +7261,7 @@ def _events_needed(counted: object, estimate: object, target: float, *effects: f
             f"1イベント {effect:.2%}",
             f"{count:,}",
             f"{count / per_year:,.0f}年",
-            f"{count - counted.events_oos:+,}"  # type: ignore[attr-defined]
-            if count > counted.events_oos  # type: ignore[attr-defined]
-            else "足りている",
+            f"{count - periods:+,}" if count > periods else "足りている",
         )
     console.print(table)
     console.print(
@@ -7050,6 +7269,352 @@ def _events_needed(counted: object, estimate: object, target: float, *effects: f
         f"{span:.1f}年で {counted.after_liquidity:,} 件）。"  # type: ignore[attr-defined]
         "**いちばん減らしているのは貸借の絞りだが、空売りできない銘柄で"
         "ショートを検証しないための絞りなので動かさない。**[/]"
+    )
+
+
+@app.command(name="revision-census")
+def revision_census_upward(
+    directory: str = typer.Option(
+        str(DEFAULT_ARCHIVE_DIR), "--dir", help="Where the archived originals live."
+    ),
+    min_turnover: float = typer.Option(MIN_TURNOVER, "--min-turnover", help="Liquidity floor."),
+    limit: int | None = typer.Option(None, "--limit", help="Read only the first N originals."),
+) -> None:
+    """Count the upward forecast revisions - no return is computed here.
+
+    **#5 の §0 の表を埋める。**
+
+    **リターンを1つも計算しない。** だから判定を消費しない。
+
+    **決算と同じ日に出た修正は外す**（§2）。#2・#3 と同じ日付集合を使わない
+    ためで、**それが再開の前提そのものである。**
+
+    読めなかったものを 0 に落とさない。会社予想が読めない行、前回の予想が無い
+    行、会計年度末が読めない行は**それぞれ数えて出す。** まとめて「修正なし」に
+    すると、**読めていないことが「修正が無かった」に化ける。**
+    """
+    from stock_ai.backtest.pead import TURNOVER_WINDOW
+    from stock_ai.backtest.revision_census import REVISION_TYPE, UPWARD_MIN, census
+    from stock_ai.data.jquants_bulk import records_from_csv
+    from stock_ai.data.schema import VOLUME
+    from stock_ai.data.universe import four_digit_code
+
+    settings = get_settings()
+    configure_logging(settings.log_level)
+
+    source = Path(directory)
+    keys = [key for key in sorted(read_manifest(source)) if endpoint_of(key) == "/fins/summary"]
+    if limit is not None:
+        keys = keys[:limit]
+    if not keys:
+        console.print(
+            f"[red]{source} に `/fins/summary` の原本が無い。[/] "
+            "**一括で保存したはずのものである。**"
+        )
+        raise typer.Exit(code=1)
+
+    console.print("[dim]リターンは1つも計算しない。判定は消費しない。[/]")
+    items = []
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        BarColumn(),
+        TaskProgressColumn(),
+        TimeRemainingColumn(),
+        console=console,
+    ) as progress:
+        task = progress.add_task("原本を読む", total=len(keys))
+        for index, key in enumerate(keys, start=1):
+            progress.update(task, completed=index)
+            try:
+                # **`FS` を経由しない。** 一括 CSV では `CurFYEn` も `FNP` も
+                # **原本の列そのもの**で、`FS` には鍵が1つも入っていない
+                # （2026-09-16、72,156 件で確認）。`parse_details` は `FS` の
+                # 中身しか `values` に入れないので、そこを読むと全滅する。
+                items.extend(records_from_csv(read_archived(path_for(source, key))))
+            except Exception as exc:  # noqa: BLE001 - どこで読めないかが記録に値する
+                console.print(f"[yellow]{key}: {type(exc).__name__}[/]")
+
+    database = Database()
+    database.create_all()
+    with database.session() as session:
+        price_repo = PriceRepository(session)
+        liquid: dict[tuple[str, dt.date], bool] = {}
+        symbols = sorted(
+            {
+                code
+                for row in items
+                if (row.get("DocType") or "").strip() == REVISION_TYPE
+                and (code := four_digit_code((row.get("Code") or "").strip())) is not None
+            }
+        )
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            BarColumn(),
+            TaskProgressColumn(),
+            TimeRemainingColumn(),
+            console=console,
+        ) as progress:
+            task = progress.add_task("売買代金を読む", total=len(symbols))
+            for index, symbol in enumerate(symbols, start=1):
+                progress.update(task, completed=index)
+                raw = price_repo.get_raw_prices(symbol)
+                if raw.empty:
+                    continue
+                rolling = (
+                    (raw[CLOSE] * raw[VOLUME]).rolling(TURNOVER_WINDOW).mean().shift(1).dropna()
+                )
+                for stamp, value in rolling.items():
+                    liquid[(symbol, stamp.date())] = bool(value >= min_turnover)
+
+    found = census(items, liquid_on=lambda symbol, on: liquid.get((symbol, on), False))
+    console.print(found.summary())
+
+    read = found.readability
+    table = Table(title="§0 の件数センサス（**リターンは入っていない**）")
+    for column in ("測るもの", "値"):
+        table.add_column(column, overflow="fold")
+    table.add_row(f"`{REVISION_TYPE}` の行", f"{read.rows:,}")
+    table.add_row("　会社予想が読めなかった", f"{read.no_forecast:,}")
+    table.add_row("　会計年度末が読めなかった", f"{read.no_fiscal_year:,}")
+    table.add_row("　前回の予想が無い", f"{read.no_previous:,}")
+    table.add_row(f"　下方修正（−{UPWARD_MIN:.0%} 以下）", f"{read.downward:,}")
+    table.add_row(f"　幅が小さい（±{UPWARD_MIN:.0%} 未満）", f"{read.too_small:,}")
+    table.add_row(f"[bold]　上方修正（+{UPWARD_MIN:.0%} 以上）[/]", f"[bold]{read.upward:,}[/]")
+    table.add_row("うち決算と同じ日（**外す**）", f"{found.on_statement_day:,}")
+    table.add_row("決算と別の日", f"{found.standalone:,}")
+    table.add_row("流動性の下限を通した後", f"{found.after_liquidity:,}")
+    table.add_row("　うち IS（推定に使う）", f"{found.events_is:,}")
+    table.add_row("[bold]　うち OOS（判定。§0 の期数）[/]", f"[bold]{found.events_oos:,}[/]")
+    table.add_row("イベントのあった日", f"{found.days_with_events:,}")
+    table.add_row("上位1割の日の占有", f"{found.busiest_share:.0%}")
+    table.add_row("同じ日に重なる修正（中央値）", f"{found.same_day_median:,}")
+    table.add_row("修正幅（中央値）", f"{found.change_median:+.1%}")
+    console.print(table)
+
+    if found.by_year:
+        years = Table(title="年ごとの上方修正（**平均だけ見ない**）")
+        for column in ("年", "件数"):
+            years.add_column(column, justify="right")
+        for year, count in found.by_year.items():
+            years.add_row(str(year), f"{count:,}")
+        console.print(years)
+
+    # **33% が読めないまま先に進まない。** どういう行が落ちているのかを出す。
+    #
+    # **`FNC…` は単体（非連結）である。** `F…` は連結。ここは数えるだけで、
+    # **読み替えない**——「連結と単体を取り違える」は名指しで戒めてある形である。
+    profile = read.missing_profile()
+    if profile:
+        missing = Table(title=f"会社予想が読めなかった {read.no_forecast:,} 件の中身")
+        for column in ("代わりに埋まっていた列", "件数", "割合"):
+            missing.add_column(column, justify="left" if column.startswith("代わり") else "right")
+        for name, count, share in profile[:12]:
+            note = "（単体）" if name.startswith("FNC") else ""
+            missing.add_row(f"{name}{note}", f"{count:,}", f"{share:.0%}")
+        console.print(missing)
+        if read.missing_by_year:
+            span = sorted(read.missing_by_year)
+            console.print(
+                f"[dim]読めなかった行の年: {span[0]} 〜 {span[-1]}、"
+                f"最多は {max(read.missing_by_year, key=lambda y: read.missing_by_year[y])} 年"
+                f"（{max(read.missing_by_year.values()):,} 件）。"
+                "**時代に偏っていないかを見る。**[/]"
+            )
+
+    for line in found.warnings():
+        console.print(f"[yellow]{line}[/]")
+
+    # **`FS` の外も見せる。** 探しているものが `FS` に無いとき、`FS` の鍵を
+    # いくら並べても答えにならない。原本そのものの列名を出す。
+    #
+    # 会計年度末が 72,156 件すべてで読めなかったとき、`FS` の鍵しか出して
+    # いなかった（2026-09-16）。**読み口が捨てている列は、読み口からは見えない。**
+    if read.rows and (read.no_fiscal_year == read.rows or read.no_forecast == read.rows):
+        sample = next(iter(records_from_csv(read_archived(path_for(source, keys[0])))), {})
+        console.print(
+            f"[yellow]原本そのものの列: {'、'.join(sorted(sample))}。"
+            "**`FS` の中だけを探していないか。**[/]"
+        )
+
+    console.print()
+    console.print(
+        f"[dim]IS と OOS の境は {found.split_on}（原本が覆う期間の真ん中）。"
+        "次は散らばりの実測（§0）で、そこで初めてリターンを触る。[/]"
+    )
+
+
+@app.command(name="estimator-gain")
+def estimator_gain(  # noqa: PLR0913 - 校正が固定した条件をすべて受け取る
+    factor: str = typer.Option("低ボラ", "--factor", help="Which factor to calibrate on."),
+    is_start: str = typer.Option("2009-01-01", "--is-start", help="First day of the IS window."),
+    is_end: str = typer.Option("2017-12-31", "--is-end", help="Last day of the IS window."),
+    valuation: str | None = typer.Option(None, "--valuation", help="Month-end PBR file."),
+    window: int = typer.Option(DEFAULT_WINDOW, "--window", help="Volatility window in sessions."),
+    min_symbols: int = typer.Option(MIN_SYMBOLS_PER_MONTH, "--min-symbols", help="Per month."),
+    lags: int = typer.Option(LOWVOL_LAGS, "--lags", help="Newey-West lags, in months."),
+) -> None:
+    """Measure r, the t gain from taking sector and size out of the returns.
+
+    **判定ではない。** 推定量の校正であって、説の合否ではない。見るのは IS だけ
+    である。
+
+    **1つ目の校正（分位ソート → 横断回帰）は 0.93倍で終わった。** これが2つ目
+    で、**残っている最後の手**である——どの説も市場βしか引いていない。
+
+    しきい値は測る前に確定してある（`docs/HYPOTHESES.md`「2つ目の校正」）。
+    **r ≥ 1.4 で動いた、1.2 ≤ r < 1.4 は曖昧域で打ち切り、r < 1.2 は動かない。**
+    1.4 の出どころは #7 で、**1.38倍あれば足りていた。**
+
+    **`t` 比で測る。SD 比ではない。** 推定量を変えると効果も一緒に縮むので、
+    SD 比だと改善が無料で出たように見える。
+
+    **判定済みの説を測り直すのに使わない**（2026-09-16、ユーザーの判断）。
+    答えを見た後で測り方を変えることになる。
+    """
+    from stock_ai.backtest.cross_section import beta_to_benchmark, build_estimators, neutralise
+    from stock_ai.backtest.cross_section import t_ratio as ratio_of
+    from stock_ai.backtest.factor_panel import NEEDS_VALUATION, build_panel
+    from stock_ai.backtest.power import (
+        NEUTRAL_AMBIGUOUS,
+        NEUTRAL_PROCEED,
+        estimate_power,
+        neutral_verdict,
+    )
+    from stock_ai.data.valuation_monthly import DEFAULT_PATH
+    from stock_ai.data.valuation_monthly import read as read_valuation
+
+    settings = get_settings()
+    configure_logging(settings.log_level)
+
+    begin, cut = _parse_date(is_start), _parse_date(is_end)
+    if begin is None or cut is None or begin >= cut:
+        raise typer.BadParameter("--is-start/--is-end must be YYYY-MM-DD and in order.")
+
+    frame = None
+    if factor in NEEDS_VALUATION:
+        frame = read_valuation(Path(valuation) if valuation else DEFAULT_PATH)
+        if frame.empty:
+            console.print("[red]月末の PBR が無い。[/]")
+            raise typer.Exit(code=1)
+
+    console.print("[bold yellow]これは判定ではない。[/] 推定量の校正である。")
+    console.print(
+        "[dim]しきい値は測る前に確定済み（`docs/HYPOTHESES.md`）。"
+        "**r ≥ 1.4 で動いた、1.2〜1.4 は打ち切り。** 見てから動かさない。[/]"
+    )
+    console.print()
+
+    database = Database()
+    database.create_all()
+    try:
+        panel = build_panel(
+            database,
+            factors=(factor,),
+            start=begin,
+            end=cut,
+            window=window,
+            min_symbols=min_symbols,
+            valuation=frame,
+        )
+    except ValueError as error:
+        console.print(f"[red]盤面を作れなかった: {error}[/]")
+        raise typer.Exit(code=1) from error
+
+    column = panel.column(factor)
+
+    # **月を揃える。** 中立化できない月は両方から落とす。揃っていない系列の
+    # t を比べると、推定量の差ではなく期間の差を測ることになる。
+    plain: list[list[tuple[float, float]]] = []
+    neutral: list[list[tuple[float, float]]] = []
+    bench: list[float] = []
+    skipped = 0
+    explained: list[float] = []
+    for month, (rows, meta, mark) in enumerate(
+        zip(column, panel.context, panel.benchmark, strict=True)
+    ):
+        forwards = [forward for _signal, forward in rows]
+        taken = neutralise(forwards, [item.sector for item in meta], [item.size for item in meta])
+        if taken is None:
+            skipped += 1
+            continue
+        plain.append(rows)
+        neutral.append(
+            [
+                (signal, residual)
+                for (signal, _forward), residual in zip(rows, taken.residuals, strict=True)
+            ]
+        )
+        bench.append(mark)
+        explained.append(taken.explained)
+        del month
+
+    if len(plain) < 2:
+        console.print(f"[red]中立化できた月が {len(plain)} しかない。[/]")
+        raise typer.Exit(code=1)
+
+    # (a) いまの方法 — 生のスプレッドから市場βを引く。
+    built = build_estimators(plain, bench, higher_is_better=True)
+    beta = beta_to_benchmark(built.quantile_spread, built.benchmark)
+    before = built.alpha(built.quantile_spread, beta)
+    # (b) 中立版 — 断面回帰の残差から、**さらに市場βを引く。**
+    #
+    # 最初は引いていなかった。「定数項が入るので市場は自動で抜ける」と書いたが、
+    # **ロングショートのスプレッドでは定数項は相殺される**——全銘柄から同じ値を
+    # 引いても、上位平均 − 下位平均は変わらない。**(b) だけ市場が残ったまま
+    # 比べていた**（2026-09-16）。低ボラの Q1−Q5 は β が負なので、(b) を不利に
+    # する向きだった。
+    #
+    # コミットした文書は「市場β ＋ 業種 ＋ 規模」と書いてある。**実装のほうを
+    # 合わせる。しきい値は動かさない。**
+    after_built = build_estimators(neutral, bench, higher_is_better=True)
+    after_beta = beta_to_benchmark(after_built.quantile_spread, after_built.benchmark)
+    after = after_built.alpha(after_built.quantile_spread, after_beta)
+
+    rows_out = []
+    for label, values in (("(a) 市場βだけ引く", before), ("(b) 業種・規模も抜く", after)):
+        estimate = estimate_power(values, lags=lags)
+        stderr = estimate.standard_error(len(values))
+        rows_out.append((label, estimate, fmean(values) / stderr if stderr > 0 else float("nan")))
+
+    table = Table(title=f"共通因子を抜いた利得（{factor}・IS のみ。**判定ではない**）")
+    for name in ("推定量", "月数", "1期あたりのSD", "重なりの膨張", "t"):
+        table.add_column(name, overflow="fold")
+    for label, estimate, value in rows_out:
+        table.add_row(
+            label,
+            f"{estimate.observations}",
+            f"{estimate.daily_sd:.2%}",
+            f"{estimate.inflation:.2f}x",
+            f"[bold]{value:+.2f}[/]",
+        )
+    console.print(table)
+    share = median(explained)
+    console.print(
+        f"[dim]業種と規模で説明できた断面の分散: 中央値 {share:.0%}"
+        f"（中立化できずに落とした月 {skipped}）。**0% なら抜けていない。**[/]"
+    )
+    # **ここが天井である。** 分散を x しか説明していないものを完全に抜いても、
+    # 分散低減から来る t の改善は √(1/(1−x)) を超えない。**比を見る前に、
+    # 届きうるかどうかがここで決まる。**
+    if 0.0 < share < 1.0:
+        ceiling = (1.0 / (1.0 - share)) ** 0.5
+        console.print(
+            f"[dim]**分散低減だけから来る t の天井は {ceiling:.2f}倍**である"
+            f"（√(1/(1−{share:.0%})））。しきい値の下端は "
+            f"{NEUTRAL_AMBIGUOUS:.1f} で、**天井がその下なら比を見るまでもない。**[/]"
+        )
+
+    gain = ratio_of(rows_out[1][2], rows_out[0][2])
+    verdict, reading = neutral_verdict(gain)
+    console.print()
+    console.print(f"[bold]r = {gain:.2f}[/]" if gain is not None else "[bold]r は出せない[/]")
+    colour = "green" if verdict == NEUTRAL_PROCEED else "red"
+    console.print(f"[bold {colour}]{verdict}[/] {reading}")
+    console.print(
+        "[dim]**SD 比ではなく t 比である。** 推定量を変えると効果も一緒に縮む。"
+        "SD 比を見ると、改善が無料で出たように見える。[/]"
     )
 
 
