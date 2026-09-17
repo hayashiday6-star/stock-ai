@@ -2244,7 +2244,11 @@ def revision_power(  # noqa: PLR0913 - §0 が固定した条件をすべて受�
     stderr = estimate.standard_error(len(take))
     # **片側95%。** 事前登録 §0 が片側で書いている。
     floor_estimate = mean - 1.645 * stderr
-    detectable = estimate.detectable(counted.events_oos, target_t=target)
+    # **独立な観測は「日」である。** 系列は日ごとの等加重バスケットなので、
+    # 件数で割ると n を水増しする。IS は 1,827 件が 831 日にまとまっていた
+    # ——2.2倍で、検出できる差は平方根ぶん **1.48倍甘く出ていた**（2026-09-17）。
+    periods = counted.days_oos or counted.events_oos
+    detectable = estimate.detectable(periods, target_t=target)
     trimmed, dropped = trimmed_variance(take, fraction=0.01)
 
     table = Table(title="§0 に入れる材料（IS から。判定ではない）")
@@ -2258,7 +2262,11 @@ def revision_power(  # noqa: PLR0913 - §0 が固定した条件をすべて受�
         f"{dropped} 件を除いた。**外れ値で膨らんでいないか**",
     )
     table.add_row("重なりの膨張", f"{estimate.inflation:.2f}x", f"Newey-West({holding})。実測")
-    table.add_row("判定に使える期数", f"{counted.events_oos:,}", "**OOS のイベント数**")
+    table.add_row(
+        "判定に使える期数",
+        f"{periods:,}",
+        f"**OOS の {counted.events_oos:,} 件が固まった日数。件数ではない**",
+    )
     table.add_row("検出できる差", f"{detectable:.2%}", f"t≥{target:.2f}・1イベントあたり")
     table.add_row("費用", f"{COST_ROUND_TRIP:.2%}", "往復。#6 の実測値を引く")
     console.print(table)
@@ -2303,7 +2311,7 @@ def revision_power(  # noqa: PLR0913 - §0 が固定した条件をすべて受�
             f"1イベント {effect:.2%}",
             f"{count:,}",
             f"{count / per_year:,.0f}年",
-            f"{count - counted.events_oos:+,}" if count > counted.events_oos else "足りている",
+            f"{count - periods:+,}" if count > periods else "足りている",
         )
     console.print(needed)
     console.print(
@@ -7174,7 +7182,9 @@ def margin_power(  # noqa: PLR0913 - §0 が固定した条件をすべて受け
     stderr = estimate.standard_error(len(take))
     # **片側95%。** 事前登録 §0 が片側で書いている。
     floor_estimate = mean - 1.645 * stderr
-    detectable = estimate.detectable(counted.events_oos, target_t=target)
+    # **独立な観測は「日」である**（2026-09-17 に #5 で見つけた形）。
+    periods = counted.days_oos or counted.events_oos
+    detectable = estimate.detectable(periods, target_t=target)
 
     table = Table(title="§0 に入れる材料（IS から。判定ではない）")
     for column in ("項目", "値", "どこから"):
@@ -7188,7 +7198,11 @@ def margin_power(  # noqa: PLR0913 - §0 が固定した条件をすべて受け
         f"{dropped} 件を除いた。**外れ値で膨らんでいないか**",
     )
     table.add_row("重なりの膨張", f"{estimate.inflation:.2f}x", f"Newey-West({window})。実測")
-    table.add_row("判定に使える期数", f"{counted.events_oos:,}", "**OOS のイベント数**")
+    table.add_row(
+        "判定に使える期数",
+        f"{periods:,}",
+        f"**OOS の {counted.events_oos:,} 件が固まった日数。件数ではない**",
+    )
     table.add_row("検出できる差", f"{detectable:.2%}", f"t≥{target:.2f}・1イベントあたり")
     table.add_row("費用", f"{COST_ROUND_TRIP:.2%}", "往復。#6 の実測値を引く")
     console.print(table)
@@ -7210,7 +7224,7 @@ def margin_power(  # noqa: PLR0913 - §0 が固定した条件をすべて受け
             "**費用を超えるだけの線を置くと、#7 が入った帯にまっすぐ入る。** "
             "線は動かさない。[/]"
         )
-        _events_needed(counted, estimate, target, committed, detectable)
+        _events_needed(counted, estimate, target, periods, committed, detectable)
         return
 
     console.print(f"[green]線（{committed:.1%}）は上回った。[/] 次は §0 のゲートである。")
@@ -7218,10 +7232,12 @@ def margin_power(  # noqa: PLR0913 - §0 が固定した条件をすべて受け
     colour = "green" if decision.passed else "red"
     console.print(f"[bold {colour}]{decision.verdict}[/] {decision.reading}")
     if not decision.passed:
-        _events_needed(counted, estimate, target, committed, detectable)
+        _events_needed(counted, estimate, target, periods, committed, detectable)
 
 
-def _events_needed(counted: object, estimate: object, target: float, *effects: float) -> None:
+def _events_needed(
+    counted: object, estimate: object, target: float, periods: int, *effects: float
+) -> None:
     """Say how many events the design would need - not just that it is short.
 
     **「検出力不足」で終わらせない。** 事前登録 §0 がそう定めている——
@@ -7245,9 +7261,7 @@ def _events_needed(counted: object, estimate: object, target: float, *effects: f
             f"1イベント {effect:.2%}",
             f"{count:,}",
             f"{count / per_year:,.0f}年",
-            f"{count - counted.events_oos:+,}"  # type: ignore[attr-defined]
-            if count > counted.events_oos  # type: ignore[attr-defined]
-            else "足りている",
+            f"{count - periods:+,}" if count > periods else "足りている",
         )
     console.print(table)
     console.print(

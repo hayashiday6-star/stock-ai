@@ -299,6 +299,15 @@ class RevisionCensusReport:
     events_oos: int
     change_median: float
     readability: Readability
+    days_is: int = 0
+    days_oos: int = 0
+    """**独立な観測は「日」である。** 同じ日の修正は等加重の1つにまとめるので、
+    系列の長さはイベント数ではなく**日数**になる。
+
+    **件数で割ると n を水増しする。** IS は 1,827 件が 831 日にまとまった——
+    2.2倍である。検出できる差はその平方根ぶん、**1.48倍甘く出ていた**
+    （2026-09-17）。
+    """
 
     @property
     def standalone(self) -> int:
@@ -324,6 +333,11 @@ class RevisionCensusReport:
             found.append(
                 f"**上位1割の日が全体の {self.busiest_share:.0%} を占める。** "
                 "同じ日に固まると独立な観測が減り、標準誤差が膨らむ。"
+            )
+        if self.days_oos and self.events_oos and self.days_oos < self.events_oos / 2:
+            found.append(
+                f"**OOS の {self.events_oos:,} 件は {self.days_oos:,} 日に固まっている。** "
+                "独立な観測は日のほうで、**件数で検出力を計算すると甘く出る。**"
             )
         if self.events_oos and self.events_oos < MIN_EVENTS_OOS:
             found.append(
@@ -359,7 +373,7 @@ def census(
     events, seen = find_upward(records, min_change=min_change)
     if not events:
         return RevisionCensusReport(
-            0, {}, None, None, 0, float("nan"), 0, 0, 0, None, 0, 0, float("nan"), seen
+            0, {}, None, None, 0, float("nan"), 0, 0, 0, None, 0, 0, float("nan"), seen, 0, 0
         )
 
     # **決算と同じ日は外す**（§2）。#2・#3 と同じ日付集合を使わないため。
@@ -390,6 +404,8 @@ def census(
         split_on=split,
         events_is=sum(1 for event in liquid if event.disclosed_on <= split),
         events_oos=sum(1 for event in liquid if event.disclosed_on > split),
+        days_is=len({event.disclosed_on for event in liquid if event.disclosed_on <= split}),
+        days_oos=len({event.disclosed_on for event in liquid if event.disclosed_on > split}),
         change_median=median([event.change for event in liquid]) if liquid else float("nan"),
         readability=seen,
     )

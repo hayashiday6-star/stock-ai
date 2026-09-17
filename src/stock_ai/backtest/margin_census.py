@@ -165,6 +165,16 @@ class MarginCensus:
     events_is: int = 0
     """**絞り込んだ後の** IS のイベント数。見込みと分散を推定する側。"""
 
+    days_is: int = 0
+    days_oos: int = 0
+    """**独立な観測は「日」である。** 同じ日の発動は等加重の1つにまとめるので、
+    系列の長さはイベント数ではなく**日数**になる。
+
+    **件数で割ると n を水増しする。** #5 では 1,827 件が 831 日にまとまって
+    いて、検出できる差が **1.48倍甘く出ていた**（2026-09-17）。#8 は同じ日に
+    重なる発動の中央値が 1 なので差は小さいが、**形は同じである。**
+    """
+
     events_oos: int = 0
     """**絞り込んだ後の** OOS のイベント数。
 
@@ -423,6 +433,8 @@ def census(  # noqa: PLR0913 - §2 が固定した絞り込みをすべて受け
         split_on=split,
         events_is=sum(1 for spell in liquid if spell.onset <= split),
         events_oos=sum(1 for spell in liquid if spell.onset > split),
+        days_is=len({spell.onset for spell in liquid if spell.onset <= split}),
+        days_oos=len({spell.onset for spell in liquid if spell.onset > split}),
     )
     logger.info(
         "増担保センサス: 発動 %d 件、貸借 %d 件、流動性通過 %d 件、窓 %d 営業日",

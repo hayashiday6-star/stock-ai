@@ -534,3 +534,48 @@ class TestWhatFillsTheRowsWhereTheForecastIsEmpty:
         _events, seen = find_upward([_row(_DAY, forecast=100.0)])
 
         assert seen.missing_profile() == []
+
+
+class TestTheIndependentObservationIsTheDay:
+    """**同じ日の修正は等加重の1つにまとまる。** 系列の長さは日数である。
+
+    件数で割ると n を水増しする。IS の 1,827 件は **831 日**にまとまっていて、
+    検出できる差は平方根ぶん **1.48倍甘く出ていた**（2026-09-17）。
+    """
+
+    @staticmethod
+    def _rows() -> list[dict[str, str]]:
+        found = [
+            _row(_DAY, symbol=f"130{index}", doc_type="FYFinancialStatements_Consolidated_JP")
+            for index in range(3)
+        ]
+        # 同じ日に3件。**日は1つ。**
+        for index in range(3):
+            found.append(_row(_later(10), symbol=f"130{index}", forecast=120.0))
+        return found
+
+    def test_the_day_count_is_not_the_event_count(self) -> None:
+        found = census(self._rows())
+
+        assert found.events_is + found.events_oos == 3
+        assert found.days_is + found.days_oos == 1
+
+    def test_clustering_that_halves_the_observations_is_warned_about(self) -> None:
+        found = census(self._rows(), split_on=_DAY)
+
+        assert found.events_oos == 3
+        assert found.days_oos == 1
+        assert any("固まっている" in line for line in found.warnings())
+
+    def test_one_event_a_day_raises_no_warning(self) -> None:
+        """**鳴りっぱなしにしない。** 固まっていなければ黙る。"""
+        rows = [
+            _row(_DAY, symbol="1301", doc_type="FYFinancialStatements_Consolidated_JP"),
+            _row(_later(10), symbol="1301", forecast=120.0),
+            _row(_later(20), symbol="1302", doc_type="FYFinancialStatements_Consolidated_JP"),
+            _row(_later(30), symbol="1302", forecast=120.0),
+        ]
+
+        found = census(rows)
+
+        assert not any("固まっている" in line for line in found.warnings())
