@@ -31,6 +31,12 @@ from stock_ai.core.logging import get_logger
 logger = get_logger(__name__)
 
 #: 記録が無いことを表す語。**空欄と区別する。**
+#: 構成の欄がこれを含む行は、**予算に数えない**。
+#:
+#: 陰性対照（乱数）が唯一の使い道である。**説ではないので、当たりを引こうと
+#: した回数に入らない。**
+CONTROL = "control"
+
 MISSING = "未記載"
 
 #: 判定として認める語。**これ以外は状態である**（`docs/PURPOSE.md`）。
@@ -123,6 +129,18 @@ class Hypothesis:
     def judged(self) -> bool:
         """判定を消費したか。**「未判定（…）」は判定ではない。**"""
         return any(self.verdict.startswith(word) for word in VERDICTS)
+
+    @property
+    def counted(self) -> bool:
+        """多重検定の予算に数えるか。
+
+        **陰性対照は数えない。** 世界について何も主張していないので、
+        「当たりを引こうとした回数」に入らない——補正が数えたいのはそれである。
+
+        **構成の欄で見分ける。** 判定の欄ではない——対照にも判定は出るので、
+        そこで分けると**対照の合格が本物の合格に混ざる。**
+        """
+        return CONTROL not in self.composition
 
     @property
     def source_recorded(self) -> bool:

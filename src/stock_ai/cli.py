@@ -135,6 +135,7 @@ from stock_ai.backtest.power import (
     required_improvement,
     trimmed_variance,
 )
+from stock_ai.backtest.rehearsal import SEED as REHEARSAL_SEED
 from stock_ai.backtest.report import metrics_frame
 from stock_ai.backtest.reversal import (
     BENCHMARK,
@@ -7445,6 +7446,170 @@ def revision_census_upward(
     )
 
 
+@app.command(name="rehearsal")
+def rehearsal(  # noqa: PLR0913 - 本物と同じ条件をすべて受け取る
+    is_start: str = typer.Option("2009-01-01", "--is-start", help="First day of the IS window."),
+    is_end: str = typer.Option("2017-12-31", "--is-end", help="Last day of the IS window."),
+    oos_end: str = typer.Option("2026-08-31", "--oos-end", help="Last day of the OOS window."),
+    seed: int = typer.Option(REHEARSAL_SEED, "--seed", help="Fixed, so the run reproduces."),
+    repeat: int = typer.Option(1, "--repeat", help="Draw this many signals, for calibration."),
+    window: int = typer.Option(DEFAULT_WINDOW, "--window", help="Volatility window in sessions."),
+    min_symbols: int = typer.Option(MIN_SYMBOLS_PER_MONTH, "--min-symbols", help="Per month."),
+    lags: int = typer.Option(LOWVOL_LAGS, "--lags", help="Newey-West lags, in months."),
+) -> None:
+    """Run a random signal through the whole pipe - the negative control.
+
+    **説ではない。** 乱数の signal は世界について何も主張していないので、
+    **多重検定の予算に入らない。** `§0` も通さない——§0 は「一度きりの判定を
+    弱い設計に使わない」ための関門で、**判定を消費しないものには守るものが無い。**
+
+    **signal だけを乱数にする。** 月も universe もリターンも本物のままである。
+    全部を乱数にすると、重なりも自己相関も消えて、**いちばん確かめたい部分が
+    消える。**
+
+    問いは1つ。**何も無いときに、この仕組みは合格を出すか。** 出したら仕組みが
+    壊れている。
+
+    `--repeat` を付けると、種を変えて回して **`t` の分布**を出す。帰無なら SD は
+    1.0 のはずで、**1.15 なら補正は足りていない。** 1回では分からない——
+    `t ≥ 3.02` を越える確率は 0.125% で、400回の期待値が 0.5 回だからである。
+    """
+    from stock_ai.backtest.cross_section import beta_to_benchmark, build_estimators
+    from stock_ai.backtest.factor_panel import build_panel
+    from stock_ai.backtest.multiplicity import HYPOTHESIS_BUDGET, required_t
+    from stock_ai.backtest.power import estimate_power
+    from stock_ai.backtest.rehearsal import calibrate, placebo_sections
+
+    settings = get_settings()
+    configure_logging(settings.log_level)
+
+    begin, cut, finish = _parse_date(is_start), _parse_date(is_end), _parse_date(oos_end)
+    if begin is None or cut is None or finish is None or not begin < cut < finish:
+        raise typer.BadParameter("--is-start < --is-end < --oos-end のこと。")
+    if repeat < 1:
+        raise typer.BadParameter("--repeat must be at least 1.")
+
+    target = required_t(HYPOTHESIS_BUDGET)
+    console.print("[bold yellow]これは説ではない。陰性対照である。[/]")
+    console.print(
+        "[dim]乱数の signal を、**本物と同じ管**に通す。別の管を作ったら、"
+        "確かめたことにならない。**予算には数えない。**[/]"
+    )
+    console.print()
+
+    database = Database()
+    database.create_all()
+
+    def panel_for(start: dt.date, end: dt.date):
+        return build_panel(
+            database,
+            factors=("低ボラ",),
+            start=start,
+            end=end,
+            window=window,
+            min_symbols=min_symbols,
+        )
+
+    try:
+        inside = panel_for(begin, cut)
+        outside = panel_for(cut + dt.timedelta(days=1), finish)
+    except ValueError as error:
+        console.print(f"[red]盤面を作れなかった: {error}[/]")
+        raise typer.Exit(code=1) from error
+
+    def score(panel, draw: int) -> float:
+        """Score one placebo draw through the same path a real factor takes."""
+        built = build_estimators(
+            placebo_sections(panel.sections, seed=draw),
+            panel.benchmark,
+            higher_is_better=True,
+        )
+        if built.months < 2:
+            return float("nan")
+        beta = beta_to_benchmark(built.quantile_spread, built.benchmark)
+        values = built.alpha(built.quantile_spread, beta)
+        estimate = estimate_power(values, lags=lags)
+        stderr = estimate.standard_error(len(values))
+        return fmean(values) / stderr if stderr > 0 else float("nan")
+
+    console.print(
+        f"[dim]IS {begin} 〜 {cut}（{len(inside.months)}ヶ月）、"
+        f"OOS {cut} 〜 {finish}（{len(outside.months)}ヶ月）。種 {seed}。[/]"
+    )
+
+    # --- 1回だけ、端から端まで ----------------------------------------------
+    inside_t = score(inside, seed)
+    outside_t = score(outside, seed)
+
+    table = Table(title="陰性対照を端から端まで（**説ではない**）")
+    for column in ("段", "何をしたか", "結果"):
+        table.add_column(column, overflow="fold")
+    table.add_row("IS", "乱数 signal で分位を組み、α の t を出す", f"t {inside_t:+.2f}")
+    table.add_row("封印", "**§0 は通さない**（判定を消費しないので守るものが無い）", "—")
+    table.add_row("OOS", "**一度だけ**回す", f"[bold]t {outside_t:+.2f}[/]")
+    table.add_row("判定", f"合格は `t ≥ {target:.2f}`（予算 {HYPOTHESIS_BUDGET} 本）", "")
+    console.print(table)
+
+    passed = outside_t >= target
+    if passed:
+        console.print(
+            f"[bold red]合格が出た。[/] **仕組みが壊れている。** "
+            f"乱数の signal に `t {outside_t:+.2f}` が出るのは、"
+            "起きるとしても 0.125% のはずである。**種を変えて確かめること。**"
+        )
+    else:
+        console.print(
+            "[green]不合格。[/] **何も無いところに合格は出なかった。** "
+            "これが 4本の「封印せず」より強い保証になる——"
+            "**関門ではなく、判定そのものを通した結果である。**"
+        )
+
+    if repeat < 2:
+        console.print()
+        console.print(
+            "[dim]**1回では校正できない。** `t ≥ 3.02` を越える確率は 0.125% で、"
+            "400回の期待値が 0.5 回である。`-Repeat 400` で `t` の分布を見ること。[/]"
+        )
+        return
+
+    # --- 何度も回して、t の形を見る ------------------------------------------
+    scores: list[float] = []
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        BarColumn(),
+        TaskProgressColumn(),
+        TimeRemainingColumn(),
+        console=console,
+    ) as progress:
+        task = progress.add_task("種を変えて回す", total=repeat)
+        for index in range(repeat):
+            progress.update(task, completed=index + 1)
+            scores.append(score(outside, seed + index))
+
+    found = calibrate(scores, target)
+    shape = Table(title=f"帰無の下での `t` の形（{found.runs} 回）")
+    for column in ("項目", "実測", "帰無なら"):
+        shape.add_column(column, overflow="fold")
+    shape.add_row("t の SD", f"[bold]{found.spread:.2f}[/]", "1.00")
+    shape.add_row("t の平均", f"{found.mean:+.2f}", "0.00")
+    shape.add_row("|t| ≥ 1.96", f"{found.plain_share:.1%}", "5.0%")
+    shape.add_row(f"|t| ≥ {target:.2f}", f"{found.strict_share:.2%}", "0.25%")
+    shape.add_row("いちばん大きい t", f"{found.worst:+.2f}", "—")
+    console.print(shape)
+
+    console.print(
+        f"[dim]実測の散らばりの下では、`t ≥ {target:.2f}` は本当は "
+        f"**両側 {found.implied_level(target):.2%}** に当たる（設計は 0.25%）。[/]"
+    )
+    for line in found.warnings():
+        console.print(f"[yellow]{line}[/]")
+    if found.calibrated and not found.warnings():
+        console.print(
+            "[green]`t` は素直に効いている。[/] **判定の線は、見かけどおりの意味を持つ。**"
+        )
+
+
 @app.command(name="value-reconcile")
 def value_reconcile(  # noqa: PLR0913 - 揃える条件をすべて受け取る
     rosters: str = typer.Option(
@@ -8273,9 +8438,14 @@ def hypothesis_report(
         )
     console.print(table)
 
-    judged = [hypothesis for hypothesis in found if hypothesis.judged]
+    # **陰性対照は予算に数えない。** 世界について何も主張していないので、
+    # 「当たりを引こうとした回数」に入らない——補正が数えたいのはそれである。
+    counted = [hypothesis for hypothesis in found if hypothesis.counted]
+    judged = [hypothesis for hypothesis in counted if hypothesis.judged]
+    controls = len(found) - len(counted)
+    extra = f"（ほかに陰性対照が {controls} 本。**予算に数えない**）" if controls else ""
     console.print(
-        f"判定を消費したのは [bold]{len(judged)}[/] 本、登録は {len(found)} 本。"
+        f"判定を消費したのは [bold]{len(judged)}[/] 本、登録は {len(counted)} 本{extra}。"
         "[dim] 多重検定はこの本数で考える（`power-budget`）。[/]"
     )
     blank = [hypothesis for hypothesis in found if not hypothesis.source_recorded]
