@@ -320,3 +320,79 @@ class TestTheCalibratedLineIsUsedEverywhere:
         assert "陰性対照" in source
         assert "400" in source
         assert "月次・α・低ボラ universe" in source
+
+
+class TestTheFloorStopsTheCorrectionFromLoosening:
+    """**補正は足りない分を足すためのもので、割り引くためのものではない。**
+
+    イベント型の実測は 0.94 だった。当てれば線が 3.02 → 2.85 に緩む。
+    **緩める根拠になった測定が、同時に未解決の偏り（`t` の平均 +0.49）を出して
+    いる。**
+    """
+
+    def test_a_measurement_below_one_does_not_loosen(self) -> None:
+        from stock_ai.backtest.multiplicity import calibrated_t, required_t
+
+        assert calibrated_t(20, inflation=0.94) == pytest.approx(required_t(20))
+
+    def test_a_measurement_above_one_still_tightens(self) -> None:
+        from stock_ai.backtest.multiplicity import calibrated_t, required_t
+
+        assert calibrated_t(20, inflation=1.12) > required_t(20)
+
+    def test_the_two_pipes_have_their_own_numbers(self) -> None:
+        from stock_ai.backtest.multiplicity import (
+            MEASURED_INFLATION,
+            MEASURED_INFLATION_EVENT,
+        )
+
+        assert MEASURED_INFLATION != MEASURED_INFLATION_EVENT
+
+    def test_the_event_gates_use_the_event_number(self) -> None:
+        """**月次の 1.12 をイベント型に当てるのは、測った根拠の無い厳しさ。**"""
+        import inspect
+
+        from stock_ai import cli
+
+        for command in (cli.revision_power, cli.margin_power):
+            body = inspect.getsource(command)
+            assert "inflation=MEASURED_INFLATION_EVENT" in body, command.__name__
+
+    def test_both_measured_numbers_say_where_they_came_from(self) -> None:
+        import inspect
+
+        from stock_ai.backtest import multiplicity
+
+        source = inspect.getsource(multiplicity)
+
+        assert "イベント型の対照" in source
+        assert "平均が +0.49" in source
+
+
+class TestTheWatchLooksAtTheCentreNotOnlyTheSpread:
+    """**散らばりが素直でも、中心がずれていれば判定は歪む。**
+
+    最初は SD しか警告にしていなかった。`t` の平均が +0.49 出ているのに、
+    **表の1行に出しただけで素通りさせ、線を緩める向きに促した**（2026-09-17）。
+    """
+
+    def test_a_shifted_null_is_called_out(self) -> None:
+        import inspect
+
+        from stock_ai import cli
+
+        body = inspect.getsource(cli.rehearsal_events)
+
+        assert "found.mean" in body
+        assert "中心のずれ" in body
+
+    def test_it_names_the_most_likely_cause(self) -> None:
+        """**「ずれている」で終わらせない。** 疑う先を書く。"""
+        import inspect
+
+        from stock_ai import cli
+
+        body = inspect.getsource(cli.rehearsal_events)
+
+        assert "entry か exit を取れずに落ちる" in body
+        assert "#5・#8 にも掛かっている" in body

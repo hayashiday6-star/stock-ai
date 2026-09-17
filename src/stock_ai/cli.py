@@ -2133,6 +2133,7 @@ def revision_power(  # noqa: PLR0913 - §0 が固定した条件をすべて受�
     from stock_ai.backtest.event_window import event_returns
     from stock_ai.backtest.multiplicity import (
         HYPOTHESIS_BUDGET,
+        MEASURED_INFLATION_EVENT,
         calibrated_t,
     )
     from stock_ai.backtest.pead import TURNOVER_WINDOW
@@ -2243,7 +2244,9 @@ def revision_power(  # noqa: PLR0913 - §0 が固定した条件をすべて受�
     take = [value - COST_ROUND_TRIP for value in values]
 
     estimate = estimate_power(take, lags=holding)
-    target = calibrated_t(HYPOTHESIS_BUDGET)
+    # **イベント型の管は別に測ってある**（`MEASURED_INFLATION_EVENT`）。
+    # 月次の 1.12 をここに当てるのは、測った根拠の無い厳しさになる。
+    target = calibrated_t(HYPOTHESIS_BUDGET, inflation=MEASURED_INFLATION_EVENT)
     mean = fmean(take)
     stderr = estimate.standard_error(len(take))
     # **片側95%。** 事前登録 §0 が片側で書いている。
@@ -7097,6 +7100,7 @@ def margin_power(  # noqa: PLR0913 - §0 が固定した条件をすべて受け
     from stock_ai.backtest.margin_census import census, event_returns, lending_index, spells
     from stock_ai.backtest.multiplicity import (
         HYPOTHESIS_BUDGET,
+        MEASURED_INFLATION_EVENT,
         calibrated_t,
     )
     from stock_ai.backtest.pead import TURNOVER_WINDOW
@@ -7191,7 +7195,9 @@ def margin_power(  # noqa: PLR0913 - §0 が固定した条件をすべて受け
     take = [-value - COST_ROUND_TRIP for value in values]
 
     estimate = estimate_power(take, lags=window)
-    target = calibrated_t(HYPOTHESIS_BUDGET)
+    # **イベント型の管は別に測ってある**（`MEASURED_INFLATION_EVENT`）。
+    # 月次の 1.12 をここに当てるのは、測った根拠の無い厳しさになる。
+    target = calibrated_t(HYPOTHESIS_BUDGET, inflation=MEASURED_INFLATION_EVENT)
     mean = fmean(take)
     stderr = estimate.standard_error(len(take))
     # **片側95%。** 事前登録 §0 が片側で書いている。
@@ -7610,7 +7616,6 @@ def rehearsal_events(  # noqa: PLR0913 - イベント型と同じ条件をすべ
         HYPOTHESIS_BUDGET,
         MEASURED_INFLATION,
         calibrated_t,
-        required_t,
     )
     from stock_ai.backtest.power import estimate_power
     from stock_ai.backtest.rehearsal import calibrate, placebo_events
@@ -7689,17 +7694,30 @@ def rehearsal_events(  # noqa: PLR0913 - イベント型と同じ条件をすべ
     console.print(table)
 
     console.print(
-        f"[dim]月次の盤面で測った膨張は {MEASURED_INFLATION:.2f} だった。"
-        f"**ここは {found.spread:.2f}。** 素の線 {required_t(HYPOTHESIS_BUDGET):.2f} に"
-        f"これを掛けると **{required_t(HYPOTHESIS_BUDGET) * found.spread:.2f}** になる"
-        f"（いま当てている線は {target:.2f}）。[/]"
+        f"[dim]月次の盤面で測った膨張は {MEASURED_INFLATION:.2f}、**ここは "
+        f"{found.spread:.2f}。** 線は {target:.2f}（**1.0 を下回らせない**——補正は"
+        "足りない分を足すためのもので、割り引くためのものではない）。[/]"
     )
     for line in found.warnings():
         console.print(f"[yellow]{line}[/]")
-    if abs(found.spread - MEASURED_INFLATION) > 0.10:
+
+    # **散らばりではなく、中心のずれを見る。**
+    #
+    # 最初は SD しか警告にしていなかった。**`t` の平均が +0.49 出ているのに、
+    # 表の1行に出しただけで素通りさせた**（2026-09-17）。そして「イベント型には
+    # 別の数字を当てるべき」と、**線を緩める向き**に促した。
+    #
+    # **散らばりが素直でも、中心がずれていれば判定は歪む。**
+    if abs(found.mean) > 0.20:
         console.print(
-            "[yellow]**月次の値と 0.10 以上ずれている。** "
-            "イベント型には別の数字を当てるべきである。[/]"
+            f"[red]**帰無の下で `t` の平均が {found.mean:+.2f} ある**（0.00 のはず）。[/] "
+            "乱数で選んだ銘柄と日を持つだけで、指数に系統的に勝っている。"
+            "**散らばりではなく中心のずれで、線を動かしても直らない。**"
+        )
+        console.print(
+            "[dim]いちばん疑わしいのは、窓の途中で価格が途切れるイベントが"
+            "**entry か exit を取れずに落ちる**ことである。**落ちるのは悪く終わった"
+            "側に偏る。** 同じフィルタが #5・#8 にも掛かっている。[/]"
         )
 
 

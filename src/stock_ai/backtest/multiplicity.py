@@ -101,6 +101,26 @@ class Adjustment:
 #: ラグも違うので、**同じ数字とは限らない。** そちらは別に測る。
 MEASURED_INFLATION = 1.12
 
+#: イベント型の管での膨張。**別に測った。**
+#:
+#: 400 回で **SD 0.94**（2026-09-17、`research\イベント型の対照.bat`）。月次の
+#: 1.12 とは違った。**`|t| ≥ 1.96` も 5.8% で、素直に近い。**
+#:
+#: **同じ回で `t` の平均が +0.49 出ている。** 乱数で選んだ銘柄と日を20営業日
+#: 持つと、指数に対して系統的に勝ってしまう。**散らばりではなく中心のずれで、
+#: ここでは直していない**（`docs/HYPOTHESES.md`）。
+MEASURED_INFLATION_EVENT = 0.94
+
+#: 膨張の下限。**1.0 を下回らせない。**
+#:
+#: **補正は足りない分を足すためのもので、割り引くためのものではない。**
+#: イベント型の実測は 0.94 だったが、それを当てれば線が 3.02 → 2.85 に緩む。
+#: **緩める根拠になった測定が、同時に未解決の偏り（平均 +0.49）を出している。**
+#:
+#: 400 回なら SD の誤差は ±0.03 程度なので 0.94 は 1.0 から離れているが、
+#: **離れている向きが「厳しめ」なら、そのまま受け取ればよい。**
+INFLATION_FLOOR = 1.0
+
 #: 膨張を測った回数。**3件しか出ない裾ではなく、SD を見ている。**
 #:
 #: 400 回なら SD の誤差は ±0.04 程度で、1.12 は 1.00 から明確に離れている。
@@ -131,6 +151,7 @@ def calibrated_t(
     budget: int,
     alpha: float = FAMILY_ALPHA,
     inflation: float = MEASURED_INFLATION,
+    floor: float = INFLATION_FLOOR,
 ) -> float:
     """実測の膨張を掛けた、**封印に使う線**。
 
@@ -144,13 +165,15 @@ def calibrated_t(
         budget: 試すつもりの本数。
         alpha: 全体の有意水準。
         inflation: 帰無の下での `t` の SD。**1.0 なら `required_t` と同じ。**
+        floor: 膨張の下限。**1.0 を下回らせない**——補正は足りない分を足すための
+            もので、割り引くためのものではない。
 
     Raises:
         ValueError: ``inflation`` が 0 以下。
     """
     if inflation <= 0:
         raise ValueError(f"inflation must be positive; got {inflation}.")
-    return required_t(budget, alpha) * inflation
+    return required_t(budget, alpha) * max(inflation, floor)
 
 
 def adjust(budget: int, alpha: float = FAMILY_ALPHA) -> Adjustment:
