@@ -7445,6 +7445,169 @@ def revision_census_upward(
     )
 
 
+@app.command(name="value-reconcile")
+def value_reconcile(  # noqa: PLR0913 - 揃える条件をすべて受け取る
+    rosters: str = typer.Option(
+        str(DEFAULT_SNAPSHOT_DIR), "--rosters", help="Where the dated rosters live."
+    ),
+    valuation: str | None = typer.Option(None, "--valuation", help="Month-end PBR file."),
+    is_start: str = typer.Option("2009-01-01", "--is-start", help="First day of the IS window."),
+    is_end: str = typer.Option("2017-12-31", "--is-end", help="Last day of the IS window."),
+    window: int = typer.Option(DEFAULT_WINDOW, "--window", help="Volatility window in sessions."),
+    min_symbols: int = typer.Option(MIN_SYMBOLS_PER_MONTH, "--min-symbols", help="Per month."),
+    lags: int = typer.Option(3, "--lags", help="Newey-West lags, in months."),
+) -> None:
+    """Find out why the IS value spread reads t=2.26 one way and t=0.76 another.
+
+    **判定ではない。** 同じ IS（2009-01〜2017-12）のバリューを2度測って、
+    `t` が **2.26**（#9、`antivalue-estimate`）と **+0.76**（#11、
+    `composite-gate` の脚）に割れた。**universe と推定量が違うだけである。**
+
+    **2つの推定が3倍食い違っているとき、信じるべきはその不安定さのほうで、
+    高いほうの数字ではない。** どちらが効いているのかを、1つずつ動かして出す。
+
+    **最初に両端を再現する。** 再現できなければそこで止まる——揃っていない2つを
+    比べても、差は「推定量の差」ではなく「フィルタの差」になる。
+
+    **判定を消費しない。** 見るのは IS だけで、効果ではなく**どこで数字が動くか**
+    を測っている。
+    """
+    from stock_ai.backtest.antivalue import build_series as antivalue_series
+    from stock_ai.backtest.cross_section import beta_to_benchmark, build_estimators
+    from stock_ai.backtest.factor_panel import build_panel
+    from stock_ai.backtest.power import estimate_power
+    from stock_ai.data.valuation_monthly import DEFAULT_PATH
+    from stock_ai.data.valuation_monthly import read as read_valuation
+
+    settings = get_settings()
+    configure_logging(settings.log_level)
+
+    begin, cut = _parse_date(is_start), _parse_date(is_end)
+    if begin is None or cut is None or begin >= cut:
+        raise typer.BadParameter("--is-start/--is-end must be YYYY-MM-DD and in order.")
+
+    frame = read_valuation(Path(valuation) if valuation else DEFAULT_PATH)
+    if frame.empty:
+        console.print("[red]月末の PBR が無い。[/]")
+        raise typer.Exit(code=1)
+    snapshots = membership(Path(rosters))
+    if not snapshots:
+        console.print("[red]名簿が無い。[/] **渡さないと生存バイアスが入る。**")
+        raise typer.Exit(code=1)
+
+    console.print("[bold yellow]これは判定ではない。[/] 食い違いの出どころを探している。")
+    console.print(
+        "[dim]同じ IS を2度測って t が 2.26 と 0.76 に割れた。"
+        "**信じるべきはその不安定さのほうである。**[/]"
+    )
+    console.print()
+
+    database = Database()
+    database.create_all()
+
+    def score(values: list[float]) -> float:
+        """Newey-West t for a monthly series - the sign is left as given."""
+        if len(values) < 2:
+            return float("nan")
+        estimate = estimate_power(values, lags=lags)
+        stderr = estimate.standard_error(len(values))
+        return fmean(values) / stderr if stderr > 0 else float("nan")
+
+    # --- #9 の経路 -----------------------------------------------------------
+    #
+    # **向きはバリュー（低PBR を買う）にそろえる。** `spread()` は #9 の格言の
+    # 向き（高PBR − 低PBR）なので、符号を反転する。**反転はここ1箇所。**
+    series = antivalue_series(database, frame, start=begin, end=cut, snapshots=snapshots)
+    if not series.months:
+        console.print("[red]#9 の経路で月が1つも作れなかった。[/]")
+        raise typer.Exit(code=1)
+    cost = series.cost_per_month()
+    beta = series.beta_to_benchmark()
+    nine_raw = [-value for value in series.spread()]
+    nine_alpha = [-value for value in series.alpha(beta)]
+
+    # --- 盤面の経路 ----------------------------------------------------------
+    panels: dict[str, object] = {}
+    for label, factors in (
+        ("盤面（低ボラ＋バリュー）", ("低ボラ", "バリュー")),
+        ("盤面（バリューだけ）", ("バリュー",)),
+    ):
+        try:
+            panels[label] = build_panel(
+                database,
+                factors=factors,
+                start=begin,
+                end=cut,
+                window=window,
+                min_symbols=min_symbols,
+                valuation=frame,
+            )
+        except ValueError as error:
+            console.print(f"[yellow]{label}: 作れなかった（{error}）[/]")
+
+    rows: list[tuple[str, int, float, float]] = []
+    rows.append(
+        (
+            "#9 の universe（PBR ファイル＋名簿）",
+            len(series.months),
+            score(nine_raw),
+            score(nine_alpha),
+        )
+    )
+    for label, panel in panels.items():
+        built = build_estimators(
+            panel.column("バリュー"),
+            panel.benchmark,
+            higher_is_better=True,  # type: ignore[attr-defined]
+        )
+        if built.months < 2:
+            continue
+        panel_beta = beta_to_benchmark(built.quantile_spread, built.benchmark)
+        rows.append(
+            (
+                label,
+                built.months,
+                score(built.quantile_spread),
+                score(built.alpha(built.quantile_spread, panel_beta)),
+            )
+        )
+
+    # --- 検算 ----------------------------------------------------------------
+    #
+    # **揃っていない2つを比べても、差はフィルタの差になる。** 先に両端を出す。
+    console.print("[bold]検算：両端を再現できるか。[/]")
+    nine_with_cost = score([value - cost for value in nine_raw])
+    console.print(
+        f"[dim]#9（生のスプレッド・費用引き後）: t {nine_with_cost:+.2f}"
+        "（**#9 の出力から導いた値は +2.26**）[/]"
+    )
+    for label, _months, _raw, alpha_t in rows:
+        if label.startswith("盤面（低ボラ"):
+            console.print(
+                f"[dim]#11（α・費用引き前）: t {alpha_t:+.2f}（**#11 の出力は +0.76**）[/]"
+            )
+    console.print()
+
+    table = Table(title="バリューの t が、どこで動くか（IS のみ。**判定ではない**）")
+    for column in ("universe", "月数", "生のスプレッド", "α（β を引く）"):
+        table.add_column(column, overflow="fold")
+    for label, months, raw_t, alpha_t in rows:
+        table.add_row(label, f"{months}", f"{raw_t:+.2f}", f"{alpha_t:+.2f}")
+    console.print(table)
+    console.print(
+        f"[dim]表は**すべて費用引き前**にそろえてある（費用は月 {cost:.3%}、"
+        f"年 {cost * 12:.2%}）。上の検算だけ、それぞれ元の流儀で出している。"
+        f"β は #9 の経路で {beta:+.2f}。[/]"
+    )
+
+    console.print()
+    console.print(
+        "[dim]**横に動けば推定量が、縦に動けば universe が効いている。** "
+        "どちらでも大きく動くなら、**効果は設計の選び方に対して頑健でない**——"
+        "それ自体が効果に対する反証寄りの情報である。[/]"
+    )
+
+
 @app.command(name="estimator-gain")
 def estimator_gain(  # noqa: PLR0913 - 校正が固定した条件をすべて受け取る
     factor: str = typer.Option("低ボラ", "--factor", help="Which factor to calibrate on."),

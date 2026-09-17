@@ -385,3 +385,93 @@ class TestTheCommandRefusesBelowTheCommittedFloor:
         assert "α" in result.output
         assert "β" in result.output
         assert "検出できる差" in result.output
+
+
+class TestReconcilingTheTwoValueMeasurements:
+    """**同じ IS を2度測って t が 2.26 と 0.76 に割れた。**
+
+    universe と推定量のどちらが効いているのかを、1つずつ動かして出す道具。
+    **固定するのは「揃っていないものを比べない」ことだけである。**
+    """
+
+    def test_the_sign_is_flipped_once_to_the_value_direction(self) -> None:
+        """`spread()` は #9 の格言の向き（高PBR − 低PBR）である。
+
+        **バリューは逆向きなので反転が要る。反転は1箇所だけ。** 2箇所に置くと、
+        どちらで反転したのか分からなくなる（#8 で同じ規則を書いた）。
+        """
+        import inspect
+
+        from stock_ai import cli
+
+        body = inspect.getsource(cli.value_reconcile)
+
+        assert body.count("-value for value in series.spread()") == 1
+        assert body.count("-value for value in series.alpha(") == 1
+
+    def test_the_table_is_gross_and_says_so(self) -> None:
+        """**費用を片方だけ引かない。** 費用は平均を動かすので t が動く。"""
+        import inspect
+
+        from stock_ai import cli
+
+        body = inspect.getsource(cli.value_reconcile)
+
+        assert "すべて費用引き前" in body
+
+    def test_both_ends_are_reproduced_before_they_are_compared(self) -> None:
+        """**揃っていない2つを比べると、差はフィルタの差になる。**
+
+        `composite-gain` が「最初に検算します」と書いてあるのと同じ形。
+        """
+        import inspect
+
+        from stock_ai import cli
+
+        body = inspect.getsource(cli.value_reconcile)
+
+        assert "検算" in body
+        assert "+2.26" in body
+        assert "+0.76" in body
+
+    def test_it_runs_end_to_end(self, tmp_path, monkeypatch) -> None:
+        """**部品が全部緑でも、繋ぎ忘れは出る。**"""
+        from typer.testing import CliRunner
+
+        from stock_ai import cli
+
+        database, symbols = _database(count=120)
+        path = tmp_path / "valuation_monthly.csv.gz"
+        frame = _valuation(symbols)
+        for column in ("per", "bps", "market_cap"):
+            frame[column] = 1.0
+        frame.to_csv(path, index=False, compression="gzip")
+
+        monkeypatch.setenv("COLUMNS", "200")
+        monkeypatch.setattr(cli, "Database", lambda *a, **k: database)
+        monkeypatch.setattr(
+            cli, "membership", lambda directory: {day.date(): set(symbols) for day in _INDEX}
+        )
+
+        result = CliRunner().invoke(
+            cli.app,
+            [
+                "value-reconcile",
+                "--valuation",
+                str(path),
+                "--rosters",
+                str(tmp_path / "rosters"),
+                "--is-start",
+                "2009-01-05",
+                "--is-end",
+                "2009-12-31",
+                "--window",
+                "60",
+                "--min-symbols",
+                "10",
+            ],
+        )
+
+        assert result.exit_code == 0, result.output
+        assert "検算" in result.output
+        assert "どこで動くか" in result.output
