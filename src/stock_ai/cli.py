@@ -7478,7 +7478,7 @@ def rehearsal(  # noqa: PLR0913 - 本物と同じ条件をすべて受け取る
     from stock_ai.backtest.factor_panel import build_panel
     from stock_ai.backtest.multiplicity import HYPOTHESIS_BUDGET, required_t
     from stock_ai.backtest.power import estimate_power
-    from stock_ai.backtest.rehearsal import calibrate, placebo_sections
+    from stock_ai.backtest.rehearsal import calibrate, oos_seed, placebo_sections
 
     settings = get_settings()
     configure_logging(settings.log_level)
@@ -7534,12 +7534,16 @@ def rehearsal(  # noqa: PLR0913 - 本物と同じ条件をすべて受け取る
 
     console.print(
         f"[dim]IS {begin} 〜 {cut}（{len(inside.months)}ヶ月）、"
-        f"OOS {cut} 〜 {finish}（{len(outside.months)}ヶ月）。種 {seed}。[/]"
+        f"OOS {cut} 〜 {finish}（{len(outside.months)}ヶ月）。"
+        f"種は IS {seed} / OOS {oos_seed(seed)}（**同じ流れを使わない**）。[/]"
     )
 
     # --- 1回だけ、端から端まで ----------------------------------------------
+    # **同じ種を両方に使わない。** 乱数の流れが共有されると、2つが独立な引きに
+    # ならない。最初はそうしていて、IS +1.24・OOS +1.29 が揃って見えた——
+    # **偶然か共有のせいかを区別できなかった**（2026-09-17）。
     inside_t = score(inside, seed)
-    outside_t = score(outside, seed)
+    outside_t = score(outside, oos_seed(seed))
 
     table = Table(title="陰性対照を端から端まで（**説ではない**）")
     for column in ("段", "何をしたか", "結果"):
@@ -7585,7 +7589,7 @@ def rehearsal(  # noqa: PLR0913 - 本物と同じ条件をすべて受け取る
         task = progress.add_task("種を変えて回す", total=repeat)
         for index in range(repeat):
             progress.update(task, completed=index + 1)
-            scores.append(score(outside, seed + index))
+            scores.append(score(outside, oos_seed(seed) + index))
 
     found = calibrate(scores, target)
     shape = Table(title=f"帰無の下での `t` の形（{found.runs} 回）")
@@ -8403,7 +8407,7 @@ def hypothesis_report(
 
     **空欄を埋めない。** 出典が「未記載」ならレポートにもそう出る。
     """
-    from stock_ai.hypotheses import read_registry, write_reports
+    from stock_ai.hypotheses import consumed, read_registry, write_reports
 
     settings = get_settings()
     configure_logging(settings.log_level)
@@ -8441,7 +8445,7 @@ def hypothesis_report(
     # **陰性対照は予算に数えない。** 世界について何も主張していないので、
     # 「当たりを引こうとした回数」に入らない——補正が数えたいのはそれである。
     counted = [hypothesis for hypothesis in found if hypothesis.counted]
-    judged = [hypothesis for hypothesis in counted if hypothesis.judged]
+    judged = consumed(found)
     controls = len(found) - len(counted)
     extra = f"（ほかに陰性対照が {controls} 本。**予算に数えない**）" if controls else ""
     console.print(

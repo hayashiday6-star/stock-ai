@@ -151,3 +151,39 @@ class TestTheControlIsNotCountedInTheBudget:
 
         assert control.judged, "対照にも判定は出る"
         assert not control.counted
+
+
+class TestTheTwoHalvesAreDrawnIndependently:
+    """**同じ種を両方に使わない。** 乱数の流れが共有されると独立でなくなる。
+
+    最初はそうしていて、IS +1.24・OOS +1.29 が揃って見えた——**偶然か共有の
+    せいかを区別できなかった**（2026-09-17）。
+    """
+
+    def test_the_out_of_sample_seed_differs(self) -> None:
+        from stock_ai.backtest.rehearsal import oos_seed
+
+        assert oos_seed(SEED) != SEED
+
+    def test_the_offset_is_big_enough_to_not_collide_with_repeats(self) -> None:
+        """**`--repeat 400` は種を 400 ずらす。** そこにぶつからないこと。"""
+        from stock_ai.backtest.rehearsal import OOS_OFFSET
+
+        assert OOS_OFFSET > 100_000
+
+    def test_the_seed_is_reproducible_by_hand(self) -> None:
+        """**`spawn` にしない。** 種を記録すれば手で再現できるようにする。"""
+        from stock_ai.backtest.rehearsal import OOS_OFFSET, oos_seed
+
+        assert oos_seed(123) == 123 + OOS_OFFSET
+
+    def test_the_command_uses_different_streams_for_the_two_halves(self) -> None:
+        """**部品が正しくても、呼ぶ側が同じ種を渡せば意味が無い。**"""
+        import inspect
+
+        from stock_ai import cli
+
+        body = inspect.getsource(cli.rehearsal)
+
+        assert "score(inside, seed)" in body
+        assert "score(outside, oos_seed(seed))" in body

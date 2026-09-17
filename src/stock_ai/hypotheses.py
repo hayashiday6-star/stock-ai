@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import dataclasses
 import re
+from collections.abc import Sequence
 from pathlib import Path
 
 from stock_ai.core.logging import get_logger
@@ -156,6 +157,22 @@ class Hypothesis:
         同じに扱うと、正直に書いたことが罰される。**
         """
         return self.source_recorded and "未記録" not in self.source
+
+
+def consumed(found: Sequence[Hypothesis]) -> list[Hypothesis]:
+    """判定を消費した説。**陰性対照は入らない。**
+
+    **数える場所を1つにする。** `judged` と `counted` を呼ぶ側で組み合わせると、
+    **1箇所忘れただけで対照の判定が本物の本数に混ざる。** 実際に混ざった——
+    対照を足した日に、最初に数えたテストが 6 を返した（2026-09-17）。
+
+    Args:
+        found: 登録の一覧。
+
+    Returns:
+        予算に数える説のうち、判定の出たもの。
+    """
+    return [item for item in found if item.counted and item.judged]
 
 
 def read_registry(path: Path) -> list[Hypothesis]:

@@ -16,6 +16,7 @@ from stock_ai.hypotheses import (
     VERDICTS,
     Hypothesis,
     _plain,
+    consumed,
     read_registry,
     read_table,
     report_for,
@@ -123,10 +124,25 @@ class TestCountingWhatConsumedAJudgement:
         `docs/HYPOTHESES.md` に「判定を消費したのは 5 本」と書いてある。
         別の切り口で同じ数が出るかを見る。
         """
-        judged = [h for h in read_registry(REGISTRY) if h.judged]
+        judged = consumed(read_registry(REGISTRY))
 
         assert len(judged) == 5
         assert {h.number for h in judged} == {"1", "2", "3", "6", "7"}
+
+    def test_a_control_verdict_does_not_reach_the_count(self) -> None:
+        """**対照にも判定は出る。** 数える場所を1つにしていないと混ざる。
+
+        実際に混ざった——対照を足した日に、このテストが 6 を返した
+        （2026-09-17）。`judged` と `counted` を呼ぶ側で組み合わせる形では、
+        **1箇所忘れただけで起きる。**
+        """
+        found = read_registry(REGISTRY)
+        controls = [h for h in found if not h.counted]
+
+        assert controls, "陰性対照が登録に無い"
+        assert any(h.judged for h in controls), "対照に判定が出ていない"
+        names = {h.identifier for h in consumed(found)}
+        assert not names & {h.identifier for h in controls}
 
 
 class TestSlicingTheSectionWithoutReadingIt:
