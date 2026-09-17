@@ -7577,9 +7577,14 @@ def value_reconcile(  # noqa: PLR0913 - 揃える条件をすべて受け取る
     # **揃っていない2つを比べても、差はフィルタの差になる。** 先に両端を出す。
     console.print("[bold]検算：両端を再現できるか。[/]")
     nine_with_cost = score([value - cost for value in nine_raw])
+    # **比べる相手を間違えない。** #9 の出力から導いた +2.26 は**格言の向き**
+    # （高PBR − 低PBR）の t である。バリュー向きに反転すると費用が逆向きの
+    # 引き算になり、平均だけ 2×cost ぶん小さくなる（SD は動かない）。
+    # **期待値は +2.03 である**（2026-09-17 に書き間違えていた）。
     console.print(
-        f"[dim]#9（生のスプレッド・費用引き後）: t {nine_with_cost:+.2f}"
-        "（**#9 の出力から導いた値は +2.26**）[/]"
+        f"[dim]#9（バリュー向き・費用引き後）: t {nine_with_cost:+.2f}"
+        "（**期待値 +2.03**。#9 の出力の +2.26 は格言の向きで、"
+        "反転すると費用の引き算も向きが変わる）[/]"
     )
     for label, _months, _raw, alpha_t in rows:
         if label.startswith("盤面（低ボラ"):

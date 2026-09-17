@@ -431,8 +431,13 @@ class TestReconcilingTheTwoValueMeasurements:
         body = inspect.getsource(cli.value_reconcile)
 
         assert "検算" in body
-        assert "+2.26" in body
         assert "+0.76" in body
+        # **格言の向きの +2.26 を、バリュー向きの期待値にしない。**
+        #
+        # 反転すると費用が逆向きの引き算になり、平均だけ 2×cost ぶん小さく
+        # なる（SD は動かない）。**期待値は +2.03 である。**
+        assert "+2.03" in body
+        assert "格言の向き" in body
 
     def test_it_runs_end_to_end(self, tmp_path, monkeypatch) -> None:
         """**部品が全部緑でも、繋ぎ忘れは出る。**"""
