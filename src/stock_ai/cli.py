@@ -6994,7 +6994,13 @@ def _event_inflation(mode: str) -> float:
     return known[mode]
 
 
-def _universe_to_subtract(database: Database, mode: str, holding: int) -> object | None:
+def _universe_to_subtract(  # noqa: PLR0913 - 何で作ったかを全部受け取る
+    database: Database,
+    mode: str,
+    holding: int,
+    fraction: float = 1.0,
+    seed: int = 0,
+) -> object | None:
     """Build the equal-weighted benchmark when the mode asks for it.
 
     **引く相手を、持ち方と同じ加重にする。** `1306` は時価総額加重で、イベントの
@@ -7005,6 +7011,9 @@ def _universe_to_subtract(database: Database, mode: str, holding: int) -> object
         database: 価格の保存先。
         mode: ``index`` か ``universe``。
         holding: 保有営業日数。**イベント側と同じ値を渡すこと。**
+        fraction: 引く相手を作るのに使う銘柄の割合。**診断用**——日は減らさず、
+            引く相手の精度だけを落とす。
+        seed: 間引きの種。
 
     Returns:
         ``universe`` なら :class:`UniverseBenchmark`、``index`` なら ``None``。
@@ -7033,7 +7042,9 @@ def _universe_to_subtract(database: Database, mode: str, holding: int) -> object
         def step(done: int, total: int) -> None:
             progress.update(task, completed=done, total=total)
 
-        built = equal_weighted_windows(database, holding, progress=step)
+        built = equal_weighted_windows(
+            database, holding, progress=step, fraction=fraction, seed=seed
+        )
 
     console.print(
         f"[dim]{len(built.window):,} 日ぶん（{built.symbols:,} 銘柄、窓 {holding} 営業日）。"
@@ -7784,6 +7795,9 @@ def rehearsal_events(  # noqa: PLR0913 - イベント型と同じ条件をすべ
     subtract: str = typer.Option(
         "universe", "--subtract", help="What to deduct: universe (equal weight) or index."
     ),
+    benchmark_fraction: float = typer.Option(
+        1.0, "--benchmark-fraction", help="Build the deduction from this share of symbols."
+    ),
 ) -> None:
     """Calibrate the event-type pipe - the one #8 and #5 actually use.
 
@@ -7847,9 +7861,18 @@ def rehearsal_events(  # noqa: PLR0913 - イベント型と同じ条件をすべ
 
     # **1度だけ作って400回ぶん使い回す。** 毎回作り直すと、同じものを400回
     # 計算することになる。乱数で変わるのは引くほうであって、引かれる相手ではない。
-    deducted = _universe_to_subtract(database, subtract, holding)
+    deducted = _universe_to_subtract(
+        database, subtract, holding, fraction=benchmark_fraction, seed=seed
+    )
 
     scores: list[float] = []
+    # **既に計算していて、捨てていた2つ。**
+    #
+    # `t` の SD が 1.09 出た理由を探すのに、`t` そのものしか見ていなかった。
+    # `t = 平均 / 標準誤差` なので、**分母の形も見ないと、どちらが動いたのか
+    # 分からない**（2026-09-18）。
+    spreads: list[float] = []
+    observations: list[int] = []
     # **400回ぶんの処分を足し上げる。** 1回ぶんでは件数が小さすぎて、
     # 上場廃止で落ちる割合が読めない。
     tally: dict[str, object] = {"values": [], "truncated": [], "drawn": 0}
@@ -7883,6 +7906,8 @@ def rehearsal_events(  # noqa: PLR0913 - イベント型と同じ条件をすべ
             stderr = estimate.standard_error(len(values))
             if stderr > 0:
                 scores.append(fmean(values) / stderr)
+                spreads.append(estimate.inflation)
+                observations.append(len(values))
 
     # **自分が引いた相手の線を出す。** 別の相手で測った線を並べると、
     # 比べているつもりで別のものを比べることになる。
@@ -7900,6 +7925,29 @@ def rehearsal_events(  # noqa: PLR0913 - イベント型と同じ条件をすべ
     table.add_row("|t| ≥ 1.96", f"{found.plain_share:.1%}", "5.0%")
     table.add_row("いちばん大きい t", f"{found.worst:+.2f}", "—")
     console.print(table)
+
+    # **分子と分母を分けて見る。** `t` だけ見ていると、平均が動いたのか
+    # 標準誤差が動いたのか分からない。0.94 → 1.09 のときに、そこで止まった。
+    if spreads:
+        shape = Table(title="`t` の分母の形")
+        for column in ("項目", "平均", "SD"):
+            shape.add_column(column, overflow="fold")
+        shape.add_row(
+            "重なりの膨張（Newey-West）",
+            f"{fmean(spreads):.2f}",
+            f"{stdev(spreads):.2f}" if len(spreads) > 1 else "—",
+        )
+        shape.add_row(
+            "1回あたりの観測日数",
+            f"{fmean(observations):,.0f}",
+            f"{stdev(observations):,.0f}" if len(observations) > 1 else "—",
+        )
+        console.print(shape)
+        console.print(
+            "[dim]**膨張が 1 に近くて散らばっているなら、`t` の裾は分母の"
+            "推定誤差から来ている**——重なりが無いところに 20 ラグを当てている"
+            "ぶんである。**膨張そのものが大きいなら、重なりが残っている。**[/]"
+        )
 
     console.print(
         f"[dim]月次の盤面で測った膨張は {MEASURED_INFLATION:.2f}、**ここは "

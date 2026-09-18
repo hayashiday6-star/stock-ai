@@ -167,3 +167,70 @@ class TestTheTiltActuallyGoesAway:
         naked.window.pop(_DAYS[1])
         missing = event_sample(database, [("2000", _DAYS[1])], holding=5, subtract=naked)
         assert (missing.used, missing.no_benchmark) == (0, 1)
+
+
+class TestThinningChangesThePrecisionNotThePeriod:
+    """**散らばりが動いた理由を、1つに絞れる形にする。**
+
+    `MIN_SYMBOLS_PER_DAY` を上げると、落ちるのは期間の初めの薄い日である。
+    **日の集合が変わるので、SD が動いても「精度」か「期間」か分からない。**
+
+    銘柄を間引けば、**日は1日も減らずに引く相手の誤差だけが増える。**
+    """
+
+    def test_not_a_single_day_is_lost(self) -> None:
+        database = _database(_crowd(0.001, 80))
+
+        whole = equal_weighted_windows(database, holding=5)
+        quarter = equal_weighted_windows(database, holding=5, fraction=0.25, seed=1)
+
+        assert set(quarter.window) == set(whole.window)
+
+    def test_fewer_symbols_stand_behind_each_average(self) -> None:
+        database = _database(_crowd(0.001, 80))
+
+        quarter = equal_weighted_windows(database, holding=5, fraction=0.25, seed=1)
+
+        assert quarter.symbols == 20
+        assert quarter.counted[_DAYS[0]] == 20
+
+    def test_the_thinning_reproduces_from_its_seed(self) -> None:
+        """**記録すれば手で再現できること。**
+
+        **銘柄の中身を変えてある。** 全部同じ足にすると、どの部分集合を
+        引いても平均が同じになり、**「種が効いていない」と「銘柄が同じ」を
+        区別できない**——最初その形で書いて、緑になりかけた。
+        """
+        varied = {f"{2000 + offset}": _drifting(0.0005 * offset) for offset in range(80)}
+        database = _database(varied)
+
+        first = equal_weighted_windows(database, holding=5, fraction=0.5, seed=3)
+        again = equal_weighted_windows(database, holding=5, fraction=0.5, seed=3)
+        other = equal_weighted_windows(database, holding=5, fraction=0.5, seed=4)
+
+        assert first.window == again.window
+        assert first.window != other.window
+
+    def test_a_thinned_benchmark_says_so(self) -> None:
+        """**診断用だと、気付かなくても目に入ること。**"""
+        database = _database(_crowd(0.001, 80))
+
+        quarter = equal_weighted_windows(database, holding=5, fraction=0.25, seed=1)
+
+        assert any("診断用" in line for line in quarter.warnings())
+        assert not any(
+            "診断用" in line for line in equal_weighted_windows(database, holding=5).warnings()
+        )
+
+    def test_a_fraction_outside_the_range_is_refused(self) -> None:
+        """**この検査が落ちる条件を、実際に1つ作る。**"""
+        database = _database(_crowd(0.001, 40))
+
+        for bad in (0.0, -0.5, 1.5):
+            with pytest.raises(ValueError, match="fraction"):
+                equal_weighted_windows(database, holding=5, fraction=bad)
+
+    def test_it_never_thins_down_to_nothing(self) -> None:
+        database = _database(_crowd(0.001, 40))
+
+        assert equal_weighted_windows(database, holding=5, fraction=0.001, seed=1).symbols == 1

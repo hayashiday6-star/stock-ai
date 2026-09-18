@@ -454,3 +454,48 @@ class TestTheWatchLooksAtTheCentreNotOnlyTheSpread:
         assert "大きいほうが、直すべきほうである" in body
         # **決め打ちの犯人が戻っていないこと。**
         assert "いちばん疑わしいのは" not in body
+
+
+class TestTheDenominatorIsShownToo:
+    """**`t` だけ見ていると、分子と分母のどちらが動いたのか分からない。**
+
+    引く相手を直したら SD が 0.94 → 1.09 に動いた。`t = 平均 / 標準誤差`
+    なので、**分母の形を見ないと理由に近づけない**（2026-09-18）。
+    それは既に計算されていて、捨てられていた。
+    """
+
+    def test_the_run_keeps_the_newey_west_factor(self) -> None:
+        import inspect
+
+        from stock_ai import cli
+
+        body = inspect.getsource(cli.rehearsal_events)
+
+        assert "spreads.append(estimate.inflation)" in body
+        assert "observations.append(len(values))" in body
+
+    def test_the_run_prints_the_denominator(self) -> None:
+        import inspect
+
+        from stock_ai import cli
+
+        body = inspect.getsource(cli.rehearsal_events)
+
+        assert "`t` の分母の形" in body
+
+    def test_the_thinning_goes_through_to_the_builder(self) -> None:
+        """**口を開けただけで配線を忘れる**形を止める。
+
+        `BulkIngester` はプロバイダを差し替え可能な作りなのに、CLI 側が
+        新しい設定を配線し忘れて、切り替えたはずが旧経路を叩き続けていた
+        実例が複数ある（`CLAUDE.md`）。
+        """
+        import inspect
+
+        from stock_ai import cli
+
+        body = inspect.getsource(cli.rehearsal_events)
+
+        assert "benchmark_fraction" in body
+        assert "fraction=benchmark_fraction" in body
+        assert "fraction=fraction" in inspect.getsource(cli._universe_to_subtract)

@@ -43,6 +43,16 @@
 .PARAMETER Subtract
     引く相手。`universe`（等加重、既定）か `index`（`1306`、時価総額加重）。
     **`index` にすると、直す前の姿が見られます。**
+
+.PARAMETER BenchmarkFraction
+    引く相手を作るのに使う銘柄の割合。**診断用です。**
+
+    等加重に替えたら `t` の SD が 0.94 から **1.09** に上がりました。出どころ
+    が分かっていません。**引く相手そのものが推定値なので、その揺れが観測に
+    乗っている**のかもしれません。
+
+    `0.25` にすると引く相手の誤差が2倍になります。**日は1日も減りません**
+    ので、SD が動けばその筋、動かなければ別の筋です。
 #>
 [CmdletBinding()]
 param(
@@ -50,7 +60,8 @@ param(
     [int]$Events = 0,
     [int]$Holding = 0,
     [ValidateSet('universe', 'index')]
-    [string]$Subtract = ''
+    [string]$Subtract = '',
+    [double]$BenchmarkFraction = 0
 )
 
 $ErrorActionPreference = 'Continue'
@@ -72,6 +83,7 @@ if ($Repeat -gt 0) { $arguments += @('--repeat', $Repeat) }
 if ($Events -gt 0) { $arguments += @('--events', $Events) }
 if ($Holding -gt 0) { $arguments += @('--holding', $Holding) }
 if ($Subtract) { $arguments += @('--subtract', $Subtract) }
+if ($BenchmarkFraction -gt 0) { $arguments += @('--benchmark-fraction', $BenchmarkFraction) }
 
 uv @arguments
 $code = $LASTEXITCODE

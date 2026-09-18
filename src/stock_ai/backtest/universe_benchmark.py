@@ -71,7 +71,18 @@ class UniverseBenchmark:
     """その日の平均に入った銘柄数。**平均だけ見て、何社の平均かを見ない形を作らない。**"""
 
     symbols: int
-    """足を読んだ銘柄数。"""
+    """足を読んだ銘柄数。**間引いたあとの数である。**"""
+
+    fraction: float
+    """銘柄をどれだけ使ったか。`1.0` なら全部。"""
+
+    min_symbols: int
+    """その日の平均を出すのに要った最低銘柄数。**間引けば一緒に下がる。**
+
+    **下げないと、間引きが日を落としてしまう。** それでは期間が変わり、
+    「精度だけを動かす」という実験にならない——最初そうなって、テストが
+    **全日を落として**落ちた（2026-09-18）。
+    """
 
     last_session: dt.date
     """読んだ中でいちばん新しい日。**上場廃止と期間の端を分けるのに使う。**"""
@@ -90,26 +101,35 @@ class UniverseBenchmark:
             # **ここで return しない。** 1日も作れなかったときこそ理由が要る。
             # 手前の検査が全部を弾くと後ろが黙る形を、`EventSample` で踏んでいる。
             found.append("**1日も平均が作れなかった。** 引く相手が無い。")
+        if self.fraction < 1.0:
+            found.append(
+                f"**引く相手を {self.fraction:.0%} の銘柄で作っている**"
+                f"（{self.symbols:,} 銘柄、足切り {self.min_symbols} 社）。"
+                "**診断用である。判定には使わない。**"
+            )
         if self.thin_days:
             found.append(
-                f"**{self.thin_days:,} 日は銘柄が {MIN_SYMBOLS_PER_DAY} 社に届かず、"
+                f"**{self.thin_days:,} 日は銘柄が {self.min_symbols} 社に届かず、"
                 "値を出していない。** そこに落ちたイベントは判定に入らない。"
             )
         if not self.counted:
             return found
         thinnest = min(self.counted.values())
-        if thinnest < MIN_SYMBOLS_PER_DAY * 2:
+        if thinnest < self.min_symbols * 2:
             found.append(f"**いちばん薄い日で {thinnest:,} 社。** 期間の初めが薄いことが多い。")
         return found
 
 
-def equal_weighted_windows(
+def equal_weighted_windows(  # noqa: PLR0913 - 何で作ったかを全部受け取る
     database: object,
     holding: int,
     *,
     symbols: list[str] | None = None,
     eligible: Callable[[str, dt.date], bool] | None = None,
     progress: Callable[[int, int], None] | None = None,
+    fraction: float = 1.0,
+    seed: int = 0,
+    min_symbols: int | None = None,
 ) -> UniverseBenchmark:
     """日ごとの**等加重平均の窓リターン**を作る。
 
@@ -119,18 +139,34 @@ def equal_weighted_windows(
         symbols: 対象の銘柄。省くと JP の全銘柄。
         eligible: ``(銘柄, 日)`` で絞る。省くと絞らない。
         progress: ``(済み, 全体)`` で呼ばれる。**1行に収めること。**
+        fraction: 銘柄をこの割合だけ使う。**引く相手の精度だけを落とす**ための
+            口である（`1.0` なら全部）。**日は1日も減らない**ので、
+            `MIN_SYMBOLS_PER_DAY` を上げるのと違って**期間が変わらない。**
+        seed: 間引きの種。**記録すれば手で再現できる。**
+        min_symbols: その日の平均を出すのに要る最低銘柄数。省くと
+            `MIN_SYMBOLS_PER_DAY` を ``fraction`` で割り引いた値になる——
+            **割り引かないと、間引きが日まで落としてしまう。**
 
     Returns:
         :class:`UniverseBenchmark`。
 
     Raises:
-        ValueError: ``holding`` が 1 未満、または銘柄が1つも無い。
+        ValueError: ``holding`` が 1 未満、``fraction`` が 0〜1 の外、
+            または銘柄が1つも無い。
     """
+    import numpy as np
+
     from stock_ai.data.schema import CLOSE, OPEN, split_adjusted
     from stock_ai.database.repository import PriceRepository, list_securities
 
     if holding < 1:
         raise ValueError(f"holding must be at least 1; got {holding}.")
+    if not 0.0 < fraction <= 1.0:
+        raise ValueError(f"fraction must be in (0, 1]; got {fraction}.")
+    # **間引いたら足切りも一緒に下げる。** 下げないと薄い日が落ちて期間が変わり、
+    # 「引く相手の精度だけを動かす」という実験でなくなる。
+    floor = min_symbols if min_symbols is not None else round(MIN_SYMBOLS_PER_DAY * fraction)
+    floor = max(1, floor)
 
     total: dict[dt.date, float] = {}
     counted: dict[dt.date, int] = {}
@@ -142,6 +178,13 @@ def equal_weighted_windows(
             wanted = [sym for sym, market in list_securities(session) if market == "JP"]
         if not wanted:
             raise ValueError("銘柄が1つも無い。等加重の平均を作れない。")
+        if fraction < 1.0:
+            # **日ではなく銘柄を間引く。** 日を減らすと期間が変わり、散らばりが
+            # 動いた理由が「精度」か「期間」か分からなくなる。
+            rng = np.random.default_rng(seed)
+            keep = max(1, round(len(wanted) * fraction))
+            picked = rng.choice(len(wanted), size=keep, replace=False)
+            wanted = [wanted[int(index)] for index in sorted(picked)]
 
         prices = PriceRepository(session)
         for done, symbol in enumerate(wanted, start=1):
@@ -166,10 +209,8 @@ def equal_weighted_windows(
         raise ValueError("価格の在る銘柄が1つも無い。等加重の平均を作れない。")
 
     # **薄い日は値を出さない。** 出すと「3社の等加重」が「宇宙」を名乗る。
-    window = {
-        when: total[when] / count for when, count in counted.items() if count >= MIN_SYMBOLS_PER_DAY
-    }
-    thin = sum(1 for count in counted.values() if count < MIN_SYMBOLS_PER_DAY)
+    window = {when: total[when] / count for when, count in counted.items() if count >= floor}
+    thin = sum(1 for count in counted.values() if count < floor)
     kept = {when: count for when, count in counted.items() if when in window}
     logger.info(
         "等加重の引く相手: %d 日（%d 銘柄、薄くて外した日 %d）",
@@ -182,6 +223,8 @@ def equal_weighted_windows(
         window=window,
         counted=kept,
         symbols=len(wanted),
+        fraction=fraction,
+        min_symbols=floor,
         last_session=last_session,
         thin_days=thin,
     )
