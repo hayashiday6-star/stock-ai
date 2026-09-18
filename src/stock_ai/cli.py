@@ -5973,6 +5973,82 @@ def jquants_plan_coverage(
         console.print(f"[dim]{name}: {why} 原本に残せないので、在庫の表には出ない。[/]")
 
 
+@app.command(name="price-coverage")
+def price_coverage(
+    market: str = typer.Option("JP", "--market", help="Which market to count."),
+    thin: int = typer.Option(0, "--thin-bars", help="Bars below this count as unusable."),
+    show: int = typer.Option(20, "--show", help="How many symbols to list."),
+) -> None:
+    """Count the symbols the roster has but the prices do not.
+
+    **穴は、黙って観測を消す。** 陰性対照で、引いた 800,000 件のうち
+    **16,677 件（2.1%）が「価格が1本も無い銘柄」に当たっていた**
+    （2026-09-18）。
+
+    **乱数だからどうでもいい、という話ではない。** 引いているのは
+    `list_securities` が返す銘柄で、**説の側の候補もそこから出る。**
+    そこに足が1本も無ければ、**そのイベントは判定に入らないまま消える。**
+
+    **数えるだけで、取り込みはしない。** 穴の理由は1つではない（上場前・
+    プランの範囲外・取り込み失敗）ので、見てから決める。
+
+    API を1回も叩かない。
+    """
+    from stock_ai.data.price_coverage import THIN_BARS, survey
+
+    settings = get_settings()
+    configure_logging(settings.log_level)
+
+    database = Database()
+    database.create_all()
+    found = survey(database, market=market, thin_bars=thin or THIN_BARS)
+    if not found.listed:
+        console.print(f"[red]{market} の銘柄が名簿に1件も無い。[/]")
+        raise typer.Exit(code=1)
+
+    table = Table(title=f"名簿と価格の噛み合い（{market}）")
+    for column in ("見たもの", "件数", "割合"):
+        table.add_column(column, overflow="fold")
+    table.add_row("名簿に在る", f"{found.listed:,}", "100.0%")
+    table.add_row(
+        "足がある",
+        f"{found.with_prices:,}",
+        f"{found.with_prices / found.listed:.1%}",
+    )
+    table.add_row(
+        "[bold]足が1本も無い（穴）[/]",
+        f"[bold]{len(found.empty):,}[/]",
+        f"[bold]{found.empty_share:.1%}[/]",
+    )
+    table.add_row(
+        f"足が {found.thin_bars} 本未満（窓が開けられない）",
+        f"{len(found.thin):,}",
+        f"{found.thin_share:.1%}",
+    )
+    console.print(table)
+
+    # **別の切り口から同じ数を出して、一致するか見る。** 一様に銘柄を引けば、
+    # この割合がそのまま捨てられる。陰性対照は 2.1% と出していた。
+    console.print(
+        f"[dim]一様に銘柄を引くと、**{found.unusable_share:.1%} はイベントを"
+        "1件も作れない。** 陰性対照の「穴」の割合と噛み合うはずである"
+        "——**噛み合わなければ、どちらかが違うものを数えている。**[/]"
+    )
+
+    for line in found.warnings():
+        console.print(f"[yellow]{line}[/]")
+
+    if found.empty and show:
+        listing = Table(title=f"足が1本も無い銘柄（先頭 {min(show, len(found.empty))} 件）")
+        for column in ("銘柄", "名前"):
+            listing.add_column(column, overflow="fold")
+        for symbol, name in found.empty[:show]:
+            listing.add_row(symbol, name or "[dim]—[/]")
+        console.print(listing)
+        if len(found.empty) > show:
+            console.print(f"[dim]ほかに {len(found.empty) - show:,} 件。`--show` で増やせる。[/]")
+
+
 @app.command(name="price-audit")
 def price_audit(
     symbol: str = typer.Argument(..., help="Symbol to inspect."),
