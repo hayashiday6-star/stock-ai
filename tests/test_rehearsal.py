@@ -260,7 +260,23 @@ class TestTheEventTypeControlUsesTheSamePipe:
         body = inspect.getsource(cli.rehearsal_events)
 
         assert "from stock_ai.backtest.event_window import EventSample, event_sample" in body
-        assert "event_sample(database, drawn" in body
+        assert "event_sample(" in body
+        assert "drawn," in body
+
+    def test_the_hypotheses_call_the_same_function(self) -> None:
+        """**対照が本物と同じ管を通るとは、#5・#8 も同じ口を呼ぶということ。**
+
+        文字列で書き方を留めると、改行が入っただけで落ちる。**留めるのは
+        「どこから import しているか」**——別の管が生えたらそこに出る。
+        """
+        import inspect
+
+        from stock_ai import cli
+
+        for command in (cli.rehearsal_events, cli.revision_power, cli.margin_power):
+            body = inspect.getsource(command)
+            assert "from stock_ai.backtest.event_window import" in body, command.__name__
+            assert "event_sample" in body, command.__name__
 
     def test_it_says_so_when_the_two_pipes_disagree(self) -> None:
         import inspect

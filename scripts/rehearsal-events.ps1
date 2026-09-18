@@ -3,19 +3,28 @@
     イベント型の管を校正する。**説ではありません。予算に数えません。**
 
 .DESCRIPTION
-    月次の対照は `t` の SD が **1.12**（1.00 のはず）で返り、判定の線は設計より
-    3倍甘いと分かりました。**あれは月次の盤面で測った値です。**
+    1回目で、散らばりは片が付きました——`t` の SD は **0.94** で、1.00 に
+    近く素直です。**問題は中心のほうでした。`t` の平均が +0.49。** 乱数で
+    選んだ銘柄と日を20営業日持つだけで、指数に系統的に勝っていました。
 
-    **#8（増担保）と #5（上方修正）は、その管を使っていません。** 系列がイベント
-    日ごとで、Newey-West のラグも保有日数に取ってあります。**別の管には別の
-    数字がありえます。**
+    2回目の分解で出どころが分かりました。**銘柄側 +1.11% に対して指数側
+    +0.88%、差 +0.22%。生存フィルタの押し上げは −0.00%** でした。
+    `1306` は時価総額加重、イベントのバスケットは等加重——**加重の違う
+    ものを引き算していた**だけで、バグではありません。
 
-    ここは乱数で選んだ日と銘柄を `event_window.event_returns` に通します——
-    **#8・#5 が呼んでいる関数そのもの**です。別の管を作ったら、本物について
-    何も確かめたことになりません。
+    そこで**引く相手を等加重の宇宙に替えました。** これが既定です。
 
-      SD が 1.12 に近い    月次の値をそのまま当てられる
-      大きく違う           イベント型には別の数字が要る
+      t の平均が 0 に近い    加重を揃えたことで下駄が取れた
+      まだ +0.5 前後         下駄の出どころは他にもある
+
+    **0 に近いのは、ある程度は当たり前です。** 一様に引いた銘柄の平均を
+    一様に引いた銘柄から引くので、そこは近くなって当然です。**それでも
+    通す意味はあります**——実装が思ったとおり効いているかは、ここでしか
+    見られません。
+
+    ここが通しているのは `event_window.event_sample` です——**#8・#5 が
+    呼んでいる関数そのもの**で、別の管を作ったら何も確かめたことに
+    なりません。
 
     **日の固まり方は本物に合わせていません。** 同じ日数・同じ件数で、中身だけ
     乱数です。**本物のほうが固まっていれば、膨張はここより大きく出ます。**
@@ -30,12 +39,18 @@
 
 .EXAMPLE
     .\scripts\rehearsal-events.ps1
+
+.PARAMETER Subtract
+    引く相手。`universe`（等加重、既定）か `index`（`1306`、時価総額加重）。
+    **`index` にすると、直す前の姿が見られます。**
 #>
 [CmdletBinding()]
 param(
     [int]$Repeat = 0,
     [int]$Events = 0,
-    [int]$Holding = 0
+    [int]$Holding = 0,
+    [ValidateSet('universe', 'index')]
+    [string]$Subtract = ''
 )
 
 $ErrorActionPreference = 'Continue'
@@ -49,13 +64,14 @@ if (-not (Test-UvInstalled)) { Exit-WithPause 1 }
 
 Write-Section 'イベント型の対照（説ではない。予算に数えない）'
 Write-Host '#8・#5 が呼んでいる関数そのものに、乱数を通します。' -ForegroundColor Yellow
-Write-Host '月次で測った 1.12 が、ここにも当てはまるとは限りません。' -ForegroundColor DarkGray
+Write-Host '引く相手は等加重の宇宙です（時価総額加重の 1306 ではありません）。' -ForegroundColor DarkGray
 Write-Host ''
 
 $arguments = @('run', 'stock-ai', 'rehearsal-events')
 if ($Repeat -gt 0) { $arguments += @('--repeat', $Repeat) }
 if ($Events -gt 0) { $arguments += @('--events', $Events) }
 if ($Holding -gt 0) { $arguments += @('--holding', $Holding) }
+if ($Subtract) { $arguments += @('--subtract', $Subtract) }
 
 uv @arguments
 $code = $LASTEXITCODE

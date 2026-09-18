@@ -1,0 +1,212 @@
+"""引く相手を、**持ち方と同じ加重で**作る。
+
+## なぜ要るか
+
+イベント型の陰性対照で、**乱数で選んだ銘柄と日を20営業日持つと指数に勝った**
+——情報が何も無いのに、である（2026-09-17、400回・800,000件）。
+
+分解したら出どころははっきりしていた。
+
+| | 1イベントあたり |
+|---|---|
+| 銘柄側 | +1.11% |
+| 指数側（`1306`） | +0.88% |
+| **差** | **+0.22%** |
+| うち生存フィルタ | −0.00% |
+
+**バグではない。** `1306` は時価総額加重で、イベントのバスケットは等加重である。
+**加重が違うものを引き算していた。** 年におよそ +2.8%、小型株の割増として
+ありふれた大きさで、**ロングの説には下駄を、ショートの説には重しを**付けていた。
+
+## ここが作るもの
+
+各営業日 `D` について、**その日に窓を開けられた銘柄すべての等加重平均**
+——`D+1` の寄付きで入り、`D+holding` の終値で降りたときのリターン。
+
+**イベント側とまったく同じ数え方をする。** 銘柄ごとに自分の足で `D+1` と
+`D+holding` を取り、足りない銘柄はその日の平均に入らない。片方だけ別の数え方を
+すると、差が「説の効果」ではなく「数え方の違い」になる。
+
+## 分かっていて残している食い違い
+
+**説の側には流動性の絞り込みが掛かっているが、ここには掛かっていない。**
+`eligible` で同じ絞り込みを渡せるようにしてあるが、#5・#8 は候補イベントに
+ついてしか流動性を測っていないので、宇宙全体には当てられない。
+
+**絞り込みを掛けないほうが小型に寄る**ので、ロングの説には**辛く**出る。
+`1306` のときと向きが逆である。**0 になったわけではない**——小さくして向きを
+変えただけで、そう書いておく。
+"""
+
+from __future__ import annotations
+
+import dataclasses
+import datetime as dt
+from collections.abc import Callable, Iterator
+
+from stock_ai.core.logging import get_logger
+
+logger = get_logger(__name__)
+
+#: 1日の平均を作るのに要る最低銘柄数。
+#:
+#: **少ない日の平均は、平均ではない。** 3銘柄の等加重は「宇宙」ではなく、
+#: たまたま足の在った3社である。下回る日は値を出さず、**そこに落ちたイベントは
+#: `no_benchmark` に数えられる**——黙って消えない。
+#:
+#: 30 は「指数と呼べる最低限」の目安であって、**測って出した値ではない。**
+#: そう書いておく。
+MIN_SYMBOLS_PER_DAY = 30
+
+
+@dataclasses.dataclass(frozen=True)
+class UniverseBenchmark:
+    """日ごとの等加重平均リターンと、**その元になった数。**"""
+
+    holding: int
+    window: dict[dt.date, float]
+    """``D`` → ``D+1`` 寄付きから ``D+holding`` 終値までの等加重平均リターン。"""
+
+    counted: dict[dt.date, int]
+    """その日の平均に入った銘柄数。**平均だけ見て、何社の平均かを見ない形を作らない。**"""
+
+    symbols: int
+    """足を読んだ銘柄数。"""
+
+    last_session: dt.date
+    """読んだ中でいちばん新しい日。**上場廃止と期間の端を分けるのに使う。**"""
+
+    thin_days: int
+    """銘柄数が足りず、値を出さなかった日。"""
+
+    def get(self, when: dt.date) -> float | None:
+        """その日の等加重平均。**無ければ `None`**（0 ではない）。"""
+        return self.window.get(when)
+
+    def warnings(self) -> list[str]:
+        """気付かなくても目に入るべきこと。"""
+        found: list[str] = []
+        if not self.window:
+            # **ここで return しない。** 1日も作れなかったときこそ理由が要る。
+            # 手前の検査が全部を弾くと後ろが黙る形を、`EventSample` で踏んでいる。
+            found.append("**1日も平均が作れなかった。** 引く相手が無い。")
+        if self.thin_days:
+            found.append(
+                f"**{self.thin_days:,} 日は銘柄が {MIN_SYMBOLS_PER_DAY} 社に届かず、"
+                "値を出していない。** そこに落ちたイベントは判定に入らない。"
+            )
+        if not self.counted:
+            return found
+        thinnest = min(self.counted.values())
+        if thinnest < MIN_SYMBOLS_PER_DAY * 2:
+            found.append(f"**いちばん薄い日で {thinnest:,} 社。** 期間の初めが薄いことが多い。")
+        return found
+
+
+def equal_weighted_windows(
+    database: object,
+    holding: int,
+    *,
+    symbols: list[str] | None = None,
+    eligible: Callable[[str, dt.date], bool] | None = None,
+    progress: Callable[[int, int], None] | None = None,
+) -> UniverseBenchmark:
+    """日ごとの**等加重平均の窓リターン**を作る。
+
+    Args:
+        database: 価格の保存先。
+        holding: 保有営業日数。**イベント側と同じ値を渡すこと。**
+        symbols: 対象の銘柄。省くと JP の全銘柄。
+        eligible: ``(銘柄, 日)`` で絞る。省くと絞らない。
+        progress: ``(済み, 全体)`` で呼ばれる。**1行に収めること。**
+
+    Returns:
+        :class:`UniverseBenchmark`。
+
+    Raises:
+        ValueError: ``holding`` が 1 未満、または銘柄が1つも無い。
+    """
+    from stock_ai.data.schema import CLOSE, OPEN, split_adjusted
+    from stock_ai.database.repository import PriceRepository, list_securities
+
+    if holding < 1:
+        raise ValueError(f"holding must be at least 1; got {holding}.")
+
+    total: dict[dt.date, float] = {}
+    counted: dict[dt.date, int] = {}
+    last_session: dt.date | None = None
+
+    with database.session() as session:  # type: ignore[attr-defined]
+        wanted = symbols
+        if wanted is None:
+            wanted = [sym for sym, market in list_securities(session) if market == "JP"]
+        if not wanted:
+            raise ValueError("銘柄が1つも無い。等加重の平均を作れない。")
+
+        prices = PriceRepository(session)
+        for done, symbol in enumerate(wanted, start=1):
+            if progress is not None:
+                progress(done, len(wanted))
+            raw = prices.get_raw_prices(symbol)
+            if raw.empty:
+                continue
+            adjusted = split_adjusted(raw)
+            index = adjusted.index
+            opens = adjusted[OPEN].to_numpy(dtype=float)
+            close = adjusted[CLOSE].to_numpy(dtype=float)
+            if last_session is None or index[-1].date() > last_session:
+                last_session = index[-1].date()
+            for when, value in _windows(index, opens, close, holding):
+                if eligible is not None and not eligible(symbol, when):
+                    continue
+                total[when] = total.get(when, 0.0) + value
+                counted[when] = counted.get(when, 0) + 1
+
+    if last_session is None:
+        raise ValueError("価格の在る銘柄が1つも無い。等加重の平均を作れない。")
+
+    # **薄い日は値を出さない。** 出すと「3社の等加重」が「宇宙」を名乗る。
+    window = {
+        when: total[when] / count for when, count in counted.items() if count >= MIN_SYMBOLS_PER_DAY
+    }
+    thin = sum(1 for count in counted.values() if count < MIN_SYMBOLS_PER_DAY)
+    kept = {when: count for when, count in counted.items() if when in window}
+    logger.info(
+        "等加重の引く相手: %d 日（%d 銘柄、薄くて外した日 %d）",
+        len(window),
+        len(kept),
+        thin,
+    )
+    return UniverseBenchmark(
+        holding=holding,
+        window=window,
+        counted=kept,
+        symbols=len(wanted),
+        last_session=last_session,
+        thin_days=thin,
+    )
+
+
+def _windows(
+    index: object,
+    opens: object,
+    close: object,
+    holding: int,
+) -> Iterator[tuple[dt.date, float]]:
+    """1銘柄ぶんの ``(D, D+1 寄付き → D+holding 終値)`` を流す。
+
+    **イベント側と同じ形で取る。** `D+holding` が足の外に出る日は流さない
+    ——イベント側も同じ理由で落としている。
+
+    Yields:
+        ``(D, リターン)``。取れない日は飛ばす。
+    """
+    length = len(index)  # type: ignore[arg-type]
+    for position in range(length):
+        if position + holding >= length:
+            break
+        entry = opens[position + 1]  # type: ignore[index]
+        leave = close[position + holding]  # type: ignore[index]
+        if not (entry > 0) or not (leave > 0):
+            continue
+        yield index[position].date(), (leave / entry) - 1.0  # type: ignore[index]

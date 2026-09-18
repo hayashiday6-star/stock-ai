@@ -2116,6 +2116,9 @@ def revision_power(  # noqa: PLR0913 - §0 が固定した条件をすべて受�
     benchmark: str = typer.Option(BENCHMARK, "--benchmark", help="Sets the calendar."),
     min_turnover: float = typer.Option(MIN_TURNOVER, "--min-turnover", help="Liquidity floor."),
     holding: int = typer.Option(20, "--holding", help="Sessions held, fixed by the prereg."),
+    subtract: str = typer.Option(
+        "index", "--subtract", help="What to deduct: index (as the prereg says) or universe."
+    ),
     limit: int | None = typer.Option(None, "--limit", help="Read only the first N originals."),
 ) -> None:
     """Measure the IS spread for #5, so the gate can be applied.
@@ -2232,8 +2235,17 @@ def revision_power(  # noqa: PLR0913 - §0 が固定した条件をすべて受�
         for event in events
         if not event.on_statement_day and liquid_on(event.symbol, event.disclosed_on)
     ]
+    # **事前登録は `1306` を指している。** 既定を変えない——判定の出た説を、
+    # あとから別の相手で測り直すことになる。`--subtract universe` は、
+    # 新しい説のために形だけ通してある。
+    deducted = _universe_to_subtract(database, subtract, holding)
     sample = event_sample(
-        database, kept, holding=holding, benchmark=benchmark, until=counted.split_on
+        database,
+        kept,
+        holding=holding,
+        benchmark=benchmark,
+        until=counted.split_on,
+        subtract=deducted,
     )
     values = sample.values
     # **捨てた件数を黙って捨てない。** 引いた件数のうち何件が、どの理由で
@@ -6941,6 +6953,64 @@ _DISPOSITION_LABELS = {
 }
 
 
+#: 何を引くか。**`index` は時価総額加重、`universe` は等加重。**
+#:
+#: **既定は管ごとに違う。** 事前登録が `1306` を指している説（#5・#8）は
+#: `index` のままにする——**判定の出た説を、あとから別の相手で測り直さない。**
+#: 対照は `universe` を既定にする。そこが直ったことを見る場所だからである。
+_SUBTRACT_CHOICES = ("index", "universe")
+
+
+def _universe_to_subtract(database: Database, mode: str, holding: int) -> object | None:
+    """Build the equal-weighted benchmark when the mode asks for it.
+
+    **引く相手を、持ち方と同じ加重にする。** `1306` は時価総額加重で、イベントの
+    バスケットは等加重である。陰性対照では、その食い違いだけで**情報ゼロの並びが
+    20営業日で +0.22% 勝っていた**（2026-09-17、400回）。
+
+    Args:
+        database: 価格の保存先。
+        mode: ``index`` か ``universe``。
+        holding: 保有営業日数。**イベント側と同じ値を渡すこと。**
+
+    Returns:
+        ``universe`` なら :class:`UniverseBenchmark`、``index`` なら ``None``。
+
+    Raises:
+        typer.BadParameter: 知らない ``mode``。
+    """
+    from stock_ai.backtest.universe_benchmark import equal_weighted_windows
+
+    if mode not in _SUBTRACT_CHOICES:
+        raise typer.BadParameter(f"--subtract は {' か '.join(_SUBTRACT_CHOICES)}。")
+    if mode == "index":
+        return None
+
+    console.print("[dim]等加重の引く相手を作っています（全銘柄の足を1度だけ読みます）...[/]")
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        BarColumn(),
+        TaskProgressColumn(),
+        TimeRemainingColumn(),
+        console=console,
+    ) as progress:
+        task = progress.add_task("銘柄を読む", total=None)
+
+        def step(done: int, total: int) -> None:
+            progress.update(task, completed=done, total=total)
+
+        built = equal_weighted_windows(database, holding, progress=step)
+
+    console.print(
+        f"[dim]{len(built.window):,} 日ぶん（{built.symbols:,} 銘柄、窓 {holding} 営業日）。"
+        "**引くのは時価総額加重の指数ではなく、等加重の宇宙である。**[/]"
+    )
+    for line in built.warnings():
+        console.print(f"[yellow]{line}[/]")
+    return built
+
+
 def _report_event_disposition(sample: object, *, title: str) -> None:
     """Print what the event window kept and what it threw away.
 
@@ -7144,6 +7214,9 @@ def margin_power(  # noqa: PLR0913 - §0 が固定した条件をすべて受け
     benchmark: str = typer.Option(BENCHMARK, "--benchmark", help="Sets the calendar."),
     min_turnover: float = typer.Option(MIN_TURNOVER, "--min-turnover", help="Liquidity floor."),
     holding: int | None = typer.Option(None, "--holding", help="Override the window from §3."),
+    subtract: str = typer.Option(
+        "index", "--subtract", help="What to deduct: index (as the prereg says) or universe."
+    ),
     limit: int | None = typer.Option(None, "--limit", help="Read only the first N originals."),
 ) -> None:
     """Measure the IS spread for #8, so the gate can be applied.
@@ -7245,8 +7318,15 @@ def margin_power(  # noqa: PLR0913 - §0 が固定した条件をすべて受け
         for spell in spells(alerts)
         if lending(spell.symbol, spell.onset) and liquid.get((spell.symbol, spell.onset), False)
     ]
+    # **事前登録は `1306` を指している。** 既定を変えない（上と同じ理由）。
+    deducted = _universe_to_subtract(database, subtract, window)
     sample = event_sample(
-        database, kept, holding=window, benchmark=benchmark, until=counted.split_on
+        database,
+        kept,
+        holding=window,
+        benchmark=benchmark,
+        until=counted.split_on,
+        subtract=deducted,
     )
     values = sample.values
     # **捨てた件数を黙って捨てない**（2026-09-17）。
@@ -7661,6 +7741,9 @@ def rehearsal_events(  # noqa: PLR0913 - イベント型と同じ条件をすべ
     repeat: int = typer.Option(400, "--repeat", help="Draws, for calibration."),
     start: str = typer.Option("2009-01-01", "--start", help="First day events may land on."),
     end: str = typer.Option("2026-08-31", "--end", help="Last day events may land on."),
+    subtract: str = typer.Option(
+        "universe", "--subtract", help="What to deduct: universe (equal weight) or index."
+    ),
 ) -> None:
     """Calibrate the event-type pipe - the one #8 and #5 actually use.
 
@@ -7722,6 +7805,10 @@ def rehearsal_events(  # noqa: PLR0913 - イベント型と同じ条件をすべ
         f"毎回 {events:,} 件を引く。窓は {holding} 営業日。種 {seed}。[/]"
     )
 
+    # **1度だけ作って400回ぶん使い回す。** 毎回作り直すと、同じものを400回
+    # 計算することになる。乱数で変わるのは引くほうであって、引かれる相手ではない。
+    deducted = _universe_to_subtract(database, subtract, holding)
+
     scores: list[float] = []
     # **400回ぶんの処分を足し上げる。** 1回ぶんでは件数が小さすぎて、
     # 上場廃止で落ちる割合が読めない。
@@ -7740,7 +7827,9 @@ def rehearsal_events(  # noqa: PLR0913 - イベント型と同じ条件をすべ
         for index in range(repeat):
             progress.update(task, completed=index + 1)
             drawn = placebo_events(days, symbols, events, seed=seed + index)
-            sample = event_sample(database, drawn, holding=holding, benchmark=benchmark)
+            sample = event_sample(
+                database, drawn, holding=holding, benchmark=benchmark, subtract=deducted
+            )
             tally["drawn"] += sample.drawn
             for key in _DISPOSITIONS:
                 tally[key] += getattr(sample, key)
