@@ -370,9 +370,35 @@ class TestTheFloorStopsTheCorrectionFromLoosening:
 
         from stock_ai import cli
 
-        for command in (cli.revision_power, cli.margin_power):
+        for command in (cli.revision_power, cli.margin_power, cli.rehearsal_events):
             body = inspect.getsource(command)
-            assert "inflation=MEASURED_INFLATION_EVENT" in body, command.__name__
+            assert "_event_inflation(subtract)" in body, command.__name__
+
+    def test_the_inflation_follows_what_is_actually_subtracted(self) -> None:
+        """**測った条件と違う条件の数字を当てない。**
+
+        引く相手を替えたら SD が 0.94 → 1.09 に動いた（2026-09-18、どちらも
+        400回・同じ種）。**片方の数字をもう片方に当てれば、線はもっともらしい
+        まま根拠を失う。**
+        """
+        from stock_ai.backtest.multiplicity import (
+            MEASURED_INFLATION_EVENT,
+            MEASURED_INFLATION_EVENT_INDEX,
+        )
+        from stock_ai.cli import _event_inflation
+
+        assert _event_inflation("index") == MEASURED_INFLATION_EVENT_INDEX
+        assert _event_inflation("universe") == MEASURED_INFLATION_EVENT
+        assert MEASURED_INFLATION_EVENT != MEASURED_INFLATION_EVENT_INDEX
+
+    def test_an_unknown_subtraction_is_refused(self) -> None:
+        """**この検査が落ちる条件を、実際に1つ作る。**"""
+        import typer
+
+        from stock_ai.cli import _event_inflation
+
+        with pytest.raises(typer.BadParameter):
+            _event_inflation("topix")
 
     def test_both_measured_numbers_say_where_they_came_from(self) -> None:
         import inspect
@@ -382,7 +408,10 @@ class TestTheFloorStopsTheCorrectionFromLoosening:
         source = inspect.getsource(multiplicity)
 
         assert "イベント型の対照" in source
-        assert "平均が +0.49" in source
+        # **どちらの測定も、条件と結果が読めること。**
+        assert "+0.49" in source
+        assert "時価総額加重" in source
+        assert "等加重の宇宙" in source
 
 
 class TestTheWatchLooksAtTheCentreNotOnlyTheSpread:

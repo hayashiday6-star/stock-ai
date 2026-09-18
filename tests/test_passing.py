@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import pathlib
 import re
 
@@ -98,9 +99,14 @@ class TestTheDocumentIsGenerated:
 
         assert f"`t ≥ {target:.2f}`" in body, "docs/PASSING.md を書き直すこと"
         for shape in SHAPES:
-            annual = shape.required_annual(target)
-            need = f"年 {annual:.1%}" if annual else f"1{shape.unit} {shape.required(target):.2%}"
+            # **形ごとの線で見る。** ここも1つの線を全部に当てていた
+            # （2026-09-18）——**直す側だけでなく、確かめる側も同じ間違いを
+            # していた。**
+            own = shape.line()
+            annual = shape.required_annual(own)
+            need = f"年 {annual:.1%}" if annual else f"1{shape.unit} {shape.required(own):.2%}"
             assert need in body, f"{shape.name}: {need} が文書に無い"
+            assert f"`t ≥ {own:.2f}`" in body, f"{shape.name}: 線が文書に無い"
 
     def test_it_carries_all_five_conditions(self) -> None:
         body = _DOC.read_text(encoding="utf-8")
@@ -115,3 +121,65 @@ class TestTheDocumentIsGenerated:
 
         assert f"{required_t(HYPOTHESIS_BUDGET):.2f}" in body, "素の線の出どころが書いていない"
         assert f"**`t ≥ {calibrated_t(HYPOTHESIS_BUDGET):.2f}`**" in body
+
+
+class TestTheLineIsPerPipeHereToo:
+    """**1つの線を全部に当てていた**（2026-09-18 まで）。
+
+    線を管ごとにすると決めた日に、ここだけ直し忘れていた。#5 はイベント型
+    なのに、月次の盤面で測った膨張が乗った線で「要るリターン」を出していた。
+
+    **決めたことを、決めた場所の全部に当てる。**
+    """
+
+    def test_a_monthly_shape_takes_the_monthly_line(self) -> None:
+        from stock_ai.backtest.multiplicity import (
+            HYPOTHESIS_BUDGET,
+            MEASURED_INFLATION,
+            calibrated_t,
+        )
+        from stock_ai.backtest.passing import SHAPES
+
+        monthly = next(shape for shape in SHAPES if shape.pipe == "monthly")
+
+        assert monthly.line() == pytest.approx(
+            calibrated_t(HYPOTHESIS_BUDGET, inflation=MEASURED_INFLATION)
+        )
+
+    def test_an_event_shape_takes_the_event_line(self) -> None:
+        from stock_ai.backtest.multiplicity import (
+            HYPOTHESIS_BUDGET,
+            MEASURED_INFLATION_EVENT,
+            calibrated_t,
+        )
+        from stock_ai.backtest.passing import SHAPES
+
+        event = next(shape for shape in SHAPES if shape.pipe == "event")
+
+        assert event.line() == pytest.approx(
+            calibrated_t(HYPOTHESIS_BUDGET, inflation=MEASURED_INFLATION_EVENT)
+        )
+
+    def test_the_two_lines_are_not_the_same(self) -> None:
+        """**違う数字であること。** 同じなら、この分けは何も守っていない。"""
+        from stock_ai.backtest.passing import SHAPES
+
+        monthly = next(shape for shape in SHAPES if shape.pipe == "monthly")
+        event = next(shape for shape in SHAPES if shape.pipe == "event")
+
+        assert monthly.line() != event.line()
+
+    def test_every_shape_names_a_pipe_that_exists(self) -> None:
+        from stock_ai.backtest.passing import SHAPES
+
+        for shape in SHAPES:
+            assert shape.line() > 0, shape.name
+
+    def test_an_unknown_pipe_is_refused(self) -> None:
+        """**この検査が落ちる条件を、実際に1つ作る。**"""
+        from stock_ai.backtest.passing import SHAPES
+
+        strange = dataclasses.replace(SHAPES[0], pipe="weekly")
+
+        with pytest.raises(ValueError, match="知らない管"):
+            strange.line()

@@ -2136,7 +2136,6 @@ def revision_power(  # noqa: PLR0913 - §0 が固定した条件をすべて受�
     from stock_ai.backtest.event_window import event_sample
     from stock_ai.backtest.multiplicity import (
         HYPOTHESIS_BUDGET,
-        MEASURED_INFLATION_EVENT,
         calibrated_t,
     )
     from stock_ai.backtest.pead import TURNOVER_WINDOW
@@ -2260,9 +2259,9 @@ def revision_power(  # noqa: PLR0913 - §0 が固定した条件をすべて受�
     take = [value - COST_ROUND_TRIP for value in values]
 
     estimate = estimate_power(take, lags=holding)
-    # **イベント型の管は別に測ってある**（`MEASURED_INFLATION_EVENT`）。
-    # 月次の 1.12 をここに当てるのは、測った根拠の無い厳しさになる。
-    target = calibrated_t(HYPOTHESIS_BUDGET, inflation=MEASURED_INFLATION_EVENT)
+    # **膨張は「管 × 引く相手」ごとに測ってある。** 引く相手を替えると数字が
+    # 動いた（0.94 → 1.09）ので、**いま引いている相手の値を当てる。**
+    target = calibrated_t(HYPOTHESIS_BUDGET, inflation=_event_inflation(subtract))
     mean = fmean(take)
     stderr = estimate.standard_error(len(take))
     # **片側95%。** 事前登録 §0 が片側で書いている。
@@ -6961,6 +6960,40 @@ _DISPOSITION_LABELS = {
 _SUBTRACT_CHOICES = ("index", "universe")
 
 
+def _event_inflation(mode: str) -> float:
+    """Pick the measured inflation that matches what is being subtracted.
+
+    **同じ管でも、引く相手を替えたら数字が動いた**（2026-09-18、どちらも400回・
+    同じ種）。
+
+    | 引く相手 | `t` の SD |
+    |---|---|
+    | `1306`（時価総額加重） | 0.94 |
+    | 等加重の宇宙 | 1.09 |
+
+    **測った条件と違う条件の数字を当てない。** 当てれば、線はもっともらしい
+    まま根拠を失う。
+
+    Args:
+        mode: ``index`` か ``universe``。
+
+    Returns:
+        当てる膨張。
+
+    Raises:
+        typer.BadParameter: 知らない ``mode``。
+    """
+    from stock_ai.backtest.multiplicity import (
+        MEASURED_INFLATION_EVENT,
+        MEASURED_INFLATION_EVENT_INDEX,
+    )
+
+    known = {"index": MEASURED_INFLATION_EVENT_INDEX, "universe": MEASURED_INFLATION_EVENT}
+    if mode not in known:
+        raise typer.BadParameter(f"--subtract は {' か '.join(_SUBTRACT_CHOICES)}。")
+    return known[mode]
+
+
 def _universe_to_subtract(database: Database, mode: str, holding: int) -> object | None:
     """Build the equal-weighted benchmark when the mode asks for it.
 
@@ -7235,7 +7268,6 @@ def margin_power(  # noqa: PLR0913 - §0 が固定した条件をすべて受け
     from stock_ai.backtest.margin_census import census, lending_index, spells
     from stock_ai.backtest.multiplicity import (
         HYPOTHESIS_BUDGET,
-        MEASURED_INFLATION_EVENT,
         calibrated_t,
     )
     from stock_ai.backtest.pead import TURNOVER_WINDOW
@@ -7340,9 +7372,9 @@ def margin_power(  # noqa: PLR0913 - §0 が固定した条件をすべて受け
     take = [-value - COST_ROUND_TRIP for value in values]
 
     estimate = estimate_power(take, lags=window)
-    # **イベント型の管は別に測ってある**（`MEASURED_INFLATION_EVENT`）。
-    # 月次の 1.12 をここに当てるのは、測った根拠の無い厳しさになる。
-    target = calibrated_t(HYPOTHESIS_BUDGET, inflation=MEASURED_INFLATION_EVENT)
+    # **膨張は「管 × 引く相手」ごとに測ってある。** 引く相手を替えると数字が
+    # 動いた（0.94 → 1.09）ので、**いま引いている相手の値を当てる。**
+    target = calibrated_t(HYPOTHESIS_BUDGET, inflation=_event_inflation(subtract))
     mean = fmean(take)
     stderr = estimate.standard_error(len(take))
     # **片側95%。** 事前登録 §0 が片側で書いている。
@@ -7626,6 +7658,7 @@ def passing(
     from stock_ai.backtest.multiplicity import (
         HYPOTHESIS_BUDGET,
         MEASURED_INFLATION,
+        MEASURED_INFLATION_EVENT,
         calibrated_t,
         required_t,
     )
@@ -7641,15 +7674,19 @@ def passing(
     for column in ("設計", "1期あたりのSD", "合格に要る大きさ", "どこに書いてあるか"):
         table.add_column(column, overflow="fold")
     for shape in SHAPES:
-        annual = shape.required_annual(target)
-        need = f"年 {annual:.1%}" if annual else f"1{shape.unit} {shape.required(target):.2%}"
+        # **線は管ごとに違う。** 1つの線を全部に当てると、イベント型の行に
+        # 月次で測った膨張が乗る（2026-09-18 まで、そうなっていた）。
+        own = shape.line()
+        annual = shape.required_annual(own)
+        need = f"年 {annual:.1%}" if annual else f"1{shape.unit} {shape.required(own):.2%}"
         table.add_row(shape.name, f"{shape.sd:.2%}／{shape.unit}", f"[bold]{need}[/]", shape.source)
     console.print(table)
     console.print(
-        f"[dim]線は `t ≥ {target:.2f}`（予算 {HYPOTHESIS_BUDGET} 本の "
+        f"[dim]月次の線は `t ≥ {target:.2f}`（予算 {HYPOTHESIS_BUDGET} 本の "
         f"{required_t(HYPOTHESIS_BUDGET):.2f} に、対照で測った膨張 "
-        f"{MEASURED_INFLATION:.2f} を掛けた）。**指数に対して、手数料を引いた後で、"
-        f"{SHAPES[0].periods / 12:.1f}年つづける。**[/]"
+        f"{MEASURED_INFLATION:.2f} を掛けた）。**イベント型は別の管なので "
+        f"`t ≥ {calibrated_t(HYPOTHESIS_BUDGET, inflation=MEASURED_INFLATION_EVENT):.2f}`。**"
+        f"**指数に対して、手数料を引いた後で、{SHAPES[0].periods / 12:.1f}年つづける。**[/]"
     )
     console.print(
         "[dim]イベント型は**年率に直さない**——資金をどれだけ張るかを決める必要が"
@@ -7696,16 +7733,19 @@ def _passing_lines(
         "## 1. 合格に要るリターン",
         "",
         f"線は **`t ≥ {target:.2f}`**（予算 {budget} 本の {required_t(budget):.2f} に、"
-        f"陰性対照で測った膨張 {inflation:.2f} を掛けた）。",
+        f"陰性対照で測った膨張 {inflation:.2f} を掛けた）。**管ごとに違う**"
+        "——下の表はそれぞれの管の線で計算してある。",
         "",
-        "| 設計 | 1期あたりのSD | **合格に要る大きさ** | どこに書いてあるか |",
-        "|---|---|---|---|",
+        "| 設計 | 1期あたりのSD | **合格に要る大きさ** | 線 | どこに書いてあるか |",
+        "|---|---|---|---|---|",
     ]
     for shape in shapes:  # type: ignore[attr-defined]
-        annual = shape.required_annual(target)
-        need = f"年 {annual:.1%}" if annual else f"1{shape.unit} {shape.required(target):.2%}"
+        own = shape.line()
+        annual = shape.required_annual(own)
+        need = f"年 {annual:.1%}" if annual else f"1{shape.unit} {shape.required(own):.2%}"
         lines.append(
-            f"| {shape.name} | {shape.sd:.2%}／{shape.unit} | **{need}** | {shape.source} |"
+            f"| {shape.name} | {shape.sd:.2%}／{shape.unit} | **{need}** "
+            f"| `t ≥ {own:.2f}` | {shape.source} |"
         )
     lines += [
         "",
@@ -7723,7 +7763,7 @@ def _passing_lines(
         "## 2. 合格の条件",
         "",
         "> **先に紙に書いたとおりに売買して、手数料を引いた後で、指数を"
-        f"年 {shapes[0].required_annual(target):.1%} 以上"  # type: ignore[index]
+        f"年 {shapes[0].required_annual(shapes[0].line()):.1%} 以上"  # type: ignore[index]
         "（設計によってはもっと）上回り、それが続き、しかもまぐれでは説明できないこと。**",
         "",
     ]
@@ -7844,7 +7884,9 @@ def rehearsal_events(  # noqa: PLR0913 - イベント型と同じ条件をすべ
             if stderr > 0:
                 scores.append(fmean(values) / stderr)
 
-    target = calibrated_t(HYPOTHESIS_BUDGET)
+    # **自分が引いた相手の線を出す。** 別の相手で測った線を並べると、
+    # 比べているつもりで別のものを比べることになる。
+    target = calibrated_t(HYPOTHESIS_BUDGET, inflation=_event_inflation(subtract))
     found = calibrate(scores, target)
     if not found.runs:
         console.print("[red]1回も測れなかった。[/]")
