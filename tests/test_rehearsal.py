@@ -386,13 +386,26 @@ class TestTheWatchLooksAtTheCentreNotOnlyTheSpread:
         assert "found.mean" in body
         assert "中心のずれ" in body
 
-    def test_it_names_the_most_likely_cause(self) -> None:
-        """**「ずれている」で終わらせない。** 疑う先を書く。"""
+    def test_it_reads_the_decomposition_instead_of_naming_a_suspect(self) -> None:
+        """**決め打ちの犯人を刷らない。**
+
+        最初は「窓の途中で価格が途切れるイベントが落ちるのがいちばん疑わしい」
+        と刷っていた。**同じ出力の上に分解が出ているのに、である。**
+        そして外れた——生存フィルタの押し上げは **-0.00%/件** だった
+        （2026-09-17、400回）。
+
+        **表が否定しているものを、その下の行が断定する**形になっていた。
+        読み上げるのは、測った分解のほうである。
+        """
         import inspect
 
         from stock_ai import cli
 
         body = inspect.getsource(cli.rehearsal_events)
 
-        assert "entry か exit を取れずに落ちる" in body
-        assert "#5・#8 にも掛かっている" in body
+        # 分解の両側を読み上げていること。
+        assert "lifted" in body
+        assert "gap" in body
+        assert "大きいほうが、直すべきほうである" in body
+        # **決め打ちの犯人が戻っていないこと。**
+        assert "いちばん疑わしいのは" not in body

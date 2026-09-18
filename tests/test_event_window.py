@@ -196,6 +196,7 @@ class TestEveryEventLandsInExactlyOneBucket:
         parts = (
             found.used,
             found.no_prices,
+            found.not_trading,
             found.ended_early,
             found.too_recent,
             found.bad_leg,
@@ -214,6 +215,7 @@ class TestEveryEventLandsInExactlyOneBucket:
                 drawn=5,
                 used=1,
                 no_prices=0,
+                not_trading=0,
                 ended_early=0,
                 too_recent=0,
                 bad_leg=0,
@@ -236,10 +238,27 @@ class TestEveryEventLandsInExactlyOneBucket:
         at_the_edge = event_sample(database, [("1301", _DAYS[57])], holding=5)
         assert (at_the_edge.ended_early, at_the_edge.too_recent) == (0, 1)
 
-    def test_a_symbol_with_no_prices_at_all_is_counted(self) -> None:
-        database = _database_of_lengths({"1306": 60, "1301": 60})
-        found = event_sample(database, [("9999", _DAYS[0])], holding=5)
-        assert (found.no_prices, found.used) == (1, 0)
+    def test_a_hole_in_the_data_is_not_the_same_as_not_being_listed(self) -> None:
+        """**名簿に在って価格が無い**のと、**その日に動いていなかった**のは別。
+
+        混ぜると、直すべき穴が直しようのない構造に薄められる。400回の対照で
+        34.4% が1つの行に潰れていた（2026-09-17）。
+        """
+        database = _database_of_lengths({"1306": 60, "1302": 30})
+        # 価格が1本も無い銘柄——**取り込みの穴。**
+        hole = event_sample(database, [("9999", _DAYS[0])], holding=5)
+        assert (hole.no_prices, hole.not_trading, hole.used) == (1, 0, 0)
+        # 足は在るが、その日には無い——**上場前・廃止後。穴ではない。**
+        gone = event_sample(database, [("1302", _DAYS[45])], holding=5)
+        assert (gone.no_prices, gone.not_trading, gone.used) == (0, 1, 0)
+
+    def test_only_the_hole_raises_a_warning(self) -> None:
+        """**当たり前に出るほうで鳴らさない。** 鳴りっぱなしの警告は読まれない。"""
+        database = _database_of_lengths({"1306": 60, "1302": 30})
+        hole = event_sample(database, [("9999", _DAYS[0])], holding=5)
+        assert any("穴" in line for line in hole.warnings())
+        gone = event_sample(database, [("1302", _DAYS[45])], holding=5)
+        assert not any("穴" in line for line in gone.warnings())
 
 
 class TestTheTwoLegsAddBackUpToTheExcess:

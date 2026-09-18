@@ -22,6 +22,13 @@
 
 そして**銘柄側と指数側を別々に返す。** 超過リターンだけを見ていると、
 「銘柄が上がった」のか「引く相手が上がらなかった」のかが分からない。
+
+**答えは指数側だった**（2026-09-17、400回）。銘柄側 +1.11% に対して指数側
++0.88%、差 **+0.22%**。生存フィルタの押し上げは **-0.00%/件**（落ちたのは
+800,000 件中 941 件）。**疑っていたほうではなかった。**
+
+引く相手が `1306`（時価総額加重）で、引くほうが一様抽選（実質等加重）である
+——**それだけで、情報ゼロの並びが指数に勝つ。**
 """
 
 from __future__ import annotations
@@ -43,7 +50,7 @@ class EventSample:
     件数はすべて**イベント件数**である（日数ではない）。`values` だけが
     公表日ごとにまとめた後の並びで、こちらは**日数**になる。
 
-    **`used` と捨てた4つを足すと `drawn` になる。** 成り立たない経路を書いたら
+    **`used` と捨てた5つを足すと `drawn` になる。** 成り立たない経路を書いたら
     生成時に落ちる。
     """
 
@@ -55,7 +62,21 @@ class EventSample:
 
     used: int
     no_prices: int
-    """銘柄の価格が1本も無い。"""
+    """**その銘柄の価格が1本も無い。** 名簿には載っているのに取れていない。
+
+    **これはデータの穴である。** 本物のイベントがここに落ちると、**その説の
+    観測が黙って消える。**
+    """
+
+    not_trading: int
+    """価格は在るが、**その日に足が無い**——上場前・廃止後・停止。
+
+    **穴ではない。** その日にその銘柄は存在しなかったか、動いていなかった。
+    乱数で日と銘柄を別々に引けば、当たり前に大量に出る。
+
+    **`no_prices` と混ぜない。** 混ぜると、直すべき穴が、直しようのない構造に
+    薄められる——400回の対照で 34.4% が1つの行に潰れていた（2026-09-17）。
+    """
 
     ended_early: int
     """窓が価格の終わりを越える。**その銘柄の足が全体の最終日より前で切れている**
@@ -88,6 +109,7 @@ class EventSample:
         parts = (
             self.used,
             self.no_prices,
+            self.not_trading,
             self.ended_early,
             self.too_recent,
             self.bad_leg,
@@ -137,6 +159,15 @@ class EventSample:
             found.append(
                 f"**引いた {self.drawn:,} 件のうち {self.dropped:,} 件"
                 f"（{self.dropped_share:.1%}）を捨てている。**"
+            )
+        # **穴と構造を別に鳴らす。** 上場前・廃止後で落ちるのは当たり前だが、
+        # 名簿に在る銘柄の価格が1本も無いのは、取り込みの穴である。
+        if self.no_prices:
+            share = self.no_prices / self.drawn
+            found.append(
+                f"**価格が1本も無い銘柄に {self.no_prices:,} 件（{share:.1%}）"
+                "当たっている。** 名簿には在るのに取れていない——**データの穴で、"
+                "そこに落ちた説の観測は黙って消える。**"
             )
         if self.ended_early:
             share = self.ended_early / self.drawn
@@ -201,7 +232,7 @@ def event_sample(  # noqa: PLR0912, PLR0915 - 処分を1件ずつ数えるので
     stock_by_day: dict[dt.date, list[float]] = {}
     bench_by_day: dict[dt.date, list[float]] = {}
     truncated: list[float] = []
-    no_prices = ended_early = too_recent = bad_leg = no_benchmark = 0
+    no_prices = not_trading = ended_early = too_recent = bad_leg = no_benchmark = 0
 
     with database.session() as session:  # type: ignore[attr-defined]
         prices = PriceRepository(session)
@@ -230,7 +261,9 @@ def event_sample(  # noqa: PLR0912, PLR0915 - 処分を1件ずつ数えるので
             for when in days:
                 position = at.get(when)
                 if position is None:
-                    no_prices += 1
+                    # **価格は在るが、この日に足が無い。** 上場前・廃止後・停止。
+                    # 1本も無い場合（上の `raw.empty`）とは別に数える。
+                    not_trading += 1
                     continue
                 if position + holding >= len(index):
                     if stops_early:
@@ -269,6 +302,7 @@ def event_sample(  # noqa: PLR0912, PLR0915 - 処分を1件ずつ数えるので
         drawn=drawn,
         used=sum(len(day) for day in by_day.values()),
         no_prices=no_prices,
+        not_trading=not_trading,
         ended_early=ended_early,
         too_recent=too_recent,
         bad_leg=bad_leg,

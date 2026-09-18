@@ -6922,6 +6922,7 @@ def _report_daily_spread(series: object) -> None:
 _DISPOSITIONS = (
     "used",
     "no_prices",
+    "not_trading",
     "ended_early",
     "too_recent",
     "bad_leg",
@@ -6931,7 +6932,8 @@ _DISPOSITIONS = (
 #: 処分の日本語。**表の並びは `_DISPOSITIONS` と同じ順。**
 _DISPOSITION_LABELS = {
     "used": "使えた",
-    "no_prices": "価格が無い",
+    "no_prices": "価格が1本も無い銘柄（穴）",
+    "not_trading": "その日に足が無い（上場前・廃止後・停止）",
     "ended_early": "上場廃止・停止で窓が切れた",
     "too_recent": "期間の端で窓が足りない",
     "bad_leg": "入る値か降りる値が欠測",
@@ -7799,8 +7801,8 @@ def rehearsal_events(  # noqa: PLR0913 - イベント型と同じ条件をすべ
     # **(B) は測れる**——落ちた割合と、落ちた側を足の在るところまでで測った
     # 超過との差である。残りは (A) に当たる。
     lifted = total.survivorship_bias()
+    gap = (total.stock_leg - total.bench_leg) - (lifted or 0.0)
     if lifted is not None:
-        gap = (total.stock_leg - total.bench_leg) - lifted
         console.print(
             f"[dim]差 {total.stock_leg - total.bench_leg:+.2%} のうち、"
             f"上場廃止で落ちた分の押し上げが **{lifted:+.2%}**。"
@@ -7818,11 +7820,21 @@ def rehearsal_events(  # noqa: PLR0913 - イベント型と同じ条件をすべ
             "乱数で選んだ銘柄と日を持つだけで、指数に系統的に勝っている。"
             "**散らばりではなく中心のずれで、線を動かしても直らない。**"
         )
-        console.print(
-            "[dim]いちばん疑わしいのは、窓の途中で価格が途切れるイベントが"
-            "**entry か exit を取れずに落ちる**ことである。**落ちるのは悪く終わった"
-            "側に偏る。** 同じフィルタが #5・#8 にも掛かっている。[/]"
-        )
+        # **疑いを名指ししない。** 同じ出力の上に分解が出ているのに、
+        # 決め打ちの犯人を刷っていた（2026-09-17）。**表が否定しているものを、
+        # その下の行が断定する**形になり、実際に外れた——生存フィルタの
+        # 押し上げは -0.00%/件 だった。**読み上げるのは、測った分解のほうである。**
+        if lifted is not None:
+            console.print(
+                f"[dim]同じ回の分解では、生存フィルタの押し上げが **{lifted:+.2%}/件**、"
+                f"加重の違い（一様抽選 対 時価総額加重）が **{gap:+.2%}/件**。"
+                "**大きいほうが、直すべきほうである。**[/]"
+            )
+        else:
+            console.print(
+                "[dim]**出どころを分けられていない。** 落ちた側の超過が1件も"
+                "測れていないので、生存フィルタと加重の違いを切り分けられない。[/]"
+            )
 
 
 @app.command(name="rehearsal")
