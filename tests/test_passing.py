@@ -42,9 +42,14 @@ class TestTheNumbersAreComputedNotTranscribed:
         assert longer.required(3.39) == pytest.approx(shape.required(3.39) / 2)
 
     def test_the_gentlest_design_is_first(self) -> None:
-        """**いちばん甘い形でどれだけ要るか**が先頭に来ること。"""
+        """**いちばん甘い形でどれだけ要るか**が先頭に来ること。
+
+        **形ごとの線で並べる。** ここも1つの線（3.39）を全部に当てていた
+        ——`docs/PASSING.md` で直したのと同じ形が、確かめる側に残っていた
+        （2026-09-19）。管が増えたときに、並びが実際と違う順になる。
+        """
         monthly = [shape for shape in SHAPES if shape.per_year]
-        needs = [shape.required_annual(3.39) for shape in monthly]
+        needs = [shape.required_annual(shape.line()) for shape in monthly]
 
         assert needs == sorted(needs)
 
@@ -183,3 +188,127 @@ class TestTheLineIsPerPipeHereToo:
 
         with pytest.raises(ValueError, match="知らない管"):
             strange.line()
+
+
+class TestEveryGateUsesTheSameLine:
+    """**決めたことを、決めた場所の全部に当てる。**
+
+    線を管ごとにすると決めたのに、`power-gate` だけ校正前の 3.02 を使って
+    いた（2026-09-19 に #12 で気付いた）。同じ設計に2つの線が出て、**検出
+    できる差が 22.6% と 25.3% に割れた。**
+
+    **緩める向きの取り違えである。** 線が低ければ検出できる差も小さく出る
+    ので、**通ってはいけない設計が §0 を通る。**
+    """
+
+    def test_the_gate_asks_multiplicity_for_the_line(self) -> None:
+        import inspect
+
+        from stock_ai import cli
+
+        body = inspect.getsource(cli.power_gate)
+
+        assert "line_for(pipe, budget)" in body
+        # **素の値をそのまま線にしていないこと。**
+        assert "target_t = adjusted.required_t" not in body
+
+    def test_the_gate_takes_a_pipe(self) -> None:
+        from tests.test_cli import declared_options
+
+        assert "--pipe" in declared_options("power-gate")
+
+    def test_the_line_choice_lives_in_one_place(self) -> None:
+        """**2箇所目を書いたら、そのうち片方だけ直す。**"""
+        import inspect
+
+        from stock_ai.backtest import passing
+
+        body = inspect.getsource(passing.Shape.line)
+
+        assert "line_for" in body
+        assert "MEASURED_INFLATION" not in body
+
+    def test_every_pipe_the_shapes_name_is_one_the_line_knows(self) -> None:
+        from stock_ai.backtest.multiplicity import PIPES
+        from stock_ai.backtest.passing import SHAPES
+
+        for shape in SHAPES:
+            assert shape.pipe in PIPES, shape.name
+
+    def test_an_unknown_pipe_is_refused(self) -> None:
+        """**この検査が落ちる条件を、実際に1つ作る。**"""
+        from stock_ai.backtest.multiplicity import line_for
+
+        with pytest.raises(ValueError, match="知らない管"):
+            line_for("weekly")
+
+    def test_the_monthly_line_is_stricter_than_the_uncorrected_one(self) -> None:
+        """**校正は足すためのものである。** 素の値を下回らせない。"""
+        from stock_ai.backtest.multiplicity import (
+            HYPOTHESIS_BUDGET,
+            PIPES,
+            line_for,
+            required_t,
+        )
+
+        plain = required_t(HYPOTHESIS_BUDGET)
+        for pipe in PIPES:
+            assert line_for(pipe) >= plain, pipe
+
+
+class TestTheCalendarPipeHasItsOwnLine:
+    """**3本目の管。** 月次でもイベント型でもない。
+
+    #13 は1本の系列の中で日どうしを比べる別の推定量なので、月次の 1.12 も
+    イベント型の 1.09 も当てはまらない。**測った**（2026-09-19、400回で
+    SD 1.05）。
+
+    **1回目は使わなかった。** `t` の平均が +0.40 出ていて、原因は対照の
+    作りだった。
+    """
+
+    def test_the_pipe_is_known(self) -> None:
+        from stock_ai.backtest.multiplicity import PIPES
+
+        assert "calendar" in PIPES
+
+    def test_the_line_is_stricter_than_the_plain_one(self) -> None:
+        """**校正は足すためのものである。**"""
+        from stock_ai.backtest.multiplicity import HYPOTHESIS_BUDGET, line_for, required_t
+
+        assert line_for("calendar") > required_t(HYPOTHESIS_BUDGET)
+
+    def test_it_differs_from_the_other_pipes(self) -> None:
+        """**同じなら、この分けは何も守っていない。**"""
+        from stock_ai.backtest.multiplicity import line_for
+
+        lines = {line_for(pipe) for pipe in ("monthly", "event", "calendar")}
+
+        assert len(lines) == 3
+
+    def test_the_measured_value_says_where_it_came_from(self) -> None:
+        """**出典の無い数字を書かない。**"""
+        import inspect
+
+        from stock_ai.backtest import multiplicity
+
+        source = inspect.getsource(multiplicity)
+
+        assert "暦の対照" in source
+        assert "211 月替わり" in source
+
+    def test_the_command_uses_it(self) -> None:
+        """**口を開けただけで配線を忘れる**形を止める。"""
+        import inspect
+
+        from stock_ai import cli
+
+        body = inspect.getsource(cli.turn_of_month_power)
+
+        assert 'line_for("calendar")' in body
+        assert "暫定" not in body, "対照を回したのに、まだ暫定と書いてある"
+
+    def test_the_gate_command_accepts_it(self) -> None:
+        from stock_ai.backtest.multiplicity import line_for
+
+        assert line_for("calendar") > 0

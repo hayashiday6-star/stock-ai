@@ -102,6 +102,7 @@ from stock_ai.backtest.multiplicity import (
     HYPOTHESIS_BUDGET,
     adjust,
     ladder,
+    line_for,
 )
 from stock_ai.backtest.pead import (
     MIN_TURNOVER,
@@ -174,6 +175,7 @@ from stock_ai.core.exceptions import (
     OpsError,
     RateLimitError,
 )
+from stock_ai.core.log_gaps import survey_all as survey_logs
 from stock_ai.core.logging import configure_logging
 from stock_ai.core.scheduler import DailyScheduler, JobResult
 from stock_ai.core.version import describe as describe_version
@@ -443,7 +445,24 @@ def info() -> None:
         table.add_row("tachibana version", f"{version}{'  ' + warning if warning else ''}")
     for label, value in _secret_status(settings):
         table.add_row(label, _secret_summary(value))
+
+    # **走らなかった日は、出力に出ない。**
+    #
+    # `Get-ScheduledTaskInfo` は `LastTaskResult: 0` と出るが、それは「最後に
+    # 走った回」の話で、**走らなかった回は数に入らない。** 2026-09-19 に手で
+    # 数えて、daily に4日・accumulation に2日の穴が見つかった。**「異常なし」
+    # の顔をしたまま抜けていた。**
+    #
+    # **無いことを出すには、在るべき日を先に決めて引き算するしかない。**
+    gaps = survey_logs(Path("logs"))
+    for row in gaps:
+        # 札に名前が出ているので、本文からは落とす。
+        table.add_row(f"logs/{row.name}", row.summary().removeprefix(f"{row.name}: "))
     console.print(table)
+    # **穴は表の1行にしない。** 表は読む側が気付く必要がある。
+    for row in gaps:
+        for line in row.warnings():
+            console.print(f"[yellow]{line}[/]")
     console.print(
         "[dim]The fingerprint is a hash prefix, not the key. It answers one "
         "question the word 'set' cannot: whether the value in .env actually "
@@ -5830,6 +5849,172 @@ def antivalue_estimate(
     )
 
 
+@app.command(name="momentum-power")
+def momentum_power(
+    rosters: str = typer.Option(
+        str(DEFAULT_SNAPSHOT_DIR), "--rosters", help="Where the dated rosters live."
+    ),
+    is_end: str = typer.Option("2017-12-31", "--is-end", help="Last day of the IS window."),
+    oos_periods: int = typer.Option(104, "--oos-periods", help="Months the judgement will have."),
+) -> None:
+    """Measure the IS window for #12, so the gate table can be filled - not judge it.
+
+    **段2（自分の IS から推定する）の材料を出す。** 文献はあるが**一次資料に
+    届かなかった**ので、見込みはここから置く（`docs/PREREG_MOMENTUM_JP.md` §0）。
+
+    出すのは4つ。**1期あたりのSD**（検出できる差を決める）、**入れ替わり率**
+    （費用を決める）、**効果の推定**（封印するかどうかを決める）、**裾**
+    （急反転でどれだけ持っていかれるか）。
+
+    **判定ではない。** IS は 2009-01〜2017-12 で、OOS（2018-01〜2026-08）には
+    1日も触れない。
+
+    **設計は事前登録 §3 が固定している。** 形成12ヶ月・直近1ヶ月スキップ・
+    保有1ヶ月・5分位・等加重。**動かす引数を置いていない**のは、動かせると
+    試して選ぶことになるからである。
+    """
+    from stock_ai.backtest.momentum import (
+        FORMATION_MONTHS,
+        SKIP_MONTHS,
+    )
+    from stock_ai.backtest.momentum import (
+        build_series as momentum_series,
+    )
+    from stock_ai.backtest.multiplicity import (
+        HYPOTHESIS_BUDGET,
+        MEASURED_INFLATION,
+        calibrated_t,
+        required_t,
+    )
+    from stock_ai.backtest.power import estimate_power
+
+    settings = get_settings()
+    configure_logging(settings.log_level)
+
+    cut = _parse_date(is_end)
+    if cut is None:
+        raise typer.BadParameter(f"--is-end must be YYYY-MM-DD; got {is_end!r}.")
+
+    snapshots = membership(Path(rosters))
+    if not snapshots:
+        console.print("[red]名簿が無い。[/] **渡さないと生存バイアスが入る。**")
+        raise typer.Exit(code=1)
+
+    database = Database()
+    database.create_all()
+    console.print(
+        f"[dim]IS は {cut} まで。OOS には1日も触れない。"
+        f"形成 {FORMATION_MONTHS} ヶ月・直近 {SKIP_MONTHS} ヶ月スキップ・5分位。[/]"
+    )
+    series = momentum_series(database, end=cut, snapshots=snapshots)
+    console.print(series.summary())
+    for line in series.warnings():
+        console.print(f"[yellow]{line}[/]")
+    if not series.months:
+        raise typer.Exit(code=1)
+
+    # **費用を引いてから見る。** 実行できない大きさを見込みに置かないため。
+    cost = series.cost_per_month()
+
+    # **生の差と α の両方を出す。** #9 は §5 に「α も併記する」と書きながら
+    # §0 を生の差だけで埋めた（2026-09-16）。ここは最初から両方出す。
+    beta = series.beta_to_benchmark()
+    measured = {
+        "生の差": [value - cost for value in series.spread()],
+        "α（β を引いた）": [value - cost for value in series.alpha(beta)],
+    }
+
+    table = Table(title="§0 に入れる材料（IS から。判定ではない）")
+    for column in ("項目", "生の差", "α（β を引いた）", "どこから"):
+        table.add_column(column, overflow="fold")
+
+    target = calibrated_t(HYPOTHESIS_BUDGET)
+    stats: dict[str, tuple[float, float, float, float, float]] = {}
+    for label, values in measured.items():
+        estimate = estimate_power(values, lags=3)
+        stats[label] = (
+            estimate.daily_sd,
+            estimate.inflation,
+            fmean(values),
+            estimate.standard_error(len(values)),
+            # **判定に使える期数で当てる。** IS の月数ではない。
+            estimate.detectable(oos_periods, target_t=target),
+        )
+
+    raw, adjusted = stats["生の差"], stats["α（β を引いた）"]
+    table.add_row("1期あたりのSD", f"{raw[0]:.2%}", f"{adjusted[0]:.2%}", "IS の月次、費用引き後")
+    table.add_row(
+        "重なりの膨張", f"{raw[1]:.2f}x", f"{adjusted[1]:.2f}x", "Newey-West(3) と素の分散の比"
+    )
+    table.add_row(
+        "検出できる差",
+        f"年 {raw[4] * 12:.1%}",
+        f"年 {adjusted[4] * 12:.1%}",
+        f"t≥{target:.2f}・{oos_periods}期",
+    )
+    table.add_row("判定に使える期数", f"{oos_periods}", "—", "OOS の月数。**全期間ではない**")
+    table.add_row(
+        "入れ替わり", f"{series.turnover():.1%}／月", "—", "実測。**#9 の値は写していない**"
+    )
+    table.add_row("費用", f"年 {cost * 12:.2%}", "—", "往復 0.40% × 入れ替わり")
+    table.add_row("β", f"{beta:+.2f}", "—", "スプレッドの、指数に対する感応度。IS で推定")
+    console.print(table)
+
+    # **裾を見る**（事前登録 §5）。平均が同じでも、ここが違えば別の戦略である。
+    tail = Table(title="裾（生の差・費用引き後）")
+    for column in ("項目", "値", "なぜ見るか"):
+        tail.add_column(column, overflow="fold")
+    tail.add_row("いちばん悪かった月", f"{series.worst_month() - cost:+.2%}", "1回の事故の大きさ")
+    tail.add_row("下位5%の月の平均", f"{series.left_tail() - cost:+.2%}", "**1点ではなく帯で見る**")
+    tail.add_row("勝った月の割合", f"{series.hit_rate():.1%}", "平均だけで語らない")
+    console.print(tail)
+    console.print(
+        "[dim]**モメンタムは平常時に効いても、急反転で損失が集中しうる。** "
+        "平均が同じでも、ここが違えば別の戦略である（事前登録 §5）。[/]"
+    )
+
+    mean, stderr = raw[2], raw[3]
+    low, high = mean - 1.96 * stderr, mean + 1.96 * stderr
+    console.print(
+        f"[bold]IS の効果（生の差・費用引き後）: 年 {mean * 12:+.2%}[/] "
+        f"[dim]（95% の幅 年 {low * 12:+.2%} 〜 {high * 12:+.2%}）[/]"
+    )
+    console.print(
+        f"[dim]α でも併記する: 年 {adjusted[2] * 12:+.2%}"
+        f"（95% の幅 年 {(adjusted[2] - 1.96 * adjusted[3]) * 12:+.2%} 〜 "
+        f"{(adjusted[2] + 1.96 * adjusted[3]) * 12:+.2%}）。"
+        f"**線を当てるのは生の差のほうである**——§10 が「分位差」と書いている。[/]"
+    )
+
+    # **測る前にコミットした線である。** 動かさない（事前登録 §0）。
+    floor = MOMENTUM_FLOOR
+    console.print()
+    if mean * 12 < floor:
+        console.print(
+            f"[red]封印しない。[/] IS の推定 年 {mean * 12:+.2%} が、"
+            f"**測る前にコミットした線 年 {floor:.1%} を下回った。**"
+        )
+        console.print(
+            "[dim]事前登録 §0 にそう書いてある。**下回ったら、検出できても"
+            "実行できない。** 線は動かさない。[/]"
+        )
+        return
+
+    console.print(f"[green]線（年 {floor:.1%}）は上回った。[/] 次は §0 のゲートである。")
+    console.print(
+        "[dim]uv run stock-ai power-gate "
+        f"--sd {raw[0] * 100:.2f} --periods {oos_periods} "
+        f"--low {low * 12 * 100:.2f} --high {high * 12 * 100:.2f} "
+        f"--inflation {raw[1]:.2f} --budget {HYPOTHESIS_BUDGET}[/]"
+    )
+    console.print(
+        f"[dim]必要な t は {calibrated_t(HYPOTHESIS_BUDGET):.2f}"
+        f"（予算 {HYPOTHESIS_BUDGET} 本の {required_t(HYPOTHESIS_BUDGET):.2f} に、"
+        f"対照で測った膨張 {MEASURED_INFLATION:.2f} を掛けた）。"
+        "補正なしの 2.0 ではない。[/]"
+    )
+
+
 @app.command(name="valuation-monthly")
 def valuation_monthly(
     directory: str = typer.Option(
@@ -7175,6 +7360,27 @@ def _report_event_disposition(sample: object, *, title: str) -> None:
         console.print(f"[yellow]{line}[/]")
 
 
+#: #13 の「封印しない線」。**測る前にコミットした**（`docs/PREREG_TURN_OF_MONTH_JP.md` §0）。
+#:
+#: **売買しないので費用は引かない**が、将来売買するときのいちばん安い実装
+#: （窓の中だけ持ち分を増やす、年12回、増分は資産の半分）の費用から置いた
+#: ——`0.4% × 12 × 0.5 = 年 2.4%`。全部入って全部出るなら年 4.8% になる。
+#:
+#: **甘いほうを採った。** 実装をまだ選んでいないので、選んでいない実装のせいで
+#: 閉じることのないようにする。**測ってから動かさない。**
+TURN_OF_MONTH_FLOOR = 0.024
+
+
+#: #12 の「封印しない線」。**測る前にコミットした**（`docs/PREREG_MOMENTUM_JP.md` §0）。
+#:
+#: 費用を賄えるかどうかの線である。#9 は入れ替わり 15.9%／月で費用 年0.76%
+#: だったが、**モメンタムの順位はそれより速く動く**——12ヶ月の累積は毎月
+#: いちばん古い月が落ちるので、株価が動かなくても順位が変わる。
+#:
+#: **測ってから動かさない。**
+MOMENTUM_FLOOR = 0.02
+
+
 def _oos_session_count(database: Database, benchmark: str, holding: int) -> int:
     """Count the sessions the OOS test will have. Counts days, never values."""
     with database.session() as session:
@@ -7910,6 +8116,7 @@ def rehearsal_events(  # noqa: PLR0913 - イベント型と同じ条件をすべ
     )
     from stock_ai.backtest.power import estimate_power
     from stock_ai.backtest.rehearsal import calibrate, placebo_events
+    from stock_ai.core.logging import quiet_on_console
     from stock_ai.database.repository import list_securities
 
     settings = get_settings()
@@ -7967,14 +8174,18 @@ def rehearsal_events(  # noqa: PLR0913 - イベント型と同じ条件をすべ
     tally: dict[str, object] = {"values": [], "truncated": [], "drawn": 0}
     tally.update(dict.fromkeys(_DISPOSITIONS, 0))
     legs: list[tuple[float, float]] = []
-    with Progress(
-        SpinnerColumn(),
-        TextColumn("[progress.description]{task.description}"),
-        BarColumn(),
-        TaskProgressColumn(),
-        TimeRemainingColumn(),
-        console=console,
-    ) as progress:
+    with (
+        # **400回ぶんの1行記録をコンソールに出さない。** ファイルには残る。
+        quiet_on_console("stock_ai.backtest.power"),
+        Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            BarColumn(),
+            TaskProgressColumn(),
+            TimeRemainingColumn(),
+            console=console,
+        ) as progress,
+    ):
         task = progress.add_task("種を変えて回す", total=repeat)
         for index in range(repeat):
             progress.update(task, completed=index + 1)
@@ -8108,6 +8319,370 @@ def rehearsal_events(  # noqa: PLR0913 - イベント型と同じ条件をすべ
             )
 
 
+@app.command(name="rehearsal-calendar")
+def rehearsal_calendar(  # noqa: PLR0913 - 日次の暦と同じ条件をすべて受け取る
+    benchmark: str = typer.Option(BENCHMARK, "--benchmark", help="Which series to label."),
+    seed: int = typer.Option(REHEARSAL_SEED, "--seed", help="Fixed, so the run reproduces."),
+    repeat: int = typer.Option(400, "--repeat", help="Draws, for calibration."),
+    start: str = typer.Option("2009-01-01", "--start", help="First month-turn to use."),
+    end: str = typer.Option("2026-08-31", "--end", help="Last day any window may touch."),
+) -> None:
+    """Calibrate the daily-calendar pipe - the one #13 uses.
+
+    **説ではない。陰性対照である。** 予算に数えない。
+
+    **月次の 1.12 も、イベント型の 1.09 も、ここには当てはまらないかもしれない。**
+    #13 は1本の系列の中で日どうしを比べる**別の推定量**である。
+
+    **リターンは本物のまま、窓の位置だけを乱数にする。** 月次の対照が signal
+    だけを乱数にしたのと同じ形である。**偽の窓は本物の窓の外に置く**——重ねると
+    本物の効果が漏れ込む。
+
+    API を1回も叩かない。
+    """
+    from stock_ai.backtest.multiplicity import (
+        MEASURED_INFLATION,
+        MEASURED_INFLATION_EVENT,
+        required_t,
+    )
+    from stock_ai.backtest.power import estimate_power
+    from stock_ai.backtest.rehearsal import calibrate, placebo_windows
+    from stock_ai.backtest.turn_of_month import WINDOW_DAYS
+    from stock_ai.backtest.turn_of_month import build_series as turn_series
+    from stock_ai.core.logging import quiet_on_console
+
+    settings = get_settings()
+    configure_logging(settings.log_level)
+
+    begin, finish = _parse_date(start), _parse_date(end)
+    if begin is None or finish is None or begin >= finish:
+        raise typer.BadParameter("--start は --end より前のこと。")
+    if repeat < 1:
+        raise typer.BadParameter("--repeat は 1 以上。")
+
+    console.print("[bold yellow]これは説ではない。陰性対照である。[/]")
+    console.print(
+        "[dim]#13 が使う暦の管に、窓の位置だけ乱数にして通す。"
+        "**月次の 1.12 も、イベント型の 1.09 も、ここに当てはまるとは限らない。**[/]"
+    )
+    console.print()
+
+    returns, dates, month_ends = _calendar_pipe(benchmark)
+
+    # **本物の窓は、偽の窓からも窓の外からも外す。**
+    #
+    # 偽の窓は本物を避けて置かれるので、偽の「窓の外」は**構成上かならず
+    # 本物の窓をまたぐ。** 外さないと本物の効果が引き算する側に混ざり、
+    # 「何も無いときの分布」にならない。しかも**混ざる向きから本物の符号が
+    # 逆算できてしまう**（2026-09-19 に気付いて止めた）。
+    real = frozenset(day for end in month_ends for day in range(end, end + WINDOW_DAYS))
+
+    # **窓の外は、その隙間のふつうの日に限る。**
+    #
+    # `exclude` だけでは足りなかった。偽の窓が本物の窓を挟むと、「窓の外」が
+    # **本物の窓だけになり、除外して空になる。** しかも長さが 4〜22日 と
+    # ばらつく（本物は常に約16日）——**同じ推定量を測っていることにならない。**
+    #
+    # ここは前の本物の窓の直後から、今回の本物の窓の直前まで。**本物の日は
+    # 1日も入らない。**
+    pool = [
+        (month_ends[max(index - 1, 0)] + WINDOW_DAYS, month_ends[index] - 1)
+        for index in range(len(month_ends))
+    ]
+
+    # **使った範囲を出す。** 価格の全履歴を出していたので、2009年より前まで
+    # 使ったように見えていた（実際は `USABLE_FROM` で切られている）。
+    shape = turn_series(returns, dates, month_ends, source=benchmark, start=begin, end=finish)
+    if len(shape.episodes) < 2:
+        console.print("[red]月替わりが2回も作れない。[/]")
+        raise typer.Exit(code=1)
+    console.print(
+        f"[dim]{shape.months[0]} 〜 {shape.months[-1]}（月替わり "
+        f"{len(shape.months):,} 回）。窓は {WINDOW_DAYS} 営業日。種 {seed}。"
+        f"**本物の窓 {len(real):,} 日は、偽の窓からも窓の外からも外してある。**[/]"
+    )
+
+    scores: list[float] = []
+    # **`t` だけ見ない。** イベント型の +0.49 は `t` しか見ていなかったので、
+    # 分解に2手かかった（2026-09-18）。**下にある量も一緒に出す。**
+    levels: list[float] = []
+    with (
+        # **400回ぶんの1行記録をコンソールに出さない。** ファイルには残る。
+        # 前回この出力が 112KB になった（2026-09-19）。
+        quiet_on_console("stock_ai.backtest.turn_of_month", "stock_ai.backtest.power"),
+        Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            BarColumn(),
+            TaskProgressColumn(),
+            TimeRemainingColumn(),
+            console=console,
+        ) as progress,
+    ):
+        task = progress.add_task("種を変えて回す", total=repeat)
+        for index in range(repeat):
+            progress.update(task, completed=index + 1)
+            windows = placebo_windows(month_ends, WINDOW_DAYS, seed=seed + index)
+            drawn = turn_series(
+                returns,
+                dates,
+                month_ends,
+                source=benchmark,
+                start=begin,
+                end=finish,
+                windows=windows,
+                exclude=real,
+                outside_pool=pool,
+            )
+            if len(drawn.episodes) < 2:
+                continue
+            estimate = estimate_power(drawn.episodes, lags=3)
+            stderr = estimate.standard_error(len(drawn.episodes))
+            if stderr > 0:
+                scores.append(fmean(drawn.episodes) / stderr)
+                levels.append(fmean(drawn.episodes))
+
+    # **ここは線を「作る」側なので、校正済みの線を持てない。**
+    #
+    # 他のすべての判定箇所は `calibrated_t` を使う（`tests/test_rehearsal.py` の
+    # `TestTheCalibratedLineIsUsedEverywhere` が見ている）。**ここだけが例外で、
+    # 例外である理由は「まだ測っていないものを、測る前に当てられない」ため。**
+    #
+    # `target` と名付けない。**判定に見える名前を、判定でないものに付けない。**
+    plain_line = required_t(HYPOTHESIS_BUDGET)
+    found = calibrate(scores, plain_line)
+    if not found.runs:
+        console.print("[red]1回も測れなかった。[/]")
+        raise typer.Exit(code=1)
+
+    table = Table(title=f"日次の暦の管での `t` の形（{found.runs} 回）")
+    for column in ("項目", "実測", "帰無なら"):
+        table.add_column(column, overflow="fold")
+    table.add_row("t の SD", f"[bold]{found.spread:.2f}[/]", "1.00")
+    table.add_row("t の平均", f"{found.mean:+.2f}", "0.00")
+    table.add_row("|t| ≥ 1.96", f"{found.plain_share:.1%}", "5.0%")
+    table.add_row(f"|t| ≥ {plain_line:.2f}（素の線）", f"{found.strict_share:.2%}", "0.25%")
+    table.add_row("いちばん大きい t", f"{found.worst:+.2f}", "—")
+    if levels:
+        # **`t` の下にある量。** 中心がずれたとき、分子が動いたのか分母が
+        # 動いたのかを1回で分けられるようにする。
+        table.add_row("1月替わりあたりの差（年率）", f"{fmean(levels) * 12:+.2%}", "0.00%")
+    console.print(table)
+
+    line = plain_line * max(found.spread, 1.0)
+    console.print(
+        f"[dim]月次は {MEASURED_INFLATION:.2f}、イベント型は {MEASURED_INFLATION_EVENT:.2f}、"
+        f"**ここは {found.spread:.2f}。** 線は **{line:.2f}**"
+        "（**1.0 を下回らせない**——補正は足りない分を足すためのもので、"
+        "割り引くためのものではない）。[/]"
+    )
+    console.print(
+        f"[yellow]**これを `MEASURED_INFLATION_CALENDAR` に書き写すのは、"
+        f"こちらの仕事である。** いまは {found.spread:.2f} が定数に入っていない。[/]"
+    )
+    for warning in found.warnings():
+        console.print(f"[yellow]{warning}[/]")
+    if abs(found.mean) > 0.20:
+        console.print(
+            f"[red]**帰無の下で `t` の平均が {found.mean:+.2f} ある**（0.00 のはず）。[/] "
+            "**散らばりではなく中心のずれで、線を動かしても直らない。**"
+        )
+
+
+def _calendar_pipe(benchmark: str) -> tuple[list[float], list[dt.date], list[int]]:
+    """Read what both #13 and its control read - the calendar pipe's inputs.
+
+    **2通り持たない。** 月の切れ目も日次リターンも、ここ1箇所で作る。
+
+    Args:
+        benchmark: 暦とリターンを取る銘柄。
+
+    Returns:
+        ``(日次リターン, 日付, 月末の位置)``。
+
+    Raises:
+        typer.Exit: 価格が無い。
+    """
+    from stock_ai.backtest.lowvol_census import formation_dates
+    from stock_ai.backtest.turn_of_month import daily_returns
+    from stock_ai.data.schema import CLOSE, split_adjusted
+
+    database = Database()
+    database.create_all()
+    with database.session() as session:
+        raw = PriceRepository(session).get_raw_prices(benchmark)
+    if raw.empty:
+        console.print(f"[red]{benchmark} の価格が無い。暦を決められない。[/]")
+        raise typer.Exit(code=1)
+
+    frame = split_adjusted(raw)
+    returns = daily_returns(frame[CLOSE].to_numpy(dtype=float))
+    dates = [stamp.date() for stamp in frame.index[1:]]
+    month_ends = [position - 1 for position in formation_dates(frame.index) if position >= 1]
+    return returns, dates, month_ends
+
+
+@app.command(name="turn-of-month-power")
+def turn_of_month_power(
+    benchmark: str = typer.Option(BENCHMARK, "--benchmark", help="The series the line applies to."),
+    is_end: str = typer.Option("2017-12-31", "--is-end", help="Last day of the IS window."),
+    oos_periods: int = typer.Option(104, "--oos-periods", help="Month-turns the judgement has."),
+    universe: bool = typer.Option(True, "--universe/--no-universe", help="Also read equal weight."),
+) -> None:
+    """Measure the IS window for #13, so the gate table can be filled - not judge it.
+
+    **段2（自分の IS から推定する）の材料を出す。** 文献は読めないので、見込みは
+    ここから置く（`docs/PREREG_TURN_OF_MONTH_JP.md` §0）。
+
+    **売買しない。** 窓の中の合計と、日数を揃えた窓の外の平均の差を測るだけで
+    ある。費用は引かない——**その代わり §0 の線を、将来売買するときの費用から
+    置いてある。**
+
+    **判定ではない。** IS は 2009-01〜2017-12 で、OOS（2018-01〜2026-08）には
+    1日も触れない。
+    """
+    from stock_ai.backtest.power import estimate_power
+    from stock_ai.backtest.turn_of_month import WINDOW_DAYS
+    from stock_ai.backtest.turn_of_month import build_series as turn_series
+
+    settings = get_settings()
+    configure_logging(settings.log_level)
+
+    cut = _parse_date(is_end)
+    if cut is None:
+        raise typer.BadParameter(f"--is-end must be YYYY-MM-DD; got {is_end!r}.")
+
+    console.print(
+        f"[dim]IS は {cut} まで。OOS には1日も触れない。"
+        f"窓は月末最終営業日から翌月3営業日目まで（{WINDOW_DAYS} 営業日）。[/]"
+    )
+
+    returns, dates, month_ends = _calendar_pipe(benchmark)
+    built = [turn_series(returns, dates, month_ends, source=benchmark, end=cut)]
+    if universe:
+        built.append(_universe_calendar(month_ends, dates, cut))
+
+    for series in built:
+        console.print(series.summary())
+        for line in series.warnings():
+            console.print(f"[yellow]{line}[/]")
+    if not built[0].episodes:
+        raise typer.Exit(code=1)
+
+    table = Table(title="§0 に入れる材料（IS から。判定ではない）")
+    columns = ("項目", *[series.source for series in built], "どこから")
+    for column in columns:
+        table.add_column(column, overflow="fold")
+
+    # **この管の線は測ってある**（2026-09-19、400回で SD 1.05）。
+    # 以前は月次の線を仮に当てていた。対照を回す前だったからである。
+    target = line_for("calendar")
+    stats = []
+    for series in built:
+        estimate = estimate_power(series.episodes, lags=3)
+        stats.append(
+            (
+                estimate.daily_sd,
+                estimate.inflation,
+                fmean(series.episodes),
+                estimate.standard_error(len(series.episodes)),
+                estimate.detectable(oos_periods, target_t=target),
+            )
+        )
+
+    table.add_row("1期あたりのSD", *[f"{row[0]:.2%}" for row in stats], "IS の月替わりごと")
+    table.add_row("重なりの膨張", *[f"{row[1]:.2f}x" for row in stats], "Newey-West(3)。実測")
+    table.add_row(
+        "検出できる差",
+        *[f"年 {row[4] * 12:.1%}" for row in stats],
+        f"t≥{target:.2f}・{oos_periods}期。**この管で測った線**",
+    )
+    table.add_row("判定に使える期数", f"{oos_periods}", *["—"] * (len(built) - 1), "OOS の月数")
+    console.print(table)
+
+    tail = Table(title=f"裾（{built[0].source}）")
+    for column in ("項目", "値", "なぜ見るか"):
+        tail.add_column(column, overflow="fold")
+    tail.add_row("いちばん悪かった月替わり", f"{built[0].worst_month():+.2%}", "1回の事故の大きさ")
+    tail.add_row("下位5%の平均", f"{built[0].left_tail():+.2%}", "**1点ではなく帯で見る**")
+    tail.add_row("正だった割合", f"{built[0].hit_rate():.1%}", "平均だけで語らない")
+    console.print(tail)
+
+    mean, stderr = stats[0][2], stats[0][3]
+    low, high = mean - 1.96 * stderr, mean + 1.96 * stderr
+    console.print(
+        f"[bold]IS の差（{built[0].source}）: 年 {mean * 12:+.2%}[/] "
+        f"[dim]（95% の幅 年 {low * 12:+.2%} 〜 {high * 12:+.2%}）[/]"
+    )
+    if len(built) > 1:
+        console.print(
+            f"[dim]等加重でも併記する: 年 {stats[1][2] * 12:+.2%}。"
+            "**線を当てるのは指数のほうである**——§2 でそう決めた。[/]"
+        )
+
+    # **測る前にコミットした線である。** 動かさない（事前登録 §0）。
+    console.print()
+    if mean * 12 < TURN_OF_MONTH_FLOOR:
+        console.print(
+            f"[red]封印しない。[/] IS の推定 年 {mean * 12:+.2%} が、"
+            f"**測る前にコミットした線 年 {TURN_OF_MONTH_FLOOR:.1%} を下回った。**"
+        )
+        console.print(
+            "[dim]事前登録 §0 にそう書いてある。**下回ったら、将来売買しても"
+            "費用を賄えない。** 線は動かさない。[/]"
+        )
+        return
+
+    console.print(
+        f"[green]線（年 {TURN_OF_MONTH_FLOOR:.1%}）は上回った。[/] 次は §0 のゲートである。"
+    )
+    console.print(
+        "[dim]uv run stock-ai power-gate "
+        f"--sd {stats[0][0] * 100:.2f} --periods {oos_periods} "
+        f"--low {low * 12 * 100:.2f} --high {high * 12 * 100:.2f} "
+        f"--inflation {stats[0][1]:.2f} --budget {HYPOTHESIS_BUDGET} --pipe calendar[/]"
+    )
+
+
+def _universe_calendar(month_ends: list[int], dates: list[dt.date], cut: dt.date) -> object:
+    """Build the same month-turn series on the equal-weighted universe.
+
+    **併記用である。** 線を当てるのは指数のほう（事前登録 §2）。
+
+    **日付で揃える。** 指数と同じ暦・同じ月末の位置を使い、その日の等加重平均を
+    並べる。足の無い日は `nan` にして、平均から外れるようにする。
+
+    Args:
+        month_ends: 月末の位置（指数の暦の中）。
+        dates: 指数の暦（リターンと同じ長さ）。
+        cut: IS の最終日。
+
+    Returns:
+        :class:`~stock_ai.backtest.turn_of_month.TurnOfMonthSeries`。
+    """
+    from stock_ai.backtest.turn_of_month import build_series as turn_series
+    from stock_ai.backtest.universe_benchmark import equal_weighted_daily
+
+    database = Database()
+    database.create_all()
+    console.print("[dim]等加重の日次を作っています（全銘柄の足を1度だけ読みます）...[/]")
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        BarColumn(),
+        TaskProgressColumn(),
+        TimeRemainingColumn(),
+        console=console,
+    ) as progress:
+        task = progress.add_task("銘柄を読む", total=None)
+        daily = equal_weighted_daily(
+            database,
+            progress=lambda done, total: progress.update(task, completed=done, total=total),
+        )
+    values = [daily.get(when, float("nan")) for when in dates]
+    return turn_series(values, dates, month_ends, source="universe", end=cut)
+
+
 @app.command(name="rehearsal")
 def rehearsal(  # noqa: PLR0913 - 本物と同じ条件をすべて受け取る
     is_start: str = typer.Option("2009-01-01", "--is-start", help="First day of the IS window."),
@@ -8146,6 +8721,7 @@ def rehearsal(  # noqa: PLR0913 - 本物と同じ条件をすべて受け取る
     )
     from stock_ai.backtest.power import estimate_power
     from stock_ai.backtest.rehearsal import calibrate, oos_seed, placebo_sections
+    from stock_ai.core.logging import quiet_on_console
 
     settings = get_settings()
     configure_logging(settings.log_level)
@@ -8250,14 +8826,18 @@ def rehearsal(  # noqa: PLR0913 - 本物と同じ条件をすべて受け取る
 
     # --- 何度も回して、t の形を見る ------------------------------------------
     scores: list[float] = []
-    with Progress(
-        SpinnerColumn(),
-        TextColumn("[progress.description]{task.description}"),
-        BarColumn(),
-        TaskProgressColumn(),
-        TimeRemainingColumn(),
-        console=console,
-    ) as progress:
+    with (
+        # **400回ぶんの1行記録をコンソールに出さない。** ファイルには残る。
+        quiet_on_console("stock_ai.backtest.power"),
+        Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            BarColumn(),
+            TaskProgressColumn(),
+            TimeRemainingColumn(),
+            console=console,
+        ) as progress,
+    ):
         task = progress.add_task("種を変えて回す", total=repeat)
         for index in range(repeat):
             progress.update(task, completed=index + 1)
@@ -9203,6 +9783,9 @@ def power_gate(
     budget: int | None = typer.Option(
         None, "--budget", help="How many hypotheses you plan to judge in total."
     ),
+    pipe: str = typer.Option(
+        "monthly", "--pipe", help="Which pipe was measured: monthly, event or event-index."
+    ),
 ) -> None:
     """Decide whether a test is worth sealing at all - before it is sealed.
 
@@ -9241,7 +9824,20 @@ def power_gate(
             raise typer.BadParameter(f"--budget must be at least 1; got {budget}.")
         adjusted = adjust(budget)
         console.print(f"[dim]{adjusted.summary()}[/]")
-        target_t = adjusted.required_t
+        # **校正した線を当てる。** ここだけ `required_t`（3.02）のままだった
+        # ——他の判定箇所は全部 `calibrated_t` に移してあったのに、**この関門
+        # だけ取り残されていた**（2026-09-19 に #12 で気付いた）。
+        #
+        # **緩める向きの取り違えである。** 線が低ければ検出できる差も小さく
+        # 出るので、**通ってはいけない設計が §0 を通る。**
+        try:
+            target_t = line_for(pipe, budget)
+        except ValueError as problem:
+            raise typer.BadParameter(str(problem)) from problem
+        console.print(
+            f"[dim]線は `t ≥ {target_t:.2f}`（{pipe} の管。素の "
+            f"{adjusted.required_t:.2f} に、陰性対照で測った膨張を掛けた）。[/]"
+        )
         if budget != HYPOTHESIS_BUDGET:
             console.print(
                 f"[yellow]このプロジェクトが決めた予算は {HYPOTHESIS_BUDGET} 本である。[/] "

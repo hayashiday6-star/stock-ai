@@ -234,3 +234,88 @@ class TestThinningChangesThePrecisionNotThePeriod:
         database = _database(_crowd(0.001, 40))
 
         assert equal_weighted_windows(database, holding=5, fraction=0.001, seed=1).symbols == 1
+
+
+class TestTheDailySeriesIsNotTheWindowOne:
+    """**窓のほうから日次は取り出せない。**
+
+    `holding=1` にしても「翌日の寄付き → 翌日の終値」であって、**終値どうしの
+    変化ではない。** #13（月替わり）が要るのは後者である。
+
+    そして 2026-09-19 に、この関数を**書いたつもりで書いていなかった。**
+    `cli._universe_calendar` が存在しない名前を呼び、**ユーザーの PC で
+    `--universe` を付けた実行が落ちるまで分からなかった。**
+    """
+
+    def test_it_is_the_close_to_close_change(self) -> None:
+        from stock_ai.backtest.universe_benchmark import equal_weighted_daily
+
+        database = _database(_crowd(0.002, 40))
+
+        found = equal_weighted_daily(database)
+
+        assert found[_DAYS[1]] == pytest.approx(0.002)
+        assert found[_DAYS[5]] == pytest.approx(0.002)
+
+    def test_the_first_day_has_no_return(self) -> None:
+        from stock_ai.backtest.universe_benchmark import equal_weighted_daily
+
+        found = equal_weighted_daily(_database(_crowd(0.002, 40)))
+
+        assert _DAYS[0] not in found
+
+    def test_it_averages_across_symbols(self) -> None:
+        from stock_ai.backtest.universe_benchmark import equal_weighted_daily
+
+        series = _crowd(0.001, 30)
+        series.update({f"{3000 + n}": _drifting(0.003) for n in range(30)})
+
+        found = equal_weighted_daily(_database(series))
+
+        assert found[_DAYS[1]] == pytest.approx((0.001 + 0.003) / 2)
+
+    def test_a_thin_day_is_left_out_not_zeroed(self) -> None:
+        """**薄い日は 0 ではなく、入らない。**"""
+        from stock_ai.backtest.universe_benchmark import equal_weighted_daily
+
+        found = equal_weighted_daily(_database(_crowd(0.001, 3)))
+
+        assert found == {}
+
+    def test_the_floor_can_be_moved(self) -> None:
+        from stock_ai.backtest.universe_benchmark import equal_weighted_daily
+
+        found = equal_weighted_daily(_database(_crowd(0.001, 3)), min_symbols=2)
+
+        assert found[_DAYS[1]] == pytest.approx(0.001)
+
+    def test_a_floor_below_one_is_refused(self) -> None:
+        from stock_ai.backtest.universe_benchmark import equal_weighted_daily
+
+        with pytest.raises(ValueError, match="min_symbols"):
+            equal_weighted_daily(_database(_crowd(0.001, 40)), min_symbols=0)
+
+    def test_an_empty_universe_is_refused(self) -> None:
+        from stock_ai.backtest.universe_benchmark import equal_weighted_daily
+
+        with pytest.raises(ValueError, match="銘柄"):
+            equal_weighted_daily(_database(_crowd(0.001, 40)), symbols=[])
+
+    def test_the_window_version_gives_a_different_answer(self) -> None:
+        """**別物であることを、同じ盤面で見せる。**
+
+        `holding=1` の窓は「翌日の寄付き → 翌日の終値」なので、毎日 +0.2%
+        伸びる足では **0** になる。日次のほうは +0.2% である。
+        """
+        from stock_ai.backtest.universe_benchmark import (
+            equal_weighted_daily,
+            equal_weighted_windows,
+        )
+
+        database = _database(_crowd(0.002, 40))
+
+        daily = equal_weighted_daily(database)
+        window = equal_weighted_windows(database, holding=1)
+
+        assert daily[_DAYS[1]] == pytest.approx(0.002)
+        assert window.get(_DAYS[0]) == pytest.approx(0.0)

@@ -130,6 +130,27 @@ MEASURED_INFLATION_EVENT = 1.09
 #: いることを、そう書いておく。
 MEASURED_INFLATION_EVENT_INDEX = 0.94
 
+#: 日次の暦の管での膨張。**3本目の管。**
+#:
+#: 400 回、2009-01〜2026-07 の 211 月替わり（2026-09-19、
+#: `research\暦の対照.bat`）。
+#:
+#: | 読み | 実測 | 帰無なら |
+#: |---|---|---|
+#: | `t` の SD | **1.05** | 1.00 |
+#: | `t` の平均 | +0.01 | 0.00 |
+#: | 1月替わりあたりの差 | −0.01% | 0.00% |
+#: | `\|t\| ≥ 3.02` | 0.25% | 0.25% |
+#: | `\|t\| ≥ 1.96` | 6.0% | — |
+#:
+#: **`|t| ≥ 1.96` の 6.0% は、SD 1.05 の正規分布なら 6.2%。** 別の切り口が
+#: 同じことを言っている。
+#:
+#: **1回目は使わなかった。** `t` の平均が **+0.40** 出ていて、原因は対照の
+#: 作りだった——偽の窓の「窓の外」が**構成上かならず本物の窓をまたぐ**ので、
+#: 本物の効果が引き算する側に混ざっていた（`docs/HYPOTHESES.md`）。
+MEASURED_INFLATION_CALENDAR = 1.05
+
 #: 膨張の下限。**1.0 を下回らせない。**
 #:
 #: **補正は足りない分を足すためのもので、割り引くためのものではない。**
@@ -195,6 +216,38 @@ def calibrated_t(
     if inflation <= 0:
         raise ValueError(f"inflation must be positive; got {inflation}.")
     return required_t(budget, alpha) * max(inflation, floor)
+
+
+#: 管ごとの膨張。**線の選び方をここ1箇所に置く。**
+#:
+#: **2箇所目を書いたら、そのうち片方だけ直す。** 実際 `docs/PASSING.md` を
+#: 作るところが月次の線を全部の形に当てていて、`power-gate` は校正前の
+#: 3.02 を使ったままだった（どちらも 2026-09-18〜19 に見つけた）。
+PIPES = {
+    "monthly": MEASURED_INFLATION,
+    "event": MEASURED_INFLATION_EVENT,
+    "event-index": MEASURED_INFLATION_EVENT_INDEX,
+    "calendar": MEASURED_INFLATION_CALENDAR,
+}
+
+
+def line_for(pipe: str, budget: int = HYPOTHESIS_BUDGET, alpha: float = FAMILY_ALPHA) -> float:
+    """その管で封印に使う線。**管ごとに違う。**
+
+    Args:
+        pipe: `PIPES` の鍵。
+        budget: 試すつもりの本数。
+        alpha: 全体の有意水準。
+
+    Returns:
+        封印に使う `t`。
+
+    Raises:
+        ValueError: 知らない ``pipe``。
+    """
+    if pipe not in PIPES:
+        raise ValueError(f"知らない管 {pipe!r}。{' / '.join(PIPES)} のどれか。")
+    return calibrated_t(budget, alpha, inflation=PIPES[pipe])
 
 
 def adjust(budget: int, alpha: float = FAMILY_ALPHA) -> Adjustment:

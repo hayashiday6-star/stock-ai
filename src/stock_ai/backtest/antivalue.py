@@ -33,6 +33,7 @@ import pandas as pd
 from stock_ai.backtest.lowvol_census import formation_dates
 from stock_ai.backtest.monthly_grid import build_grid, listed_on
 from stock_ai.backtest.pead import MIN_TURNOVER, TURNOVER_WINDOW, Period
+from stock_ai.backtest.quantile_series import QuantileSeries
 from stock_ai.backtest.reversal import BENCHMARK
 from stock_ai.backtest.reversal_census import QUANTILES
 from stock_ai.core.logging import get_logger
@@ -42,9 +43,9 @@ from stock_ai.database.repository import PriceRepository
 
 logger = get_logger(__name__)
 
-#: 1往復の費用。#6・#7 と同じ。**これは写してよい**——売買のコストであって、
-#: 並べ方には依らない。
-ROUND_TRIP_COST = 0.004
+#: 1往復の費用。**正本は `quantile_series` にある。** ここは名前を残すためだけ
+#: （`tests/test_antivalue.py` が import している）。
+ROUND_TRIP_COST = QuantileSeries.round_trip_cost
 
 #: 分位を作るのに要る最低銘柄数。#7 と同じ。
 MIN_SYMBOLS_PER_MONTH = 100
@@ -56,71 +57,16 @@ USABLE_FROM = dt.date(2009, 1, 1)
 
 
 @dataclasses.dataclass
-class AntiValueSeries:
-    """月ごとの分位リターンと、入れ替わり。"""
+class AntiValueSeries(QuantileSeries):
+    """月ごとの分位リターンと、入れ替わり。**添字0が最も割安、末尾が最も割高。**
 
-    months: list[dt.date]
-    quantiles: list[tuple[float, ...]]
-    """分位ごとの月次リターン。**添字0が最も割安、末尾が最も割高。**"""
+    **読み方は `QuantileSeries` に置いてある**——スプレッド・入れ替わり・β・
+    α・費用・裾は #12（モメンタム）と同じ式である。**並べる材料しか違わない。**
+    ここに残すのは、この説に固有の数え落としだけ。
+    """
 
-    members: list[tuple[frozenset[str], frozenset[str]]]
-    """月ごとの（最も割安な分位、最も割高な分位）の顔ぶれ。"""
-
-    counts: list[int]
-    benchmark: list[float]
-    skipped_thin: int
-    skipped_no_pbr: int
-
-    def spread(self) -> list[float]:
-        """**高PBR − 低PBR。** 格言はこれが正だと予測する。"""
-        return [row[-1] - row[0] for row in self.quantiles]
-
-    def turnover(self) -> float:
-        """両端の分位の、月をまたいだ入れ替わり率。**測る。写さない。**
-
-        顔ぶれが 100件から 100件へ動くとき、消えた割合を取る。前月が無い
-        最初の月は数えない。
-        """
-        changes = []
-        for (cheap_now, rich_now), (cheap_before, rich_before) in zip(
-            self.members[1:], self.members[:-1], strict=False
-        ):
-            for now, before in ((cheap_now, cheap_before), (rich_now, rich_before)):
-                if before:
-                    changes.append(1.0 - len(now & before) / len(before))
-        return float(np.mean(changes)) if changes else 0.0
-
-    def beta_to_benchmark(self) -> float:
-        """スプレッドのベンチマークに対する β（最小二乗）。
-
-        **ロング・ショートでも β は 0 ではない。** 両端の分位の感応度が違えば
-        差にも市場が残る。割安な側は感応度が高いことが多いので、**市場が動いた
-        月はスプレッドが一方向に出る。** その上下動が分散のほとんどを作り、
-        検出力を食う。
-
-        `cross_section.beta_to_benchmark` を呼ぶ。**同じ処理を2つ書かない。**
-
-        Raises:
-            ValueError: 月が2つ未満、またはベンチマークが動かない。
-        """
-        from stock_ai.backtest.cross_section import beta_to_benchmark
-
-        return beta_to_benchmark(self.spread(), self.benchmark)
-
-    def alpha(self, beta: float) -> list[float]:
-        """スプレッド − β×ベンチマーク。
-
-        β は外から渡す。**この系列自身から推定した β を判定期間に当てると、
-        判定期間の情報でその期間を調整することになる**（#7 §7-2 と同じ）。
-        IS の推定では IS の β を当ててよいが、**判定では IS で固定した値を渡す。**
-        """
-        return [
-            value - beta * bench for value, bench in zip(self.spread(), self.benchmark, strict=True)
-        ]
-
-    def cost_per_month(self) -> float:
-        """月あたりの費用。**実測した入れ替わり率から出す。**"""
-        return ROUND_TRIP_COST * self.turnover()
+    skipped_thin: int = 0
+    skipped_no_pbr: int = 0
 
     def summary(self) -> str:
         """1行のまとめ。**平均は出さない**——§0 が判定を先食いしないため。"""

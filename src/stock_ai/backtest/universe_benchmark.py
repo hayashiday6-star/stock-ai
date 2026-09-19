@@ -253,3 +253,78 @@ def _windows(
         if not (entry > 0) or not (leave > 0):
             continue
         yield index[position].date(), (leave / entry) - 1.0  # type: ignore[index]
+
+
+def equal_weighted_daily(
+    database: object,
+    *,
+    symbols: list[str] | None = None,
+    min_symbols: int = MIN_SYMBOLS_PER_DAY,
+    progress: Callable[[int, int], None] | None = None,
+) -> dict[dt.date, float]:
+    """日ごとの**等加重平均の日次リターン**。
+
+    ## `equal_weighted_windows` と別物である
+
+    | | 返すもの |
+    |---|---|
+    | `equal_weighted_windows` | 日 → **その日から `holding` 営業日の窓**の平均 |
+    | ここ | 日 → **その日1日**の平均 |
+
+    **窓のほうから日次は取り出せない。** `holding=1` にしても
+    「翌日の寄付き → 翌日の終値」であって、**終値どうしの変化ではない。**
+    #13（月替わり）が要るのは後者である。
+
+    **共有するのは薄い日の足切りだけ。** 3社の等加重は「宇宙」ではない、
+    という理由は同じである。
+
+    Args:
+        database: 価格の保存先。
+        symbols: 対象の銘柄。省くと JP の全銘柄。
+        min_symbols: その日の平均を出すのに要る最低銘柄数。
+        progress: ``(済み, 全体)`` で呼ばれる。**1行に収めること。**
+
+    Returns:
+        日付 → 等加重平均の日次リターン。**薄い日は入らない**（0 ではない）。
+
+    Raises:
+        ValueError: 銘柄が1つも無い、または ``min_symbols`` が 1 未満。
+    """
+    from stock_ai.data.schema import CLOSE, split_adjusted
+    from stock_ai.database.repository import PriceRepository, list_securities
+
+    if min_symbols < 1:
+        raise ValueError(f"min_symbols must be at least 1; got {min_symbols}.")
+
+    total: dict[dt.date, float] = {}
+    counted: dict[dt.date, int] = {}
+
+    with database.session() as session:  # type: ignore[attr-defined]
+        wanted = symbols
+        if wanted is None:
+            wanted = [sym for sym, market in list_securities(session) if market == "JP"]
+        if not wanted:
+            raise ValueError("銘柄が1つも無い。等加重の平均を作れない。")
+
+        prices = PriceRepository(session)
+        for done, symbol in enumerate(wanted, start=1):
+            if progress is not None:
+                progress(done, len(wanted))
+            raw = prices.get_raw_prices(symbol)
+            if raw.empty:
+                continue
+            adjusted = split_adjusted(raw)
+            closes = adjusted[CLOSE].to_numpy(dtype=float)
+            index = adjusted.index
+            for position in range(1, len(index)):
+                before, after = closes[position - 1], closes[position]
+                if not (before > 0) or not (after > 0):
+                    continue
+                when = index[position].date()
+                total[when] = total.get(when, 0.0) + (after / before - 1.0)
+                counted[when] = counted.get(when, 0) + 1
+
+    # **薄い日は値を出さない。** 出すと「3社の等加重」が「宇宙」を名乗る。
+    found = {when: total[when] / count for when, count in counted.items() if count >= min_symbols}
+    logger.info("等加重の日次: %d 日（薄くて外した日 %d）", len(found), len(counted) - len(found))
+    return found
