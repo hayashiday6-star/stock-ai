@@ -46,6 +46,37 @@ class Shape:
     source: str
     """どこに書いてあるか。**出典の無い数字を書かないため。**"""
 
+    pipe: str = "monthly"
+    """どの管で測ったか。**線は管ごとに違う。**
+
+    **1つの線を全部に当てていた**（2026-09-18 まで）。#5 はイベント型なのに、
+    月次の盤面で測った 3.39 で「要るリターン」を出していた。**線が管ごとだと
+    決めた日に、ここだけ直し忘れていた。**
+
+    `monthly` か `event`。`line()` がこれを見て線を選ぶ。
+    """
+
+    def line(self) -> float:
+        """この形に当てる線。**管ごとに違う。**
+
+        Returns:
+            封印に使う `t`。
+
+        Raises:
+            ValueError: 知らない ``pipe``。
+        """
+        from stock_ai.backtest.multiplicity import (
+            HYPOTHESIS_BUDGET,
+            MEASURED_INFLATION,
+            MEASURED_INFLATION_EVENT,
+            calibrated_t,
+        )
+
+        known = {"monthly": MEASURED_INFLATION, "event": MEASURED_INFLATION_EVENT}
+        if self.pipe not in known:
+            raise ValueError(f"知らない管 {self.pipe!r}。monthly か event。")
+        return calibrated_t(HYPOTHESIS_BUDGET, inflation=known[self.pipe])
+
     def standard_error(self) -> float:
         """OOS の平均の標準誤差。"""
         return self.sd * self.inflation / self.periods**0.5
@@ -101,6 +132,7 @@ SHAPES: tuple[Shape, ...] = (
         unit="イベント日",
         per_year=0,
         source="PREREG_REVISION_JP.md §0（1,827 件が 831 日。OOS は約 950 日）",
+        pipe="event",
     ),
 )
 

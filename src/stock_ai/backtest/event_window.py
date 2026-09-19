@@ -22,6 +22,13 @@
 
 そして**銘柄側と指数側を別々に返す。** 超過リターンだけを見ていると、
 「銘柄が上がった」のか「引く相手が上がらなかった」のかが分からない。
+
+**答えは指数側だった**（2026-09-17、400回）。銘柄側 +1.11% に対して指数側
++0.88%、差 **+0.22%**。生存フィルタの押し上げは **-0.00%/件**（落ちたのは
+800,000 件中 941 件）。**疑っていたほうではなかった。**
+
+引く相手が `1306`（時価総額加重）で、引くほうが一様抽選（実質等加重）である
+——**それだけで、情報ゼロの並びが指数に勝つ。**
 """
 
 from __future__ import annotations
@@ -43,7 +50,7 @@ class EventSample:
     件数はすべて**イベント件数**である（日数ではない）。`values` だけが
     公表日ごとにまとめた後の並びで、こちらは**日数**になる。
 
-    **`used` と捨てた4つを足すと `drawn` になる。** 成り立たない経路を書いたら
+    **`used` と捨てた5つを足すと `drawn` になる。** 成り立たない経路を書いたら
     生成時に落ちる。
     """
 
@@ -55,7 +62,21 @@ class EventSample:
 
     used: int
     no_prices: int
-    """銘柄の価格が1本も無い。"""
+    """**その銘柄の価格が1本も無い。** 名簿には載っているのに取れていない。
+
+    **これはデータの穴である。** 本物のイベントがここに落ちると、**その説の
+    観測が黙って消える。**
+    """
+
+    not_trading: int
+    """価格は在るが、**その日に足が無い**——上場前・廃止後・停止。
+
+    **穴ではない。** その日にその銘柄は存在しなかったか、動いていなかった。
+    乱数で日と銘柄を別々に引けば、当たり前に大量に出る。
+
+    **`no_prices` と混ぜない。** 混ぜると、直すべき穴が、直しようのない構造に
+    薄められる——400回の対照で 34.4% が1つの行に潰れていた（2026-09-17）。
+    """
 
     ended_early: int
     """窓が価格の終わりを越える。**その銘柄の足が全体の最終日より前で切れている**
@@ -81,6 +102,10 @@ class EventSample:
     """`ended_early` で落ちた分を、**足の在るところまで**で測った超過リターン。
 
     **落ちた側がどれだけ悪かったか**を測る。空なら、その経路は測れていない。
+
+    **ここは `subtract` を渡しても指数で引く。** 窓の長さが揃っていないので、
+    `holding` 日ぶんで作った等加重の平均は当てられない。**判定には入らない**
+    診断用の数字なので、引く相手が揃っていなくても比べる先は変わらない。
     """
 
     def __post_init__(self) -> None:
@@ -88,6 +113,7 @@ class EventSample:
         parts = (
             self.used,
             self.no_prices,
+            self.not_trading,
             self.ended_early,
             self.too_recent,
             self.bad_leg,
@@ -138,6 +164,15 @@ class EventSample:
                 f"**引いた {self.drawn:,} 件のうち {self.dropped:,} 件"
                 f"（{self.dropped_share:.1%}）を捨てている。**"
             )
+        # **穴と構造を別に鳴らす。** 上場前・廃止後で落ちるのは当たり前だが、
+        # 名簿に在る銘柄の価格が1本も無いのは、取り込みの穴である。
+        if self.no_prices:
+            share = self.no_prices / self.drawn
+            found.append(
+                f"**価格が1本も無い銘柄に {self.no_prices:,} 件（{share:.1%}）"
+                "当たっている。** 名簿には在るのに取れていない——**データの穴で、"
+                "そこに落ちた説の観測は黙って消える。**"
+            )
         if self.ended_early:
             share = self.ended_early / self.drawn
             lifted = self.survivorship_bias()
@@ -149,12 +184,13 @@ class EventSample:
         return found
 
 
-def event_sample(  # noqa: PLR0912, PLR0915 - 処分を1件ずつ数えるので分岐が多い
+def event_sample(  # noqa: PLR0913, PLR0912, PLR0915 - 処分を1件ずつ数えるので分岐が多い
     database: object,
     events: Sequence[tuple[str, dt.date]],
     holding: int,
     benchmark: str = "1306",
     until: dt.date | None = None,
+    subtract: object | None = None,
 ) -> EventSample:
     """窓を当てて、**使えた分と捨てた分の両方**を返す。
 
@@ -173,8 +209,12 @@ def event_sample(  # noqa: PLR0912, PLR0915 - 処分を1件ずつ数えるので
         database: 価格の保存先。
         events: ``(銘柄, 公表日)``。**絞り込みは済んでいる前提。**
         holding: 保有営業日数（§3 の N）。
-        benchmark: 控除するベンチマーク。
+        benchmark: 暦と、落ちた側を測るのに使う銘柄。``subtract`` を渡さない
+            ときは**これが控除される相手**でもある。
         until: この日までのイベントだけ使う。**降りる日が越えてもよい。**
+        subtract: :class:`~stock_ai.backtest.universe_benchmark.UniverseBenchmark`。
+            渡すと**こちらが控除される**——持ち方と同じ等加重になる。
+            ``benchmark`` は暦と診断だけに使われる。
 
     Returns:
         :class:`EventSample`。
@@ -201,7 +241,7 @@ def event_sample(  # noqa: PLR0912, PLR0915 - 処分を1件ずつ数えるので
     stock_by_day: dict[dt.date, list[float]] = {}
     bench_by_day: dict[dt.date, list[float]] = {}
     truncated: list[float] = []
-    no_prices = ended_early = too_recent = bad_leg = no_benchmark = 0
+    no_prices = not_trading = ended_early = too_recent = bad_leg = no_benchmark = 0
 
     with database.session() as session:  # type: ignore[attr-defined]
         prices = PriceRepository(session)
@@ -230,7 +270,9 @@ def event_sample(  # noqa: PLR0912, PLR0915 - 処分を1件ずつ数えるので
             for when in days:
                 position = at.get(when)
                 if position is None:
-                    no_prices += 1
+                    # **価格は在るが、この日に足が無い。** 上場前・廃止後・停止。
+                    # 1本も無い場合（上の `raw.empty`）とは別に数える。
+                    not_trading += 1
                     continue
                 if position + holding >= len(index):
                     if stops_early:
@@ -247,18 +289,27 @@ def event_sample(  # noqa: PLR0912, PLR0915 - 処分を1件ずつ数えるので
                 if not (entry > 0) or not (leave > 0) or pd.isna(entry) or pd.isna(leave):
                     bad_leg += 1
                     continue
-                # ベンチマークは**同じ日付**で取る。位置で取ると、その銘柄に
-                # 足の無い日があったぶんだけずれる。
-                mark = bench_at.get(index[position + 1].date())
-                out = bench_at.get(index[position + holding].date())
-                if mark is None or out is None:
-                    no_benchmark += 1
-                    continue
-                if not (bench_open[mark] > 0) or not (bench_close[out] > 0):
-                    no_benchmark += 1
-                    continue
+                if subtract is not None:
+                    # **等加重の宇宙を引く。** イベント日 `D` で引く——向こうも
+                    # 銘柄ごとに自分の足で `D+1` と `D+holding` を取っている。
+                    average = subtract.get(when)  # type: ignore[attr-defined]
+                    if average is None:
+                        no_benchmark += 1
+                        continue
+                    market = 1.0 + average
+                else:
+                    # ベンチマークは**同じ日付**で取る。位置で取ると、その銘柄に
+                    # 足の無い日があったぶんだけずれる。
+                    mark = bench_at.get(index[position + 1].date())
+                    out = bench_at.get(index[position + holding].date())
+                    if mark is None or out is None:
+                        no_benchmark += 1
+                        continue
+                    if not (bench_open[mark] > 0) or not (bench_close[out] > 0):
+                        no_benchmark += 1
+                        continue
+                    market = bench_close[out] / bench_open[mark]
                 stock = leave / entry
-                market = bench_close[out] / bench_open[mark]
                 by_day.setdefault(when, []).append(stock - market)
                 stock_by_day.setdefault(when, []).append(stock - 1.0)
                 bench_by_day.setdefault(when, []).append(market - 1.0)
@@ -269,6 +320,7 @@ def event_sample(  # noqa: PLR0912, PLR0915 - 処分を1件ずつ数えるので
         drawn=drawn,
         used=sum(len(day) for day in by_day.values()),
         no_prices=no_prices,
+        not_trading=not_trading,
         ended_early=ended_early,
         too_recent=too_recent,
         bad_leg=bad_leg,
@@ -322,12 +374,13 @@ def _truncated_excess(  # noqa: PLR0913 - 価格の配列をそのまま受け�
     return (leave / entry) - (bench_close[out] / bench_open[mark])  # type: ignore[index]
 
 
-def event_returns(
+def event_returns(  # noqa: PLR0913 - `event_sample` と同じものを受け取る
     database: object,
     events: Sequence[tuple[str, dt.date]],
     holding: int,
     benchmark: str = "1306",
     until: dt.date | None = None,
+    subtract: object | None = None,
 ) -> list[float]:
     """公表日ごとの超過リターンだけを返す。**中身は `event_sample` 1つだけ。**
 
@@ -335,10 +388,13 @@ def event_returns(
         database: 価格の保存先。
         events: ``(銘柄, 公表日)``。
         holding: 保有営業日数。
-        benchmark: 控除するベンチマーク。
+        benchmark: 暦と診断に使う銘柄。
         until: この日までのイベントだけ使う。
+        subtract: 渡すとこちらが控除される（等加重の宇宙）。
 
     Returns:
         公表日ごとの超過リターン。**古い順。**
     """
-    return event_sample(database, events, holding, benchmark=benchmark, until=until).values
+    return event_sample(
+        database, events, holding, benchmark=benchmark, until=until, subtract=subtract
+    ).values

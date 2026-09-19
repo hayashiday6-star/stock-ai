@@ -260,7 +260,23 @@ class TestTheEventTypeControlUsesTheSamePipe:
         body = inspect.getsource(cli.rehearsal_events)
 
         assert "from stock_ai.backtest.event_window import EventSample, event_sample" in body
-        assert "event_sample(database, drawn" in body
+        assert "event_sample(" in body
+        assert "drawn," in body
+
+    def test_the_hypotheses_call_the_same_function(self) -> None:
+        """**対照が本物と同じ管を通るとは、#5・#8 も同じ口を呼ぶということ。**
+
+        文字列で書き方を留めると、改行が入っただけで落ちる。**留めるのは
+        「どこから import しているか」**——別の管が生えたらそこに出る。
+        """
+        import inspect
+
+        from stock_ai import cli
+
+        for command in (cli.rehearsal_events, cli.revision_power, cli.margin_power):
+            body = inspect.getsource(command)
+            assert "from stock_ai.backtest.event_window import" in body, command.__name__
+            assert "event_sample" in body, command.__name__
 
     def test_it_says_so_when_the_two_pipes_disagree(self) -> None:
         import inspect
@@ -354,9 +370,35 @@ class TestTheFloorStopsTheCorrectionFromLoosening:
 
         from stock_ai import cli
 
-        for command in (cli.revision_power, cli.margin_power):
+        for command in (cli.revision_power, cli.margin_power, cli.rehearsal_events):
             body = inspect.getsource(command)
-            assert "inflation=MEASURED_INFLATION_EVENT" in body, command.__name__
+            assert "_event_inflation(subtract)" in body, command.__name__
+
+    def test_the_inflation_follows_what_is_actually_subtracted(self) -> None:
+        """**測った条件と違う条件の数字を当てない。**
+
+        引く相手を替えたら SD が 0.94 → 1.09 に動いた（2026-09-18、どちらも
+        400回・同じ種）。**片方の数字をもう片方に当てれば、線はもっともらしい
+        まま根拠を失う。**
+        """
+        from stock_ai.backtest.multiplicity import (
+            MEASURED_INFLATION_EVENT,
+            MEASURED_INFLATION_EVENT_INDEX,
+        )
+        from stock_ai.cli import _event_inflation
+
+        assert _event_inflation("index") == MEASURED_INFLATION_EVENT_INDEX
+        assert _event_inflation("universe") == MEASURED_INFLATION_EVENT
+        assert MEASURED_INFLATION_EVENT != MEASURED_INFLATION_EVENT_INDEX
+
+    def test_an_unknown_subtraction_is_refused(self) -> None:
+        """**この検査が落ちる条件を、実際に1つ作る。**"""
+        import typer
+
+        from stock_ai.cli import _event_inflation
+
+        with pytest.raises(typer.BadParameter):
+            _event_inflation("topix")
 
     def test_both_measured_numbers_say_where_they_came_from(self) -> None:
         import inspect
@@ -366,7 +408,10 @@ class TestTheFloorStopsTheCorrectionFromLoosening:
         source = inspect.getsource(multiplicity)
 
         assert "イベント型の対照" in source
-        assert "平均が +0.49" in source
+        # **どちらの測定も、条件と結果が読めること。**
+        assert "+0.49" in source
+        assert "時価総額加重" in source
+        assert "等加重の宇宙" in source
 
 
 class TestTheWatchLooksAtTheCentreNotOnlyTheSpread:
@@ -386,13 +431,71 @@ class TestTheWatchLooksAtTheCentreNotOnlyTheSpread:
         assert "found.mean" in body
         assert "中心のずれ" in body
 
-    def test_it_names_the_most_likely_cause(self) -> None:
-        """**「ずれている」で終わらせない。** 疑う先を書く。"""
+    def test_it_reads_the_decomposition_instead_of_naming_a_suspect(self) -> None:
+        """**決め打ちの犯人を刷らない。**
+
+        最初は「窓の途中で価格が途切れるイベントが落ちるのがいちばん疑わしい」
+        と刷っていた。**同じ出力の上に分解が出ているのに、である。**
+        そして外れた——生存フィルタの押し上げは **-0.00%/件** だった
+        （2026-09-17、400回）。
+
+        **表が否定しているものを、その下の行が断定する**形になっていた。
+        読み上げるのは、測った分解のほうである。
+        """
         import inspect
 
         from stock_ai import cli
 
         body = inspect.getsource(cli.rehearsal_events)
 
-        assert "entry か exit を取れずに落ちる" in body
-        assert "#5・#8 にも掛かっている" in body
+        # 分解の両側を読み上げていること。
+        assert "lifted" in body
+        assert "gap" in body
+        assert "大きいほうが、直すべきほうである" in body
+        # **決め打ちの犯人が戻っていないこと。**
+        assert "いちばん疑わしいのは" not in body
+
+
+class TestTheDenominatorIsShownToo:
+    """**`t` だけ見ていると、分子と分母のどちらが動いたのか分からない。**
+
+    引く相手を直したら SD が 0.94 → 1.09 に動いた。`t = 平均 / 標準誤差`
+    なので、**分母の形を見ないと理由に近づけない**（2026-09-18）。
+    それは既に計算されていて、捨てられていた。
+    """
+
+    def test_the_run_keeps_the_newey_west_factor(self) -> None:
+        import inspect
+
+        from stock_ai import cli
+
+        body = inspect.getsource(cli.rehearsal_events)
+
+        assert "spreads.append(estimate.inflation)" in body
+        assert "observations.append(len(values))" in body
+
+    def test_the_run_prints_the_denominator(self) -> None:
+        import inspect
+
+        from stock_ai import cli
+
+        body = inspect.getsource(cli.rehearsal_events)
+
+        assert "`t` の分母の形" in body
+
+    def test_the_thinning_goes_through_to_the_builder(self) -> None:
+        """**口を開けただけで配線を忘れる**形を止める。
+
+        `BulkIngester` はプロバイダを差し替え可能な作りなのに、CLI 側が
+        新しい設定を配線し忘れて、切り替えたはずが旧経路を叩き続けていた
+        実例が複数ある（`CLAUDE.md`）。
+        """
+        import inspect
+
+        from stock_ai import cli
+
+        body = inspect.getsource(cli.rehearsal_events)
+
+        assert "benchmark_fraction" in body
+        assert "fraction=benchmark_fraction" in body
+        assert "fraction=fraction" in inspect.getsource(cli._universe_to_subtract)

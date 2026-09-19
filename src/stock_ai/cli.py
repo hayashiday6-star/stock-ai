@@ -2116,6 +2116,9 @@ def revision_power(  # noqa: PLR0913 - §0 が固定した条件をすべて受�
     benchmark: str = typer.Option(BENCHMARK, "--benchmark", help="Sets the calendar."),
     min_turnover: float = typer.Option(MIN_TURNOVER, "--min-turnover", help="Liquidity floor."),
     holding: int = typer.Option(20, "--holding", help="Sessions held, fixed by the prereg."),
+    subtract: str = typer.Option(
+        "index", "--subtract", help="What to deduct: index (as the prereg says) or universe."
+    ),
     limit: int | None = typer.Option(None, "--limit", help="Read only the first N originals."),
 ) -> None:
     """Measure the IS spread for #5, so the gate can be applied.
@@ -2133,7 +2136,6 @@ def revision_power(  # noqa: PLR0913 - §0 が固定した条件をすべて受�
     from stock_ai.backtest.event_window import event_sample
     from stock_ai.backtest.multiplicity import (
         HYPOTHESIS_BUDGET,
-        MEASURED_INFLATION_EVENT,
         calibrated_t,
     )
     from stock_ai.backtest.pead import TURNOVER_WINDOW
@@ -2232,8 +2234,17 @@ def revision_power(  # noqa: PLR0913 - §0 が固定した条件をすべて受�
         for event in events
         if not event.on_statement_day and liquid_on(event.symbol, event.disclosed_on)
     ]
+    # **事前登録は `1306` を指している。** 既定を変えない——判定の出た説を、
+    # あとから別の相手で測り直すことになる。`--subtract universe` は、
+    # 新しい説のために形だけ通してある。
+    deducted = _universe_to_subtract(database, subtract, holding)
     sample = event_sample(
-        database, kept, holding=holding, benchmark=benchmark, until=counted.split_on
+        database,
+        kept,
+        holding=holding,
+        benchmark=benchmark,
+        until=counted.split_on,
+        subtract=deducted,
     )
     values = sample.values
     # **捨てた件数を黙って捨てない。** 引いた件数のうち何件が、どの理由で
@@ -2248,9 +2259,9 @@ def revision_power(  # noqa: PLR0913 - §0 が固定した条件をすべて受�
     take = [value - COST_ROUND_TRIP for value in values]
 
     estimate = estimate_power(take, lags=holding)
-    # **イベント型の管は別に測ってある**（`MEASURED_INFLATION_EVENT`）。
-    # 月次の 1.12 をここに当てるのは、測った根拠の無い厳しさになる。
-    target = calibrated_t(HYPOTHESIS_BUDGET, inflation=MEASURED_INFLATION_EVENT)
+    # **膨張は「管 × 引く相手」ごとに測ってある。** 引く相手を替えると数字が
+    # 動いた（0.94 → 1.09）ので、**いま引いている相手の値を当てる。**
+    target = calibrated_t(HYPOTHESIS_BUDGET, inflation=_event_inflation(subtract))
     mean = fmean(take)
     stderr = estimate.standard_error(len(take))
     # **片側95%。** 事前登録 §0 が片側で書いている。
@@ -5962,6 +5973,95 @@ def jquants_plan_coverage(
         console.print(f"[dim]{name}: {why} 原本に残せないので、在庫の表には出ない。[/]")
 
 
+@app.command(name="price-coverage")
+def price_coverage(
+    market: str = typer.Option("JP", "--market", help="Which market to count."),
+    thin: int = typer.Option(0, "--thin-bars", help="Bars below this count as unusable."),
+    show: int = typer.Option(20, "--show", help="How many symbols to list."),
+) -> None:
+    """Count the symbols the roster has but the prices do not.
+
+    **穴は、黙って観測を消す。** 陰性対照で、引いた 800,000 件のうち
+    **16,677 件（2.1%）が「価格が1本も無い銘柄」に当たっていた**
+    （2026-09-18）。
+
+    **乱数だからどうでもいい、という話ではない。** 引いているのは
+    `list_securities` が返す銘柄で、**説の側の候補もそこから出る。**
+    そこに足が1本も無ければ、**そのイベントは判定に入らないまま消える。**
+
+    **数えるだけで、取り込みはしない。** 穴の理由は1つではない（上場前・
+    プランの範囲外・取り込み失敗）ので、見てから決める。
+
+    API を1回も叩かない。
+    """
+    from stock_ai.data.price_coverage import THIN_BARS, survey
+
+    settings = get_settings()
+    configure_logging(settings.log_level)
+
+    database = Database()
+    database.create_all()
+    found = survey(database, market=market, thin_bars=thin or THIN_BARS)
+    if not found.listed:
+        console.print(f"[red]{market} の銘柄が名簿に1件も無い。[/]")
+        raise typer.Exit(code=1)
+
+    table = Table(title=f"名簿と価格の噛み合い（{market}）")
+    for column in ("見たもの", "件数", "割合"):
+        table.add_column(column, overflow="fold")
+    table.add_row("名簿に在る", f"{found.listed:,}", "100.0%")
+    table.add_row(
+        "足がある",
+        f"{found.with_prices:,}",
+        f"{found.with_prices / found.listed:.1%}",
+    )
+    table.add_row(
+        "[bold]足が1本も無い（穴）[/]",
+        f"[bold]{len(found.empty):,}[/]",
+        f"[bold]{found.empty_share:.1%}[/]",
+    )
+    table.add_row(
+        f"足が {found.thin_bars} 本未満（窓が開けられない）",
+        f"{len(found.thin):,}",
+        f"{found.thin_share:.1%}",
+    )
+    console.print(table)
+
+    if found.empty:
+        # **穴が一様かどうかを、読む側に気付かせない。** 偏っていれば、
+        # 消える観測も偏る。件数の1行からはそれが出てこない。
+        shape = Table(title="穴の内訳")
+        for column in ("かたち", "件数", "穴に占める割合"):
+            shape.add_column(column, overflow="fold")
+        for label, rows in (
+            ("英数字コード（2024年以降の上場）", found.recent_codes),
+            ("名前も入っていない", found.nameless),
+        ):
+            shape.add_row(label, f"{len(rows):,}", f"{len(rows) / len(found.empty):.0%}")
+        console.print(shape)
+
+    # **別の切り口から同じ数を出して、一致するか見る。** 一様に銘柄を引けば、
+    # この割合がそのまま捨てられる。陰性対照は 2.1% と出していた。
+    console.print(
+        f"[dim]一様に銘柄を引くと、**{found.unusable_share:.1%} はイベントを"
+        "1件も作れない。** 陰性対照の「穴」の割合と噛み合うはずである"
+        "——**噛み合わなければ、どちらかが違うものを数えている。**[/]"
+    )
+
+    for line in found.warnings():
+        console.print(f"[yellow]{line}[/]")
+
+    if found.empty and show:
+        listing = Table(title=f"足が1本も無い銘柄（先頭 {min(show, len(found.empty))} 件）")
+        for column in ("銘柄", "名前"):
+            listing.add_column(column, overflow="fold")
+        for symbol, name in found.empty[:show]:
+            listing.add_row(symbol, name or "[dim]—[/]")
+        console.print(listing)
+        if len(found.empty) > show:
+            console.print(f"[dim]ほかに {len(found.empty) - show:,} 件。`--show` で増やせる。[/]")
+
+
 @app.command(name="price-audit")
 def price_audit(
     symbol: str = typer.Argument(..., help="Symbol to inspect."),
@@ -6922,6 +7022,7 @@ def _report_daily_spread(series: object) -> None:
 _DISPOSITIONS = (
     "used",
     "no_prices",
+    "not_trading",
     "ended_early",
     "too_recent",
     "bad_leg",
@@ -6931,12 +7032,116 @@ _DISPOSITIONS = (
 #: 処分の日本語。**表の並びは `_DISPOSITIONS` と同じ順。**
 _DISPOSITION_LABELS = {
     "used": "使えた",
-    "no_prices": "価格が無い",
+    "no_prices": "価格が1本も無い銘柄（穴）",
+    "not_trading": "その日に足が無い（上場前・廃止後・停止）",
     "ended_early": "上場廃止・停止で窓が切れた",
     "too_recent": "期間の端で窓が足りない",
     "bad_leg": "入る値か降りる値が欠測",
     "no_benchmark": "指数に対応する日が無い",
 }
+
+
+#: 何を引くか。**`index` は時価総額加重、`universe` は等加重。**
+#:
+#: **既定は管ごとに違う。** 事前登録が `1306` を指している説（#5・#8）は
+#: `index` のままにする——**判定の出た説を、あとから別の相手で測り直さない。**
+#: 対照は `universe` を既定にする。そこが直ったことを見る場所だからである。
+_SUBTRACT_CHOICES = ("index", "universe")
+
+
+def _event_inflation(mode: str) -> float:
+    """Pick the measured inflation that matches what is being subtracted.
+
+    **同じ管でも、引く相手を替えたら数字が動いた**（2026-09-18、どちらも400回・
+    同じ種）。
+
+    | 引く相手 | `t` の SD |
+    |---|---|
+    | `1306`（時価総額加重） | 0.94 |
+    | 等加重の宇宙 | 1.09 |
+
+    **測った条件と違う条件の数字を当てない。** 当てれば、線はもっともらしい
+    まま根拠を失う。
+
+    Args:
+        mode: ``index`` か ``universe``。
+
+    Returns:
+        当てる膨張。
+
+    Raises:
+        typer.BadParameter: 知らない ``mode``。
+    """
+    from stock_ai.backtest.multiplicity import (
+        MEASURED_INFLATION_EVENT,
+        MEASURED_INFLATION_EVENT_INDEX,
+    )
+
+    known = {"index": MEASURED_INFLATION_EVENT_INDEX, "universe": MEASURED_INFLATION_EVENT}
+    if mode not in known:
+        raise typer.BadParameter(f"--subtract は {' か '.join(_SUBTRACT_CHOICES)}。")
+    return known[mode]
+
+
+def _universe_to_subtract(  # noqa: PLR0913 - 何で作ったかを全部受け取る
+    database: Database,
+    mode: str,
+    holding: int,
+    fraction: float = 1.0,
+    seed: int = 0,
+) -> object | None:
+    """Build the equal-weighted benchmark when the mode asks for it.
+
+    **引く相手を、持ち方と同じ加重にする。** `1306` は時価総額加重で、イベントの
+    バスケットは等加重である。陰性対照では、その食い違いだけで**情報ゼロの並びが
+    20営業日で +0.22% 勝っていた**（2026-09-17、400回）。
+
+    Args:
+        database: 価格の保存先。
+        mode: ``index`` か ``universe``。
+        holding: 保有営業日数。**イベント側と同じ値を渡すこと。**
+        fraction: 引く相手を作るのに使う銘柄の割合。**診断用**——日は減らさず、
+            引く相手の精度だけを落とす。
+        seed: 間引きの種。
+
+    Returns:
+        ``universe`` なら :class:`UniverseBenchmark`、``index`` なら ``None``。
+
+    Raises:
+        typer.BadParameter: 知らない ``mode``。
+    """
+    from stock_ai.backtest.universe_benchmark import equal_weighted_windows
+
+    if mode not in _SUBTRACT_CHOICES:
+        raise typer.BadParameter(f"--subtract は {' か '.join(_SUBTRACT_CHOICES)}。")
+    if mode == "index":
+        return None
+
+    console.print("[dim]等加重の引く相手を作っています（全銘柄の足を1度だけ読みます）...[/]")
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        BarColumn(),
+        TaskProgressColumn(),
+        TimeRemainingColumn(),
+        console=console,
+    ) as progress:
+        task = progress.add_task("銘柄を読む", total=None)
+
+        def step(done: int, total: int) -> None:
+            progress.update(task, completed=done, total=total)
+
+        built = equal_weighted_windows(
+            database, holding, progress=step, fraction=fraction, seed=seed
+        )
+
+    console.print(
+        f"[dim]{len(built.window):,} 日ぶん（{built.symbols:,} 銘柄、窓 {holding} 営業日）。"
+        "**引くのは時価総額加重の指数ではなく、等加重の宇宙である。**[/]"
+    )
+    for line in built.warnings():
+        console.print(f"[yellow]{line}[/]")
+    return built
 
 
 def _report_event_disposition(sample: object, *, title: str) -> None:
@@ -7142,6 +7347,9 @@ def margin_power(  # noqa: PLR0913 - §0 が固定した条件をすべて受け
     benchmark: str = typer.Option(BENCHMARK, "--benchmark", help="Sets the calendar."),
     min_turnover: float = typer.Option(MIN_TURNOVER, "--min-turnover", help="Liquidity floor."),
     holding: int | None = typer.Option(None, "--holding", help="Override the window from §3."),
+    subtract: str = typer.Option(
+        "index", "--subtract", help="What to deduct: index (as the prereg says) or universe."
+    ),
     limit: int | None = typer.Option(None, "--limit", help="Read only the first N originals."),
 ) -> None:
     """Measure the IS spread for #8, so the gate can be applied.
@@ -7160,7 +7368,6 @@ def margin_power(  # noqa: PLR0913 - §0 が固定した条件をすべて受け
     from stock_ai.backtest.margin_census import census, lending_index, spells
     from stock_ai.backtest.multiplicity import (
         HYPOTHESIS_BUDGET,
-        MEASURED_INFLATION_EVENT,
         calibrated_t,
     )
     from stock_ai.backtest.pead import TURNOVER_WINDOW
@@ -7243,8 +7450,15 @@ def margin_power(  # noqa: PLR0913 - §0 が固定した条件をすべて受け
         for spell in spells(alerts)
         if lending(spell.symbol, spell.onset) and liquid.get((spell.symbol, spell.onset), False)
     ]
+    # **事前登録は `1306` を指している。** 既定を変えない（上と同じ理由）。
+    deducted = _universe_to_subtract(database, subtract, window)
     sample = event_sample(
-        database, kept, holding=window, benchmark=benchmark, until=counted.split_on
+        database,
+        kept,
+        holding=window,
+        benchmark=benchmark,
+        until=counted.split_on,
+        subtract=deducted,
     )
     values = sample.values
     # **捨てた件数を黙って捨てない**（2026-09-17）。
@@ -7258,9 +7472,9 @@ def margin_power(  # noqa: PLR0913 - §0 が固定した条件をすべて受け
     take = [-value - COST_ROUND_TRIP for value in values]
 
     estimate = estimate_power(take, lags=window)
-    # **イベント型の管は別に測ってある**（`MEASURED_INFLATION_EVENT`）。
-    # 月次の 1.12 をここに当てるのは、測った根拠の無い厳しさになる。
-    target = calibrated_t(HYPOTHESIS_BUDGET, inflation=MEASURED_INFLATION_EVENT)
+    # **膨張は「管 × 引く相手」ごとに測ってある。** 引く相手を替えると数字が
+    # 動いた（0.94 → 1.09）ので、**いま引いている相手の値を当てる。**
+    target = calibrated_t(HYPOTHESIS_BUDGET, inflation=_event_inflation(subtract))
     mean = fmean(take)
     stderr = estimate.standard_error(len(take))
     # **片側95%。** 事前登録 §0 が片側で書いている。
@@ -7544,6 +7758,7 @@ def passing(
     from stock_ai.backtest.multiplicity import (
         HYPOTHESIS_BUDGET,
         MEASURED_INFLATION,
+        MEASURED_INFLATION_EVENT,
         calibrated_t,
         required_t,
     )
@@ -7559,15 +7774,19 @@ def passing(
     for column in ("設計", "1期あたりのSD", "合格に要る大きさ", "どこに書いてあるか"):
         table.add_column(column, overflow="fold")
     for shape in SHAPES:
-        annual = shape.required_annual(target)
-        need = f"年 {annual:.1%}" if annual else f"1{shape.unit} {shape.required(target):.2%}"
+        # **線は管ごとに違う。** 1つの線を全部に当てると、イベント型の行に
+        # 月次で測った膨張が乗る（2026-09-18 まで、そうなっていた）。
+        own = shape.line()
+        annual = shape.required_annual(own)
+        need = f"年 {annual:.1%}" if annual else f"1{shape.unit} {shape.required(own):.2%}"
         table.add_row(shape.name, f"{shape.sd:.2%}／{shape.unit}", f"[bold]{need}[/]", shape.source)
     console.print(table)
     console.print(
-        f"[dim]線は `t ≥ {target:.2f}`（予算 {HYPOTHESIS_BUDGET} 本の "
+        f"[dim]月次の線は `t ≥ {target:.2f}`（予算 {HYPOTHESIS_BUDGET} 本の "
         f"{required_t(HYPOTHESIS_BUDGET):.2f} に、対照で測った膨張 "
-        f"{MEASURED_INFLATION:.2f} を掛けた）。**指数に対して、手数料を引いた後で、"
-        f"{SHAPES[0].periods / 12:.1f}年つづける。**[/]"
+        f"{MEASURED_INFLATION:.2f} を掛けた）。**イベント型は別の管なので "
+        f"`t ≥ {calibrated_t(HYPOTHESIS_BUDGET, inflation=MEASURED_INFLATION_EVENT):.2f}`。**"
+        f"**指数に対して、手数料を引いた後で、{SHAPES[0].periods / 12:.1f}年つづける。**[/]"
     )
     console.print(
         "[dim]イベント型は**年率に直さない**——資金をどれだけ張るかを決める必要が"
@@ -7614,16 +7833,19 @@ def _passing_lines(
         "## 1. 合格に要るリターン",
         "",
         f"線は **`t ≥ {target:.2f}`**（予算 {budget} 本の {required_t(budget):.2f} に、"
-        f"陰性対照で測った膨張 {inflation:.2f} を掛けた）。",
+        f"陰性対照で測った膨張 {inflation:.2f} を掛けた）。**管ごとに違う**"
+        "——下の表はそれぞれの管の線で計算してある。",
         "",
-        "| 設計 | 1期あたりのSD | **合格に要る大きさ** | どこに書いてあるか |",
-        "|---|---|---|---|",
+        "| 設計 | 1期あたりのSD | **合格に要る大きさ** | 線 | どこに書いてあるか |",
+        "|---|---|---|---|---|",
     ]
     for shape in shapes:  # type: ignore[attr-defined]
-        annual = shape.required_annual(target)
-        need = f"年 {annual:.1%}" if annual else f"1{shape.unit} {shape.required(target):.2%}"
+        own = shape.line()
+        annual = shape.required_annual(own)
+        need = f"年 {annual:.1%}" if annual else f"1{shape.unit} {shape.required(own):.2%}"
         lines.append(
-            f"| {shape.name} | {shape.sd:.2%}／{shape.unit} | **{need}** | {shape.source} |"
+            f"| {shape.name} | {shape.sd:.2%}／{shape.unit} | **{need}** "
+            f"| `t ≥ {own:.2f}` | {shape.source} |"
         )
     lines += [
         "",
@@ -7641,7 +7863,7 @@ def _passing_lines(
         "## 2. 合格の条件",
         "",
         "> **先に紙に書いたとおりに売買して、手数料を引いた後で、指数を"
-        f"年 {shapes[0].required_annual(target):.1%} 以上"  # type: ignore[index]
+        f"年 {shapes[0].required_annual(shapes[0].line()):.1%} 以上"  # type: ignore[index]
         "（設計によってはもっと）上回り、それが続き、しかもまぐれでは説明できないこと。**",
         "",
     ]
@@ -7659,6 +7881,12 @@ def rehearsal_events(  # noqa: PLR0913 - イベント型と同じ条件をすべ
     repeat: int = typer.Option(400, "--repeat", help="Draws, for calibration."),
     start: str = typer.Option("2009-01-01", "--start", help="First day events may land on."),
     end: str = typer.Option("2026-08-31", "--end", help="Last day events may land on."),
+    subtract: str = typer.Option(
+        "universe", "--subtract", help="What to deduct: universe (equal weight) or index."
+    ),
+    benchmark_fraction: float = typer.Option(
+        1.0, "--benchmark-fraction", help="Build the deduction from this share of symbols."
+    ),
 ) -> None:
     """Calibrate the event-type pipe - the one #8 and #5 actually use.
 
@@ -7720,7 +7948,20 @@ def rehearsal_events(  # noqa: PLR0913 - イベント型と同じ条件をすべ
         f"毎回 {events:,} 件を引く。窓は {holding} 営業日。種 {seed}。[/]"
     )
 
+    # **1度だけ作って400回ぶん使い回す。** 毎回作り直すと、同じものを400回
+    # 計算することになる。乱数で変わるのは引くほうであって、引かれる相手ではない。
+    deducted = _universe_to_subtract(
+        database, subtract, holding, fraction=benchmark_fraction, seed=seed
+    )
+
     scores: list[float] = []
+    # **既に計算していて、捨てていた2つ。**
+    #
+    # `t` の SD が 1.09 出た理由を探すのに、`t` そのものしか見ていなかった。
+    # `t = 平均 / 標準誤差` なので、**分母の形も見ないと、どちらが動いたのか
+    # 分からない**（2026-09-18）。
+    spreads: list[float] = []
+    observations: list[int] = []
     # **400回ぶんの処分を足し上げる。** 1回ぶんでは件数が小さすぎて、
     # 上場廃止で落ちる割合が読めない。
     tally: dict[str, object] = {"values": [], "truncated": [], "drawn": 0}
@@ -7738,7 +7979,9 @@ def rehearsal_events(  # noqa: PLR0913 - イベント型と同じ条件をすべ
         for index in range(repeat):
             progress.update(task, completed=index + 1)
             drawn = placebo_events(days, symbols, events, seed=seed + index)
-            sample = event_sample(database, drawn, holding=holding, benchmark=benchmark)
+            sample = event_sample(
+                database, drawn, holding=holding, benchmark=benchmark, subtract=deducted
+            )
             tally["drawn"] += sample.drawn
             for key in _DISPOSITIONS:
                 tally[key] += getattr(sample, key)
@@ -7752,8 +7995,12 @@ def rehearsal_events(  # noqa: PLR0913 - イベント型と同じ条件をすべ
             stderr = estimate.standard_error(len(values))
             if stderr > 0:
                 scores.append(fmean(values) / stderr)
+                spreads.append(estimate.inflation)
+                observations.append(len(values))
 
-    target = calibrated_t(HYPOTHESIS_BUDGET)
+    # **自分が引いた相手の線を出す。** 別の相手で測った線を並べると、
+    # 比べているつもりで別のものを比べることになる。
+    target = calibrated_t(HYPOTHESIS_BUDGET, inflation=_event_inflation(subtract))
     found = calibrate(scores, target)
     if not found.runs:
         console.print("[red]1回も測れなかった。[/]")
@@ -7767,6 +8014,29 @@ def rehearsal_events(  # noqa: PLR0913 - イベント型と同じ条件をすべ
     table.add_row("|t| ≥ 1.96", f"{found.plain_share:.1%}", "5.0%")
     table.add_row("いちばん大きい t", f"{found.worst:+.2f}", "—")
     console.print(table)
+
+    # **分子と分母を分けて見る。** `t` だけ見ていると、平均が動いたのか
+    # 標準誤差が動いたのか分からない。0.94 → 1.09 のときに、そこで止まった。
+    if spreads:
+        shape = Table(title="`t` の分母の形")
+        for column in ("項目", "平均", "SD"):
+            shape.add_column(column, overflow="fold")
+        shape.add_row(
+            "重なりの膨張（Newey-West）",
+            f"{fmean(spreads):.2f}",
+            f"{stdev(spreads):.2f}" if len(spreads) > 1 else "—",
+        )
+        shape.add_row(
+            "1回あたりの観測日数",
+            f"{fmean(observations):,.0f}",
+            f"{stdev(observations):,.0f}" if len(observations) > 1 else "—",
+        )
+        console.print(shape)
+        console.print(
+            "[dim]**膨張が 1 に近くて散らばっているなら、`t` の裾は分母の"
+            "推定誤差から来ている**——重なりが無いところに 20 ラグを当てている"
+            "ぶんである。**膨張そのものが大きいなら、重なりが残っている。**[/]"
+        )
 
     console.print(
         f"[dim]月次の盤面で測った膨張は {MEASURED_INFLATION:.2f}、**ここは "
@@ -7799,12 +8069,15 @@ def rehearsal_events(  # noqa: PLR0913 - イベント型と同じ条件をすべ
     # **(B) は測れる**——落ちた割合と、落ちた側を足の在るところまでで測った
     # 超過との差である。残りは (A) に当たる。
     lifted = total.survivorship_bias()
+    gap = (total.stock_leg - total.bench_leg) - (lifted or 0.0)
     if lifted is not None:
-        gap = (total.stock_leg - total.bench_leg) - lifted
         console.print(
-            f"[dim]差 {total.stock_leg - total.bench_leg:+.2%} のうち、"
-            f"上場廃止で落ちた分の押し上げが **{lifted:+.2%}**。"
-            f"残る **{gap:+.2%}** は、引く相手が時価総額加重であることに当たる。[/]"
+            # **桁を揃える。** 2桁で刷ると「差 +0.01% のうち … 残る +0.02%」
+            # のように、丸めた部分が全体に足し合わない形で出る（2026-09-18）。
+            # **足して合わない表は、読む側にどちらを信じるか決めさせる。**
+            f"[dim]差 {total.stock_leg - total.bench_leg:+.3%} のうち、"
+            f"上場廃止で落ちた分の押し上げが **{lifted:+.3%}**。"
+            f"残る **{gap:+.3%}** は、引く相手が時価総額加重であることに当たる。[/]"
         )
     else:
         console.print(
@@ -7818,11 +8091,21 @@ def rehearsal_events(  # noqa: PLR0913 - イベント型と同じ条件をすべ
             "乱数で選んだ銘柄と日を持つだけで、指数に系統的に勝っている。"
             "**散らばりではなく中心のずれで、線を動かしても直らない。**"
         )
-        console.print(
-            "[dim]いちばん疑わしいのは、窓の途中で価格が途切れるイベントが"
-            "**entry か exit を取れずに落ちる**ことである。**落ちるのは悪く終わった"
-            "側に偏る。** 同じフィルタが #5・#8 にも掛かっている。[/]"
-        )
+        # **疑いを名指ししない。** 同じ出力の上に分解が出ているのに、
+        # 決め打ちの犯人を刷っていた（2026-09-17）。**表が否定しているものを、
+        # その下の行が断定する**形になり、実際に外れた——生存フィルタの
+        # 押し上げは -0.00%/件 だった。**読み上げるのは、測った分解のほうである。**
+        if lifted is not None:
+            console.print(
+                f"[dim]同じ回の分解では、生存フィルタの押し上げが **{lifted:+.2%}/件**、"
+                f"加重の違い（一様抽選 対 時価総額加重）が **{gap:+.2%}/件**。"
+                "**大きいほうが、直すべきほうである。**[/]"
+            )
+        else:
+            console.print(
+                "[dim]**出どころを分けられていない。** 落ちた側の超過が1件も"
+                "測れていないので、生存フィルタと加重の違いを切り分けられない。[/]"
+            )
 
 
 @app.command(name="rehearsal")
