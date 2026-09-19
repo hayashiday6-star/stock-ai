@@ -99,6 +99,16 @@ SHAPES: tuple[Shape, ...] = (
         source="PREREG_LOWVOL_JP.md §8（分位1 − β×ベンチ）",
     ),
     Shape(
+        name="#13 の形（月替わり・暦・指数）",
+        sd=0.0312,
+        inflation=0.97,
+        periods=104,
+        unit="月替わり",
+        per_year=12,
+        source="PREREG_TURN_OF_MONTH_JP.md §0（IS 107 回、窓 4 営業日）",
+        pipe="calendar",
+    ),
+    Shape(
         name="#11 の形（複合・ロングショート・α）",
         sd=0.0446,
         inflation=0.95,

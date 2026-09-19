@@ -42,9 +42,14 @@ class TestTheNumbersAreComputedNotTranscribed:
         assert longer.required(3.39) == pytest.approx(shape.required(3.39) / 2)
 
     def test_the_gentlest_design_is_first(self) -> None:
-        """**いちばん甘い形でどれだけ要るか**が先頭に来ること。"""
+        """**いちばん甘い形でどれだけ要るか**が先頭に来ること。
+
+        **形ごとの線で並べる。** ここも1つの線（3.39）を全部に当てていた
+        ——`docs/PASSING.md` で直したのと同じ形が、確かめる側に残っていた
+        （2026-09-19）。管が増えたときに、並びが実際と違う順になる。
+        """
         monthly = [shape for shape in SHAPES if shape.per_year]
-        needs = [shape.required_annual(3.39) for shape in monthly]
+        needs = [shape.required_annual(shape.line()) for shape in monthly]
 
         assert needs == sorted(needs)
 
