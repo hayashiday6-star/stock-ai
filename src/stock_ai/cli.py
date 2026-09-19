@@ -6052,7 +6052,7 @@ def january_power(
         required_t,
         student_t_line,
     )
-    from stock_ai.backtest.power import estimate_power, periods_needed
+    from stock_ai.backtest.power import estimate_power, gate, periods_needed
     from stock_ai.core.logging import quiet_on_console
     from stock_ai.data.valuation_monthly import DEFAULT_PATH
     from stock_ai.data.valuation_monthly import read as read_valuation
@@ -6207,34 +6207,48 @@ def january_power(
             "費用を賄えない。** 線は動かさない。[/]"
         )
 
-    # **§0 の当てはめ。** 事前登録 §0 に3通り書いてある。人が読んで当てはめると、
-    # 封印前でも基準が動く。
+    # **§0 の当てはめは `power.gate` に聞く。** ここで書き直さない。
+    #
+    # **1度書き直して、緩いほうに外した**（2026-09-19）。合格線は「**見込みの
+    # 下限**が検出できる差を上回ること」なのに、**上限**と比べていた。それは
+    # #7 が落ちた形——「見込みが検出できる差をまたぐ」——をそのまま通す。
     console.print()
-    if high < raw[4]:
-        years = periods_needed(raw[0], 1.0, max(high, 1e-9), target_t=line_floor)
+    verdict = gate(raw[4], low, high)
+    colour = "green" if verdict.passed else "red"
+    console.print(
+        f"[{colour}]§0（素の線 t≥{line_floor:.2f}）: {verdict.verdict}。[/] {verdict.reading}"
+    )
+    console.print(
+        f"[dim]見込み {low:+.2%} 〜 {high:+.2%}、検出できる差 {raw[4]:.2%}。"
+        "**合格線は「下限が検出できる差を上回ること」の1つだけ**（`CLAUDE.md`）。[/]"
+    )
+
+    if verdict.passed:
+        # 素の線で通ったなら、**この管の線を測らないと決まらない。**
+        tighter = gate(tight, low, high)
         console.print(
-            f"[red]§0 を通さない。[/] 見込みの上限 {high:+.2%} が、"
-            f"**素の線でも検出できる差 {raw[4]:.2%} に届かない。**"
-        )
-        console.print(
-            f"[dim]線には下限 1.0 がある（`INFLATION_FLOOR`）ので、**対照を回しても"
-            f"線は 3.02 より下がらない。** 上限 {high:+.2%} を検出するには "
-            f"**{years:,} 回＝{years:,} 年**要る。手元の OOS は {oos_periods} 年である。[/]"
-        )
-    elif high < tight:
-        console.print(
-            f"[yellow]素の線では通るが、自由度 {oos_periods - 1} の線では通らない。[/] "
-            f"上限 {high:+.2%} は {raw[4]:.2%} を越えるが、{tight:.2%} には届かない。"
-        )
-        console.print(
-            "[dim]**対照を回して、この管の線を測ること**（事前登録 §0・§10）。"
-            "自由度8の 4.33 は「対照が素直ならこうなる」値で、**実測ではない。**[/]"
+            f"[dim]自由度 {oos_periods - 1} の線（t≥{small_line:.2f}）なら "
+            f"{tighter.verdict}。**その線は「対照が素直ならこうなる」値で、"
+            "実測ではない。**[/]"
         )
     else:
-        console.print(
-            f"[green]§0 を通る見込みが在る。[/] 上限 {high:+.2%} が "
-            f"{tight:.2%} を上回った。**次はこの管の対照を n={oos_periods} で回す。**"
-        )
+        # **何年あれば足りるかを書く**（`CLAUDE.md`）。下限が 0 をまたいで
+        # いるなら、持ち上げる先が無い——#13 と同じである。
+        if low > 0:
+            years = periods_needed(raw[0], 1.0, low, target_t=line_floor)
+            console.print(
+                f"[dim]下限 {low:+.2%} を検出するには **{years:,} 回＝{years:,} 年**要る。"
+                f"手元の OOS は {oos_periods} 年で、**{years - oos_periods:,} 年足りない。**[/]"
+            )
+        else:
+            centre = periods_needed(raw[0], 1.0, max(mean, 1e-9), target_t=small_line)
+            console.print(
+                f"[dim]**下限が 0 をまたいでいるので、持ち上げる先が無い。** "
+                f"参考までに、**中心の {mean:+.2%}** を自由度 {oos_periods - 1} の線で"
+                f"検出するには **{centre:,} 年**要る（手元は {oos_periods} 年、"
+                f"**{max(centre - oos_periods, 0):,} 年足りない**）。"
+                "**中心は合否に使わない**——#7 はそれで回して落ちた。[/]"
+            )
 
     # **結論は1つだけ、最後に置く。** 途中の行を結論と読まれないため——
     # 線と関門は**どちらか一方でも閉じる**（事前登録 §10）。
@@ -6244,8 +6258,12 @@ def january_power(
             "[bold red]結論: 封印しない。[/] **線を下回っている。** "
             "上の関門をどう読んでも変わらない（事前登録 §10）。"
         )
-    elif high < raw[4]:
-        console.print("[bold red]結論: 封印しない。[/] **§0 の関門を通らない。**")
+    elif not verdict.passed:
+        console.print(
+            "[bold red]結論: 封印しない。[/] **§0 の関門を通らない。** "
+            "**対照を回すまでもない**——線には下限があるので、"
+            "測っても検出できる差は縮まない。"
+        )
     else:
         console.print(
             "[bold]結論: ここでは決まらない。[/] **この管の対照を回してから決める**"

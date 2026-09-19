@@ -362,7 +362,8 @@ class TestTheCalibratedLineIsUsedEverywhere:
         body = inspect.getsource(cli.january_power)
 
         assert "対照を回しても通らない" in body
-        assert "この管の対照を n=" in body
+        assert "対照を回すまでもない" in body
+        assert "この管の対照を回してから決める" in body
 
     def test_the_measured_inflation_says_where_it_came_from(self) -> None:
         """**出典の無い数字を書かない。** 400回の対照から出た値である。"""

@@ -542,3 +542,60 @@ class TestTheGateUsesTheLineForNineObservations:
         from stock_ai.cli import JANUARY_FLOOR
 
         assert pytest.approx(QuantileSeries.round_trip_cost * 1.0) == JANUARY_FLOOR
+
+
+class TestTheGateIsNotWrittenTwice:
+    """**§0 の当てはめを、呼ぶ側で書き直さない。**
+
+    1度書き直して、**緩いほうに外した**（2026-09-19）。合格線は「**見込みの
+    下限**が検出できる差を上回ること」なのに、**上限**と比べていた。それは
+    「見込みが検出できる差をまたいでいる」を通す——**#7 が落ちたその形**で
+    ある。
+    """
+
+    def test_the_command_asks_power_for_the_verdict(self) -> None:
+        import inspect
+
+        from stock_ai import cli
+
+        body = inspect.getsource(cli.january_power)
+
+        assert "gate(raw[4], low, high)" in body
+
+    def test_it_does_not_compare_the_upper_bound_itself(self) -> None:
+        """**戻ってきたら落ちる。**"""
+        import inspect
+
+        from stock_ai import cli
+
+        body = inspect.getsource(cli.january_power)
+
+        assert "high < raw[4]" not in body
+        assert "high < tight" not in body
+
+    def test_the_rule_turns_on_the_lower_bound(self) -> None:
+        """**この検査が落ちる条件を、実際に1つ作る。**
+
+        同じ上限・同じ検出できる差でも、**下限が上か下か**で答えが変わる。
+        """
+        from stock_ai.backtest.power import gate
+
+        straddling = gate(0.0473, -0.0017, 0.0704)
+        clear = gate(0.0473, 0.0500, 0.0704)
+
+        assert not straddling.passed
+        assert clear.passed
+
+    def test_the_measured_board_does_not_pass(self) -> None:
+        """**実際に出た数字で、答えを固定する**（2026-09-19、IS 2009〜2017）。
+
+        SD 4.69%／年、見込み −0.17% 〜 +7.04%、9観測。**下限が検出できる差
+        4.72% を下回る。**
+        """
+        from stock_ai.backtest.multiplicity import HYPOTHESIS_BUDGET, required_t
+        from stock_ai.backtest.power import gate
+
+        detectable = required_t(HYPOTHESIS_BUDGET) * 0.0469 / 3.0
+
+        assert detectable == pytest.approx(0.0472, abs=0.0002)
+        assert not gate(detectable, -0.0017, 0.0704).passed
