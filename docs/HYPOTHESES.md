@@ -31,6 +31,7 @@
 | `ANTIVALUE_JP` | 9 | 買いにくい相場は高い（割安は割安のまま） | fundamental | single | jp | [日本証券業協会「株式投資の格言」買いにくい相場は高い](https://www.jsda.or.jp/start/proverb/contents/proverb26.html)（2026-09-16 閲覧） | [PREREG_ANTIVALUE_JP.md](PREREG_ANTIVALUE_JP.md) |
 | `VALUE_JP` | 10 | バリュー（低PBR を買う） | fundamental | single | jp | ネット記事等（URL未記録）。**#9 と正反対の俗説である** | 未作成（#11 の脚として登録） |
 | `LOWVOL_VALUE_JP` | 11 | 低ボラ × バリュー | technical + fundamental | **composite**（#7 + #10） | jp | **組そのものの出典は持っていない**（構成要素を組んだもの） | [PREREG_LOWVOL_VALUE_JP.md](PREREG_LOWVOL_VALUE_JP.md) |
+| `MOMENTUM_JP` | 12 | トレンドは友（中期モメンタム 12-1） | technical | single | jp | 相場格言。**文献（Asness 2011 / Fama–French 2012）は本文を読めていない**——`§0` の数字には使っていない | [PREREG_MOMENTUM_JP.md](PREREG_MOMENTUM_JP.md) |
 | `REHEARSAL` | — | 乱数の signal（**陰性対照**） | technical | **control** | jp | **出典は無い。世界について何も主張していない** | [PREREG_REHEARSAL.md](PREREG_REHEARSAL.md) |
 
 **#1〜#8 の8本は「ネット記事等（URL未記録）」である。** これが本当のところで、
@@ -91,6 +92,7 @@
 | `ANTIVALUE_JP` | 未判定（**§0 で止めた・封印せず**） | — | 安いには安い理由がある。割安株は割安のまま放置されるのか |
 | `VALUE_JP` | 未判定（**封印せず。IS が設計で 2.8倍振れた**） | — | 割安な株を買うと報われるのか。#9 と正反対の俗説 |
 | `LOWVOL_VALUE_JP` | 未判定（**§0 で止めた・封印せず**） | — | 値動きが穏やかで、かつ割安。両方満たすと片方だけより良いのか |
+| `MOMENTUM_JP` | 未判定（**§0 を測る前。封印せず**） | — | 上がっている銘柄は上がり続けるのか |
 | `REHEARSAL` | **不合格**（IS +1.24 / OOS +0.77）。**校正で SD 1.12 が出た** | 2026-09-17 | 何も無いときに、この仕組みは合格を出すか |
 
 **封印日も記録が無い。** 事前登録には判定の日（#7 なら 2026-09-05）は書いて
