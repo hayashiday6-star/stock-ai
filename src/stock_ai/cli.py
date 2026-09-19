@@ -6271,6 +6271,327 @@ def january_power(
         )
 
 
+def _wall_document(walls: list[object], missing: list[object], span: str) -> str:
+    """Build the body of `docs/WALL.md` - a generated file, never edited by hand.
+
+    Args:
+        walls: 測れた設計。
+        missing: 材料が無くて測れなかった候補。
+        span: 何を読んだか。
+
+    Returns:
+        文書の全文。
+    """
+    lines = [
+        "# 壁の下見 — まだ登録していない説の、検出できる差",
+        "",
+        "**この文書は生成物である。** 手で直さない——"
+        "`uv run stock-ai wall-survey --write docs/WALL.md` が作り直す。",
+        "",
+        "**効果（平均）は1つも出していない。** 検出できる差は `線 × SD ÷ √n` で、"
+        "**散らばりと観測数だけで決まる。** だから、これを見ても答えを先に見た"
+        "ことにならない（`backtest/wall.py` の冒頭に理由を書いた）。",
+        "",
+        f"**読んだもの:** {span}",
+        "",
+        "## 壁の高さ",
+        "",
+        "| 候補 | 設計 | 管 | n | 1観測あたりのSD | 線 | **検出できる差** |",
+        "|---|---|---|---|---|---|---|",
+    ]
+    for wall in walls:
+        annual = wall.annual  # type: ignore[attr-defined]
+        size = (
+            f"年 {annual:.1%}" if annual is not None else f"1{wall.unit} {wall.detectable:.2%}"  # type: ignore[attr-defined]
+        )
+        lines.append(
+            f"| {wall.candidate} | {wall.name} | {wall.pipe} | "  # type: ignore[attr-defined]
+            f"{wall.observations:,} | {wall.sd:.2%}／{wall.unit} | "  # type: ignore[attr-defined]
+            f"`t ≥ {wall.line:.2f}` | **{size}** |"  # type: ignore[attr-defined]
+        )
+    lines += [
+        "",
+        "**イベント型は年率に直していない。** 資金をどれだけ張るかを決めないと"
+        "直せない（`docs/PASSING.md` と同じ扱い）。",
+        "",
+        "## 材料が無くて測れなかった候補",
+        "",
+        "| 候補 | 説 | なぜ測れないか |",
+        "|---|---|---|",
+    ]
+    for item in missing:
+        lines.append(
+            f"| {item.candidate} | {item.name} | {item.reason} |"  # type: ignore[attr-defined]
+        )
+    lines += [
+        "",
+        "**無いことは、出力に出ない。** だから、測れなかったほうも表にする。",
+        "",
+        "## これをどう使うか",
+        "",
+        "**壁を越えうる設計にだけ、事前登録を書く。** 越えられないものは、"
+        "この表の数字を添えて候補のまま残す——**書かない理由が数字で残る。**",
+        "",
+        "**壁を比べても、どの説が正しいかは分からない。** ここに出ているのは"
+        "「見分けられる最小の大きさ」だけで、**効果は測っていない。**",
+        "",
+        "**窓やしきい値を変えれば壁も動く。** イベント型はどれも 20営業日で"
+        "揃えてある（`docs/PREREG_REVISION_JP.md` の #5 と同じ物差し）。"
+        "事前登録が別の窓を選ぶなら、**そこで測り直す。**",
+        "",
+    ]
+    return "\n".join(lines)
+
+
+@app.command(name="wall-survey")
+def wall_survey(
+    into: str | None = typer.Option(None, "--write", help="Regenerate docs/WALL.md."),
+    benchmark: str = typer.Option(BENCHMARK, "--benchmark", help="Calendar and index."),
+    rosters: str = typer.Option(
+        str(DEFAULT_SNAPSHOT_DIR), "--rosters", help="Where the dated rosters live."
+    ),
+) -> None:
+    """Measure how big an effect each unregistered candidate would need - no effects.
+
+    **事前登録を書く前に、壁の高さだけを見る。** 検出できる差は
+    `線 × SD ÷ √n` で、**散らばりと観測数だけで決まる**ので、これを見ても
+    答えを先に見たことにならない。
+
+    **効果（平均）は1つも計算しない。** `Wall` に平均の欄が無いのはそのため
+    である——入れられる形にすると「効果がありそうだから通す」が書けてしまう。
+
+    **IS（〜2017-12）のリターンだけを読む。** イベントの**件数**だけは OOS も
+    数える——判定に使える観測数がそこで決まるためで、件数は効果ではない。
+
+    価格を4回なめる（走査・等加重の宇宙・イベント2種）。**時間がかかる。**
+    """
+    from stock_ai.backtest.event_window import event_sample
+    from stock_ai.backtest.multiplicity import line_for, student_t_line
+    from stock_ai.backtest.power import estimate_power
+    from stock_ai.backtest.quantile_series import build_panel
+    from stock_ai.backtest.universe_benchmark import equal_weighted_windows
+    from stock_ai.backtest.wall import (
+        GAP_DOWN,
+        HOLDING,
+        IS_END,
+        KNIFE_DAYS,
+        KNIFE_DROP,
+        OOS_END,
+        OOS_FROM,
+        Missing,
+        Wall,
+        complete_halloween_years,
+        halloween_episodes,
+        scan,
+        usable_rebalances,
+    )
+    from stock_ai.core.logging import quiet_on_console
+    from stock_ai.data.schema import split_adjusted
+
+    settings = get_settings()
+    configure_logging(settings.log_level)
+
+    snapshots = membership(Path(rosters))
+    if not snapshots:
+        console.print("[red]名簿が無い。[/] **渡さないと生存バイアスが入る。**")
+        raise typer.Exit(code=1)
+
+    console.print(
+        f"[dim]IS（〜{IS_END}）のリターンだけを読みます。イベントの件数だけ "
+        f"OOS（{OOS_FROM}〜{OOS_END}）も数えます。**効果は1つも出しません。**[/]"
+    )
+
+    database = Database()
+    database.create_all()
+
+    # --- 3 Sell in May ------------------------------------------------------
+    returns, dates, _month_ends = _calendar_pipe(benchmark)
+    years, episodes = halloween_episodes(returns, dates, end=IS_END)
+    walls: list[Wall] = []
+    if len(episodes) >= 3:  # noqa: PLR2004 - 3点無いと散らばりが測れない
+        oos_years = complete_halloween_years(OOS_FROM, OOS_END)
+        with quiet_on_console("stock_ai.backtest.power"):
+            sd = estimate_power(episodes, lags=0).daily_sd
+        walls.append(
+            Wall(
+                candidate=3,
+                name="Sell in May（冬 − 夏）",
+                pipe="年1観測の暦",
+                unit="年",
+                observations=oos_years,
+                sd=sd,
+                # **自由度で線を引く。** n が小さいと `t` が正規から離れる（#14）。
+                line=student_t_line(max(oos_years - 1, 1)),
+                source=f"{benchmark} の日次、IS {years[0]}〜{years[-1]} の {len(years)} 年",
+                per_year=1.0,
+            )
+        )
+    else:
+        console.print("[yellow]**Sell in May の観測が3年に満たない。** 壁を出せない。[/]")
+
+    # --- 価格を1度だけなめる -------------------------------------------------
+    console.print("[dim]価格を走査しています（1銘柄1行は出しません）...[/]")
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        BarColumn(),
+        TaskProgressColumn(),
+        TimeRemainingColumn(),
+        console=console,
+    ) as progress:
+        task = progress.add_task("走査", total=None)
+
+        def step(done: int, total: int) -> None:
+            progress.update(task, completed=done, total=total)
+
+        with quiet_on_console("stock_ai.backtest.wall"):
+            materials = scan(database, progress=step)
+    console.print(materials.summary())
+
+    # --- 5 新値には黙ってつけ（52週高値への近さ）-----------------------------
+    with quiet_on_console("stock_ai.backtest.quantile_series"):
+        panel = build_panel(
+            database,
+            materials.high52,
+            end=IS_END,
+            snapshots=snapshots,
+        )
+    if len(panel.months) >= 3:  # noqa: PLR2004 - 3点無いと散らばりが測れない
+        spread = [row[-1] - row[0] for row in panel.quantiles]
+        with database.session() as session:
+            calendar = split_adjusted(PriceRepository(session).get_raw_prices(benchmark)).index
+        oos_months = usable_rebalances(calendar, OOS_FROM, OOS_END)
+        with quiet_on_console("stock_ai.backtest.power"):
+            sd = estimate_power(spread, lags=3).daily_sd
+        walls.append(
+            Wall(
+                candidate=5,
+                name="新値には黙ってつけ（52週高値への近さ）",
+                pipe="月次・分位ロングショート",
+                unit="月",
+                observations=oos_months,
+                sd=sd,
+                line=line_for("monthly"),
+                source=f"IS {len(panel.months)} ヶ月、5分位・等加重",
+                per_year=12.0,
+                notes=(f"近さを作れず外した銘柄月 {panel.skipped_no_value:,}",),
+            )
+        )
+    else:
+        console.print("[yellow]**52週高値の分位が3ヶ月に満たない。** 壁を出せない。[/]")
+
+    # --- 9・10 イベント型 ----------------------------------------------------
+    console.print("[dim]引く相手（等加重の宇宙）を作っています...[/]")
+    with quiet_on_console("stock_ai.backtest.universe_benchmark"):
+        universe = equal_weighted_windows(database, HOLDING)
+    for line in universe.warnings():
+        console.print(f"[yellow]{line}[/]")
+
+    events = (
+        (9, f"窓は埋まる（下窓 {GAP_DOWN:.0%}）", materials.gaps_is, materials.gaps_oos_days),
+        (
+            10,
+            f"落ちるナイフ（{KNIFE_DAYS}営業日で −{KNIFE_DROP:.0%}）",
+            materials.knives_is,
+            materials.knives_oos_days,
+        ),
+    )
+    for candidate, name, drawn, oos_days in events:
+        if len(drawn) < 2:  # noqa: PLR2004 - 1件では散らばりが測れない
+            console.print(f"[yellow]**{name} のイベントが {len(drawn)} 件しか無い。**[/]")
+            continue
+        with quiet_on_console("stock_ai.backtest.event_window"):
+            sample = event_sample(database, drawn, HOLDING, benchmark, IS_END, universe)
+        if len(sample.values) < 2:  # noqa: PLR2004 - 同上
+            console.print(f"[yellow]**{name} の使えたイベント日が足りない。**[/]")
+            continue
+        if not oos_days:
+            console.print(f"[yellow]**{name} は OOS に1日も無い。** 壁を出せない。[/]")
+            continue
+        with quiet_on_console("stock_ai.backtest.power"):
+            sd = estimate_power(sample.values, lags=HOLDING).daily_sd
+        walls.append(
+            Wall(
+                candidate=candidate,
+                name=name,
+                pipe="イベント型（等加重を引く）",
+                unit="イベント日",
+                observations=oos_days,
+                sd=sd,
+                line=line_for("event"),
+                source=(f"IS {sample.drawn:,} 件が {len(sample.values):,} 日、窓 {HOLDING} 営業日"),
+                notes=(
+                    f"価格が1本も無くて捨てた {sample.no_prices:,}、"
+                    f"その日に足が無くて捨てた {sample.not_trading:,}",
+                ),
+            )
+        )
+
+    if not walls:
+        console.print("[red]壁を1つも出せなかった。[/]")
+        raise typer.Exit(code=1)
+
+    walls.sort(key=lambda wall: (wall.annual is None, wall.annual or wall.detectable))
+
+    # **SD は IS で測り、n は OOS で数えている。** IS が薄ければ、壁の高さ
+    # そのものが当てにならない——**表に出るのは1つの数なので、薄さは見えない。**
+    for wall in walls:
+        if wall.observations < THIN_OBSERVATIONS:
+            console.print(
+                f"[yellow]**{wall.name}: 判定に使える観測が {wall.observations} しか無い。** "
+                "壁の高さも、その推定も当てにならない。[/]"
+            )
+
+    table = Table(title="壁の下見（**効果は出していない**）")
+    for column in ("候補", "設計", "n", "1観測あたりのSD", "線", "検出できる差"):
+        table.add_column(column, overflow="fold")
+    for wall in walls:
+        annual = wall.annual
+        size = f"年 {annual:.1%}" if annual is not None else f"1{wall.unit} {wall.detectable:.2%}"
+        table.add_row(
+            f"{wall.candidate}",
+            wall.name,
+            f"{wall.observations:,}",
+            f"{wall.sd:.2%}／{wall.unit}",
+            f"{wall.line:.2f}",
+            f"[bold]{size}[/]",
+        )
+    console.print(table)
+    for wall in walls:
+        for note in wall.notes:
+            console.print(f"[dim]{wall.candidate}: {note}[/]")
+
+    missing = [
+        Missing(6, "悲観の中に生まれ", "心理指標（調査・資金フロー・報道）を1つも持っていない"),
+        Missing(
+            7,
+            "需給はすべての材料に優先する",
+            "信用残と空売り比率は在るが、**設計が決まっていない。** 何を1観測とするかから",
+        ),
+        Missing(8, "噂で買って事実で売る", "「噂」の初出時点を客観的に取る口が無い"),
+    ]
+    absent = Table(title="材料が無くて測れなかった候補")
+    for column in ("候補", "説", "なぜ測れないか"):
+        absent.add_column(column, overflow="fold")
+    for item in missing:
+        absent.add_row(f"{item.candidate}", item.name, item.reason)
+    console.print(absent)
+
+    console.print(
+        "[dim]**壁を比べても、どの説が正しいかは分からない。** "
+        "ここに出ているのは見分けられる最小の大きさだけである。[/]"
+    )
+
+    if into:
+        span = (
+            f"IS は〜{IS_END} のリターン、イベントの件数は {OOS_FROM}〜{OOS_END} も。"
+            f"イベント型の窓は {HOLDING} 営業日に揃えた"
+        )
+        target = Path(into)
+        target.write_text(_wall_document(walls, missing, span), encoding="utf-8")
+        console.print(f"[green]{target} を書き直した。[/] **生成物である。手で直さない。**")
+
+
 @app.command(name="valuation-monthly")
 def valuation_monthly(
     directory: str = typer.Option(
@@ -7645,6 +7966,14 @@ MOMENTUM_FLOOR = 0.02
 #:
 #: **甘いほうを採った**（#13 と同じ扱い）。**測ってから動かさない。**
 JANUARY_FLOOR = 0.004
+
+
+#: 壁の下見で「薄い」と言う観測数。**これを下回ったら警告を出す。**
+#:
+#: 表に出るのは壁の高さ1つなので、**その裏に何観測あるかは見えない。**
+#: 10 は暦から出した値ではなく、**「片手で数えられる」を超えるところ**に
+#: 置いただけである——そう書いておく。
+THIN_OBSERVATIONS = 10
 
 
 def _oos_session_count(database: Database, benchmark: str, holding: int) -> int:
