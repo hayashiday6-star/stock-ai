@@ -175,6 +175,7 @@ from stock_ai.core.exceptions import (
     OpsError,
     RateLimitError,
 )
+from stock_ai.core.log_gaps import survey_all as survey_logs
 from stock_ai.core.logging import configure_logging
 from stock_ai.core.scheduler import DailyScheduler, JobResult
 from stock_ai.core.version import describe as describe_version
@@ -444,7 +445,24 @@ def info() -> None:
         table.add_row("tachibana version", f"{version}{'  ' + warning if warning else ''}")
     for label, value in _secret_status(settings):
         table.add_row(label, _secret_summary(value))
+
+    # **走らなかった日は、出力に出ない。**
+    #
+    # `Get-ScheduledTaskInfo` は `LastTaskResult: 0` と出るが、それは「最後に
+    # 走った回」の話で、**走らなかった回は数に入らない。** 2026-09-19 に手で
+    # 数えて、daily に4日・accumulation に2日の穴が見つかった。**「異常なし」
+    # の顔をしたまま抜けていた。**
+    #
+    # **無いことを出すには、在るべき日を先に決めて引き算するしかない。**
+    gaps = survey_logs(Path("logs"))
+    for row in gaps:
+        # 札に名前が出ているので、本文からは落とす。
+        table.add_row(f"logs/{row.name}", row.summary().removeprefix(f"{row.name}: "))
     console.print(table)
+    # **穴は表の1行にしない。** 表は読む側が気付く必要がある。
+    for row in gaps:
+        for line in row.warnings():
+            console.print(f"[yellow]{line}[/]")
     console.print(
         "[dim]The fingerprint is a hash prefix, not the key. It answers one "
         "question the word 'set' cannot: whether the value in .env actually "
