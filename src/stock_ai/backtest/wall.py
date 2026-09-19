@@ -47,8 +47,10 @@ import numpy as np
 import pandas as pd
 
 from stock_ai.backtest.discontinuity import crossings, session_breaks, spans_break
+from stock_ai.backtest.gap_fill import GAP_DOWN as _GAP_DOWN
+from stock_ai.backtest.gap_fill import gap_positions, liquid_bars
 from stock_ai.backtest.lowvol_census import formation_dates
-from stock_ai.backtest.pead import MIN_TURNOVER, TURNOVER_WINDOW
+from stock_ai.backtest.pead import MIN_TURNOVER
 from stock_ai.core.logging import get_logger
 from stock_ai.data.schema import CLOSE, OPEN, VOLUME, split_adjusted
 from stock_ai.database.engine import Database
@@ -70,12 +72,11 @@ HOLDING = 20
 #: 52週高値を測る営業日数。**52週 ≒ 250営業日。** 暦から出した値である。
 HIGH_WINDOW = 250
 
-#: 下窓と呼ぶ幅。**始値が前日終値をこれだけ下回ったら1件。**
+#: 下窓と呼ぶ幅。**正本は `gap_fill.GAP_DOWN` にある。**
 #:
-#: **この下見のために1つ選んだ。** 事前登録が別の幅を選ぶなら、そこで測り
-#: 直す。**幅を何通りも並べて良いほうを採ると、選んだこと自体が多重検定に
-#: なる**（#10）。
-GAP_DOWN = 0.03
+#: #15 が同じ規則を使う。**2つ持つと、下見で選んだ設計と判定に使う設計が、
+#: 黙ってずれる。** ここは名前を残すためだけである。
+GAP_DOWN = _GAP_DOWN
 
 #: 急落と呼ぶ幅と日数。**5営業日で −20%。** 同上、この下見のために1つ選んだ。
 KNIFE_DROP = 0.20
@@ -183,16 +184,6 @@ class Materials:
         )
 
 
-def _liquid(closes: np.ndarray, volumes: np.ndarray, floor: float) -> np.ndarray:
-    """その日までの 20営業日の売買代金の中央値が ``floor`` 以上か。
-
-    **#9・#12・#14 と同じ絞りである。** 揃えないと、壁を比べられない。
-    """
-    traded = pd.Series(closes * volumes)
-    level = traded.rolling(TURNOVER_WINDOW + 1, min_periods=TURNOVER_WINDOW + 1).median()
-    return (level >= floor).to_numpy(dtype=bool)
-
-
 def scan(
     database: Database,
     symbols: list[str] | None = None,
@@ -244,7 +235,7 @@ def scan(
             if len(closes) < 2:  # noqa: PLR2004 - 1本では何も作れない
                 continue
 
-            liquid = _liquid(closes, volumes, min_turnover)
+            liquid = liquid_bars(closes, volumes, min_turnover)
             days = [stamp.date() for stamp in index]
             # **不連続をまたぐ窓を使わない。** 規則も定数も #6 と同じものを
             # 呼ぶ（`discontinuity`）——ここで近いものを書き直すと、数えた
@@ -257,12 +248,8 @@ def scan(
                 return not spans_break(_prefix, max(first, 0), min(until, _last))
 
             # --- 下窓（前日終値 → 当日始値）------------------------------
-            previous, opened = closes[:-1], opens[1:]
-            usable = (previous > 0) & (opened > 0)
-            fell = np.zeros(len(previous), dtype=bool)
-            fell[usable] = opened[usable] / previous[usable] - 1.0 <= -GAP_DOWN
-            for offset in np.flatnonzero(fell & liquid[1:]):
-                position = offset + 1
+            # **規則は `gap_fill` に1つだけ置いてある。**
+            for position in gap_positions(opens, closes, liquid, GAP_DOWN):
                 # **窓の中に不連続があれば使わない。** 前日も見る——窓そのもの
                 # が不連続でできている形を外すため。
                 if not clean(position - 1, position + HOLDING):

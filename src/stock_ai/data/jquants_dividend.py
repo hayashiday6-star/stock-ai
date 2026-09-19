@@ -258,3 +258,61 @@ def ex_date_coverage(
         in_is=in_is,
         in_oos=in_oos,
     )
+
+
+def ex_dates(directory: Path) -> dict[str, set[dt.date]]:
+    """銘柄ごとの権利落ち日。**公表がその日より前のものだけを集めるのは呼ぶ側。**
+
+    ここが返すのは ``(公表日, 権利落ち日)`` ではなく**権利落ち日の集合**である
+    ——外す側は「その日が権利落ちか」しか要らない。
+
+    **先読みを入れないための口は、別に置いてある**（:func:`ex_dates_known_by`）。
+
+    Args:
+        directory: 原本の置き場所。
+
+    Returns:
+        ``銘柄 -> 権利落ち日の集合``。
+    """
+    found: dict[str, set[dt.date]] = {}
+    for symbol, _published, when in _ex_date_rows(directory):
+        found.setdefault(symbol, set()).add(when)
+    return found
+
+
+def ex_dates_known_by(directory: Path) -> dict[str, list[tuple[dt.date, dt.date]]]:
+    """銘柄ごとの ``(公表日, 権利落ち日)``。**先読みを外すのに使う。**
+
+    権利落ち日は前もって分かる情報だが、**後から出た訂正を使えば先読みになる。**
+    呼ぶ側は ``公表日 <= その日`` のものだけを見ること。
+
+    Args:
+        directory: 原本の置き場所。
+
+    Returns:
+        ``銘柄 -> [(公表日, 権利落ち日), ...]``。**公表日の順に並ぶ。**
+    """
+    found: dict[str, list[tuple[dt.date, dt.date]]] = {}
+    for symbol, published, when in _ex_date_rows(directory):
+        found.setdefault(symbol, []).append((published, when))
+    for rows in found.values():
+        rows.sort()
+    return found
+
+
+def _ex_date_rows(directory: Path) -> Iterable[tuple[str, dt.date, dt.date]]:
+    """原本から ``(銘柄, 公表日, 権利落ち日)`` を1行ずつ。**取りには行かない。**"""
+    from stock_ai.data.jquants_archive import path_for, read_manifest
+    from stock_ai.data.jquants_read import endpoint_of, read_archived
+
+    for key in sorted(read_manifest(directory)):
+        if endpoint_of(key) != "/fins/dividend":
+            continue
+        try:
+            found = parse_dividends(read_archived(path_for(directory, key)))
+        except Exception as exc:  # noqa: BLE001 - どこで読めないかが記録に値する
+            logger.warning("配当の原本を読めなかった: %s: %s", key, exc)
+            continue
+        for item in found:
+            if item.ex_date is not None:
+                yield item.symbol, item.published_on, item.ex_date
