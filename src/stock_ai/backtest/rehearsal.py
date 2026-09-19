@@ -138,6 +138,46 @@ def placebo_events(
     ]
 
 
+def placebo_windows(
+    month_ends: Sequence[int],
+    length: int,
+    seed: int = SEED,
+) -> list[tuple[int, int]]:
+    """窓の位置を乱数に差し替える。**日次の暦の管の対照。**
+
+    **リターンは本物のまま。** 動かすのは「窓の内か外か」のラベルだけである
+    ——月次の対照が signal だけを乱数にしたのと同じ形。
+
+    **偽の窓は、本物の窓の外に置く。** 重ねると本物の効果が漏れ込み、
+    「何も無いときの分布」にならない。
+
+    Args:
+        month_ends: 月の最終営業日の位置。
+        length: 窓の長さ（営業日）。
+        seed: 乱数の種。
+
+    Returns:
+        月替わりごとの ``(開始位置, 長さ)``。**先頭は使われないので本物のまま。**
+
+    Raises:
+        ValueError: ``length`` が 1 未満、または月末が2つ未満。
+    """
+    if length < 1:
+        raise ValueError(f"length must be at least 1; got {length}.")
+    if len(month_ends) < 2:
+        raise ValueError("月末が2つ未満。窓を差し替えられない。")
+
+    rng = np.random.default_rng(seed)
+    built: list[tuple[int, int]] = [(month_ends[0], length)]
+    for index in range(1, len(month_ends)):
+        # 本物の窓の外に収まる範囲。前の窓が終わった翌日から、今回の窓の前日まで。
+        low = month_ends[index - 1] + length
+        high = month_ends[index] - length
+        begin = int(rng.integers(low, high + 1)) if high >= low else low
+        built.append((begin, length))
+    return built
+
+
 @dataclasses.dataclass(frozen=True)
 class Calibration:
     """帰無の下での `t` の分布。**まれな裾ではなく、形を見る。**"""

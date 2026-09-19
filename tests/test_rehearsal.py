@@ -325,6 +325,25 @@ class TestTheCalibratedLineIsUsedEverywhere:
         assert assigned, "判定の線を置いている場所が見つからない"
         assert set(assigned) == {"calibrated_t"}, assigned
 
+    def test_the_only_place_without_a_calibrated_line_is_the_one_that_makes_one(
+        self,
+    ) -> None:
+        """**例外は1つだけで、その1つは名前で分かること。**
+
+        線を作る側の対照は、校正済みの線を持てない——**まだ測っていないものを、
+        測る前に当てられない。** そこだけ素の線を使う。
+
+        **`target` と名付けない。** 判定に見える名前を、判定でないものに付けない。
+        **2つ目が現れたら、ここが落ちる。**
+        """
+        import pathlib
+        import re
+
+        body = pathlib.Path("src/stock_ai/cli.py").read_text(encoding="utf-8")
+        plain = re.findall(r"(\w+) = required_t\(HYPOTHESIS_BUDGET\)", body)
+
+        assert plain == ["plain_line"], plain
+
     def test_the_measured_inflation_says_where_it_came_from(self) -> None:
         """**出典の無い数字を書かない。** 400回の対照から出た値である。"""
         import inspect

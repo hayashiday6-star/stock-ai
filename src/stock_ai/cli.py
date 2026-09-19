@@ -7342,6 +7342,17 @@ def _report_event_disposition(sample: object, *, title: str) -> None:
         console.print(f"[yellow]{line}[/]")
 
 
+#: #13 の「封印しない線」。**測る前にコミットした**（`docs/PREREG_TURN_OF_MONTH_JP.md` §0）。
+#:
+#: **売買しないので費用は引かない**が、将来売買するときのいちばん安い実装
+#: （窓の中だけ持ち分を増やす、年12回、増分は資産の半分）の費用から置いた
+#: ——`0.4% × 12 × 0.5 = 年 2.4%`。全部入って全部出るなら年 4.8% になる。
+#:
+#: **甘いほうを採った。** 実装をまだ選んでいないので、選んでいない実装のせいで
+#: 閉じることのないようにする。**測ってから動かさない。**
+TURN_OF_MONTH_FLOOR = 0.024
+
+
 #: #12 の「封印しない線」。**測る前にコミットした**（`docs/PREREG_MOMENTUM_JP.md` §0）。
 #:
 #: 費用を賄えるかどうかの線である。#9 は入れ替わり 15.9%／月で費用 年0.76%
@@ -8283,6 +8294,325 @@ def rehearsal_events(  # noqa: PLR0913 - イベント型と同じ条件をすべ
                 "[dim]**出どころを分けられていない。** 落ちた側の超過が1件も"
                 "測れていないので、生存フィルタと加重の違いを切り分けられない。[/]"
             )
+
+
+@app.command(name="rehearsal-calendar")
+def rehearsal_calendar(  # noqa: PLR0913 - 日次の暦と同じ条件をすべて受け取る
+    benchmark: str = typer.Option(BENCHMARK, "--benchmark", help="Which series to label."),
+    seed: int = typer.Option(REHEARSAL_SEED, "--seed", help="Fixed, so the run reproduces."),
+    repeat: int = typer.Option(400, "--repeat", help="Draws, for calibration."),
+    start: str = typer.Option("2009-01-01", "--start", help="First month-turn to use."),
+    end: str = typer.Option("2026-08-31", "--end", help="Last day any window may touch."),
+) -> None:
+    """Calibrate the daily-calendar pipe - the one #13 uses.
+
+    **説ではない。陰性対照である。** 予算に数えない。
+
+    **月次の 1.12 も、イベント型の 1.09 も、ここには当てはまらないかもしれない。**
+    #13 は1本の系列の中で日どうしを比べる**別の推定量**である。
+
+    **リターンは本物のまま、窓の位置だけを乱数にする。** 月次の対照が signal
+    だけを乱数にしたのと同じ形である。**偽の窓は本物の窓の外に置く**——重ねると
+    本物の効果が漏れ込む。
+
+    API を1回も叩かない。
+    """
+    from stock_ai.backtest.multiplicity import (
+        MEASURED_INFLATION,
+        MEASURED_INFLATION_EVENT,
+        required_t,
+    )
+    from stock_ai.backtest.power import estimate_power
+    from stock_ai.backtest.rehearsal import calibrate, placebo_windows
+    from stock_ai.backtest.turn_of_month import (
+        WINDOW_DAYS,
+    )
+    from stock_ai.backtest.turn_of_month import (
+        build_series as turn_series,
+    )
+
+    settings = get_settings()
+    configure_logging(settings.log_level)
+
+    begin, finish = _parse_date(start), _parse_date(end)
+    if begin is None or finish is None or begin >= finish:
+        raise typer.BadParameter("--start は --end より前のこと。")
+    if repeat < 1:
+        raise typer.BadParameter("--repeat は 1 以上。")
+
+    console.print("[bold yellow]これは説ではない。陰性対照である。[/]")
+    console.print(
+        "[dim]#13 が使う暦の管に、窓の位置だけ乱数にして通す。"
+        "**月次の 1.12 も、イベント型の 1.09 も、ここに当てはまるとは限らない。**[/]"
+    )
+    console.print()
+
+    returns, dates, month_ends = _calendar_pipe(benchmark)
+    console.print(
+        f"[dim]{dates[0]} 〜 {dates[-1]}（{len(dates):,} 営業日、"
+        f"月替わり {len(month_ends):,} 回）。窓は {WINDOW_DAYS} 営業日。種 {seed}。[/]"
+    )
+
+    scores: list[float] = []
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        BarColumn(),
+        TaskProgressColumn(),
+        TimeRemainingColumn(),
+        console=console,
+    ) as progress:
+        task = progress.add_task("種を変えて回す", total=repeat)
+        for index in range(repeat):
+            progress.update(task, completed=index + 1)
+            windows = placebo_windows(month_ends, WINDOW_DAYS, seed=seed + index)
+            drawn = turn_series(
+                returns,
+                dates,
+                month_ends,
+                source=benchmark,
+                start=begin,
+                end=finish,
+                windows=windows,
+            )
+            if len(drawn.episodes) < 2:
+                continue
+            estimate = estimate_power(drawn.episodes, lags=3)
+            stderr = estimate.standard_error(len(drawn.episodes))
+            if stderr > 0:
+                scores.append(fmean(drawn.episodes) / stderr)
+
+    # **ここは線を「作る」側なので、校正済みの線を持てない。**
+    #
+    # 他のすべての判定箇所は `calibrated_t` を使う（`tests/test_rehearsal.py` の
+    # `TestTheCalibratedLineIsUsedEverywhere` が見ている）。**ここだけが例外で、
+    # 例外である理由は「まだ測っていないものを、測る前に当てられない」ため。**
+    #
+    # `target` と名付けない。**判定に見える名前を、判定でないものに付けない。**
+    plain_line = required_t(HYPOTHESIS_BUDGET)
+    found = calibrate(scores, plain_line)
+    if not found.runs:
+        console.print("[red]1回も測れなかった。[/]")
+        raise typer.Exit(code=1)
+
+    table = Table(title=f"日次の暦の管での `t` の形（{found.runs} 回）")
+    for column in ("項目", "実測", "帰無なら"):
+        table.add_column(column, overflow="fold")
+    table.add_row("t の SD", f"[bold]{found.spread:.2f}[/]", "1.00")
+    table.add_row("t の平均", f"{found.mean:+.2f}", "0.00")
+    table.add_row("|t| ≥ 1.96", f"{found.plain_share:.1%}", "5.0%")
+    table.add_row(f"|t| ≥ {plain_line:.2f}（素の線）", f"{found.strict_share:.2%}", "0.25%")
+    table.add_row("いちばん大きい t", f"{found.worst:+.2f}", "—")
+    console.print(table)
+
+    line = plain_line * max(found.spread, 1.0)
+    console.print(
+        f"[dim]月次は {MEASURED_INFLATION:.2f}、イベント型は {MEASURED_INFLATION_EVENT:.2f}、"
+        f"**ここは {found.spread:.2f}。** 線は **{line:.2f}**"
+        "（**1.0 を下回らせない**——補正は足りない分を足すためのもので、"
+        "割り引くためのものではない）。[/]"
+    )
+    console.print(
+        f"[yellow]**これを `MEASURED_INFLATION_CALENDAR` に書き写すのは、"
+        f"こちらの仕事である。** いまは {found.spread:.2f} が定数に入っていない。[/]"
+    )
+    for warning in found.warnings():
+        console.print(f"[yellow]{warning}[/]")
+    if abs(found.mean) > 0.20:
+        console.print(
+            f"[red]**帰無の下で `t` の平均が {found.mean:+.2f} ある**（0.00 のはず）。[/] "
+            "**散らばりではなく中心のずれで、線を動かしても直らない。**"
+        )
+
+
+def _calendar_pipe(benchmark: str) -> tuple[list[float], list[dt.date], list[int]]:
+    """Read what both #13 and its control read - the calendar pipe's inputs.
+
+    **2通り持たない。** 月の切れ目も日次リターンも、ここ1箇所で作る。
+
+    Args:
+        benchmark: 暦とリターンを取る銘柄。
+
+    Returns:
+        ``(日次リターン, 日付, 月末の位置)``。
+
+    Raises:
+        typer.Exit: 価格が無い。
+    """
+    from stock_ai.backtest.lowvol_census import formation_dates
+    from stock_ai.backtest.turn_of_month import daily_returns
+    from stock_ai.data.schema import CLOSE, split_adjusted
+
+    database = Database()
+    database.create_all()
+    with database.session() as session:
+        raw = PriceRepository(session).get_raw_prices(benchmark)
+    if raw.empty:
+        console.print(f"[red]{benchmark} の価格が無い。暦を決められない。[/]")
+        raise typer.Exit(code=1)
+
+    frame = split_adjusted(raw)
+    returns = daily_returns(frame[CLOSE].to_numpy(dtype=float))
+    dates = [stamp.date() for stamp in frame.index[1:]]
+    month_ends = [position - 1 for position in formation_dates(frame.index) if position >= 1]
+    return returns, dates, month_ends
+
+
+@app.command(name="turn-of-month-power")
+def turn_of_month_power(
+    benchmark: str = typer.Option(BENCHMARK, "--benchmark", help="The series the line applies to."),
+    is_end: str = typer.Option("2017-12-31", "--is-end", help="Last day of the IS window."),
+    oos_periods: int = typer.Option(104, "--oos-periods", help="Month-turns the judgement has."),
+    universe: bool = typer.Option(True, "--universe/--no-universe", help="Also read equal weight."),
+) -> None:
+    """Measure the IS window for #13, so the gate table can be filled - not judge it.
+
+    **段2（自分の IS から推定する）の材料を出す。** 文献は読めないので、見込みは
+    ここから置く（`docs/PREREG_TURN_OF_MONTH_JP.md` §0）。
+
+    **売買しない。** 窓の中の合計と、日数を揃えた窓の外の平均の差を測るだけで
+    ある。費用は引かない——**その代わり §0 の線を、将来売買するときの費用から
+    置いてある。**
+
+    **判定ではない。** IS は 2009-01〜2017-12 で、OOS（2018-01〜2026-08）には
+    1日も触れない。
+    """
+    from stock_ai.backtest.multiplicity import calibrated_t
+    from stock_ai.backtest.power import estimate_power
+    from stock_ai.backtest.turn_of_month import WINDOW_DAYS
+    from stock_ai.backtest.turn_of_month import build_series as turn_series
+
+    settings = get_settings()
+    configure_logging(settings.log_level)
+
+    cut = _parse_date(is_end)
+    if cut is None:
+        raise typer.BadParameter(f"--is-end must be YYYY-MM-DD; got {is_end!r}.")
+
+    console.print(
+        f"[dim]IS は {cut} まで。OOS には1日も触れない。"
+        f"窓は月末最終営業日から翌月3営業日目まで（{WINDOW_DAYS} 営業日）。[/]"
+    )
+
+    returns, dates, month_ends = _calendar_pipe(benchmark)
+    built = [turn_series(returns, dates, month_ends, source=benchmark, end=cut)]
+    if universe:
+        built.append(_universe_calendar(month_ends, dates, cut))
+
+    for series in built:
+        console.print(series.summary())
+        for line in series.warnings():
+            console.print(f"[yellow]{line}[/]")
+    if not built[0].episodes:
+        raise typer.Exit(code=1)
+
+    table = Table(title="§0 に入れる材料（IS から。判定ではない）")
+    columns = ("項目", *[series.source for series in built], "どこから")
+    for column in columns:
+        table.add_column(column, overflow="fold")
+
+    # **この管の線はまだ測っていない。** 暫定で月次の線を当て、そう書く。
+    target = calibrated_t(HYPOTHESIS_BUDGET)
+    stats = []
+    for series in built:
+        estimate = estimate_power(series.episodes, lags=3)
+        stats.append(
+            (
+                estimate.daily_sd,
+                estimate.inflation,
+                fmean(series.episodes),
+                estimate.standard_error(len(series.episodes)),
+                estimate.detectable(oos_periods, target_t=target),
+            )
+        )
+
+    table.add_row("1期あたりのSD", *[f"{row[0]:.2%}" for row in stats], "IS の月替わりごと")
+    table.add_row("重なりの膨張", *[f"{row[1]:.2f}x" for row in stats], "Newey-West(3)。実測")
+    table.add_row(
+        "検出できる差（暫定）",
+        *[f"年 {row[4] * 12:.1%}" for row in stats],
+        f"t≥{target:.2f}・{oos_periods}期。**この管の線ではない**",
+    )
+    table.add_row("判定に使える期数", f"{oos_periods}", *["—"] * (len(built) - 1), "OOS の月数")
+    console.print(table)
+
+    tail = Table(title=f"裾（{built[0].source}）")
+    for column in ("項目", "値", "なぜ見るか"):
+        tail.add_column(column, overflow="fold")
+    tail.add_row("いちばん悪かった月替わり", f"{built[0].worst_month():+.2%}", "1回の事故の大きさ")
+    tail.add_row("下位5%の平均", f"{built[0].left_tail():+.2%}", "**1点ではなく帯で見る**")
+    tail.add_row("正だった割合", f"{built[0].hit_rate():.1%}", "平均だけで語らない")
+    console.print(tail)
+
+    mean, stderr = stats[0][2], stats[0][3]
+    low, high = mean - 1.96 * stderr, mean + 1.96 * stderr
+    console.print(
+        f"[bold]IS の差（{built[0].source}）: 年 {mean * 12:+.2%}[/] "
+        f"[dim]（95% の幅 年 {low * 12:+.2%} 〜 {high * 12:+.2%}）[/]"
+    )
+    if len(built) > 1:
+        console.print(
+            f"[dim]等加重でも併記する: 年 {stats[1][2] * 12:+.2%}。"
+            "**線を当てるのは指数のほうである**——§2 でそう決めた。[/]"
+        )
+
+    # **測る前にコミットした線である。** 動かさない（事前登録 §0）。
+    console.print()
+    if mean * 12 < TURN_OF_MONTH_FLOOR:
+        console.print(
+            f"[red]封印しない。[/] IS の推定 年 {mean * 12:+.2%} が、"
+            f"**測る前にコミットした線 年 {TURN_OF_MONTH_FLOOR:.1%} を下回った。**"
+        )
+        console.print(
+            "[dim]事前登録 §0 にそう書いてある。**下回ったら、将来売買しても"
+            "費用を賄えない。** 線は動かさない。[/]"
+        )
+        return
+
+    console.print(
+        f"[green]線（年 {TURN_OF_MONTH_FLOOR:.1%}）は上回った。[/] "
+        "**次は §0 のゲートだが、その前にこの管の対照を回すこと**"
+        "（`research\\暦の対照.bat`）。線がまだ無い。"
+    )
+
+
+def _universe_calendar(month_ends: list[int], dates: list[dt.date], cut: dt.date) -> object:
+    """Build the same month-turn series on the equal-weighted universe.
+
+    **併記用である。** 線を当てるのは指数のほう（事前登録 §2）。
+
+    **日付で揃える。** 指数と同じ暦・同じ月末の位置を使い、その日の等加重平均を
+    並べる。足の無い日は `nan` にして、平均から外れるようにする。
+
+    Args:
+        month_ends: 月末の位置（指数の暦の中）。
+        dates: 指数の暦（リターンと同じ長さ）。
+        cut: IS の最終日。
+
+    Returns:
+        :class:`~stock_ai.backtest.turn_of_month.TurnOfMonthSeries`。
+    """
+    from stock_ai.backtest.turn_of_month import build_series as turn_series
+    from stock_ai.backtest.universe_benchmark import equal_weighted_daily
+
+    database = Database()
+    database.create_all()
+    console.print("[dim]等加重の日次を作っています（全銘柄の足を1度だけ読みます）...[/]")
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        BarColumn(),
+        TaskProgressColumn(),
+        TimeRemainingColumn(),
+        console=console,
+    ) as progress:
+        task = progress.add_task("銘柄を読む", total=None)
+        daily = equal_weighted_daily(
+            database,
+            progress=lambda done, total: progress.update(task, completed=done, total=total),
+        )
+    values = [daily.get(when, float("nan")) for when in dates]
+    return turn_series(values, dates, month_ends, source="universe", end=cut)
 
 
 @app.command(name="rehearsal")

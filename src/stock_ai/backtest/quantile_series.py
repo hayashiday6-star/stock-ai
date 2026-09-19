@@ -23,6 +23,7 @@ import datetime as dt
 
 import numpy as np
 
+from stock_ai.backtest import tails
 from stock_ai.backtest.lowvol import ROUND_TRIP_COST
 from stock_ai.core.logging import get_logger
 
@@ -108,13 +109,11 @@ class QuantileSeries:
         return self.round_trip_cost * self.turnover()
 
     def worst_month(self) -> float:
-        """いちばん悪かった月のスプレッド。**平均が同じでも、ここが違えば別物。**"""
-        return min(self.spread()) if self.months else float("nan")
+        """いちばん悪かった月のスプレッド。**式は `tails` に1つだけ置いてある。**"""
+        return tails.worst(self.spread())
 
-    def left_tail(self, share: float = 0.05) -> float:
-        """下位 ``share`` の月の平均。**裾を、1点ではなく帯で見る。**
-
-        いちばん悪い月だけを見ると、**1回の事故か、そういう性質かが分からない。**
+    def left_tail(self, share: float = tails.DEFAULT_TAIL_SHARE) -> float:
+        """下位 ``share`` の月の平均。**1点ではなく帯で見る。**
 
         Args:
             share: 下から取る割合。
@@ -125,17 +124,8 @@ class QuantileSeries:
         Raises:
             ValueError: ``share`` が 0〜1 の外。
         """
-        if not 0.0 < share <= 1.0:
-            raise ValueError(f"share must be in (0, 1]; got {share}.")
-        if not self.months:
-            return float("nan")
-        ordered = sorted(self.spread())
-        take = max(1, round(len(ordered) * share))
-        return float(np.mean(ordered[:take]))
+        return tails.left_tail(self.spread(), share)
 
     def hit_rate(self) -> float:
         """スプレッドが正だった月の割合。**平均だけで語らない。**"""
-        if not self.months:
-            return float("nan")
-        values = self.spread()
-        return sum(1 for value in values if value > 0) / len(values)
+        return tails.hit_rate(self.spread())
