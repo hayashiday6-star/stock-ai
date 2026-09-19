@@ -27,6 +27,18 @@
 **窓の外は、前回の窓が終わってから今回の窓が始まるまで**である。こう切ると、
 **どの営業日もちょうど1つの窓か1つの窓外に属する**——重なりも隙間も無い。
 
+## 対照は、本物の窓を見てはいけない
+
+**偽の窓の「窓の外」は、構成上かならず本物の窓をまたぐ。** 偽の窓は本物を
+避けて置かれるので、`前の偽窓の終わり+1 〜 今回の偽窓の始まり-1` という区間に
+本物の月替わりが必ず入る。
+
+すると本物の効果が**引き算する側**に混ざり、「何も無いときの分布」にならない。
+しかも**混ざる向きから本物の符号が逆算できてしまう**ので、§0 の前に答えを
+見ることになる（2026-09-19 に気付いて止めた）。
+
+`exclude` は**そのためだけの口**である。対照は「ふつうの日」だけを見る。
+
 ## 加重も生存バイアスも、ここでは偏りを作らない
 
 #5・#8 は**等加重のバスケットから時価総額加重の指数を引いて**いたので、加重差が
@@ -176,6 +188,7 @@ def build_series(  # noqa: PLR0913 - 事前登録が固定した条件をすべ�
     start: dt.date | None = None,
     end: dt.date | None = None,
     windows: Sequence[tuple[int, int]] | None = None,
+    exclude: frozenset[int] | None = None,
 ) -> TurnOfMonthSeries:
     """月替わり1回ごとの差を作る。
 
@@ -189,6 +202,9 @@ def build_series(  # noqa: PLR0913 - 事前登録が固定した条件をすべ�
         end: **この日より後のデータを1つも使わない。** 窓の終わりまで見る。
         windows: ``(開始位置, 長さ)`` を月替わりごとに差し替える。
             **陰性対照のためだけの口である。** 渡さなければ事前登録どおり。
+        exclude: 窓からも窓の外からも外す位置。**これも対照のためだけ。**
+            偽の窓の「窓の外」は**構成上かならず本物の窓をまたぐ**ので、
+            渡さないと本物の効果が引き算する側に混ざる（2026-09-19）。
 
     Returns:
         :class:`TurnOfMonthSeries`。
@@ -233,8 +249,21 @@ def build_series(  # noqa: PLR0913 - 事前登録が固定した条件をすべ�
             if windows is not None
             else previous + WINDOW_DAYS - 1
         )
-        outside = [value for value in returns[previous_end + 1 : begin] if not np.isnan(value)]
-        inside = [value for value in returns[begin : last + 1] if not np.isnan(value)]
+        # **除外は窓にも窓の外にも同じだけ当てる。** 片方だけ外すと、
+        # 外した日が「無かったこと」ではなく「相手側に寄った」ことになる。
+        # **内包表記の変数を外側と同じ名前にしない。** Python では別の束縛に
+        # なるので動くが、読む側が「上書きされた」と読み違える。
+        skip = exclude or frozenset()
+        outside = [
+            returns[day]
+            for day in range(previous_end + 1, begin)
+            if day not in skip and not np.isnan(returns[day])
+        ]
+        inside = [
+            returns[day]
+            for day in range(begin, last + 1)
+            if day not in skip and not np.isnan(returns[day])
+        ]
         if not outside:
             no_outside += 1
             continue

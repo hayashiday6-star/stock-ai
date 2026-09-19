@@ -8342,12 +8342,9 @@ def rehearsal_calendar(  # noqa: PLR0913 - 日次の暦と同じ条件をすべ�
     )
     from stock_ai.backtest.power import estimate_power
     from stock_ai.backtest.rehearsal import calibrate, placebo_windows
-    from stock_ai.backtest.turn_of_month import (
-        WINDOW_DAYS,
-    )
-    from stock_ai.backtest.turn_of_month import (
-        build_series as turn_series,
-    )
+    from stock_ai.backtest.turn_of_month import WINDOW_DAYS
+    from stock_ai.backtest.turn_of_month import build_series as turn_series
+    from stock_ai.core.logging import quiet_on_console
 
     settings = get_settings()
     configure_logging(settings.log_level)
@@ -8366,20 +8363,44 @@ def rehearsal_calendar(  # noqa: PLR0913 - 日次の暦と同じ条件をすべ�
     console.print()
 
     returns, dates, month_ends = _calendar_pipe(benchmark)
+
+    # **本物の窓は、偽の窓からも窓の外からも外す。**
+    #
+    # 偽の窓は本物を避けて置かれるので、偽の「窓の外」は**構成上かならず
+    # 本物の窓をまたぐ。** 外さないと本物の効果が引き算する側に混ざり、
+    # 「何も無いときの分布」にならない。しかも**混ざる向きから本物の符号が
+    # 逆算できてしまう**（2026-09-19 に気付いて止めた）。
+    real = frozenset(day for end in month_ends for day in range(end, end + WINDOW_DAYS))
+
+    # **使った範囲を出す。** 価格の全履歴を出していたので、2009年より前まで
+    # 使ったように見えていた（実際は `USABLE_FROM` で切られている）。
+    shape = turn_series(returns, dates, month_ends, source=benchmark, start=begin, end=finish)
+    if len(shape.episodes) < 2:
+        console.print("[red]月替わりが2回も作れない。[/]")
+        raise typer.Exit(code=1)
     console.print(
-        f"[dim]{dates[0]} 〜 {dates[-1]}（{len(dates):,} 営業日、"
-        f"月替わり {len(month_ends):,} 回）。窓は {WINDOW_DAYS} 営業日。種 {seed}。[/]"
+        f"[dim]{shape.months[0]} 〜 {shape.months[-1]}（月替わり "
+        f"{len(shape.months):,} 回）。窓は {WINDOW_DAYS} 営業日。種 {seed}。"
+        f"**本物の窓 {len(real):,} 日は、偽の窓からも窓の外からも外してある。**[/]"
     )
 
     scores: list[float] = []
-    with Progress(
-        SpinnerColumn(),
-        TextColumn("[progress.description]{task.description}"),
-        BarColumn(),
-        TaskProgressColumn(),
-        TimeRemainingColumn(),
-        console=console,
-    ) as progress:
+    # **`t` だけ見ない。** イベント型の +0.49 は `t` しか見ていなかったので、
+    # 分解に2手かかった（2026-09-18）。**下にある量も一緒に出す。**
+    levels: list[float] = []
+    with (
+        # **400回ぶんの1行記録をコンソールに出さない。** ファイルには残る。
+        # 前回この出力が 112KB になった（2026-09-19）。
+        quiet_on_console("stock_ai.backtest.turn_of_month"),
+        Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            BarColumn(),
+            TaskProgressColumn(),
+            TimeRemainingColumn(),
+            console=console,
+        ) as progress,
+    ):
         task = progress.add_task("種を変えて回す", total=repeat)
         for index in range(repeat):
             progress.update(task, completed=index + 1)
@@ -8392,6 +8413,7 @@ def rehearsal_calendar(  # noqa: PLR0913 - 日次の暦と同じ条件をすべ�
                 start=begin,
                 end=finish,
                 windows=windows,
+                exclude=real,
             )
             if len(drawn.episodes) < 2:
                 continue
@@ -8399,6 +8421,7 @@ def rehearsal_calendar(  # noqa: PLR0913 - 日次の暦と同じ条件をすべ�
             stderr = estimate.standard_error(len(drawn.episodes))
             if stderr > 0:
                 scores.append(fmean(drawn.episodes) / stderr)
+                levels.append(fmean(drawn.episodes))
 
     # **ここは線を「作る」側なので、校正済みの線を持てない。**
     #
@@ -8421,6 +8444,10 @@ def rehearsal_calendar(  # noqa: PLR0913 - 日次の暦と同じ条件をすべ�
     table.add_row("|t| ≥ 1.96", f"{found.plain_share:.1%}", "5.0%")
     table.add_row(f"|t| ≥ {plain_line:.2f}（素の線）", f"{found.strict_share:.2%}", "0.25%")
     table.add_row("いちばん大きい t", f"{found.worst:+.2f}", "—")
+    if levels:
+        # **`t` の下にある量。** 中心がずれたとき、分子が動いたのか分母が
+        # 動いたのかを1回で分けられるようにする。
+        table.add_row("1月替わりあたりの差（年率）", f"{fmean(levels) * 12:+.2%}", "0.00%")
     console.print(table)
 
     line = plain_line * max(found.spread, 1.0)

@@ -330,3 +330,80 @@ class TestTheTailIsReported:
         assert np.isnan(empty.worst_month())
         assert np.isnan(empty.hit_rate())
         assert empty.warnings() == ["**月替わりを1回も作れなかった。**"]
+
+
+class TestThePlaceboMustNotSeeTheRealWindowAtAll:
+    """**偽の窓の「窓の外」は、本物の窓を必ず含む。**
+
+    偽の窓は本物の窓を避けて置かれるので、`前の偽窓の終わり+1 〜 今回の偽窓の
+    始まり-1` という区間は、**構成上かならず本物の月替わりをまたぐ。**
+
+    すると本物の効果が**引き算する側**に混ざり、「何も無いときの分布」に
+    ならない。しかも**混ざる向きから本物の符号が逆算できてしまう**ので、
+    §0 の前に答えを見ることになる（2026-09-19 に気付いた）。
+
+    **本物の窓は、偽の窓からも窓の外からも外す。**
+    """
+
+    @staticmethod
+    def _real_positions(ends: list[int], length: int = WINDOW_DAYS) -> frozenset[int]:
+        return frozenset(position for end in ends for position in range(end, end + length))
+
+    def test_the_real_window_leaks_into_the_outside_when_not_excluded(self) -> None:
+        """**汚染が実在することを、先に見せる。**
+
+        本物の窓にだけ効果を置く。除外しなければ、偽の観測はその効果を
+        **引き算する側**で拾い、0 から離れる。
+        """
+        ends = _month_ends()
+        returns = [0.0] * (len(_DATES) - 1)
+        for end in ends:
+            for position in range(end, min(end + WINDOW_DAYS, len(returns))):
+                returns[position] = 0.01
+
+        leaky = build_series(
+            returns, _DATES[1:], ends, windows=placebo_windows(ends, WINDOW_DAYS, seed=5)
+        )
+
+        assert float(np.mean(leaky.episodes)) < -0.001, "汚染が起きていない"
+
+    def test_excluding_the_real_window_removes_the_leak(self) -> None:
+        """**除外すれば、偽の観測は 0 に戻る。**"""
+        ends = _month_ends()
+        returns = [0.0] * (len(_DATES) - 1)
+        for end in ends:
+            for position in range(end, min(end + WINDOW_DAYS, len(returns))):
+                returns[position] = 0.01
+
+        clean = build_series(
+            returns,
+            _DATES[1:],
+            ends,
+            windows=placebo_windows(ends, WINDOW_DAYS, seed=5),
+            exclude=self._real_positions(ends),
+        )
+
+        assert float(np.mean(clean.episodes)) == pytest.approx(0.0, abs=1e-12)
+
+    def test_the_exclusion_does_not_touch_the_real_measurement(self) -> None:
+        """**本物を測るときは除外しない。** 渡さなければ何も変わらない。"""
+        ends = _month_ends()
+        returns = [0.0] * (len(_DATES) - 1)
+        for end in ends:
+            for position in range(end, min(end + WINDOW_DAYS, len(returns))):
+                returns[position] = 0.01
+
+        plain = build_series(returns, _DATES[1:], ends)
+
+        assert float(np.mean(plain.episodes)) > 0.03
+
+    def test_an_excluded_day_is_not_counted_in_the_outside(self) -> None:
+        ends = _month_ends()
+        returns = [0.0] * (len(_DATES) - 1)
+
+        without = build_series(returns, _DATES[1:], ends)
+        with_exclusion = build_series(
+            returns, _DATES[1:], ends, exclude=frozenset(range(ends[1], ends[1] + 3))
+        )
+
+        assert sum(with_exclusion.outside_days) < sum(without.outside_days)

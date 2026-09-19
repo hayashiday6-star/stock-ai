@@ -13,8 +13,10 @@ output when asking for help.
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import re
+from collections.abc import Iterator
 from logging.config import dictConfig
 from typing import Any
 
@@ -79,6 +81,41 @@ def redact(text: str) -> str:
 _QUIET_ON_CONSOLE = ("httpx", "httpcore", "urllib3")
 
 
+#: ループの間だけコンソールから落とすロガー。**`quiet_on_console` が出し入れする。**
+#:
+#: `_QUIET_ON_CONSOLE` は「いつも黙っていてよい」ライブラリの固定リストだが、
+#: **こちら側の部品は1回だけ回すときに要る。** 要らないのは**400回のループの
+#: 中で同じ行が出るとき**だけなので、**呼ぶ側が一時的に黙らせる。**
+#:
+#: 陰性対照が `turn_of_month.build_series` を400回呼び、出力が 112KB になった
+#: （2026-09-19）。**モジュールごと固定リストに入れると、1回だけ回すときの
+#: 件数や警告まで消える。**
+_QUIET_WHILE: set[str] = set()
+
+
+@contextlib.contextmanager
+def quiet_on_console(*names: str) -> Iterator[None]:
+    """Silence these loggers on the console for the duration of the block.
+
+    ``names`` のロガーを、この間だけコンソールから落とす。
+
+    **ファイルには残る。** 後から追う手段は減らさない——`_QUIET_ON_CONSOLE`
+    と同じ扱いである。
+
+    Args:
+        names: ロガー名の接頭辞。
+
+    Yields:
+        何も返さない。
+    """
+    added = {name for name in names if name not in _QUIET_WHILE}
+    _QUIET_WHILE.update(added)
+    try:
+        yield
+    finally:
+        _QUIET_WHILE.difference_update(added)
+
+
 class ConsoleNoiseFilter(logging.Filter):
     """Keep per-request chatter out of the console, not out of the log file.
 
@@ -92,6 +129,8 @@ class ConsoleNoiseFilter(logging.Filter):
         """Drop sub-warning records from the noisy libraries."""
         if record.levelno >= logging.WARNING:
             return True
+        if _QUIET_WHILE and record.name.startswith(tuple(_QUIET_WHILE)):
+            return False
         return not record.name.startswith(_QUIET_ON_CONSOLE)
 
 
