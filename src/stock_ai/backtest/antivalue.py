@@ -30,16 +30,17 @@ import datetime as dt
 import numpy as np
 import pandas as pd
 
-from stock_ai.backtest.lowvol_census import formation_dates
-from stock_ai.backtest.monthly_grid import build_grid, listed_on
-from stock_ai.backtest.pead import MIN_TURNOVER, TURNOVER_WINDOW, Period
-from stock_ai.backtest.quantile_series import QuantileSeries
+from stock_ai.backtest.pead import MIN_TURNOVER, Period
+from stock_ai.backtest.quantile_series import (
+    QuantileSeries,
+    build_panel,
+    monthly_values,
+    value_on,
+)
 from stock_ai.backtest.reversal import BENCHMARK
 from stock_ai.backtest.reversal_census import QUANTILES
 from stock_ai.core.logging import get_logger
-from stock_ai.data.schema import CLOSE, OPEN, VOLUME, split_adjusted
 from stock_ai.database.engine import Database
-from stock_ai.database.repository import PriceRepository
 
 logger = get_logger(__name__)
 
@@ -85,22 +86,16 @@ class AntiValueSeries(QuantileSeries):
 def pbr_by_month(frame: pd.DataFrame) -> dict[tuple[str, pd.Period], tuple[dt.date, float]]:
     """（銘柄, 月）→（その月末の日付, PBR）。
 
-    **月で引く。日付そのものでは引かない。** 月の途中で上場廃止になった銘柄の
-    最後の観測は、ベンチマークの月末とは違う日である。日付で引くと、**その銘柄
-    が丸ごと落ちる。**
+    **正本は `quantile_series.monthly_values` にある。** #14（時価総額で並べる）
+    が同じ処理を要るので、列名だけを渡す形に移した。**ここは名前を残すため
+    だけ**である（`tests/test_antivalue.py` が import している）。
+
+    **1つだけ振る舞いが変わった。** 空の `pbr` は、以前は `nan` として表に
+    入っていた（`float(nan)`）。いまは**入らない。** `valuation_monthly` が
+    書く前に落としているので実データでは出ないが、**並べ替えの鍵に `nan` が
+    混じる形が消えた**——その月の分位が黙って狂う形である。
     """
-    found: dict[tuple[str, pd.Period], tuple[dt.date, float]] = {}
-    if frame.empty:
-        return found
-    months = pd.to_datetime(frame["date"]).dt.to_period("M")
-    for (symbol, month), date, pbr in zip(
-        zip(frame["symbol"], months, strict=True),
-        frame["date"],
-        frame["pbr"],
-        strict=True,
-    ):
-        found[(symbol, month)] = (date, float(pbr))
-    return found
+    return monthly_values(frame, "pbr")
 
 
 def pbr_on(
@@ -110,18 +105,9 @@ def pbr_on(
 ) -> float | None:
     """組み替え日 ``on`` の時点で使ってよい PBR。無ければ ``None``。
 
-    **組み替え日より後の PBR を使わない。** 先読みである。月で引いておいて
-    日付で弾くのは、月の途中で上場廃止になった銘柄を落とさないためである
-    （:func:`pbr_by_month` の理由と同じ）。
-
-    **この関門は1箇所にしか無い。** 呼ぶ側で書き直すと、片方だけ先読みを
-    通す形になりうる。
+    **正本は `quantile_series.value_on` にある。**
     """
-    found = pbr_of.get((symbol, pd.Period(on, freq="M")))
-    if found is None:
-        return None
-    pbr_date, pbr = found
-    return None if pbr_date > on else pbr
+    return value_on(pbr_of, symbol, on)
 
 
 def build_series(  # noqa: PLR0913 - 事前登録が固定した条件をすべて受け取る
@@ -138,6 +124,9 @@ def build_series(  # noqa: PLR0913 - 事前登録が固定した条件をすべ�
     snapshots: dict[dt.date, set[str]] | None = None,
 ) -> AntiValueSeries:
     """月末の PBR で並べ、翌月のリターンを分位ごとに集める。
+
+    **組み立ては `quantile_series.build_panel` に置いてある。** ここが渡すのは
+    **並べる材料（PBR）だけ**である。
 
     Args:
         database: 価格の保存先。
@@ -158,103 +147,25 @@ def build_series(  # noqa: PLR0913 - 事前登録が固定した条件をすべ�
     Raises:
         ValueError: ベンチマークの価格が無いか、組み替え日が足りない。
     """
-    from stock_ai.database.repository import list_securities
-
-    floor = USABLE_FROM if start is None else max(start, USABLE_FROM)
-    pbr_of = pbr_by_month(valuation)
-
-    with database.session() as session:
-        price_repo = PriceRepository(session)
-        bench_raw = price_repo.get_raw_prices(benchmark)
-        if bench_raw.empty:
-            raise ValueError(f"ベンチマーク {benchmark!r} の価格が無い。暦を決められない。")
-        bench = split_adjusted(bench_raw)
-        calendar = bench.index
-        bench_open = bench[OPEN].to_numpy(dtype=float)
-        grid = build_grid(calendar, formation_dates(calendar), period, floor, end)
-
-        ordered_snapshots = sorted(snapshots) if snapshots else []
-        if symbols is None:
-            symbols = [sym for sym, market in list_securities(session) if market == "JP"]
-        targets = [symbol for symbol in symbols if symbol != benchmark]
-
-        buckets: dict[int, list[tuple[float, float, str]]] = {index: [] for index, _ in grid.usable}
-        no_pbr = 0
-
-        for symbol in targets:
-            raw = price_repo.get_raw_prices(symbol)
-            if raw.empty:
-                continue
-            adjusted = split_adjusted(raw)
-            opens = adjusted[OPEN].to_numpy(dtype=float)
-            closes = adjusted[CLOSE].to_numpy(dtype=float)
-            volumes = adjusted[VOLUME].to_numpy(dtype=float)
-            own = adjusted.index
-
-            for index, position in grid.usable:
-                on = calendar[position].date()
-                if ordered_snapshots and not listed_on(
-                    symbol, on, ordered_snapshots, snapshots, False, set()
-                ):
-                    continue
-                pbr = pbr_on(pbr_of, symbol, on)
-                if pbr is None:
-                    no_pbr += 1
-                    continue
-
-                own_position = own.searchsorted(calendar[position])
-                if own_position >= len(own) or own.values[own_position] != calendar[position]:
-                    continue
-                entry = own_position + 1
-                exit_at = own.searchsorted(calendar[grid.exit_at(index)])
-                if entry >= len(own) or exit_at >= len(own) or exit_at <= entry:
-                    continue
-                if not (opens[entry] > 0) or not (opens[exit_at] > 0):
-                    continue
-                window = closes[max(0, own_position - TURNOVER_WINDOW) : own_position + 1]
-                traded = volumes[max(0, own_position - TURNOVER_WINDOW) : own_position + 1]
-                level = float(np.median(window * traded)) if len(window) else float("nan")
-                if not np.isfinite(level) or level < min_turnover:
-                    continue
-                buckets[index].append((pbr, float(opens[exit_at] / opens[entry] - 1.0), symbol))
-
-    months: list[dt.date] = []
-    rows: list[tuple[float, ...]] = []
-    members: list[tuple[frozenset[str], frozenset[str]]] = []
-    counts: list[int] = []
-    bench_returns: list[float] = []
-    thin = 0
-
-    for index, position in grid.usable:
-        holding = buckets[index]
-        if len(holding) < max(min_symbols, quantiles):
-            thin += 1
-            continue
-        entry = bench_open[position + 1]
-        leave = bench_open[grid.exit_at(index)]
-        if not (entry > 0) or not (leave > 0):
-            thin += 1
-            continue
-        holding.sort(key=lambda row: row[0])
-        size = len(holding) // quantiles
-        groups = [holding[step * size : (step + 1) * size] for step in range(quantiles)]
-        rows.append(tuple(float(np.mean([row[1] for row in group])) for group in groups))
-        members.append(
-            (
-                frozenset(row[2] for row in groups[0]),
-                frozenset(row[2] for row in groups[-1]),
-            )
-        )
-        months.append(calendar[position].date())
-        counts.append(len(holding))
-        bench_returns.append(float(leave / entry - 1.0))
-
+    panel = build_panel(
+        database,
+        pbr_by_month(valuation),
+        period=period,
+        symbols=symbols,
+        benchmark=benchmark,
+        start=USABLE_FROM if start is None else max(start, USABLE_FROM),
+        end=end,
+        min_turnover=min_turnover,
+        min_symbols=min_symbols,
+        quantiles=quantiles,
+        snapshots=snapshots,
+    )
     return AntiValueSeries(
-        months=months,
-        quantiles=rows,
-        members=members,
-        counts=counts,
-        benchmark=bench_returns,
-        skipped_thin=thin,
-        skipped_no_pbr=no_pbr,
+        months=panel.months,
+        quantiles=panel.quantiles,
+        members=panel.members,
+        counts=panel.counts,
+        benchmark=panel.benchmark,
+        skipped_thin=panel.skipped_thin,
+        skipped_no_pbr=panel.skipped_no_value,
     )

@@ -325,16 +325,20 @@ class TestTheCalibratedLineIsUsedEverywhere:
         assert assigned, "判定の線を置いている場所が見つからない"
         assert set(assigned) == {"calibrated_t"}, assigned
 
-    def test_the_only_place_without_a_calibrated_line_is_the_one_that_makes_one(
-        self,
-    ) -> None:
-        """**例外は1つだけで、その1つは名前で分かること。**
+    def test_the_only_places_without_a_calibrated_line_are_named(self) -> None:
+        """**例外は数えられるだけで、どれも名前で分かること。**
 
-        線を作る側の対照は、校正済みの線を持てない——**まだ測っていないものを、
-        測る前に当てられない。** そこだけ素の線を使う。
+        校正済みの線を持てない場所が2つある。**どちらも、まだ測っていない
+        ものを測る前に当てられない**という同じ理由である。
 
-        **`target` と名付けない。** 判定に見える名前を、判定でないものに付けない。
-        **2つ目が現れたら、ここが落ちる。**
+        - `plain_line`（`rehearsal_calendar`）——**線を作る側の対照**である
+        - `line_floor`（`january_power`）——**校正していない管の、線の下限。**
+          膨張には下限 1.0 があるので（`INFLATION_FLOOR`）線はこれより下がら
+          ない。**ここで通らないなら、対照を回しても通らない**——だから対照を
+          回す前に §0 を当てられる
+
+        **どちらも `target` と名付けない。** 判定に見える名前を、判定でない
+        ものに付けない。**3つ目が現れたら、ここが落ちる。**
         """
         import pathlib
         import re
@@ -342,7 +346,23 @@ class TestTheCalibratedLineIsUsedEverywhere:
         body = pathlib.Path("src/stock_ai/cli.py").read_text(encoding="utf-8")
         plain = re.findall(r"(\w+) = required_t\(HYPOTHESIS_BUDGET\)", body)
 
-        assert plain == ["plain_line"], plain
+        assert sorted(plain) == ["line_floor", "plain_line"], plain
+        assert len(plain) == 2, plain
+
+    def test_the_floor_is_not_used_as_the_judging_line(self) -> None:
+        """**下限は「通らなければ閉じる」側にしか使わない。**
+
+        #14 は**この管をまだ校正していない**。下限で通っただけで封印に進むと、
+        **測っていない線で判定したことになる。**
+        """
+        import inspect
+
+        from stock_ai import cli
+
+        body = inspect.getsource(cli.january_power)
+
+        assert "対照を回しても通らない" in body
+        assert "この管の対照を n=" in body
 
     def test_the_measured_inflation_says_where_it_came_from(self) -> None:
         """**出典の無い数字を書かない。** 400回の対照から出た値である。"""
