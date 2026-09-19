@@ -155,3 +155,62 @@ class TestOnlyTheMarketAskedFor:
 
         assert found.listed == 1
         assert found.empty == ()
+
+
+class TestTheShapeOfTheHolesIsReportedNotEyeballed:
+    """**穴が一様かどうかを、読む側に気付かせない。**
+
+    実データの一覧を見て、**穴が新規上場に偏っている**ことに人間が気付いた
+    （2026-09-19）。**道具はそれを言っていなかった。** 件数の1行からは
+    出てこない。
+
+    偏っていれば、**消える観測も偏る**——小型や IPO を扱う説ほど多くを失う。
+    """
+
+    def test_a_letter_in_the_code_means_a_recent_listing(self) -> None:
+        found = survey(_database({"1301": 40}, listed_only=("135A", "1734")))
+
+        assert [symbol for symbol, _name in found.recent_codes] == ["135A"]
+
+    def test_a_hole_without_a_name_is_counted_on_its_own(self) -> None:
+        """**名前も無いのは、その行が一度も埋められていないということ。**"""
+        database = _database({"1301": 40})
+        with database.session() as session:
+            get_or_create_security(session, "1734", market="JP", name=None)
+            get_or_create_security(session, "135A", market="JP", name="なまえ")
+            session.commit()
+
+        found = survey(database)
+
+        assert [symbol for symbol, _name in found.nameless] == ["1734"]
+
+    def test_both_shapes_raise_their_own_warning(self) -> None:
+        """**1つの警告で2つを守らない**——片方が通ったときに黙る。"""
+        database = _database({"1301": 40})
+        with database.session() as session:
+            get_or_create_security(session, "1734", market="JP", name=None)
+            get_or_create_security(session, "135A", market="JP", name="なまえ")
+            session.commit()
+
+        lines = survey(database).warnings()
+
+        assert any("英数字コード" in line for line in lines)
+        assert any("名前も入っていない" in line for line in lines)
+
+    def test_neither_fires_when_the_holes_are_ordinary(self) -> None:
+        """**鳴りっぱなしの警告は読まれない。**"""
+        database = _database({"1301": 40})
+        with database.session() as session:
+            get_or_create_security(session, "1734", market="JP", name="なまえ")
+            session.commit()
+
+        lines = survey(database).warnings()
+
+        assert not any("英数字コード" in line for line in lines)
+        assert not any("名前も入っていない" in line for line in lines)
+
+    def test_a_shape_is_a_slice_of_the_holes_not_of_the_roster(self) -> None:
+        """**足のある英数字コードは、穴ではない。**"""
+        found = survey(_database({"135A": 40}, listed_only=("1734",)))
+
+        assert found.recent_codes == ()

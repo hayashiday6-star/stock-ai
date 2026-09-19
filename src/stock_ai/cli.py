@@ -6027,6 +6027,19 @@ def price_coverage(
     )
     console.print(table)
 
+    if found.empty:
+        # **穴が一様かどうかを、読む側に気付かせない。** 偏っていれば、
+        # 消える観測も偏る。件数の1行からはそれが出てこない。
+        shape = Table(title="穴の内訳")
+        for column in ("かたち", "件数", "穴に占める割合"):
+            shape.add_column(column, overflow="fold")
+        for label, rows in (
+            ("英数字コード（2024年以降の上場）", found.recent_codes),
+            ("名前も入っていない", found.nameless),
+        ):
+            shape.add_row(label, f"{len(rows):,}", f"{len(rows) / len(found.empty):.0%}")
+        console.print(shape)
+
     # **別の切り口から同じ数を出して、一致するか見る。** 一様に銘柄を引けば、
     # この割合がそのまま捨てられる。陰性対照は 2.1% と出していた。
     console.print(
@@ -8059,9 +8072,12 @@ def rehearsal_events(  # noqa: PLR0913 - イベント型と同じ条件をすべ
     gap = (total.stock_leg - total.bench_leg) - (lifted or 0.0)
     if lifted is not None:
         console.print(
-            f"[dim]差 {total.stock_leg - total.bench_leg:+.2%} のうち、"
-            f"上場廃止で落ちた分の押し上げが **{lifted:+.2%}**。"
-            f"残る **{gap:+.2%}** は、引く相手が時価総額加重であることに当たる。[/]"
+            # **桁を揃える。** 2桁で刷ると「差 +0.01% のうち … 残る +0.02%」
+            # のように、丸めた部分が全体に足し合わない形で出る（2026-09-18）。
+            # **足して合わない表は、読む側にどちらを信じるか決めさせる。**
+            f"[dim]差 {total.stock_leg - total.bench_leg:+.3%} のうち、"
+            f"上場廃止で落ちた分の押し上げが **{lifted:+.3%}**。"
+            f"残る **{gap:+.3%}** は、引く相手が時価総額加重であることに当たる。[/]"
         )
     else:
         console.print(

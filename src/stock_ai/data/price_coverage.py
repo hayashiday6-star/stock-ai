@@ -65,6 +65,29 @@ class Coverage:
     """``(銘柄, 名前, 本数)``。**足は在るが、窓を1つも開けられない。**"""
 
     @property
+    def recent_codes(self) -> tuple[tuple[str, str | None], ...]:
+        """穴のうち、**英数字コード**のもの。
+
+        東証が 2024 年から割り当てている `135A` のような形である。
+        **ほぼ最近の上場を意味する。**
+
+        **穴が一様でないなら、消える観測も一様でない。** 新規上場に偏って
+        いれば、小型や IPO を扱う説ほど多くを失う。**件数だけ見ても、その
+        偏りは出てこない。**
+        """
+        return tuple((symbol, name) for symbol, name in self.empty if _has_letter(symbol))
+
+    @property
+    def nameless(self) -> tuple[tuple[str, str | None], ...]:
+        """穴のうち、**名前も入っていない**もの。
+
+        価格の取り込みに失敗しただけなら名前は在る。**名前も無いのは、
+        その行が別の経路のついでに作られて、一度も埋められていない**という
+        ことである。
+        """
+        return tuple((symbol, name) for symbol, name in self.empty if not name)
+
+    @property
     def empty_share(self) -> float:
         """足が1本も無い銘柄の割合。"""
         return len(self.empty) / self.listed if self.listed else 0.0
@@ -95,12 +118,31 @@ class Coverage:
                 f"（{self.empty_share:.1%}）。** `list_securities` が返すので、"
                 "**説の候補にも入る。そこに落ちたイベントは黙って消える。**"
             )
+        # **穴が一様かどうかを、読む側に気付かせない。** 偏っていれば、
+        # 消える観測も偏る。件数の1行からはそれが出てこない。
+        if self.recent_codes:
+            share = len(self.recent_codes) / len(self.empty)
+            found.append(
+                f"**穴の {len(self.recent_codes):,} 件（{share:.0%}）が英数字コード**"
+                "（`135A` のような、2024年以降の割り当て）。**穴は最近の上場に"
+                "偏っている——消える観測も偏る。**"
+            )
+        if self.nameless:
+            found.append(
+                f"**穴の {len(self.nameless):,} 件は名前も入っていない。** "
+                "**その行は別の経路のついでに作られて、一度も埋められていない。**"
+            )
         if self.thin:
             found.append(
                 f"**足が {self.thin_bars} 本未満の銘柄が {len(self.thin):,} 件"
                 f"（{self.thin_share:.1%}）。** 在っても窓を1つも開けられない。"
             )
         return found
+
+
+def _has_letter(symbol: str) -> bool:
+    """英数字コードか。**`135A` は 2024年以降の割り当てである。**"""
+    return any(character.isalpha() for character in symbol)
 
 
 def survey(database: object, market: str = "JP", thin_bars: int = THIN_BARS) -> Coverage:
