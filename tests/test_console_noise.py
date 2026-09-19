@@ -78,14 +78,31 @@ class TestTheLoopCanSilenceItsOwnParts:
 class TestTheControlActuallyUsesIt:
     """**口を開けただけで配線を忘れる**形を止める（`BulkIngester` で複数回）。"""
 
-    def test_the_calendar_control_quiets_the_builder(self) -> None:
+    def test_every_control_quiets_the_power_estimate(self) -> None:
+        """**400回回すループは、全部が同じ1行記録を出す。**
+
+        `power.estimate_power` は1回ごとに「検出力の見積もり」を出す。暦の
+        対照では、それだけで 400行になった（2026-09-19、出力 112KB のうち
+        半分）。**片方だけ黙らせて済ませない。**
+        """
+        import inspect
+
+        from stock_ai import cli
+
+        for command in (cli.rehearsal, cli.rehearsal_events, cli.rehearsal_calendar):
+            body = inspect.getsource(command)
+            assert "quiet_on_console(" in body, command.__name__
+            assert '"stock_ai.backtest.power"' in body, command.__name__
+
+    def test_the_calendar_control_also_quiets_the_builder(self) -> None:
+        """暦の対照だけは、`build_series` も1回ごとに1行出す。"""
         import inspect
 
         from stock_ai import cli
 
         body = inspect.getsource(cli.rehearsal_calendar)
 
-        assert 'quiet_on_console("stock_ai.backtest.turn_of_month")' in body
+        assert '"stock_ai.backtest.turn_of_month"' in body
 
     def test_the_calendar_control_excludes_the_real_window(self) -> None:
         """**汚染を止める配線が在ること。**"""

@@ -39,6 +39,13 @@
 
 `exclude` は**そのためだけの口**である。対照は「ふつうの日」だけを見る。
 
+**`exclude` だけでは足りなかった。** 偽の窓が本物の窓を挟むと、「窓の外」が
+**本物の窓だけになり、除外して空になる。** しかも長さが 4〜22日 とばらつく
+（本物は常に約16日）——**同じ推定量を測っていることにならない。**
+
+`outside_pool` で、**窓の外をその隙間のふつうの日に限る。** 本物を測るときは
+渡さない。
+
 ## 加重も生存バイアスも、ここでは偏りを作らない
 
 #5・#8 は**等加重のバスケットから時価総額加重の指数を引いて**いたので、加重差が
@@ -189,6 +196,7 @@ def build_series(  # noqa: PLR0913 - 事前登録が固定した条件をすべ�
     end: dt.date | None = None,
     windows: Sequence[tuple[int, int]] | None = None,
     exclude: frozenset[int] | None = None,
+    outside_pool: Sequence[tuple[int, int]] | None = None,
 ) -> TurnOfMonthSeries:
     """月替わり1回ごとの差を作る。
 
@@ -205,6 +213,12 @@ def build_series(  # noqa: PLR0913 - 事前登録が固定した条件をすべ�
         exclude: 窓からも窓の外からも外す位置。**これも対照のためだけ。**
             偽の窓の「窓の外」は**構成上かならず本物の窓をまたぐ**ので、
             渡さないと本物の効果が引き算する側に混ざる（2026-09-19）。
+        outside_pool: 窓の外をどこから取るか。月替わりごとの ``(始め, 終わり)``
+            で、**両端を含む。** 省くと「前の窓の終わり＋1 から今回の窓の
+            始まりまで」——本物を測るときはこれでよい。
+            **対照では渡すこと。** 渡さないと窓の外の長さが 4〜22日 と
+            ばらつき（本物は常に約16日）、しかも本物の窓だけになって**空に
+            なる回が出る**（2026-09-19 に、`exclude` を入れて初めて出た）。
 
     Returns:
         :class:`TurnOfMonthSeries`。
@@ -218,6 +232,10 @@ def build_series(  # noqa: PLR0913 - 事前登録が固定した条件をすべ�
         raise ValueError("月末が2つ未満。月替わりを作れない。")
     if windows is not None and len(windows) != len(month_ends):
         raise ValueError(f"windows {len(windows)} と month_ends {len(month_ends)} の数が違う。")
+    if outside_pool is not None and len(outside_pool) != len(month_ends):
+        raise ValueError(
+            f"outside_pool {len(outside_pool)} と month_ends {len(month_ends)} の数が違う。"
+        )
 
     floor = USABLE_FROM if start is None else max(start, USABLE_FROM)
 
@@ -254,10 +272,15 @@ def build_series(  # noqa: PLR0913 - 事前登録が固定した条件をすべ�
         # **内包表記の変数を外側と同じ名前にしない。** Python では別の束縛に
         # なるので動くが、読む側が「上書きされた」と読み違える。
         skip = exclude or frozenset()
+        if outside_pool is not None:
+            low, high = outside_pool[index]
+            pool = [day for day in range(low, high + 1) if not begin <= day <= last]
+        else:
+            pool = list(range(previous_end + 1, begin))
         outside = [
             returns[day]
-            for day in range(previous_end + 1, begin)
-            if day not in skip and not np.isnan(returns[day])
+            for day in pool
+            if 0 <= day < len(returns) and day not in skip and not np.isnan(returns[day])
         ]
         inside = [
             returns[day]

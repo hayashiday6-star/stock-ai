@@ -8116,6 +8116,7 @@ def rehearsal_events(  # noqa: PLR0913 - イベント型と同じ条件をすべ
     )
     from stock_ai.backtest.power import estimate_power
     from stock_ai.backtest.rehearsal import calibrate, placebo_events
+    from stock_ai.core.logging import quiet_on_console
     from stock_ai.database.repository import list_securities
 
     settings = get_settings()
@@ -8173,14 +8174,18 @@ def rehearsal_events(  # noqa: PLR0913 - イベント型と同じ条件をすべ
     tally: dict[str, object] = {"values": [], "truncated": [], "drawn": 0}
     tally.update(dict.fromkeys(_DISPOSITIONS, 0))
     legs: list[tuple[float, float]] = []
-    with Progress(
-        SpinnerColumn(),
-        TextColumn("[progress.description]{task.description}"),
-        BarColumn(),
-        TaskProgressColumn(),
-        TimeRemainingColumn(),
-        console=console,
-    ) as progress:
+    with (
+        # **400回ぶんの1行記録をコンソールに出さない。** ファイルには残る。
+        quiet_on_console("stock_ai.backtest.power"),
+        Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            BarColumn(),
+            TaskProgressColumn(),
+            TimeRemainingColumn(),
+            console=console,
+        ) as progress,
+    ):
         task = progress.add_task("種を変えて回す", total=repeat)
         for index in range(repeat):
             progress.update(task, completed=index + 1)
@@ -8372,6 +8377,19 @@ def rehearsal_calendar(  # noqa: PLR0913 - 日次の暦と同じ条件をすべ�
     # 逆算できてしまう**（2026-09-19 に気付いて止めた）。
     real = frozenset(day for end in month_ends for day in range(end, end + WINDOW_DAYS))
 
+    # **窓の外は、その隙間のふつうの日に限る。**
+    #
+    # `exclude` だけでは足りなかった。偽の窓が本物の窓を挟むと、「窓の外」が
+    # **本物の窓だけになり、除外して空になる。** しかも長さが 4〜22日 と
+    # ばらつく（本物は常に約16日）——**同じ推定量を測っていることにならない。**
+    #
+    # ここは前の本物の窓の直後から、今回の本物の窓の直前まで。**本物の日は
+    # 1日も入らない。**
+    pool = [
+        (month_ends[max(index - 1, 0)] + WINDOW_DAYS, month_ends[index] - 1)
+        for index in range(len(month_ends))
+    ]
+
     # **使った範囲を出す。** 価格の全履歴を出していたので、2009年より前まで
     # 使ったように見えていた（実際は `USABLE_FROM` で切られている）。
     shape = turn_series(returns, dates, month_ends, source=benchmark, start=begin, end=finish)
@@ -8391,7 +8409,7 @@ def rehearsal_calendar(  # noqa: PLR0913 - 日次の暦と同じ条件をすべ�
     with (
         # **400回ぶんの1行記録をコンソールに出さない。** ファイルには残る。
         # 前回この出力が 112KB になった（2026-09-19）。
-        quiet_on_console("stock_ai.backtest.turn_of_month"),
+        quiet_on_console("stock_ai.backtest.turn_of_month", "stock_ai.backtest.power"),
         Progress(
             SpinnerColumn(),
             TextColumn("[progress.description]{task.description}"),
@@ -8414,6 +8432,7 @@ def rehearsal_calendar(  # noqa: PLR0913 - 日次の暦と同じ条件をすべ�
                 end=finish,
                 windows=windows,
                 exclude=real,
+                outside_pool=pool,
             )
             if len(drawn.episodes) < 2:
                 continue
@@ -8698,6 +8717,7 @@ def rehearsal(  # noqa: PLR0913 - 本物と同じ条件をすべて受け取る
     )
     from stock_ai.backtest.power import estimate_power
     from stock_ai.backtest.rehearsal import calibrate, oos_seed, placebo_sections
+    from stock_ai.core.logging import quiet_on_console
 
     settings = get_settings()
     configure_logging(settings.log_level)
@@ -8802,14 +8822,18 @@ def rehearsal(  # noqa: PLR0913 - 本物と同じ条件をすべて受け取る
 
     # --- 何度も回して、t の形を見る ------------------------------------------
     scores: list[float] = []
-    with Progress(
-        SpinnerColumn(),
-        TextColumn("[progress.description]{task.description}"),
-        BarColumn(),
-        TaskProgressColumn(),
-        TimeRemainingColumn(),
-        console=console,
-    ) as progress:
+    with (
+        # **400回ぶんの1行記録をコンソールに出さない。** ファイルには残る。
+        quiet_on_console("stock_ai.backtest.power"),
+        Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            BarColumn(),
+            TaskProgressColumn(),
+            TimeRemainingColumn(),
+            console=console,
+        ) as progress,
+    ):
         task = progress.add_task("種を変えて回す", total=repeat)
         for index in range(repeat):
             progress.update(task, completed=index + 1)

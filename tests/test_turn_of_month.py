@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import pathlib
 
 import numpy as np
 import pandas as pd
@@ -407,3 +408,178 @@ class TestThePlaceboMustNotSeeTheRealWindowAtAll:
         )
 
         assert sum(with_exclusion.outside_days) < sum(without.outside_days)
+
+
+class TestTheOutsideMustMirrorTheRealOne:
+    """**`exclude` だけでは足りなかった。**
+
+    偽の窓が本物の窓を挟むと、「窓の外」が**本物の窓だけになり、除外して空に
+    なる。** しかも長さが 4〜22日 とばらつく（本物は常に約16日）——
+    **同じ推定量を測っていることにならない。**
+
+    直した先で新しい壊れ方を作っていた形である（2026-09-19）。
+    """
+
+    @staticmethod
+    def _pool(ends: list[int]) -> list[tuple[int, int]]:
+        return [
+            (ends[max(index - 1, 0)] + WINDOW_DAYS, ends[index] - 1) for index in range(len(ends))
+        ]
+
+    def test_without_a_pool_the_outside_length_swings(self) -> None:
+        """**壊れていることを、先に見せる。**"""
+        ends = _month_ends()
+        returns = [0.0] * (len(_DATES) - 1)
+
+        loose = build_series(
+            returns, _DATES[1:], ends, windows=placebo_windows(ends, WINDOW_DAYS, seed=1)
+        )
+
+        assert max(loose.outside_days) - min(loose.outside_days) > 8
+
+    def test_with_a_pool_the_outside_stays_put(self) -> None:
+        ends = _month_ends()
+        returns = [0.0] * (len(_DATES) - 1)
+        real = frozenset(day for end in ends for day in range(end, end + WINDOW_DAYS))
+
+        tight = build_series(
+            returns,
+            _DATES[1:],
+            ends,
+            windows=placebo_windows(ends, WINDOW_DAYS, seed=1),
+            exclude=real,
+            outside_pool=self._pool(ends),
+        )
+
+        assert max(tight.outside_days) - min(tight.outside_days) <= 4
+
+    def test_no_episode_is_lost_to_an_empty_outside(self) -> None:
+        """**本物の窓だけになって空になる回が、出ない。**"""
+        ends = _month_ends()
+        returns = [0.0] * (len(_DATES) - 1)
+        real = frozenset(day for end in ends for day in range(end, end + WINDOW_DAYS))
+
+        for seed in range(1, 8):
+            found = build_series(
+                returns,
+                _DATES[1:],
+                ends,
+                windows=placebo_windows(ends, WINDOW_DAYS, seed=seed),
+                exclude=real,
+                outside_pool=self._pool(ends),
+            )
+            assert found.skipped_no_outside == 0, seed
+
+    def test_the_pool_never_holds_a_real_window_day(self) -> None:
+        """**本物の日は1日も入らない。**"""
+        ends = _month_ends()
+        real = {day for end in ends for day in range(end, end + WINDOW_DAYS)}
+
+        for low, high in self._pool(ends)[1:]:
+            assert not (set(range(low, high + 1)) & real)
+
+    def test_a_pool_of_the_wrong_size_is_refused(self) -> None:
+        """**この検査が落ちる条件を、実際に1つ作る。**"""
+        with pytest.raises(ValueError, match="outside_pool"):
+            build_series(
+                [0.0] * (len(_DATES) - 1), _DATES[1:], _month_ends(), outside_pool=[(1, 2)]
+            )
+
+    def test_the_control_passes_a_pool(self) -> None:
+        """**口を開けただけで配線を忘れる**形を止める。"""
+        import inspect
+
+        from stock_ai import cli
+
+        assert "outside_pool=pool" in inspect.getsource(cli.rehearsal_calendar)
+
+
+class TestTheCommandReachesTheUniverseBranch:
+    """**到達しない疎通確認を「疎通した」と読まない。**
+
+    2026-09-19、`uv run stock-ai turn-of-month-power` を**空の DB** で叩いて
+    「1306 の価格が無い」で終わったのを、疎通の確認としていた。**`--universe`
+    の枝には一度も届いていなかった**ので、そこが存在しない名前を呼んで
+    いることに気付けなかった。
+
+    `tests/test_turn_of_month.py` は当時 332行あったが、**同じ枝を一度も
+    通していなかった。** `factor_panel` と同じ形である。
+
+    ここは**本物のコマンドを、中身の入った DB で呼ぶ。**
+    """
+
+    @staticmethod
+    def _database(where: pathlib.Path) -> None:
+        from stock_ai.data.schema import ADJ_CLOSE, HIGH, LOW, VOLUME
+        from stock_ai.database.engine import Database
+        from stock_ai.database.repository import PriceRepository
+
+        index = pd.bdate_range("2008-01-01", periods=600, name="date")
+        database = Database(f"sqlite:///{where / 'stock_ai.db'}")
+        database.create_all()
+        with database.session() as session:
+            repo = PriceRepository(session)
+            # 1306 と、薄い日の足切り（30社）を越える数の銘柄。
+            # **定数の足を置かない。** 散らばりが 0 だと標準誤差も 0 になり、
+            # 対照が「1回も測れなかった」で終わる——**コードではなく足場の
+            # せいで落ちる**ので、原因を探す時間が要る（2026-09-19）。
+            for offset, symbol in enumerate(["1306", *[f"{1400 + n}" for n in range(40)]]):
+                steps = np.random.default_rng(offset).normal(0.0004, 0.01, 600)
+                close = list(100.0 * np.exp(np.cumsum(steps)))
+                repo.upsert_prices(
+                    symbol,
+                    pd.DataFrame(
+                        {
+                            OPEN: close,
+                            HIGH: close,
+                            LOW: close,
+                            CLOSE: close,
+                            ADJ_CLOSE: close,
+                            VOLUME: [1_000_000.0] * 600,
+                        },
+                        index=index,
+                    ),
+                    market="JP",
+                )
+
+    def test_it_runs_all_the_way_through_with_the_universe(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """**`--universe` を付けた経路が、最後まで通ること。**"""
+        from stock_ai import cli
+        from stock_ai.database import engine
+
+        monkeypatch.setattr(engine, "DATA_DIR", tmp_path)
+        self._database(tmp_path)
+
+        cli.turn_of_month_power(
+            benchmark="1306", is_end="2010-03-31", oos_periods=104, universe=True
+        )
+
+    def test_it_also_runs_without_the_universe(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """**速い側も通しておく。** 片方だけだと、もう片方が黙って壊れる。"""
+        from stock_ai import cli
+        from stock_ai.database import engine
+
+        monkeypatch.setattr(engine, "DATA_DIR", tmp_path)
+        self._database(tmp_path)
+
+        cli.turn_of_month_power(
+            benchmark="1306", is_end="2010-03-31", oos_periods=104, universe=False
+        )
+
+    def test_the_calendar_control_runs_all_the_way_through(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """対照のほうも、本物のコマンドで1本通す。"""
+        from stock_ai import cli
+        from stock_ai.database import engine
+
+        monkeypatch.setattr(engine, "DATA_DIR", tmp_path)
+        self._database(tmp_path)
+
+        cli.rehearsal_calendar(
+            benchmark="1306", seed=1, repeat=3, start="2009-01-01", end="2010-03-31"
+        )
