@@ -5830,6 +5830,172 @@ def antivalue_estimate(
     )
 
 
+@app.command(name="momentum-power")
+def momentum_power(
+    rosters: str = typer.Option(
+        str(DEFAULT_SNAPSHOT_DIR), "--rosters", help="Where the dated rosters live."
+    ),
+    is_end: str = typer.Option("2017-12-31", "--is-end", help="Last day of the IS window."),
+    oos_periods: int = typer.Option(104, "--oos-periods", help="Months the judgement will have."),
+) -> None:
+    """Measure the IS window for #12, so the gate table can be filled - not judge it.
+
+    **段2（自分の IS から推定する）の材料を出す。** 文献はあるが**一次資料に
+    届かなかった**ので、見込みはここから置く（`docs/PREREG_MOMENTUM_JP.md` §0）。
+
+    出すのは4つ。**1期あたりのSD**（検出できる差を決める）、**入れ替わり率**
+    （費用を決める）、**効果の推定**（封印するかどうかを決める）、**裾**
+    （急反転でどれだけ持っていかれるか）。
+
+    **判定ではない。** IS は 2009-01〜2017-12 で、OOS（2018-01〜2026-08）には
+    1日も触れない。
+
+    **設計は事前登録 §3 が固定している。** 形成12ヶ月・直近1ヶ月スキップ・
+    保有1ヶ月・5分位・等加重。**動かす引数を置いていない**のは、動かせると
+    試して選ぶことになるからである。
+    """
+    from stock_ai.backtest.momentum import (
+        FORMATION_MONTHS,
+        SKIP_MONTHS,
+    )
+    from stock_ai.backtest.momentum import (
+        build_series as momentum_series,
+    )
+    from stock_ai.backtest.multiplicity import (
+        HYPOTHESIS_BUDGET,
+        MEASURED_INFLATION,
+        calibrated_t,
+        required_t,
+    )
+    from stock_ai.backtest.power import estimate_power
+
+    settings = get_settings()
+    configure_logging(settings.log_level)
+
+    cut = _parse_date(is_end)
+    if cut is None:
+        raise typer.BadParameter(f"--is-end must be YYYY-MM-DD; got {is_end!r}.")
+
+    snapshots = membership(Path(rosters))
+    if not snapshots:
+        console.print("[red]名簿が無い。[/] **渡さないと生存バイアスが入る。**")
+        raise typer.Exit(code=1)
+
+    database = Database()
+    database.create_all()
+    console.print(
+        f"[dim]IS は {cut} まで。OOS には1日も触れない。"
+        f"形成 {FORMATION_MONTHS} ヶ月・直近 {SKIP_MONTHS} ヶ月スキップ・5分位。[/]"
+    )
+    series = momentum_series(database, end=cut, snapshots=snapshots)
+    console.print(series.summary())
+    for line in series.warnings():
+        console.print(f"[yellow]{line}[/]")
+    if not series.months:
+        raise typer.Exit(code=1)
+
+    # **費用を引いてから見る。** 実行できない大きさを見込みに置かないため。
+    cost = series.cost_per_month()
+
+    # **生の差と α の両方を出す。** #9 は §5 に「α も併記する」と書きながら
+    # §0 を生の差だけで埋めた（2026-09-16）。ここは最初から両方出す。
+    beta = series.beta_to_benchmark()
+    measured = {
+        "生の差": [value - cost for value in series.spread()],
+        "α（β を引いた）": [value - cost for value in series.alpha(beta)],
+    }
+
+    table = Table(title="§0 に入れる材料（IS から。判定ではない）")
+    for column in ("項目", "生の差", "α（β を引いた）", "どこから"):
+        table.add_column(column, overflow="fold")
+
+    target = calibrated_t(HYPOTHESIS_BUDGET)
+    stats: dict[str, tuple[float, float, float, float, float]] = {}
+    for label, values in measured.items():
+        estimate = estimate_power(values, lags=3)
+        stats[label] = (
+            estimate.daily_sd,
+            estimate.inflation,
+            fmean(values),
+            estimate.standard_error(len(values)),
+            # **判定に使える期数で当てる。** IS の月数ではない。
+            estimate.detectable(oos_periods, target_t=target),
+        )
+
+    raw, adjusted = stats["生の差"], stats["α（β を引いた）"]
+    table.add_row("1期あたりのSD", f"{raw[0]:.2%}", f"{adjusted[0]:.2%}", "IS の月次、費用引き後")
+    table.add_row(
+        "重なりの膨張", f"{raw[1]:.2f}x", f"{adjusted[1]:.2f}x", "Newey-West(3) と素の分散の比"
+    )
+    table.add_row(
+        "検出できる差",
+        f"年 {raw[4] * 12:.1%}",
+        f"年 {adjusted[4] * 12:.1%}",
+        f"t≥{target:.2f}・{oos_periods}期",
+    )
+    table.add_row("判定に使える期数", f"{oos_periods}", "—", "OOS の月数。**全期間ではない**")
+    table.add_row(
+        "入れ替わり", f"{series.turnover():.1%}／月", "—", "実測。**#9 の値は写していない**"
+    )
+    table.add_row("費用", f"年 {cost * 12:.2%}", "—", "往復 0.40% × 入れ替わり")
+    table.add_row("β", f"{beta:+.2f}", "—", "スプレッドの、指数に対する感応度。IS で推定")
+    console.print(table)
+
+    # **裾を見る**（事前登録 §5）。平均が同じでも、ここが違えば別の戦略である。
+    tail = Table(title="裾（生の差・費用引き後）")
+    for column in ("項目", "値", "なぜ見るか"):
+        tail.add_column(column, overflow="fold")
+    tail.add_row("いちばん悪かった月", f"{series.worst_month() - cost:+.2%}", "1回の事故の大きさ")
+    tail.add_row("下位5%の月の平均", f"{series.left_tail() - cost:+.2%}", "**1点ではなく帯で見る**")
+    tail.add_row("勝った月の割合", f"{series.hit_rate():.1%}", "平均だけで語らない")
+    console.print(tail)
+    console.print(
+        "[dim]**モメンタムは平常時に効いても、急反転で損失が集中しうる。** "
+        "平均が同じでも、ここが違えば別の戦略である（事前登録 §5）。[/]"
+    )
+
+    mean, stderr = raw[2], raw[3]
+    low, high = mean - 1.96 * stderr, mean + 1.96 * stderr
+    console.print(
+        f"[bold]IS の効果（生の差・費用引き後）: 年 {mean * 12:+.2%}[/] "
+        f"[dim]（95% の幅 年 {low * 12:+.2%} 〜 {high * 12:+.2%}）[/]"
+    )
+    console.print(
+        f"[dim]α でも併記する: 年 {adjusted[2] * 12:+.2%}"
+        f"（95% の幅 年 {(adjusted[2] - 1.96 * adjusted[3]) * 12:+.2%} 〜 "
+        f"{(adjusted[2] + 1.96 * adjusted[3]) * 12:+.2%}）。"
+        f"**線を当てるのは生の差のほうである**——§10 が「分位差」と書いている。[/]"
+    )
+
+    # **測る前にコミットした線である。** 動かさない（事前登録 §0）。
+    floor = MOMENTUM_FLOOR
+    console.print()
+    if mean * 12 < floor:
+        console.print(
+            f"[red]封印しない。[/] IS の推定 年 {mean * 12:+.2%} が、"
+            f"**測る前にコミットした線 年 {floor:.1%} を下回った。**"
+        )
+        console.print(
+            "[dim]事前登録 §0 にそう書いてある。**下回ったら、検出できても"
+            "実行できない。** 線は動かさない。[/]"
+        )
+        return
+
+    console.print(f"[green]線（年 {floor:.1%}）は上回った。[/] 次は §0 のゲートである。")
+    console.print(
+        "[dim]uv run stock-ai power-gate "
+        f"--sd {raw[0] * 100:.2f} --periods {oos_periods} "
+        f"--low {low * 12 * 100:.2f} --high {high * 12 * 100:.2f} "
+        f"--inflation {raw[1]:.2f} --budget {HYPOTHESIS_BUDGET}[/]"
+    )
+    console.print(
+        f"[dim]必要な t は {calibrated_t(HYPOTHESIS_BUDGET):.2f}"
+        f"（予算 {HYPOTHESIS_BUDGET} 本の {required_t(HYPOTHESIS_BUDGET):.2f} に、"
+        f"対照で測った膨張 {MEASURED_INFLATION:.2f} を掛けた）。"
+        "補正なしの 2.0 ではない。[/]"
+    )
+
+
 @app.command(name="valuation-monthly")
 def valuation_monthly(
     directory: str = typer.Option(
@@ -7173,6 +7339,16 @@ def _report_event_disposition(sample: object, *, title: str) -> None:
     )
     for line in sample.warnings():  # type: ignore[attr-defined]
         console.print(f"[yellow]{line}[/]")
+
+
+#: #12 の「封印しない線」。**測る前にコミットした**（`docs/PREREG_MOMENTUM_JP.md` §0）。
+#:
+#: 費用を賄えるかどうかの線である。#9 は入れ替わり 15.9%／月で費用 年0.76%
+#: だったが、**モメンタムの順位はそれより速く動く**——12ヶ月の累積は毎月
+#: いちばん古い月が落ちるので、株価が動かなくても順位が変わる。
+#:
+#: **測ってから動かさない。**
+MOMENTUM_FLOOR = 0.02
 
 
 def _oos_session_count(database: Database, benchmark: str, holding: int) -> int:
