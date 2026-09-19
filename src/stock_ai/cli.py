@@ -6296,8 +6296,8 @@ def _wall_document(walls: list[object], missing: list[object], span: str) -> str
         "",
         "## 壁の高さ",
         "",
-        "| 候補 | 設計 | 管 | n | 1観測あたりのSD | 線 | **検出できる差** |",
-        "|---|---|---|---|---|---|---|",
+        "| 候補 | 設計 | 管 | n | 1観測あたりのSD | 重なりの膨張 | 線 | **検出できる差** |",
+        "|---|---|---|---|---|---|---|---|",
     ]
     for wall in walls:
         annual = wall.annual  # type: ignore[attr-defined]
@@ -6307,6 +6307,7 @@ def _wall_document(walls: list[object], missing: list[object], span: str) -> str
         lines.append(
             f"| {wall.candidate} | {wall.name} | {wall.pipe} | "  # type: ignore[attr-defined]
             f"{wall.observations:,} | {wall.sd:.2%}／{wall.unit} | "  # type: ignore[attr-defined]
+            f"{wall.inflation:.2f}x | "  # type: ignore[attr-defined]
             f"`t ≥ {wall.line:.2f}` | **{size}** |"  # type: ignore[attr-defined]
         )
     lines += [
@@ -6414,7 +6415,9 @@ def wall_survey(
         oos_years = complete_halloween_years(OOS_FROM, OOS_END)
         sampled["Sell in May（冬 − 夏）"] = episodes
         with quiet_on_console("stock_ai.backtest.power"):
-            sd = estimate_power(episodes, lags=0).daily_sd
+            # **n=7 では Newey-West が不安定。** 膨張は 1.0 に固定する（#14）。
+            estimate = estimate_power(episodes, lags=0)
+        sd, inflation = estimate.daily_sd, estimate.inflation
         walls.append(
             Wall(
                 candidate=3,
@@ -6423,6 +6426,7 @@ def wall_survey(
                 unit="年",
                 observations=oos_years,
                 sd=sd,
+                inflation=inflation,
                 # **自由度で線を引く。** n が小さいと `t` が正規から離れる（#14）。
                 line=student_t_line(max(oos_years - 1, 1)),
                 source=f"{benchmark} の日次、IS {years[0]}〜{years[-1]} の {len(years)} 年",
@@ -6466,7 +6470,8 @@ def wall_survey(
         oos_months = usable_rebalances(calendar, OOS_FROM, OOS_END)
         sampled["新値には黙ってつけ"] = spread
         with quiet_on_console("stock_ai.backtest.power"):
-            sd = estimate_power(spread, lags=3).daily_sd
+            estimate = estimate_power(spread, lags=3)
+        sd, inflation = estimate.daily_sd, estimate.inflation
         walls.append(
             Wall(
                 candidate=5,
@@ -6475,6 +6480,7 @@ def wall_survey(
                 unit="月",
                 observations=oos_months,
                 sd=sd,
+                inflation=inflation,
                 line=line_for("monthly"),
                 source=f"IS {len(panel.months)} ヶ月、5分位・等加重",
                 per_year=12.0,
@@ -6514,7 +6520,9 @@ def wall_survey(
             continue
         sampled[name] = sample.values
         with quiet_on_console("stock_ai.backtest.power"):
-            sd = estimate_power(sample.values, lags=HOLDING).daily_sd
+            # **窓が20営業日、入口は毎日。** 重なりは大きい side である。
+            estimate = estimate_power(sample.values, lags=HOLDING)
+        sd, inflation = estimate.daily_sd, estimate.inflation
         walls.append(
             Wall(
                 candidate=candidate,
@@ -6523,6 +6531,7 @@ def wall_survey(
                 unit="イベント日",
                 observations=oos_days,
                 sd=sd,
+                inflation=inflation,
                 line=line_for("event"),
                 source=(f"IS {sample.drawn:,} 件が {len(sample.values):,} 日、窓 {HOLDING} 営業日"),
                 notes=(
@@ -6555,7 +6564,9 @@ def wall_survey(
             continue
         variance, dropped = trimmed_variance(values, fraction=0.01)
         trimmed = variance**0.5
-        if trimmed > 0 and (estimate_power(values, lags=0).daily_sd / trimmed) > TAIL_DRIVEN:
+        with quiet_on_console("stock_ai.backtest.power"):
+            plain = estimate_power(values, lags=0).daily_sd
+        if trimmed > 0 and (plain / trimmed) > TAIL_DRIVEN:
             console.print(
                 f"[yellow]**{label}: 散らばりの大半が数日でできている。** "
                 f"外れた {dropped} 件を落とすと SD が {trimmed:.2%} まで下がる"
@@ -6563,7 +6574,7 @@ def wall_survey(
             )
 
     table = Table(title="壁の下見（**効果は出していない**）")
-    for column in ("候補", "設計", "n", "1観測あたりのSD", "線", "検出できる差"):
+    for column in ("候補", "設計", "n", "1観測あたりのSD", "重なりの膨張", "線", "検出できる差"):
         table.add_column(column, overflow="fold")
     for wall in walls:
         annual = wall.annual
@@ -6573,6 +6584,7 @@ def wall_survey(
             wall.name,
             f"{wall.observations:,}",
             f"{wall.sd:.2%}／{wall.unit}",
+            f"{wall.inflation:.2f}x",
             f"{wall.line:.2f}",
             f"[bold]{size}[/]",
         )

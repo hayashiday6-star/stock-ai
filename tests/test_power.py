@@ -393,3 +393,68 @@ def test_the_gate_command_still_gives_the_ratio_when_the_floor_is_positive() -> 
     assert "Traceback" not in result.output
     assert "計算できない" not in result.output
     assert "倍" in result.output
+
+
+class TestTheStandardErrorHasOneHome:
+    """**同じ式が3箇所にあり、3つ目が膨張を落としていた**（2026-09-19）。
+
+    `PowerEstimate` と `passing.Shape` は掛けていたのに、`wall.Wall` だけが
+    落としていた。**20日保有・毎日エントリーなら理屈の上で4倍前後**なので、
+    壁が数倍低く出る——**緩む向き**である。
+    """
+
+    def test_the_estimate_delegates(self) -> None:
+        import inspect
+
+        from stock_ai.backtest.power import PowerEstimate
+
+        assert "standard_error(" in inspect.getsource(PowerEstimate.standard_error)
+        assert "math.sqrt(self.omega" not in inspect.getsource(PowerEstimate.standard_error)
+
+    def test_the_shape_delegates(self) -> None:
+        import inspect
+
+        from stock_ai.backtest.passing import Shape
+
+        body = inspect.getsource(Shape.standard_error)
+
+        assert "standard_error(" in body
+        assert "periods**0.5" not in body
+
+    def test_the_wall_delegates(self) -> None:
+        import inspect
+
+        from stock_ai.backtest.wall import Wall
+
+        body = inspect.getsource(Wall)
+
+        assert "detectable_difference(" in body
+        assert "math.sqrt(self.observations)" not in body
+
+    def test_the_formula_is_what_it_says(self) -> None:
+        import math
+
+        from stock_ai.backtest.power import standard_error
+
+        assert standard_error(0.05, 2.0, 100) == pytest.approx(0.05 * 2.0 / math.sqrt(100))
+
+    def test_it_is_the_inverse_of_periods_needed(self) -> None:
+        """**往復して同じところに戻ること。** 片方だけ直しても、ここで落ちる。"""
+        from stock_ai.backtest.power import detectable_difference, periods_needed
+
+        effect = detectable_difference(0.05, 1.5, 144, target_t=3.39)
+
+        assert periods_needed(0.05, 1.5, effect, target_t=3.39) == 144
+
+    def test_a_zero_inflation_is_refused(self) -> None:
+        """**この検査が落ちる条件を、実際に1つ作る。**"""
+        from stock_ai.backtest.power import standard_error
+
+        with pytest.raises(ValueError, match="inflation must be positive"):
+            standard_error(0.05, 0.0, 100)
+
+    def test_no_periods_is_refused(self) -> None:
+        from stock_ai.backtest.power import standard_error
+
+        with pytest.raises(ValueError, match="periods must be at least 1"):
+            standard_error(0.05, 1.0, 0)

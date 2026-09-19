@@ -104,6 +104,13 @@ class Wall:
     sd: float
     """1観測あたりの標準偏差。**IS で測った。**"""
 
+    inflation: float
+    """重なりで標準誤差が何倍になるか。**実測。**
+
+    **掛け忘れると緩む。** 20日保有・毎日エントリーなら理屈の上で4倍前後に
+    なるので、落とせば壁が数倍低く出る（`power.standard_error`）。
+    """
+
     line: float
     source: str
     """どうやって測ったか。**出典の無い数字を書かない。**"""
@@ -115,8 +122,15 @@ class Wall:
 
     @property
     def detectable(self) -> float:
-        """検出できる差。**`線 × SD ÷ √n`。**"""
-        return self.line * self.sd / math.sqrt(self.observations)
+        """検出できる差。**式は `power` に1つだけ置いてある。**
+
+        `線 × SD × 膨張 ÷ √n` である。**膨張を落とした版を1度書いた**
+        （2026-09-19）——`passing.Shape` は掛けていたのに、ここだけ落ちて
+        いた。**同じ式を3つ書けば、1つは間違える。**
+        """
+        from stock_ai.backtest.power import detectable_difference
+
+        return detectable_difference(self.sd, self.inflation, self.observations, self.line)
 
     @property
     def annual(self) -> float | None:

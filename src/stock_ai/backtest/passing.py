@@ -70,8 +70,10 @@ class Shape:
         return line_for(self.pipe)
 
     def standard_error(self) -> float:
-        """OOS の平均の標準誤差。"""
-        return self.sd * self.inflation / self.periods**0.5
+        """OOS の平均の標準誤差。**式は `power` に1つだけ置いてある。**"""
+        from stock_ai.backtest.power import standard_error
+
+        return standard_error(self.sd, self.inflation, self.periods)
 
     def required(self, target: float) -> float:
         """合格に要る、1期あたりの大きさ。"""

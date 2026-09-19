@@ -84,6 +84,57 @@ def long_run_variance(gammas: Sequence[float]) -> float:
     return max(omega, 0.0)
 
 
+def standard_error(sd: float, inflation: float, periods: int) -> float:
+    """``periods`` 期ぶんの平均の標準誤差。**式はここ1箇所だけ。**
+
+    **膨張を掛け忘れる形を、3度書いた。** `PowerEstimate`・`passing.Shape`・
+    `wall.Wall` が同じ式を別々に持っていて、**3つ目が膨張を落としていた**
+    （2026-09-19）。20日保有・毎日エントリーなら膨張は理屈の上で4倍前後に
+    なるので、**落とすと壁が数倍低く出る**——緩む向きである。
+
+    Args:
+        sd: 1期あたりの標準偏差。
+        inflation: 重なりで標準誤差が何倍になるか。**重ならないなら 1.0。**
+        periods: 期数。
+
+    Returns:
+        平均の標準誤差。
+
+    Raises:
+        ValueError: ``sd`` が負、``inflation`` が 0 以下、``periods`` が1未満。
+    """
+    if sd < 0:
+        raise ValueError(f"sd must not be negative; got {sd}.")
+    if inflation <= 0:
+        raise ValueError(f"inflation must be positive; got {inflation}.")
+    if periods < 1:
+        raise ValueError(f"periods must be at least 1; got {periods}.")
+    return sd * inflation / math.sqrt(periods)
+
+
+def detectable_difference(
+    sd: float,
+    inflation: float,
+    periods: int,
+    target_t: float = TARGET_T,
+) -> float:
+    """``periods`` 期で ``target_t`` に届くのに要る差。**`periods_needed` の逆。**
+
+    Args:
+        sd: 1期あたりの標準偏差。
+        inflation: 重なりによる標準誤差の膨張。
+        periods: 期数。
+        target_t: 合格に要する `t`。
+
+    Returns:
+        見分けられる最小の差。
+
+    Raises:
+        ValueError: :func:`standard_error` と同じ条件。
+    """
+    return target_t * standard_error(sd, inflation, periods)
+
+
 @dataclass(frozen=True)
 class PowerEstimate:
     """分散だけから作った検出力の見積もり。
@@ -118,20 +169,22 @@ class PowerEstimate:
     def standard_error(self, sample_days: int) -> float:
         """``sample_days`` 日ぶんの平均の標準誤差。
 
+        **式は `standard_error` に1つだけ置いてある。**
+
         Raises:
             ValueError: ``sample_days`` が1未満。
         """
-        if sample_days < 1:
-            raise ValueError(f"sample_days must be at least 1; got {sample_days}.")
-        return math.sqrt(self.omega / sample_days)
+        return standard_error(self.daily_sd, self.inflation, sample_days)
 
     def detectable(self, sample_days: int, target_t: float = TARGET_T) -> float:
         """``sample_days`` 日で ``target_t`` に届くのに必要な差。
 
         これが費用のしきい値より大きければ、**その期間では合格を出しようが
         ない**。封印する前に知っておく数字である。
+
+        **式は `detectable_difference` に1つだけ置いてある。**
         """
-        return target_t * self.standard_error(sample_days)
+        return detectable_difference(self.daily_sd, self.inflation, sample_days, target_t)
 
 
 def trimmed_variance(values: Sequence[float], fraction: float = 0.01) -> tuple[float, int]:

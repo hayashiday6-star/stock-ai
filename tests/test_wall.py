@@ -48,6 +48,7 @@ def _wall(**changed) -> Wall:
         "unit": "月",
         "observations": 104,
         "sd": 0.05,
+        "inflation": 1.0,
         "line": 3.39,
         "source": "ためし",
         "per_year": 12.0,
@@ -107,6 +108,43 @@ class TestTheWallIsComputedNotTranscribed:
         wall = _wall(observations=104, sd=0.05, line=3.39)
 
         assert wall.detectable == pytest.approx(3.39 * 0.05 / np.sqrt(104))
+
+    def test_the_overlap_inflation_is_not_dropped(self) -> None:
+        """**1度落とした**（2026-09-19）。20日保有なら理屈の上で4倍前後になる。
+
+        **緩む向きである**——壁が数倍低く出る。
+        """
+        assert _wall(inflation=4.0).detectable == pytest.approx(_wall(inflation=1.0).detectable * 4)
+
+    def test_it_agrees_with_the_canonical_estimate(self) -> None:
+        """**同じ式を3つ書けば、1つは間違える。** ここで縛る。"""
+        from stock_ai.backtest.power import PowerEstimate
+
+        estimate = PowerEstimate(observations=100, lags=20, variance=0.01, omega=0.16)
+        wall = _wall(
+            observations=100,
+            sd=estimate.daily_sd,
+            inflation=estimate.inflation,
+            line=3.30,
+        )
+
+        assert wall.detectable == pytest.approx(estimate.detectable(100, target_t=3.30))
+
+    def test_it_agrees_with_the_passing_document(self) -> None:
+        """`passing.Shape` とも同じ式であること。**3つ目がここだった。**"""
+        import dataclasses
+
+        from stock_ai.backtest.passing import SHAPES
+
+        shape = dataclasses.replace(SHAPES[0], inflation=1.4)
+        wall = _wall(
+            observations=shape.periods,
+            sd=shape.sd,
+            inflation=shape.inflation,
+            line=3.39,
+        )
+
+        assert wall.detectable == pytest.approx(shape.required(3.39))
 
     def test_more_observations_lower_it(self) -> None:
         assert _wall(observations=416).detectable == pytest.approx(
