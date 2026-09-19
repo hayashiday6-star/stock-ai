@@ -65,17 +65,9 @@ class Shape:
         Raises:
             ValueError: 知らない ``pipe``。
         """
-        from stock_ai.backtest.multiplicity import (
-            HYPOTHESIS_BUDGET,
-            MEASURED_INFLATION,
-            MEASURED_INFLATION_EVENT,
-            calibrated_t,
-        )
+        from stock_ai.backtest.multiplicity import line_for
 
-        known = {"monthly": MEASURED_INFLATION, "event": MEASURED_INFLATION_EVENT}
-        if self.pipe not in known:
-            raise ValueError(f"知らない管 {self.pipe!r}。monthly か event。")
-        return calibrated_t(HYPOTHESIS_BUDGET, inflation=known[self.pipe])
+        return line_for(self.pipe)
 
     def standard_error(self) -> float:
         """OOS の平均の標準誤差。"""
@@ -123,6 +115,15 @@ SHAPES: tuple[Shape, ...] = (
         unit="月",
         per_year=12,
         source="PREREG_ANTIVALUE_JP.md §0",
+    ),
+    Shape(
+        name="#12 の形（モメンタム・ロングショート・生の差）",
+        sd=0.0542,
+        inflation=1.17,
+        periods=104,
+        unit="月",
+        per_year=12,
+        source="PREREG_MOMENTUM_JP.md §0（IS 106ヶ月、入れ替わり 29.5%／月）",
     ),
     Shape(
         name="#5 の形（イベント型・20営業日）",

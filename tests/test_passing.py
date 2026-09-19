@@ -183,3 +183,69 @@ class TestTheLineIsPerPipeHereToo:
 
         with pytest.raises(ValueError, match="知らない管"):
             strange.line()
+
+
+class TestEveryGateUsesTheSameLine:
+    """**決めたことを、決めた場所の全部に当てる。**
+
+    線を管ごとにすると決めたのに、`power-gate` だけ校正前の 3.02 を使って
+    いた（2026-09-19 に #12 で気付いた）。同じ設計に2つの線が出て、**検出
+    できる差が 22.6% と 25.3% に割れた。**
+
+    **緩める向きの取り違えである。** 線が低ければ検出できる差も小さく出る
+    ので、**通ってはいけない設計が §0 を通る。**
+    """
+
+    def test_the_gate_asks_multiplicity_for_the_line(self) -> None:
+        import inspect
+
+        from stock_ai import cli
+
+        body = inspect.getsource(cli.power_gate)
+
+        assert "line_for(pipe, budget)" in body
+        # **素の値をそのまま線にしていないこと。**
+        assert "target_t = adjusted.required_t" not in body
+
+    def test_the_gate_takes_a_pipe(self) -> None:
+        from tests.test_cli import declared_options
+
+        assert "--pipe" in declared_options("power-gate")
+
+    def test_the_line_choice_lives_in_one_place(self) -> None:
+        """**2箇所目を書いたら、そのうち片方だけ直す。**"""
+        import inspect
+
+        from stock_ai.backtest import passing
+
+        body = inspect.getsource(passing.Shape.line)
+
+        assert "line_for" in body
+        assert "MEASURED_INFLATION" not in body
+
+    def test_every_pipe_the_shapes_name_is_one_the_line_knows(self) -> None:
+        from stock_ai.backtest.multiplicity import PIPES
+        from stock_ai.backtest.passing import SHAPES
+
+        for shape in SHAPES:
+            assert shape.pipe in PIPES, shape.name
+
+    def test_an_unknown_pipe_is_refused(self) -> None:
+        """**この検査が落ちる条件を、実際に1つ作る。**"""
+        from stock_ai.backtest.multiplicity import line_for
+
+        with pytest.raises(ValueError, match="知らない管"):
+            line_for("weekly")
+
+    def test_the_monthly_line_is_stricter_than_the_uncorrected_one(self) -> None:
+        """**校正は足すためのものである。** 素の値を下回らせない。"""
+        from stock_ai.backtest.multiplicity import (
+            HYPOTHESIS_BUDGET,
+            PIPES,
+            line_for,
+            required_t,
+        )
+
+        plain = required_t(HYPOTHESIS_BUDGET)
+        for pipe in PIPES:
+            assert line_for(pipe) >= plain, pipe

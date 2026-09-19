@@ -102,6 +102,7 @@ from stock_ai.backtest.multiplicity import (
     HYPOTHESIS_BUDGET,
     adjust,
     ladder,
+    line_for,
 )
 from stock_ai.backtest.pead import (
     MIN_TURNOVER,
@@ -9379,6 +9380,9 @@ def power_gate(
     budget: int | None = typer.Option(
         None, "--budget", help="How many hypotheses you plan to judge in total."
     ),
+    pipe: str = typer.Option(
+        "monthly", "--pipe", help="Which pipe was measured: monthly, event or event-index."
+    ),
 ) -> None:
     """Decide whether a test is worth sealing at all - before it is sealed.
 
@@ -9417,7 +9421,20 @@ def power_gate(
             raise typer.BadParameter(f"--budget must be at least 1; got {budget}.")
         adjusted = adjust(budget)
         console.print(f"[dim]{adjusted.summary()}[/]")
-        target_t = adjusted.required_t
+        # **校正した線を当てる。** ここだけ `required_t`（3.02）のままだった
+        # ——他の判定箇所は全部 `calibrated_t` に移してあったのに、**この関門
+        # だけ取り残されていた**（2026-09-19 に #12 で気付いた）。
+        #
+        # **緩める向きの取り違えである。** 線が低ければ検出できる差も小さく
+        # 出るので、**通ってはいけない設計が §0 を通る。**
+        try:
+            target_t = line_for(pipe, budget)
+        except ValueError as problem:
+            raise typer.BadParameter(str(problem)) from problem
+        console.print(
+            f"[dim]線は `t ≥ {target_t:.2f}`（{pipe} の管。素の "
+            f"{adjusted.required_t:.2f} に、陰性対照で測った膨張を掛けた）。[/]"
+        )
         if budget != HYPOTHESIS_BUDGET:
             console.print(
                 f"[yellow]このプロジェクトが決めた予算は {HYPOTHESIS_BUDGET} 本である。[/] "

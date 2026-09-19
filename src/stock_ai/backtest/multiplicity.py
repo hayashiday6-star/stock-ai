@@ -197,6 +197,37 @@ def calibrated_t(
     return required_t(budget, alpha) * max(inflation, floor)
 
 
+#: 管ごとの膨張。**線の選び方をここ1箇所に置く。**
+#:
+#: **2箇所目を書いたら、そのうち片方だけ直す。** 実際 `docs/PASSING.md` を
+#: 作るところが月次の線を全部の形に当てていて、`power-gate` は校正前の
+#: 3.02 を使ったままだった（どちらも 2026-09-18〜19 に見つけた）。
+PIPES = {
+    "monthly": MEASURED_INFLATION,
+    "event": MEASURED_INFLATION_EVENT,
+    "event-index": MEASURED_INFLATION_EVENT_INDEX,
+}
+
+
+def line_for(pipe: str, budget: int = HYPOTHESIS_BUDGET, alpha: float = FAMILY_ALPHA) -> float:
+    """その管で封印に使う線。**管ごとに違う。**
+
+    Args:
+        pipe: `PIPES` の鍵。
+        budget: 試すつもりの本数。
+        alpha: 全体の有意水準。
+
+    Returns:
+        封印に使う `t`。
+
+    Raises:
+        ValueError: 知らない ``pipe``。
+    """
+    if pipe not in PIPES:
+        raise ValueError(f"知らない管 {pipe!r}。{' / '.join(PIPES)} のどれか。")
+    return calibrated_t(budget, alpha, inflation=PIPES[pipe])
+
+
 def adjust(budget: int, alpha: float = FAMILY_ALPHA) -> Adjustment:
     """予算から、1本あたりの有意水準と必要な `t` を出す。"""
     return Adjustment(budget=budget, alpha=alpha / budget, required_t=required_t(budget, alpha))
