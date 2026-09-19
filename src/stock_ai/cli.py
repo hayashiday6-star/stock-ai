@@ -6015,6 +6015,262 @@ def momentum_power(
     )
 
 
+@app.command(name="january-power")
+def january_power(
+    rosters: str = typer.Option(
+        str(DEFAULT_SNAPSHOT_DIR), "--rosters", help="Where the dated rosters live."
+    ),
+    valuation: str | None = typer.Option(None, "--valuation", help="Month-end valuation file."),
+    is_end: str = typer.Option("2017-12-31", "--is-end", help="Last day of the IS window."),
+    oos_periods: int = typer.Option(9, "--oos-periods", help="Januaries the judgement has."),
+) -> None:
+    """Measure the IS window for #14, so the gate table can be filled - not judge it.
+
+    **段2（自分の IS から推定する）の材料を出す。** 文献はこの環境から読めない
+    ので、見込みはここから置く（`docs/PREREG_JANUARY_JP.md` §0）。
+
+    **測るのはサイズの傾きである。** 時価総額で5分位に分け、**最小 − 最大**の
+    月次スプレッドを作り、**その年の1月**と**同じ年の他の月の平均**の差を取る。
+    観測は**年に1回**しかない。
+
+    **判定ではない。** IS は 2009-01〜2017-11 で、OOS（2018-01〜2026-08）には
+    1日も触れない。
+
+    **n=9 では `t` が正規から離れる。** 自由度8の正しい線は 4.33 で、`t` の SD
+    から出す 3.49 では **24% 甘い**（事前登録 §0）。ここでは**素の線 3.02**
+    （下限）と**自由度8の線**の両方で検出できる差を出す。
+    """
+    from stock_ai.backtest.january import (
+        JanuarySeries,
+        annual_episodes,
+    )
+    from stock_ai.backtest.january import (
+        build_series as size_series,
+    )
+    from stock_ai.backtest.multiplicity import (
+        HYPOTHESIS_BUDGET,
+        required_t,
+        student_t_line,
+    )
+    from stock_ai.backtest.power import estimate_power, gate, periods_needed
+    from stock_ai.core.logging import quiet_on_console
+    from stock_ai.data.valuation_monthly import DEFAULT_PATH
+    from stock_ai.data.valuation_monthly import read as read_valuation
+
+    settings = get_settings()
+    configure_logging(settings.log_level)
+
+    cut = _parse_date(is_end)
+    if cut is None:
+        raise typer.BadParameter(f"--is-end must be YYYY-MM-DD; got {is_end!r}.")
+    if oos_periods < 3:  # noqa: PLR2004 - 3点無いと散らばりが測れない
+        raise typer.BadParameter(f"--oos-periods must be at least 3; got {oos_periods}.")
+
+    snapshots = membership(Path(rosters))
+    if not snapshots:
+        console.print("[red]名簿が無い。[/] **渡さないと生存バイアスが入る。**")
+        raise typer.Exit(code=1)
+
+    frame = read_valuation(Path(valuation) if valuation else DEFAULT_PATH)
+    if frame.empty:
+        console.print("[red]月末の時価総額が無い。[/] `checks\\月末のPBRを抜き出す.bat` を先に。")
+        raise typer.Exit(code=1)
+
+    database = Database()
+    database.create_all()
+    console.print(
+        f"[dim]IS は {cut} まで（実現した月で切る）。OOS には1日も触れない。"
+        "時価総額で5分位・等加重・月次組み替え、スプレッドは**小型 − 大型**。[/]"
+    )
+
+    # **ループの中の1行記録を、貼られる出力に出さない。** ファイルには残る。
+    with quiet_on_console("stock_ai.backtest.quantile_series", "stock_ai.backtest.january"):
+        series = size_series(database, frame, end=cut, snapshots=snapshots)
+    console.print(series.summary())
+    for line in series.warnings():
+        console.print(f"[yellow]{line}[/]")
+    if not series.months:
+        raise typer.Exit(code=1)
+
+    # **生の差と α の両方を出す**（事前登録 §5）。#9 は「併記する」と書いて
+    # おきながら生の差だけで §0 を埋めた。
+    beta = series.beta_to_benchmark()
+    with quiet_on_console("stock_ai.backtest.january", "stock_ai.backtest.power"):
+        measured: dict[str, JanuarySeries] = {
+            "生の差": annual_episodes(series.months, series.spread(), series.counts),
+            "α（β を引いた）": annual_episodes(series.months, series.alpha(beta), series.counts),
+        }
+    annual = measured["生の差"]
+    console.print(annual.summary())
+    for line in annual.warnings():
+        console.print(f"[yellow]{line}[/]")
+    if len(annual.years) < 3:  # noqa: PLR2004 - 3点無いと散らばりが測れない
+        console.print(f"[red]1月の観測が {len(annual.years)} しかない。[/] 散らばりを測れない。")
+        raise typer.Exit(code=1)
+
+    # **判定の線ではない。線の下限である。** この管はまだ校正していないが、
+    # 膨張には下限 1.0 があるので（`INFLATION_FLOOR`）、**線がこれより下がる
+    # ことはない。** ここで通らないなら、対照を回しても通らない。
+    line_floor = required_t(HYPOTHESIS_BUDGET)
+    # **自由度は「判定に使う観測数 − 1」である。** IS の年数ではない。
+    small_line = student_t_line(oos_periods - 1, HYPOTHESIS_BUDGET)
+
+    table = Table(title="§0 に入れる材料（IS から。判定ではない）")
+    for column in ("項目", "生の差", "α（β を引いた）", "どこから"):
+        table.add_column(column, overflow="fold")
+
+    stats: dict[str, tuple[float, float, float, float, float]] = {}
+    with quiet_on_console("stock_ai.backtest.power"):
+        for label, built in measured.items():
+            # **膨張は 1.0 に固定する。** n=9 では Newey-West が不安定なので、
+            # 代わりに1次の自己相関を出す（事前登録 §5）。
+            estimate = estimate_power(built.episodes, lags=0)
+            stats[label] = (
+                estimate.daily_sd,
+                built.autocorrelation(),
+                fmean(built.episodes),
+                estimate.standard_error(len(built.episodes)),
+                estimate.detectable(oos_periods, target_t=line_floor),
+            )
+        raw, adjusted = stats["生の差"], stats["α（β を引いた）"]
+        tight = estimate_power(annual.episodes, lags=0).detectable(oos_periods, target_t=small_line)
+
+    table.add_row("1観測あたりのSD", f"{raw[0]:.2%}", f"{adjusted[0]:.2%}", "IS の1月ごと")
+    table.add_row(
+        "1次の自己相関",
+        f"{raw[1]:+.2f}",
+        f"{adjusted[1]:+.2f}",
+        "実測。**膨張は 1.0 に固定**（n=9 では Newey-West が不安定）",
+    )
+    table.add_row(
+        "検出できる差（素の線）",
+        f"1月 {raw[4]:.2%}",
+        f"1月 {adjusted[4]:.2%}",
+        f"t≥{line_floor:.2f}・{oos_periods}回。**線の下限**",
+    )
+    table.add_row(
+        f"検出できる差（自由度 {oos_periods - 1} の線）",
+        f"1月 {tight:.2%}",
+        "—",
+        f"t≥{small_line:.2f}。**対照がこれより甘い線を出すことはない**",
+    )
+    table.add_row("判定に使える回数", f"{oos_periods}", "—", "OOS の1月の回数。**月数ではない**")
+    table.add_row(
+        "入れ替わり", f"{series.turnover():.1%}／月", "—", "実測。**参考**——費用は引いていない"
+    )
+    table.add_row("β", f"{beta:+.2f}", "—", "スプレッドの、指数に対する感応度。IS で推定")
+    console.print(table)
+
+    tail = Table(title="裾（生の差・1月あたり）")
+    for column in ("項目", "値", "なぜ見るか"):
+        tail.add_column(column, overflow="fold")
+    tail.add_row("いちばん悪かった年", f"{annual.worst_year():+.2%}", "1回の事故の大きさ")
+    tail.add_row(
+        "下位5%の平均",
+        f"{annual.left_tail():+.2%}",
+        f"**{len(annual.years)}観測の 5% は1点に丸まる。** 最悪の年と一緒に読む",
+    )
+    tail.add_row("正だった年の割合", f"{annual.hit_rate():.1%}", "平均だけで語らない")
+    console.print(tail)
+
+    mean, stderr = raw[2], raw[3]
+    # **95% の幅も、正規ではなく `t` で取る。** n=9 なら 1.96 ではなく 2.31。
+    width = student_t_line(len(annual.episodes) - 1, budget=1)
+    low, high = mean - width * stderr, mean + width * stderr
+    console.print(
+        f"[bold]IS の差（1月あたり）: {mean:+.2%}[/] "
+        f"[dim]（95% の幅 {low:+.2%} 〜 {high:+.2%}。幅は t({len(annual.episodes) - 1}) の "
+        f"{width:.2f} で取った——**1.96 ではない**）[/]"
+    )
+    console.print(
+        f"[dim]α でも併記する: 1月 {adjusted[2]:+.2%}。"
+        "**線を当てるのは生の差のほうである**——§10 が「分位差」と書いている。[/]"
+    )
+    console.print(
+        f"[dim]内訳: 1月の平均 {fmean(annual.januaries):+.2%}、"
+        f"引いた他の月の平均 {fmean(annual.others):+.2%}。"
+        "**`t` だけ見ない。下にある量も出す**（`CLAUDE.md`）。[/]"
+    )
+
+    # **測る前にコミットした線である。** 動かさない（事前登録 §0）。
+    console.print()
+    held = mean >= JANUARY_FLOOR
+    if held:
+        console.print(f"[green]線（1月 {JANUARY_FLOOR:.1%}）は上回った。[/]")
+    else:
+        console.print(
+            f"[red]線を下回った。[/] IS の推定 1月 {mean:+.2%} が、"
+            f"**測る前にコミットした線 1月 {JANUARY_FLOOR:.1%} に届かない。**"
+        )
+        console.print(
+            "[dim]事前登録 §0 にそう書いてある。**下回ったら、将来売買しても"
+            "費用を賄えない。** 線は動かさない。[/]"
+        )
+
+    # **§0 の当てはめは `power.gate` に聞く。** ここで書き直さない。
+    #
+    # **1度書き直して、緩いほうに外した**（2026-09-19）。合格線は「**見込みの
+    # 下限**が検出できる差を上回ること」なのに、**上限**と比べていた。それは
+    # #7 が落ちた形——「見込みが検出できる差をまたぐ」——をそのまま通す。
+    console.print()
+    verdict = gate(raw[4], low, high)
+    colour = "green" if verdict.passed else "red"
+    console.print(
+        f"[{colour}]§0（素の線 t≥{line_floor:.2f}）: {verdict.verdict}。[/] {verdict.reading}"
+    )
+    console.print(
+        f"[dim]見込み {low:+.2%} 〜 {high:+.2%}、検出できる差 {raw[4]:.2%}。"
+        "**合格線は「下限が検出できる差を上回ること」の1つだけ**（`CLAUDE.md`）。[/]"
+    )
+
+    if verdict.passed:
+        # 素の線で通ったなら、**この管の線を測らないと決まらない。**
+        tighter = gate(tight, low, high)
+        console.print(
+            f"[dim]自由度 {oos_periods - 1} の線（t≥{small_line:.2f}）なら "
+            f"{tighter.verdict}。**その線は「対照が素直ならこうなる」値で、"
+            "実測ではない。**[/]"
+        )
+    else:
+        # **何年あれば足りるかを書く**（`CLAUDE.md`）。下限が 0 をまたいで
+        # いるなら、持ち上げる先が無い——#13 と同じである。
+        if low > 0:
+            years = periods_needed(raw[0], 1.0, low, target_t=line_floor)
+            console.print(
+                f"[dim]下限 {low:+.2%} を検出するには **{years:,} 回＝{years:,} 年**要る。"
+                f"手元の OOS は {oos_periods} 年で、**{years - oos_periods:,} 年足りない。**[/]"
+            )
+        else:
+            centre = periods_needed(raw[0], 1.0, max(mean, 1e-9), target_t=small_line)
+            console.print(
+                f"[dim]**下限が 0 をまたいでいるので、持ち上げる先が無い。** "
+                f"参考までに、**中心の {mean:+.2%}** を自由度 {oos_periods - 1} の線で"
+                f"検出するには **{centre:,} 年**要る（手元は {oos_periods} 年、"
+                f"**{max(centre - oos_periods, 0):,} 年足りない**）。"
+                "**中心は合否に使わない**——#7 はそれで回して落ちた。[/]"
+            )
+
+    # **結論は1つだけ、最後に置く。** 途中の行を結論と読まれないため——
+    # 線と関門は**どちらか一方でも閉じる**（事前登録 §10）。
+    console.print()
+    if not held:
+        console.print(
+            "[bold red]結論: 封印しない。[/] **線を下回っている。** "
+            "上の関門をどう読んでも変わらない（事前登録 §10）。"
+        )
+    elif not verdict.passed:
+        console.print(
+            "[bold red]結論: 封印しない。[/] **§0 の関門を通らない。** "
+            "**対照を回すまでもない**——線には下限があるので、"
+            "測っても検出できる差は縮まない。"
+        )
+    else:
+        console.print(
+            "[bold]結論: ここでは決まらない。[/] **この管の対照を回してから決める**"
+            "（事前登録 §0・§10）。"
+        )
+
+
 @app.command(name="valuation-monthly")
 def valuation_monthly(
     directory: str = typer.Option(
@@ -7379,6 +7635,16 @@ TURN_OF_MONTH_FLOOR = 0.024
 #:
 #: **測ってから動かさない。**
 MOMENTUM_FLOOR = 0.02
+
+
+#: #14 の「封印しない線」。**測る前にコミットした**（`docs/PREREG_JANUARY_JP.md` §0）。
+#:
+#: いちばん安い実装は**12月末に仕込んで1月末に外す**形で、**年1往復**である。
+#: 両端がまるごと入れ替わるので入れ替わり率 1.0、往復 0.40% を掛けて **年 0.4%**。
+#: **観測は年に1回なので、1月あたり 0.4% と年 0.4% は同じ数である。**
+#:
+#: **甘いほうを採った**（#13 と同じ扱い）。**測ってから動かさない。**
+JANUARY_FLOOR = 0.004
 
 
 def _oos_session_count(database: Database, benchmark: str, holding: int) -> int:

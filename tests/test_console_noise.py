@@ -143,3 +143,50 @@ def contextlib_suppress():
     import contextlib
 
     return contextlib.suppress(RuntimeError)
+
+
+class TestTheJanuaryCommandQuietsItsParts:
+    """#14 も、**貼られる出力に1行記録を混ぜない。**
+
+    こちらは 400回のループではないが、`build_panel` が全銘柄を読み、
+    `estimate_power` が推定量の数だけ1行ずつ出す。**貼る側から見れば同じ
+    ことである。**
+    """
+
+    def test_it_quiets_the_panel_builder(self) -> None:
+        import inspect
+
+        from stock_ai import cli
+
+        body = inspect.getsource(cli.january_power)
+
+        assert '"stock_ai.backtest.quantile_series"' in body
+
+    def test_it_quiets_the_power_estimate(self) -> None:
+        import inspect
+
+        from stock_ai import cli
+
+        body = inspect.getsource(cli.january_power)
+
+        assert '"stock_ai.backtest.power"' in body
+
+    def test_it_quiets_its_own_module(self) -> None:
+        import inspect
+
+        from stock_ai import cli
+
+        body = inspect.getsource(cli.january_power)
+
+        assert '"stock_ai.backtest.january"' in body
+
+    def test_the_conclusion_is_printed_once_at_the_end(self) -> None:
+        """**途中の行を結論と読まれない。** 線と関門はどちらか一方でも閉じる。"""
+        import inspect
+
+        from stock_ai import cli
+
+        body = inspect.getsource(cli.january_power)
+
+        assert body.count("結論: ") == 3
+        assert "結論" not in body[: body.index("held = mean >= JANUARY_FLOOR")]

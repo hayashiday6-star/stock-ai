@@ -22,12 +22,24 @@ import dataclasses
 import datetime as dt
 
 import numpy as np
+import pandas as pd
 
 from stock_ai.backtest import tails
-from stock_ai.backtest.lowvol import ROUND_TRIP_COST
+from stock_ai.backtest.lowvol import MIN_SYMBOLS_PER_MONTH, ROUND_TRIP_COST
+from stock_ai.backtest.lowvol_census import formation_dates
+from stock_ai.backtest.monthly_grid import build_grid, listed_on
+from stock_ai.backtest.pead import MIN_TURNOVER, TURNOVER_WINDOW, Period
+from stock_ai.backtest.reversal import BENCHMARK
+from stock_ai.backtest.reversal_census import QUANTILES
 from stock_ai.core.logging import get_logger
+from stock_ai.data.schema import CLOSE, OPEN, VOLUME, split_adjusted
+from stock_ai.database.engine import Database
+from stock_ai.database.repository import PriceRepository
 
 logger = get_logger(__name__)
+
+#: （その月末の日付, 値）。**日付を捨てない**——月で引いて日付で弾くため。
+_Observed = tuple[dt.date, float]
 
 
 @dataclasses.dataclass
@@ -129,3 +141,226 @@ class QuantileSeries:
     def hit_rate(self) -> float:
         """スプレッドが正だった月の割合。**平均だけで語らない。**"""
         return tails.hit_rate(self.spread())
+
+
+def monthly_values(frame: pd.DataFrame, column: str) -> dict[tuple[str, pd.Period], _Observed]:
+    """（銘柄, 月）→（その月末の日付, 値）。
+
+    **月で引く。日付そのものでは引かない。** 月の途中で上場廃止になった銘柄の
+    最後の観測は、ベンチマークの月末とは違う日である。日付で引くと、**その銘柄
+    が丸ごと落ちる。**
+
+    Args:
+        frame: :func:`~stock_ai.data.valuation_monthly.read` が返す形。
+        column: 取り出す列。
+
+    Returns:
+        （銘柄, 月）で引ける表。**値が空の行は入らない。**
+
+    Raises:
+        KeyError: ``column`` がその表に無い。
+    """
+    found: dict[tuple[str, pd.Period], _Observed] = {}
+    if frame.empty:
+        return found
+    if column not in frame.columns:
+        raise KeyError(f"{column!r} がこの表に無い。在るのは {list(frame.columns)}。")
+    months = pd.to_datetime(frame["date"]).dt.to_period("M")
+    for (symbol, month), date, value in zip(
+        zip(frame["symbol"], months, strict=True),
+        frame["date"],
+        frame[column],
+        strict=True,
+    ):
+        if value is None or pd.isna(value):
+            continue
+        found[(symbol, month)] = (date, float(value))
+    return found
+
+
+def value_on(
+    values: dict[tuple[str, pd.Period], _Observed],
+    symbol: str,
+    on: dt.date,
+) -> float | None:
+    """組み替え日 ``on`` の時点で使ってよい値。無ければ ``None``。
+
+    **組み替え日より後の値を使わない。** 先読みである。月で引いておいて日付で
+    弾くのは、月の途中で上場廃止になった銘柄を落とさないためである。
+
+    **この関門は1箇所にしか無い。** 呼ぶ側で書き直すと、片方だけ先読みを通す
+    形になりうる。
+    """
+    found = values.get((symbol, pd.Period(on, freq="M")))
+    if found is None:
+        return None
+    when, value = found
+    return None if when > on else value
+
+
+@dataclasses.dataclass
+class Panel:
+    """分位を作った結果と、**作れなかったものの数**。
+
+    **どう並べるかは呼ぶ側が決める。** ここは「材料が揃ったあと」だけを扱う。
+    材料の小さい順に並べるので、**添字0が最小、末尾が最大**である。
+    """
+
+    months: list[dt.date]
+    quantiles: list[tuple[float, ...]]
+    members: list[tuple[frozenset[str], frozenset[str]]]
+    counts: list[int]
+    benchmark: list[float]
+    skipped_thin: int
+    skipped_no_value: int
+    top_cutoff: list[float]
+    """月ごとの、**上端の分位に入るのに要った材料の値**（その分位の最小値）。"""
+
+    rejected_illiquid: list[list[float]]
+    """月ごとの、**流動性で落とした銘柄の材料の値。** 何を削ったかを見るため。"""
+
+
+def build_panel(  # noqa: PLR0913 - 事前登録が固定した条件をすべて受け取る
+    database: Database,
+    values: dict[tuple[str, pd.Period], _Observed],
+    period: Period = Period.ALL,
+    symbols: list[str] | None = None,
+    benchmark: str = BENCHMARK,
+    start: dt.date | None = None,
+    end: dt.date | None = None,
+    min_turnover: float = MIN_TURNOVER,
+    min_symbols: int = MIN_SYMBOLS_PER_MONTH,
+    quantiles: int = QUANTILES,
+    snapshots: dict[dt.date, set[str]] | None = None,
+) -> Panel:
+    """月末の値で並べ、翌月のリターンを分位ごとに集める。
+
+    **#9（PBR）と #14（時価総額）が同じものを呼ぶ。** 並べる材料しか違わない
+    のに2つ書けば、片方だけ直したときに気付けない。
+
+    Args:
+        database: 価格の保存先。
+        values: :func:`monthly_values` が返す表。**小さい順に並ぶ。**
+        period: IS / OOS / ALL。
+        symbols: 対象銘柄。省略時は ``market="JP"`` の全銘柄。
+        benchmark: ベンチマーク。**暦もこれに合わせる。**
+        start: この日より前の組み替え日を使わない。
+        end: **この日より後のデータを1つも使わない。** 退場日まで見る。
+        min_turnover: 流動性の下限（円）。
+        min_symbols: 分位を作るのに必要な最低銘柄数。
+        quantiles: 分位数。
+        snapshots: 日付ごとの名簿。**渡さないと生存バイアスが入る。**
+
+    Returns:
+        :class:`Panel`。
+
+    Raises:
+        ValueError: ベンチマークの価格が無いか、組み替え日が足りない。
+    """
+    from stock_ai.database.repository import list_securities
+
+    with database.session() as session:
+        price_repo = PriceRepository(session)
+        bench_raw = price_repo.get_raw_prices(benchmark)
+        if bench_raw.empty:
+            raise ValueError(f"ベンチマーク {benchmark!r} の価格が無い。暦を決められない。")
+        bench = split_adjusted(bench_raw)
+        calendar = bench.index
+        bench_open = bench[OPEN].to_numpy(dtype=float)
+        grid = build_grid(calendar, formation_dates(calendar), period, start, end)
+
+        ordered_snapshots = sorted(snapshots) if snapshots else []
+        if symbols is None:
+            symbols = [sym for sym, market in list_securities(session) if market == "JP"]
+        targets = [symbol for symbol in symbols if symbol != benchmark]
+
+        buckets: dict[int, list[tuple[float, float, str]]] = {index: [] for index, _ in grid.usable}
+        rejected: dict[int, list[float]] = {index: [] for index, _ in grid.usable}
+        no_value = 0
+
+        for symbol in targets:
+            raw = price_repo.get_raw_prices(symbol)
+            if raw.empty:
+                continue
+            adjusted = split_adjusted(raw)
+            opens = adjusted[OPEN].to_numpy(dtype=float)
+            closes = adjusted[CLOSE].to_numpy(dtype=float)
+            volumes = adjusted[VOLUME].to_numpy(dtype=float)
+            own = adjusted.index
+
+            for index, position in grid.usable:
+                on = calendar[position].date()
+                if ordered_snapshots and not listed_on(
+                    symbol, on, ordered_snapshots, snapshots, False, set()
+                ):
+                    continue
+                value = value_on(values, symbol, on)
+                if value is None:
+                    no_value += 1
+                    continue
+
+                own_position = own.searchsorted(calendar[position])
+                if own_position >= len(own) or own.values[own_position] != calendar[position]:
+                    continue
+                entry = own_position + 1
+                exit_at = own.searchsorted(calendar[grid.exit_at(index)])
+                if entry >= len(own) or exit_at >= len(own) or exit_at <= entry:
+                    continue
+                if not (opens[entry] > 0) or not (opens[exit_at] > 0):
+                    continue
+                window = closes[max(0, own_position - TURNOVER_WINDOW) : own_position + 1]
+                traded = volumes[max(0, own_position - TURNOVER_WINDOW) : own_position + 1]
+                level = float(np.median(window * traded)) if len(window) else float("nan")
+                if not np.isfinite(level) or level < min_turnover:
+                    # **削った側も残す。** 何を削ったのかは、残ったものからは
+                    # 見えない（#14 の流動性の絞りは小型株をまるごと削る）。
+                    rejected[index].append(value)
+                    continue
+                buckets[index].append((value, float(opens[exit_at] / opens[entry] - 1.0), symbol))
+
+    months: list[dt.date] = []
+    rows: list[tuple[float, ...]] = []
+    members: list[tuple[frozenset[str], frozenset[str]]] = []
+    counts: list[int] = []
+    bench_returns: list[float] = []
+    cutoffs: list[float] = []
+    illiquid: list[list[float]] = []
+    thin = 0
+
+    for index, position in grid.usable:
+        holding = buckets[index]
+        if len(holding) < max(min_symbols, quantiles):
+            thin += 1
+            continue
+        entry = bench_open[position + 1]
+        leave = bench_open[grid.exit_at(index)]
+        if not (entry > 0) or not (leave > 0):
+            thin += 1
+            continue
+        holding.sort(key=lambda row: row[0])
+        size = len(holding) // quantiles
+        groups = [holding[step * size : (step + 1) * size] for step in range(quantiles)]
+        rows.append(tuple(float(np.mean([row[1] for row in group])) for group in groups))
+        members.append(
+            (
+                frozenset(row[2] for row in groups[0]),
+                frozenset(row[2] for row in groups[-1]),
+            )
+        )
+        months.append(calendar[position].date())
+        counts.append(len(holding))
+        bench_returns.append(float(leave / entry - 1.0))
+        cutoffs.append(min(row[0] for row in groups[-1]))
+        illiquid.append(rejected[index])
+
+    return Panel(
+        months=months,
+        quantiles=rows,
+        members=members,
+        counts=counts,
+        benchmark=bench_returns,
+        skipped_thin=thin,
+        skipped_no_value=no_value,
+        top_cutoff=cutoffs,
+        rejected_illiquid=illiquid,
+    )

@@ -35,6 +35,7 @@
 from __future__ import annotations
 
 import dataclasses
+import math
 from statistics import NormalDist
 
 #: 補正しないときの両側の有意水準。`power.TARGET_T = 2.0` はこれに対応する。
@@ -187,6 +188,98 @@ def required_t(budget: int, alpha: float = FAMILY_ALPHA) -> float:
     if not 0.0 < alpha < 1.0:
         raise ValueError(f"alpha must be between 0 and 1; got {alpha}.")
     return NormalDist().inv_cdf(1.0 - alpha / budget / 2.0)
+
+
+def _abs_t_cdf(t: float, df: int) -> float:
+    """`P(|T| ≤ t)`。**整数自由度の閉じた式である**（Abramowitz & Stegun 26.7.3/4）。
+
+    `scipy` はこのプロジェクトに入っていない。**数値積分で近似すると、
+    刻みを間違えても答えらしきものが返る**ので、有限和で厳密に出す。
+
+    Args:
+        t: 0 以上。
+        df: 自由度。1 以上の整数。
+
+    Returns:
+        `|T|` が ``t`` 以下になる確率。
+
+    Raises:
+        ValueError: ``t`` が負、または ``df`` が 1 未満。
+    """
+    if t < 0:
+        raise ValueError(f"t must not be negative; got {t}.")
+    if df < 1:
+        raise ValueError(f"df must be at least 1; got {df}.")
+
+    theta = math.atan(t / math.sqrt(df))
+    if df % 2 == 1:
+        # 奇数: (2/π)[θ + sinθ(cosθ + (2/3)cos³θ + …)]。df=1 は括弧の中が空。
+        term = math.cos(theta)
+        total = 0.0
+        for step in range(1, (df - 1) // 2 + 1):
+            total += term
+            term *= (2 * step) / (2 * step + 1) * math.cos(theta) ** 2
+        return min(1.0, 2.0 / math.pi * (theta + math.sin(theta) * total))
+
+    # 偶数: sinθ[1 + (1/2)cos²θ + (1·3)/(2·4)cos⁴θ + …]
+    term = 1.0
+    total = 0.0
+    for step in range(1, df // 2 + 1):
+        total += term
+        term *= (2 * step - 1) / (2 * step) * math.cos(theta) ** 2
+    return min(1.0, math.sin(theta) * total)
+
+
+def student_t_line(
+    df: int,
+    budget: int = HYPOTHESIS_BUDGET,
+    alpha: float = FAMILY_ALPHA,
+) -> float:
+    """観測が ``df + 1`` 個しかないときの、**正しい線**。
+
+    `required_t` は正規分布の分位点である。**それでよいのは、自由度が大きくて
+    `t` がほとんど正規のときだけ**である。
+
+    | 自由度 | ここが返す値 | `required_t` に SD を掛けた値 |
+    |---|---|---|
+    | 8 | **4.33** | 3.49（**24% 甘い**） |
+    | 103 | 3.10 | 3.05 |
+    | 210 | 3.06 | 3.04 |
+
+    **既存の管を遡って直す話ではない。** 自由度が大きければ両者は一致する。
+    **年1観測の管（`docs/PREREG_JANUARY_JP.md`、n=9）だけが違う。**
+
+    Args:
+        df: 自由度。**観測数 − 1** である。
+        budget: 試すつもりの本数。
+        alpha: 全体の有意水準。
+
+    Returns:
+        両側で `alpha / budget` を切る `t`。
+
+    Raises:
+        ValueError: ``df`` が 1 未満、``budget`` が 1 未満、``alpha`` が 0〜1 の外。
+    """
+    if df < 1:
+        raise ValueError(f"df must be at least 1; got {df}.")
+    if budget < 1:
+        raise ValueError(f"budget must be at least 1; got {budget}.")
+    if not 0.0 < alpha < 1.0:
+        raise ValueError(f"alpha must be between 0 and 1; got {alpha}.")
+
+    target = 1.0 - alpha / budget
+    low, high = 0.0, 1.0
+    while _abs_t_cdf(high, df) < target:
+        high *= 2.0
+        if high > 1e12:  # pragma: no cover - 到達しない。無限ループにしないため
+            raise ValueError(f"df={df} で線が見つからない。")
+    for _ in range(200):
+        mid = (low + high) / 2.0
+        if _abs_t_cdf(mid, df) < target:
+            low = mid
+        else:
+            high = mid
+    return (low + high) / 2.0
 
 
 def calibrated_t(
