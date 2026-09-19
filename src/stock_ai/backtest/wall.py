@@ -46,6 +46,7 @@ from collections.abc import Callable
 import numpy as np
 import pandas as pd
 
+from stock_ai.backtest.discontinuity import crossings, session_breaks, spans_break
 from stock_ai.backtest.lowvol_census import formation_dates
 from stock_ai.backtest.pead import MIN_TURNOVER, TURNOVER_WINDOW
 from stock_ai.core.logging import get_logger
@@ -149,6 +150,13 @@ class Materials:
     skipped_short: int
     """52週に足りず、近さを作れなかった銘柄。"""
 
+    dropped_broken: int
+    """**不連続をまたぐので捨てたイベント**（IS）。
+
+    **5営業日で −20% は、調整漏れの分割がそう見える形**である。#6 は不連続を
+    外すだけで SD が 24.42% → 3.64% になった（`discontinuity`）。
+    """
+
     def summary(self) -> str:
         """1行のまとめ。**平均は出さない。**"""
         return (
@@ -157,6 +165,7 @@ class Materials:
             f"（履歴が足りず外した銘柄 {self.skipped_short:,}）、"
             f"下窓 {len(self.gaps_is):,} 件（IS）、"
             f"急落 {len(self.knives_is):,} 件（IS）。"
+            f"**不連続をまたぐので捨てた {self.dropped_broken:,} 件。**"
         )
 
 
@@ -197,7 +206,7 @@ def scan(
     knives_is: list[tuple[str, dt.date]] = []
     gap_days_oos: set[dt.date] = set()
     knife_days_oos: set[dt.date] = set()
-    read = short = 0
+    read = short = dropped = 0
 
     with database.session() as session:
         if symbols is None:
@@ -223,6 +232,15 @@ def scan(
 
             liquid = _liquid(closes, volumes, min_turnover)
             days = [stamp.date() for stamp in index]
+            # **不連続をまたぐ窓を使わない。** 規則も定数も #6 と同じものを
+            # 呼ぶ（`discontinuity`）——ここで近いものを書き直すと、数えた
+            # 件数と実際に回したときの件数がずれる。
+            prefix = crossings(session_breaks(adjusted[CLOSE]))
+            last = len(closes) - 1
+
+            def clean(first: int, until: int, _prefix=prefix, _last=last) -> bool:
+                """``[first, until]`` に不連続が無いか。**端は切り詰める。**"""
+                return not spans_break(_prefix, max(first, 0), min(until, _last))
 
             # --- 下窓（前日終値 → 当日始値）------------------------------
             previous, opened = closes[:-1], opens[1:]
@@ -230,7 +248,13 @@ def scan(
             fell = np.zeros(len(previous), dtype=bool)
             fell[usable] = opened[usable] / previous[usable] - 1.0 <= -GAP_DOWN
             for offset in np.flatnonzero(fell & liquid[1:]):
-                when = days[offset + 1]
+                position = offset + 1
+                # **窓の中に不連続があれば使わない。** 前日も見る——窓そのもの
+                # が不連続でできている形を外すため。
+                if not clean(position - 1, position + HOLDING):
+                    dropped += 1
+                    continue
+                when = days[position]
                 if when <= IS_END:
                     gaps_is.append((symbol, when))
                 elif OOS_FROM <= when <= OOS_END:
@@ -240,10 +264,16 @@ def scan(
             if len(closes) > KNIFE_DAYS:
                 before, after = closes[:-KNIFE_DAYS], closes[KNIFE_DAYS:]
                 usable = (before > 0) & (after > 0)
-                dropped = np.zeros(len(before), dtype=bool)
-                dropped[usable] = after[usable] / before[usable] - 1.0 <= -KNIFE_DROP
-                for offset in np.flatnonzero(dropped & liquid[KNIFE_DAYS:]):
-                    when = days[offset + KNIFE_DAYS]
+                fell_hard = np.zeros(len(before), dtype=bool)
+                fell_hard[usable] = after[usable] / before[usable] - 1.0 <= -KNIFE_DROP
+                for offset in np.flatnonzero(fell_hard & liquid[KNIFE_DAYS:]):
+                    position = offset + KNIFE_DAYS
+                    # **急落そのものが不連続でないこと。** 1:2 の併合は
+                    # −50% に見える。そして窓の中も見る。
+                    if not clean(position - KNIFE_DAYS, position + HOLDING):
+                        dropped += 1
+                        continue
+                    when = days[position]
                     if when <= IS_END:
                         knives_is.append((symbol, when))
                     elif OOS_FROM <= when <= OOS_END:
@@ -274,6 +304,7 @@ def scan(
         knives_oos_days=len(knife_days_oos),
         symbols=read,
         skipped_short=short,
+        dropped_broken=dropped,
     )
 
 

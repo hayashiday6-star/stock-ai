@@ -41,10 +41,11 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
+from stock_ai.backtest.discontinuity import session_breaks
 from stock_ai.backtest.lowvol_census import formation_dates
 from stock_ai.backtest.monthly_grid import build_grid, listed_on
 from stock_ai.backtest.pead import MIN_TURNOVER, TURNOVER_WINDOW, Period
-from stock_ai.backtest.reversal import BENCHMARK, MAX_SESSION_MOVE
+from stock_ai.backtest.reversal import BENCHMARK
 from stock_ai.backtest.reversal_census import QUANTILES
 from stock_ai.core.logging import get_logger
 from stock_ai.data.schema import CLOSE, OPEN, VOLUME, split_adjusted
@@ -342,11 +343,7 @@ def build_series(
                 .reindex(calendar)
                 .to_numpy(dtype=float)
             )
-            filled = adjusted[CLOSE].ffill().to_numpy(dtype=float)
-            with np.errstate(divide="ignore", invalid="ignore"):
-                step = filled[1:] / filled[:-1]
-            broken = np.zeros(len(calendar), dtype=bool)
-            broken[1:] = np.isfinite(step) & (np.abs(step - 1.0) > MAX_SESSION_MOVE)
+            broken = session_breaks(adjusted[CLOSE])
             breaks = np.concatenate(([0], np.cumsum(broken)))
             returns = np.full(len(calendar), np.nan)
             with np.errstate(divide="ignore", invalid="ignore"):

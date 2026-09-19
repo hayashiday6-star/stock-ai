@@ -6367,7 +6367,7 @@ def wall_survey(
     """
     from stock_ai.backtest.event_window import event_sample
     from stock_ai.backtest.multiplicity import line_for, student_t_line
-    from stock_ai.backtest.power import estimate_power
+    from stock_ai.backtest.power import estimate_power, trimmed_variance
     from stock_ai.backtest.quantile_series import build_panel
     from stock_ai.backtest.universe_benchmark import equal_weighted_windows
     from stock_ai.backtest.wall import (
@@ -6408,8 +6408,11 @@ def wall_survey(
     returns, dates, _month_ends = _calendar_pipe(benchmark)
     years, episodes = halloween_episodes(returns, dates, end=IS_END)
     walls: list[Wall] = []
+    # **裾の感度を見るために、系列そのものを取っておく。** 平均は取らない。
+    sampled: dict[str, list[float]] = {}
     if len(episodes) >= 3:  # noqa: PLR2004 - 3点無いと散らばりが測れない
         oos_years = complete_halloween_years(OOS_FROM, OOS_END)
+        sampled["Sell in May（冬 − 夏）"] = episodes
         with quiet_on_console("stock_ai.backtest.power"):
             sd = estimate_power(episodes, lags=0).daily_sd
         walls.append(
@@ -6461,6 +6464,7 @@ def wall_survey(
         with database.session() as session:
             calendar = split_adjusted(PriceRepository(session).get_raw_prices(benchmark)).index
         oos_months = usable_rebalances(calendar, OOS_FROM, OOS_END)
+        sampled["新値には黙ってつけ"] = spread
         with quiet_on_console("stock_ai.backtest.power"):
             sd = estimate_power(spread, lags=3).daily_sd
         walls.append(
@@ -6508,6 +6512,7 @@ def wall_survey(
         if not oos_days:
             console.print(f"[yellow]**{name} は OOS に1日も無い。** 壁を出せない。[/]")
             continue
+        sampled[name] = sample.values
         with quiet_on_console("stock_ai.backtest.power"):
             sd = estimate_power(sample.values, lags=HOLDING).daily_sd
         walls.append(
@@ -6540,6 +6545,21 @@ def wall_survey(
             console.print(
                 f"[yellow]**{wall.name}: 判定に使える観測が {wall.observations} しか無い。** "
                 "壁の高さも、その推定も当てにならない。[/]"
+            )
+
+    # **SD が数日でできていないか。** 1% を落として半分以下になるなら、それは
+    # 「毎日どれくらい散らばるか」ではなく「まれに何が起きるか」を測っている
+    # （`power.trimmed_variance`）。**壁の高さも、その数日で決まる。**
+    for label, values in sampled.items():
+        if len(values) < 100:  # noqa: PLR2004 - 1% を落とせる最小の数
+            continue
+        variance, dropped = trimmed_variance(values, fraction=0.01)
+        trimmed = variance**0.5
+        if trimmed > 0 and (estimate_power(values, lags=0).daily_sd / trimmed) > TAIL_DRIVEN:
+            console.print(
+                f"[yellow]**{label}: 散らばりの大半が数日でできている。** "
+                f"外れた {dropped} 件を落とすと SD が {trimmed:.2%} まで下がる"
+                f"（{len(values):,} 件中）。**壁の高さも、その数日で決まっている。**[/]"
             )
 
     table = Table(title="壁の下見（**効果は出していない**）")
@@ -7974,6 +7994,13 @@ JANUARY_FLOOR = 0.004
 #: 10 は暦から出した値ではなく、**「片手で数えられる」を超えるところ**に
 #: 置いただけである——そう書いておく。
 THIN_OBSERVATIONS = 10
+
+#: SD が裾でできていると言う比。**1% を落として、これだけ縮んだら警告。**
+#:
+#: `power.trimmed_variance` の言うとおり、**推定量ではなく感度である。**
+#: 2 に根拠は無い——「半分以下になる」を数にしただけで、そう書いておく。
+#: **壁の高さが数日で決まっているなら、その壁は当てにならない。**
+TAIL_DRIVEN = 2.0
 
 
 def _oos_session_count(database: Database, benchmark: str, holding: int) -> int:

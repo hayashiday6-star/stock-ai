@@ -202,6 +202,7 @@ def _prices(
     gaps: tuple[int, ...] = (),
     crashes: tuple[int, ...] = (),
     index: pd.DatetimeIndex | None = None,
+    merger: int | None = None,
 ) -> pd.DataFrame:
     """乱数歩行に、下窓と急落を**決め打ちの位置**で仕込む。
 
@@ -216,6 +217,10 @@ def _prices(
         # **定数から出す。** 幅を書き写すと、定数を動かしたとき仕込みだけ古くなる。
         steps[start : start + KNIFE_DAYS] = np.log(1.0 - KNIFE_DROP) / KNIFE_DAYS * 1.2
     close = 1_000.0 * np.exp(np.cumsum(steps))
+    if merger is not None:
+        # **調整漏れの併合。** #6 の 8308 と同じ形——1営業日で桁が変わる。
+        # **これは値動きではない**（`discontinuity`）。
+        close[merger:] *= 0.001
     opens = close.copy()
     for position in gaps:
         # **前日終値から当日始値が落ちる形。** 終値そのものは動かさない。
@@ -334,6 +339,59 @@ class TestTheScanFindsWhatItSaysItFinds:
 
         with pytest.raises(ValueError, match="銘柄が1つも無い"):
             scan(database, symbols=[])
+
+
+class TestADiscontinuityIsNotAnEvent:
+    """**5営業日で −20% は、調整漏れの分割がそう見える形である。**
+
+    #6 は不連続を外すだけで SD が 24.42% → 3.64% になった。ここで外さないと、
+    **壁の高さが桁で変わる**——実データで 273%／イベント日 が出た
+    （2026-09-19）。
+    """
+
+    @staticmethod
+    def _database(merger: int | None) -> tuple[Database, list[str]]:
+        database = Database("sqlite:///:memory:")
+        database.create_all()
+        symbols = [f"{1400 + index:04d}" for index in range(5)]
+        with database.session() as session:
+            repo = PriceRepository(session)
+            for index, symbol in enumerate(symbols):
+                repo.upsert_prices(symbol, _prices(seed=index, merger=merger), market="JP")
+        return database, symbols
+
+    def test_a_merger_does_not_become_a_falling_knife(self) -> None:
+        where = _is_position()
+        database, symbols = self._database(merger=where)
+
+        found = scan(database, symbols=symbols)
+
+        broke = _INDEX[where].date()
+        assert broke not in [when for _symbol, when in found.knives_is]
+        assert found.dropped_broken > 0
+
+    def test_without_the_merger_that_day_is_an_event(self) -> None:
+        """**この検査が落ちる条件を、実際に1つ作る。**
+
+        同じ位置に、不連続ではない急落を置く。**外れるのは不連続のほうだけ。**
+        """
+        where = _is_position()
+        database = Database("sqlite:///:memory:")
+        database.create_all()
+        symbols = [f"{1400 + index:04d}" for index in range(5)]
+        with database.session() as session:
+            repo = PriceRepository(session)
+            for index, symbol in enumerate(symbols):
+                repo.upsert_prices(
+                    symbol,
+                    _prices(seed=index, crashes=(where - KNIFE_DAYS,)),
+                    market="JP",
+                )
+
+        found = scan(database, symbols=symbols)
+
+        assert found.knives_is
+        assert found.dropped_broken == 0
 
 
 class TestCountingTheJudgementWindow:
@@ -497,3 +555,47 @@ class TestTheCommandRunsOnARealDatabase:
                 benchmark="1306",
                 rosters=str(_pathlib.Path(tmp_path) / "missing"),
             )
+
+
+class TestTheTailSensitivityIsShown:
+    """**壁の高さが数日で決まっていないか。**
+
+    実データで 273%／イベント日 が出た（2026-09-19）。不連続を外したうえで
+    なお裾が効いているなら、**その壁は当てにならない。**
+    """
+
+    def test_the_command_measures_it(self) -> None:
+        import inspect
+
+        from stock_ai import cli
+
+        body = inspect.getsource(cli.wall_survey)
+
+        assert "trimmed_variance(" in body
+
+    def test_the_threshold_says_where_it_came_from(self) -> None:
+        """**根拠の無い数字を、根拠があるように書かない。**"""
+        import inspect
+
+        from stock_ai import cli
+
+        source = inspect.getsource(cli)
+
+        assert "2 に根拠は無い" in source
+
+    def test_a_tail_driven_series_is_caught(self) -> None:
+        """**この検査が落ちる条件を、実際に1つ作る。**"""
+        from stock_ai.backtest.power import estimate_power, trimmed_variance
+        from stock_ai.cli import TAIL_DRIVEN
+
+        quiet = [0.01, -0.01] * 100
+        spiky = [*quiet, 50.0, -50.0]
+
+        plain = estimate_power(spiky, lags=0).daily_sd
+        trimmed = trimmed_variance(spiky, fraction=0.01)[0] ** 0.5
+
+        assert plain / trimmed > TAIL_DRIVEN
+        assert (
+            estimate_power(quiet, lags=0).daily_sd
+            / trimmed_variance(quiet, fraction=0.01)[0] ** 0.5
+        ) < TAIL_DRIVEN
