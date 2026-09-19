@@ -6344,6 +6344,57 @@ def _wall_document(walls: list[object], missing: list[object], span: str) -> str
     return "\n".join(lines)
 
 
+@app.command(name="ex-date-coverage")
+def ex_date_coverage_command(
+    directory: str = typer.Option(
+        str(DEFAULT_ARCHIVE_DIR), "--dir", help="Where the archived originals live."
+    ),
+) -> None:
+    """Count how many ex-dividend dates the archive can supply - nothing is fetched.
+
+    **#9（窓は埋まる）の設計がこれに掛かっている。** 前日終値から −3% の下窓
+    は、**権利落ちがまさにそう見える。** 外せなければ、事象の定義が配当を拾う。
+
+    `/fins/dividend` は **Premium のエンドポイント**なので、解約後は原本に
+    在るものがすべてである。**取りには行かない。**
+
+    **列ごとに独立に数える。** 行が読めたことと、`ExDate` が埋まっている
+    ことは別である。
+    """
+    from stock_ai.data.jquants_dividend import ex_date_coverage
+
+    settings = get_settings()
+    configure_logging(settings.log_level)
+
+    found = ex_date_coverage(Path(directory))
+    console.print(found.summary())
+    for line in found.warnings():
+        console.print(f"[yellow]{line}[/]")
+
+    table = Table(title="権利落ち日（#9 で外す材料）")
+    for column in ("項目", "値", "なぜ見るか"):
+        table.add_column(column, overflow="fold")
+    table.add_row("原本の本数", f"{found.files:,}", "0 なら保存できていない")
+    table.add_row("行", f"{found.rows:,}", "読めた行")
+    table.add_row(
+        "`ExDate` が在る行",
+        f"{found.with_ex_date:,}",
+        "**行数と別に数える。** 読めたことと、埋まっていることは別",
+    )
+    table.add_row("別々の権利落ち", f"{found.days:,}", "**外す対象はこれ**（銘柄 × 日）")
+    table.add_row("IS（〜2017-12）", f"{found.in_is:,}", "推定に使えるか")
+    table.add_row("OOS（2018-01〜）", f"{found.in_oos:,}", "判定に使えるか")
+    console.print(table)
+
+    if not found.days:
+        console.print(
+            "[red]外す材料が無い。[/] **#9 の設計を変えることになる**"
+            "——分割日だけで代用するか、決算期末を機械的に外すか。"
+        )
+        raise typer.Exit(code=1)
+    console.print("[green]権利落ちを外せる。[/] 事前登録の §2 にそう書く。")
+
+
 @app.command(name="wall-survey")
 def wall_survey(
     into: str | None = typer.Option(None, "--write", help="Regenerate docs/WALL.md."),

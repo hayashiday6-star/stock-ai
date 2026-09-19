@@ -42,11 +42,15 @@ from __future__ import annotations
 import dataclasses
 import datetime as dt
 from collections.abc import Iterable
+from pathlib import Path
 
+from stock_ai.core.logging import get_logger
 from stock_ai.data.jquants_bulk import records_from_csv
 from stock_ai.data.jquants_details import parse_time
 from stock_ai.data.jquants_margin import parse_date, parse_number
 from stock_ai.data.universe import four_digit_code
+
+logger = get_logger(__name__)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -139,3 +143,118 @@ def straddles_a_split(dividend: Dividend, split_days: Iterable[dt.date]) -> bool
         return False
     low, high = (start, end) if start <= end else (end, start)
     return any(low <= day <= high for day in split_days)
+
+
+@dataclasses.dataclass
+class ExDateCoverage:
+    """権利落ち日が、原本にどれだけ入っているか。
+
+    **#9（窓は埋まる）の設計がこれに掛かっている。** 3% の下窓は、権利落ちが
+    そう見える——外せなければ、事象の定義が配当を拾う。
+
+    **列ごとに独立に数える。** 行が読めたことと、`ExDate` が埋まっていることは
+    別である（`CLAUDE.md`「0 を『読めた』と読まない」）。
+    """
+
+    files: int
+    rows: int
+    with_ex_date: int
+    """`ExDate` が埋まっていた行。**行数と別に数える。**"""
+
+    symbols: int
+    days: int
+    """**別々の（銘柄, 権利落ち日）の数。** 外す対象はこれである。"""
+
+    first: dt.date | None
+    last: dt.date | None
+    in_is: int
+    in_oos: int
+
+    def summary(self) -> str:
+        """1行のまとめ。"""
+        if not self.rows:
+            return "配当の原本が1行も読めなかった。**外す材料が無い。**"
+        span = f"{self.first} 〜 {self.last}" if self.first else "日付が1つも無い"
+        return (
+            f"{self.files:,} 本、{self.rows:,} 行。"
+            f"`ExDate` が埋まっていたのは {self.with_ex_date:,} 行"
+            f"（{self.with_ex_date / self.rows:.1%}）。"
+            f"{self.symbols:,} 銘柄、**別々の権利落ち {self.days:,} 件**（{span}）。"
+        )
+
+    def warnings(self) -> list[str]:
+        """気付かなくても目に入るべきこと。**早期 return しない。**"""
+        found: list[str] = []
+        if not self.rows:
+            return ["**配当の原本が1行も読めなかった。**"]
+        missing = self.rows - self.with_ex_date
+        if missing:
+            found.append(
+                f"**{missing:,} 行は `ExDate` が空だった**（{missing / self.rows:.1%}）。"
+                "その配当は外せない。"
+            )
+        if not self.in_is:
+            found.append("**IS（〜2017-12）に権利落ちが1件も無い。** 推定に使えない。")
+        if not self.in_oos:
+            found.append("**OOS（2018-01〜）に権利落ちが1件も無い。** 判定に使えない。")
+        return found
+
+
+def ex_date_coverage(
+    directory: Path,
+    is_end: dt.date = dt.date(2017, 12, 31),
+    oos_from: dt.date = dt.date(2018, 1, 1),
+) -> ExDateCoverage:
+    """保存済みの原本から、権利落ち日がどれだけ取れるかを数える。
+
+    **落としには行かない。** `/fins/dividend` は Premium のエンドポイントなので、
+    解約後はここに在るものがすべてである。
+
+    Args:
+        directory: 原本の置き場所。
+        is_end: IS の最終日。
+        oos_from: OOS の初日。
+
+    Returns:
+        :class:`ExDateCoverage`。
+    """
+    from stock_ai.data.jquants_archive import path_for, read_manifest
+    from stock_ai.data.jquants_read import endpoint_of, read_archived
+
+    files = rows = with_ex = 0
+    symbols: set[str] = set()
+    days: set[tuple[str, dt.date]] = set()
+    in_is = in_oos = 0
+    for key in sorted(read_manifest(directory)):
+        if endpoint_of(key) != "/fins/dividend":
+            continue
+        files += 1
+        try:
+            found = parse_dividends(read_archived(path_for(directory, key)))
+        except Exception as exc:  # noqa: BLE001 - どこで読めないかが記録に値する
+            logger.warning("配当の原本を読めなかった: %s: %s", key, exc)
+            continue
+        for item in found:
+            rows += 1
+            symbols.add(item.symbol)
+            if item.ex_date is None:
+                continue
+            with_ex += 1
+            days.add((item.symbol, item.ex_date))
+            if item.ex_date <= is_end:
+                in_is += 1
+            elif item.ex_date >= oos_from:
+                in_oos += 1
+
+    dates = [when for _symbol, when in days]
+    return ExDateCoverage(
+        files=files,
+        rows=rows,
+        with_ex_date=with_ex,
+        symbols=len(symbols),
+        days=len(days),
+        first=min(dates) if dates else None,
+        last=max(dates) if dates else None,
+        in_is=in_is,
+        in_oos=in_oos,
+    )
