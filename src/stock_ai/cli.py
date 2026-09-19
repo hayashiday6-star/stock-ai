@@ -8541,7 +8541,6 @@ def turn_of_month_power(
     **判定ではない。** IS は 2009-01〜2017-12 で、OOS（2018-01〜2026-08）には
     1日も触れない。
     """
-    from stock_ai.backtest.multiplicity import calibrated_t
     from stock_ai.backtest.power import estimate_power
     from stock_ai.backtest.turn_of_month import WINDOW_DAYS
     from stock_ai.backtest.turn_of_month import build_series as turn_series
@@ -8575,8 +8574,9 @@ def turn_of_month_power(
     for column in columns:
         table.add_column(column, overflow="fold")
 
-    # **この管の線はまだ測っていない。** 暫定で月次の線を当て、そう書く。
-    target = calibrated_t(HYPOTHESIS_BUDGET)
+    # **この管の線は測ってある**（2026-09-19、400回で SD 1.05）。
+    # 以前は月次の線を仮に当てていた。対照を回す前だったからである。
+    target = line_for("calendar")
     stats = []
     for series in built:
         estimate = estimate_power(series.episodes, lags=3)
@@ -8593,9 +8593,9 @@ def turn_of_month_power(
     table.add_row("1期あたりのSD", *[f"{row[0]:.2%}" for row in stats], "IS の月替わりごと")
     table.add_row("重なりの膨張", *[f"{row[1]:.2f}x" for row in stats], "Newey-West(3)。実測")
     table.add_row(
-        "検出できる差（暫定）",
+        "検出できる差",
         *[f"年 {row[4] * 12:.1%}" for row in stats],
-        f"t≥{target:.2f}・{oos_periods}期。**この管の線ではない**",
+        f"t≥{target:.2f}・{oos_periods}期。**この管で測った線**",
     )
     table.add_row("判定に使える期数", f"{oos_periods}", *["—"] * (len(built) - 1), "OOS の月数")
     console.print(table)
@@ -8634,9 +8634,13 @@ def turn_of_month_power(
         return
 
     console.print(
-        f"[green]線（年 {TURN_OF_MONTH_FLOOR:.1%}）は上回った。[/] "
-        "**次は §0 のゲートだが、その前にこの管の対照を回すこと**"
-        "（`research\\暦の対照.bat`）。線がまだ無い。"
+        f"[green]線（年 {TURN_OF_MONTH_FLOOR:.1%}）は上回った。[/] 次は §0 のゲートである。"
+    )
+    console.print(
+        "[dim]uv run stock-ai power-gate "
+        f"--sd {stats[0][0] * 100:.2f} --periods {oos_periods} "
+        f"--low {low * 12 * 100:.2f} --high {high * 12 * 100:.2f} "
+        f"--inflation {stats[0][1]:.2f} --budget {HYPOTHESIS_BUDGET} --pipe calendar[/]"
     )
 
 

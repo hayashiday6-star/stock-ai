@@ -38,10 +38,10 @@ echo.
 echo Both the index and the equal weighted universe are
 echo printed. The line applies to the index.
 echo.
-echo The detectable difference in the table is
-echo PROVISIONAL: this pipe has no measured line yet, so
-echo the monthly one stands in. Run the calendar control
-echo first.
+echo The line for this pipe was measured on 2026-09-19:
+echo 400 draws gave a t spread of 1.05, so the line is
+echo 3.17. Neither the monthly 3.39 nor the event 3.30
+echo applies here.
 echo.
 echo No API calls. Reading the equal weighted universe
 echo means reading every symbol once, so allow a while.
