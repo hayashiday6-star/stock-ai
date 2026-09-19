@@ -6408,16 +6408,26 @@ def ex_date_coverage_command(
     for column in ("項目", "値", "なぜ見るか"):
         table.add_column(column, overflow="fold")
     table.add_row("原本の本数", f"{found.files:,}", "0 なら保存できていない")
-    table.add_row("行", f"{found.rows:,}", "読めた行")
+    table.add_row("行", f"{found.rows:,}", "**行。** 外す対象の単位ではない")
     table.add_row(
         "`ExDate` が在る行",
         f"{found.with_ex_date:,}",
-        "**行数と別に数える。** 読めたことと、埋まっていることは別",
+        "**行。** 読めたことと、埋まっていることは別",
     )
-    table.add_row("別々の権利落ち", f"{found.days:,}", "**外す対象はこれ**（銘柄 × 日）")
-    table.add_row("IS（〜2017-12）", f"{found.in_is:,}", "推定に使えるか")
-    table.add_row("OOS（2018-01〜）", f"{found.in_oos:,}", "判定に使えるか")
+    table.add_row(
+        "別々の権利落ち",
+        f"{found.days:,}",
+        "**外す対象はこれ**（銘柄 × 日）。**下の3つはこれを分けたもの**",
+    )
+    table.add_row("　IS（〜2017-12）", f"{found.in_is:,}", "銘柄 × 日。**行ではない**")
+    table.add_row("　OOS（2018-01〜2026-08）", f"{found.in_oos:,}", "同上")
+    table.add_row("　OOS より後", f"{found.after_oos:,}", "配当は前もって公表される")
     console.print(table)
+    console.print(
+        "[dim]**下の3つは足すと「別々の権利落ち」になる**（合わなければ生成時に"
+        "落ちる）。**行と（銘柄 × 日）を同じ列に並べていた**——2026-09-19 に"
+        "ユーザーが見つけた。2.6倍ずれていた。[/]"
+    )
 
     if not found.days:
         console.print(

@@ -294,3 +294,85 @@ class TestHowManyExDatesTheArchiveCanSupply:
             {"Code": "13020", "ExDate": "2020-03-30", "RefNo": "2"},
         )
         cli.ex_date_coverage_command(directory=str(self._archive(tmp_path, body)))
+
+
+class TestTheHalvesAreCountedInTheSameUnitAsTheRowAbove:
+    """**同じ列に、行と（銘柄 × 日）を混ぜていた**（2026-09-19、ユーザーが発見）。
+
+    `IS 92,831 + OOS 206,515 = 299,346` は**行**の数で、すぐ上に出ている
+    「別々の権利落ち 114,942」とは **2.6倍**違っていた。**同じ列に2つの単位が
+    並んでいた。**
+
+    `CLAUDE.md`「独立な観測を、件数で数えない」「系列を作るときの単位と、
+    検出力を計算するときの単位を揃える」に当たる形である。**例外は出ない。**
+    """
+
+    _MAKE = TestHowManyExDatesTheArchiveCanSupply
+
+    def test_two_rows_for_the_same_day_count_once_in_the_half(self, tmp_path) -> None:
+        """**直す前のコードなら 2 になる。** 行で数えていたので。"""
+        from stock_ai.data.jquants_dividend import ex_date_coverage
+
+        body = self._MAKE._rows(
+            {"Code": "13010", "ExDate": "2015-03-30", "RefNo": "1"},
+            {"Code": "13010", "ExDate": "2015-03-30", "RefNo": "2"},
+        )
+        found = ex_date_coverage(self._MAKE._archive(tmp_path, body))
+
+        assert found.rows == 2
+        assert found.days == 1
+        assert found.in_is == 1
+
+    def test_the_parts_add_up(self, tmp_path) -> None:
+        """**足して合わなければ生成時に落ちる。** それが、この形の見張りである。"""
+        from stock_ai.data.jquants_dividend import ex_date_coverage
+
+        body = self._MAKE._rows(
+            {"Code": "13010", "ExDate": "2015-03-30", "RefNo": "1"},
+            {"Code": "13010", "ExDate": "2015-03-30", "RefNo": "2"},
+            {"Code": "13020", "ExDate": "2020-03-30", "RefNo": "3"},
+            {"Code": "13030", "ExDate": "2027-03-30", "RefNo": "4"},
+        )
+        found = ex_date_coverage(self._MAKE._archive(tmp_path, body))
+
+        assert found.in_is + found.in_oos + found.after_oos == found.days
+
+    def test_a_date_past_the_judgement_window_has_its_own_bucket(self, tmp_path) -> None:
+        """**在る。** 配当は前もって公表されるので、2027年の権利落ちが原本に入る。"""
+        from stock_ai.data.jquants_dividend import ex_date_coverage
+
+        body = self._MAKE._rows({"Code": "13030", "ExDate": "2027-08-30", "RefNo": "1"})
+        found = ex_date_coverage(self._MAKE._archive(tmp_path, body))
+
+        assert found.after_oos == 1
+        assert found.in_oos == 0
+        assert any("OOS より後" in line for line in found.warnings())
+
+    def test_parts_that_do_not_add_up_are_refused(self) -> None:
+        """**この検査が落ちる条件を、実際に1つ作る。**"""
+        from stock_ai.data.jquants_dividend import ExDateCoverage
+
+        with pytest.raises(ValueError, match="単位が混ざっている"):
+            ExDateCoverage(
+                files=1,
+                rows=2,
+                with_ex_date=2,
+                symbols=1,
+                days=1,
+                first=dt.date(2015, 3, 30),
+                last=dt.date(2015, 3, 30),
+                in_is=2,
+                in_oos=0,
+                after_oos=0,
+            )
+
+    def test_the_table_says_which_rows_are_which_unit(self) -> None:
+        """**読む側が単位を取り違えない形にする。**"""
+        import inspect
+
+        from stock_ai import cli
+
+        body = inspect.getsource(cli.ex_date_coverage_command)
+
+        assert "外す対象の単位ではない" in body
+        assert "銘柄 × 日。**行ではない**" in body

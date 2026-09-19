@@ -168,7 +168,39 @@ class ExDateCoverage:
     first: dt.date | None
     last: dt.date | None
     in_is: int
+    """IS に入る**（銘柄, 日）**。**行ではない。**"""
+
     in_oos: int
+    """OOS に入る**（銘柄, 日）**。"""
+
+    after_oos: int
+    """OOS より後の**（銘柄, 日）**。
+
+    **在る。** 配当は前もって公表されるので、判定期間の先の権利落ち日が原本に
+    入っている（実データで 2027年まで）。**別に数えないと、3つ目が黙って
+    どこかに混ざる。**
+    """
+
+    def __post_init__(self) -> None:
+        """**3つの内訳が、別々の（銘柄, 日）の数に足し合わさること。**
+
+        **同じ列に行と（銘柄 × 日）を混ぜていた**（2026-09-19、ユーザーが
+        発見）。IS と OOS を行で数えていて、すぐ上の「外す対象」の行とは
+        **2.6倍違う数**が同じ列に並んでいた。
+
+        `CLAUDE.md`「独立な観測を、件数で数えない」「系列を作るときの単位と、
+        検出力を計算するときの単位を揃える」に当たる形である。**そして
+        例外は出ない**——だから、**足して合わなければここで落とす。**
+
+        Raises:
+            ValueError: 内訳が ``days`` に足し合わさらない。
+        """
+        parts = self.in_is + self.in_oos + self.after_oos
+        if parts != self.days:
+            raise ValueError(
+                f"内訳 {parts} が、別々の権利落ち {self.days} に合わない。"
+                "**単位が混ざっている**（行と（銘柄 × 日））。"
+            )
 
     def summary(self) -> str:
         """1行のまとめ。"""
@@ -187,6 +219,11 @@ class ExDateCoverage:
         found: list[str] = []
         if not self.rows:
             return ["**配当の原本が1行も読めなかった。**"]
+        if self.after_oos:
+            found.append(
+                f"**{self.after_oos:,} 件は OOS より後の権利落ちである。** "
+                "配当は前もって公表されるので、判定期間の先が入っている。"
+            )
         missing = self.rows - self.with_ex_date
         if missing:
             found.append(
@@ -204,6 +241,7 @@ def ex_date_coverage(
     directory: Path,
     is_end: dt.date = dt.date(2017, 12, 31),
     oos_from: dt.date = dt.date(2018, 1, 1),
+    oos_end: dt.date = dt.date(2026, 8, 31),
 ) -> ExDateCoverage:
     """保存済みの原本から、権利落ち日がどれだけ取れるかを数える。
 
@@ -214,6 +252,7 @@ def ex_date_coverage(
         directory: 原本の置き場所。
         is_end: IS の最終日。
         oos_from: OOS の初日。
+        oos_end: OOS の最終日。**これより後は別に数える。**
 
     Returns:
         :class:`ExDateCoverage`。
@@ -224,7 +263,6 @@ def ex_date_coverage(
     files = rows = with_ex = 0
     symbols: set[str] = set()
     days: set[tuple[str, dt.date]] = set()
-    in_is = in_oos = 0
     for key in sorted(read_manifest(directory)):
         if endpoint_of(key) != "/fins/dividend":
             continue
@@ -241,12 +279,13 @@ def ex_date_coverage(
                 continue
             with_ex += 1
             days.add((item.symbol, item.ex_date))
-            if item.ex_date <= is_end:
-                in_is += 1
-            elif item.ex_date >= oos_from:
-                in_oos += 1
 
+    # **期間で分けるのは、別々の（銘柄, 日）になってからである。** 行ごとに
+    # 数えると、同じ列に2つの単位が並ぶ（2026-09-19 に 2.6倍ずれていた）。
     dates = [when for _symbol, when in days]
+    in_is = sum(1 for when in dates if when <= is_end)
+    in_oos = sum(1 for when in dates if oos_from <= when <= oos_end)
+    after = sum(1 for when in dates if when > oos_end)
     return ExDateCoverage(
         files=files,
         rows=rows,
@@ -257,6 +296,7 @@ def ex_date_coverage(
         last=max(dates) if dates else None,
         in_is=in_is,
         in_oos=in_oos,
+        after_oos=after,
     )
 
 
