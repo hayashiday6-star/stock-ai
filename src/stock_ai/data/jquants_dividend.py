@@ -345,7 +345,7 @@ class ExDividend:
     """ある権利落ち日に落ちる配当。**普通と特別を分けて持つ。**"""
 
     rate: float
-    """1株あたりの合計。**円。調整前の終値で割ること。**"""
+    """1株あたり。**円。調整前の終値で割ること。** 無配の公表なら 0。"""
 
     special: float
     """うち特別配当。**大きければ「特別配当だった」と言える。**"""
@@ -355,13 +355,74 @@ class ExDividend:
         """特別配当が乗っているか。"""
         return self.special > 0
 
+    @property
+    def is_zero(self) -> bool:
+        """無配。**「読めない」ではなく「落ちるものが無い」。**"""
+        return self.rate <= 0
 
-def ex_dividend_rates(directory: Path) -> dict[str, dict[dt.date, ExDividend]]:
+
+@dataclasses.dataclass(frozen=True)
+class ExDividends:
+    """読んだ配当と、**読み方が正しかったかを言うための数。**"""
+
+    rates: dict[str, dict[dt.date, ExDividend]]
+    rows: int
+    """`ExDate` と `DivRate` の両方が在った行。"""
+
+    ex_dates: int
+    """``(銘柄, 権利落ち日)`` の数。**行数ではない。**"""
+
+    multi_row: int
+    """2行以上が同じ ``(銘柄, 権利落ち日)`` に乗っていた数。"""
+
+    max_rows: int
+    zero_rate: int
+    """額が 0 だった権利落ち。**無配の公表にも `ExDate` は入る。**"""
+
+    def summary(self) -> str:
+        """1行のまとめ。"""
+        if not self.ex_dates:
+            return "配当の額が1件も読めなかった。"
+        return (
+            f"{len(self.rates):,} 銘柄・{self.rows:,} 行から、"
+            f"**{self.ex_dates:,} 件の権利落ち**を作った"
+            f"（同じ日に2行以上あったのは {self.multi_row:,} 件、最大 {self.max_rows} 行）。"
+            f"**額が 0 の公表が {self.zero_rate:,} 件。**"
+        )
+
+    def warnings(self) -> list[str]:
+        """気付かなくても目に入るべきこと。**早期 return しない。**"""
+        found: list[str] = []
+        if not self.ex_dates:
+            return ["**配当の額が1件も読めなかった。**"]
+        if self.multi_row:
+            share = self.multi_row / self.ex_dates
+            found.append(
+                f"**{self.multi_row:,} 件（{share:.1%}）は同じ権利落ち日に2行以上ある。** "
+                "**足していない**——`latest_by_term` と同じく最後の公表を1行だけ採る。"
+                "足すと年間配当が3倍になる（2026-09-20、実際にそうしていた）。"
+            )
+        if self.zero_rate:
+            share = self.zero_rate / self.ex_dates
+            found.append(
+                f"**額が 0 の権利落ちが {self.zero_rate:,} 件（{share:.1%}）。** "
+                "**`ExDate` が在るだけで外すと、落ちるものが無い日で外すことになる。**"
+            )
+        return found
+
+
+def ex_dividend_rates(directory: Path) -> ExDividends:
     """銘柄・権利落ち日ごとの **1株あたり配当**。**監査専用である。**
 
     **最後に公表された値を採る**ので、先読みが入る。**売買の判定に使わない**
     ——外した件数の中身を見るためだけのものである（`ex-date-audit`）。
     先読みを外して権利落ち日を引くのは :func:`ex_dates_known_by`。
+
+    **足さない。** 同じ権利落ち日に複数行が乗ることがあるが、それは同じ支払の
+    公表・訂正であって、別々の配当ではない。:func:`latest_by_term` と同じ規則
+    （公表日時、同じなら `RefNo` の大きいほう）で**1行だけ**採る。
+    **足すと年間配当が3倍になる**——その注意書きは `latest_by_term` の説明に
+    既に書いてあり、それを読まずに2つ目を書いて踏んだ（2026-09-20）。
 
     **`DivRate` は1株あたりの円**で、分割の前後で尺度が変わる。**割るのは
     調整前の終値**であること（調整後で割ると分割ぶんずれる）。
@@ -370,15 +431,13 @@ def ex_dividend_rates(directory: Path) -> dict[str, dict[dt.date, ExDividend]]:
         directory: 原本の置き場所。
 
     Returns:
-        ``銘柄 -> {権利落ち日: :class:`ExDividend`}``。**額の無い行は入らない。**
+        :class:`ExDividends`。**額の無い行は入らない。額が 0 の行は入る。**
     """
     from stock_ai.data.jquants_archive import path_for, read_manifest
     from stock_ai.data.jquants_read import endpoint_of, read_archived
 
-    # **同じ権利落ち日に複数の期が乗ることがある**（普通配当と記念配当が
-    # 別行）。**足す。** 落ちるのは合計だからである。期と `RefNo` で1本に
-    # まとめ、後から出た公表で上書きする。
-    seen: dict[str, dict[dt.date, dict[tuple[str, str], tuple[dt.date, float, float]]]] = {}
+    seen: dict[str, dict[dt.date, list[Dividend]]] = {}
+    rows = 0
     for key in sorted(read_manifest(directory)):
         if endpoint_of(key) != "/fins/dividend":
             continue
@@ -390,21 +449,32 @@ def ex_dividend_rates(directory: Path) -> dict[str, dict[dt.date, ExDividend]]:
         for item in found:
             if item.ex_date is None or item.rate is None:
                 continue
-            slot = seen.setdefault(item.symbol, {}).setdefault(item.ex_date, {})
-            tag = (item.term, item.reference)
-            previous = slot.get(tag)
-            if previous is None or previous[0] <= item.published_on:
-                slot[tag] = (item.published_on, item.rate, item.special_rate or 0.0)
-    return {
-        symbol: {
-            when: ExDividend(
-                rate=sum(rate for _published, rate, _special in rows.values()),
-                special=sum(special for _published, _rate, special in rows.values()),
-            )
-            for when, rows in dates.items()
-        }
-        for symbol, dates in seen.items()
-    }
+            rows += 1
+            seen.setdefault(item.symbol, {}).setdefault(item.ex_date, []).append(item)
+
+    rates: dict[str, dict[dt.date, ExDividend]] = {}
+    ex_dates = multi_row = max_rows = zero_rate = 0
+    for symbol, dates in seen.items():
+        for when, items in dates.items():
+            ex_dates += 1
+            max_rows = max(max_rows, len(items))
+            if len(items) > 1:
+                multi_row += 1
+            # **最後の公表を1行だけ。** `latest_by_term` と同じ並べ方である。
+            last = max(items, key=_order)
+            found_rate = ExDividend(rate=last.rate or 0.0, special=last.special_rate or 0.0)
+            if found_rate.is_zero:
+                zero_rate += 1
+            rates.setdefault(symbol, {})[when] = found_rate
+
+    return ExDividends(
+        rates=rates,
+        rows=rows,
+        ex_dates=ex_dates,
+        multi_row=multi_row,
+        max_rows=max_rows,
+        zero_rate=zero_rate,
+    )
 
 
 def _ex_date_rows(directory: Path) -> Iterable[tuple[str, dt.date, dt.date]]:

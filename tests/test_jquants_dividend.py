@@ -376,3 +376,74 @@ class TestTheHalvesAreCountedInTheSameUnitAsTheRowAbove:
 
         assert "外す対象の単位ではない" in body
         assert "銘柄 × 日。**行ではない**" in body
+
+
+class TestReadingTheAmountDoesNotAddRowsUp:
+    """**足すと年間配当が3倍になる。**
+
+    その注意書きは `latest_by_term` の説明に既に書いてあり、それを読まずに
+    2つ目を書いて踏んだ（2026-09-20）。実データで**下げ −1.27% に対し利回り
+    3.09%** と出て、2.4倍合わなかった。
+    """
+
+    _rows = staticmethod(TestHowManyExDatesTheArchiveCanSupply._rows)
+    _archive = classmethod(TestHowManyExDatesTheArchiveCanSupply._archive.__func__)
+
+    def test_two_rows_on_one_ex_date_are_not_added(self, tmp_path) -> None:
+        """同じ権利落ち日の2行は、**最後の公表を1行だけ**採る。"""
+        from stock_ai.data.jquants_dividend import ex_dividend_rates
+
+        body = self._rows(
+            {
+                "Code": "13010",
+                "ExDate": "2015-03-30",
+                "RefNo": "1",
+                "PubDate": "2015-02-01",
+                "DivRate": "10",
+                "IFTerm": "2015-03",
+            },
+            {
+                "Code": "13010",
+                "ExDate": "2015-03-30",
+                "RefNo": "2",
+                "PubDate": "2015-03-01",
+                "DivRate": "12",
+                "IFTerm": "2015-03",
+            },
+        )
+
+        found = ex_dividend_rates(self._archive(tmp_path, body))
+
+        assert found.rates["1301"][dt.date(2015, 3, 30)].rate == 12.0, "**足している。**"
+        assert found.multi_row == 1
+        assert found.max_rows == 2
+        assert any("2行以上" in line for line in found.warnings())
+
+    def test_one_row_per_date_says_nothing(self, tmp_path) -> None:
+        """**両向きに置く。** 常に鳴る旗は何も区別しない。"""
+        from stock_ai.data.jquants_dividend import ex_dividend_rates
+
+        body = self._rows(
+            {"Code": "13010", "ExDate": "2015-03-30", "RefNo": "1", "DivRate": "10"},
+            {"Code": "13020", "ExDate": "2015-03-30", "RefNo": "2", "DivRate": "20"},
+        )
+
+        found = ex_dividend_rates(self._archive(tmp_path, body))
+
+        assert found.multi_row == 0
+        assert found.ex_dates == 2
+        assert not any("2行以上" in line for line in found.warnings())
+
+    def test_a_zero_amount_is_kept_and_counted(self, tmp_path) -> None:
+        """**無配の公表にも `ExDate` は入る。** 落とさずに数える。"""
+        from stock_ai.data.jquants_dividend import ex_dividend_rates
+
+        body = self._rows(
+            {"Code": "13010", "ExDate": "2015-03-30", "RefNo": "1", "DivRate": "0"},
+        )
+
+        found = ex_dividend_rates(self._archive(tmp_path, body))
+
+        assert found.rates["1301"][dt.date(2015, 3, 30)].is_zero
+        assert found.zero_rate == 1
+        assert any("額が 0" in line for line in found.warnings())

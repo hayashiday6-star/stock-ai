@@ -152,7 +152,7 @@ class TestFindingWhereTheStepIs:
 
         lined = measure_alignment(_database(series), rates, _FIRST, _LAST)
 
-        assert any("小さすぎる" in line for line in lined.warnings())
+        assert any("合わない" in line for line in lined.warnings())
 
     def test_a_zero_span_is_refused(self) -> None:
         with pytest.raises(ValueError, match="span must be at least 1"):
@@ -266,6 +266,58 @@ class TestWhetherTheCrashesShouldHaveBeenDropped:
         assert dict(found.by_month) == {3: 2, 9: 1}
 
 
+class TestTheZeroDividendCase:
+    """**額 0 は「読めない」ではなく「落ちるものが無い」。**
+
+    無配の公表にも `ExDate` は入る。`ex_dates_known_by` は額を見ないので、
+    **落ちるものが無い日で急落を外していた**（2026-09-20）。
+    """
+
+    @staticmethod
+    def _one(rate: float) -> tuple[Database, dict, list, dict]:
+        crash = _at("2015-06-10")
+        ex_index = crash - 2
+        closes = _walk(0, {crash - KNIFE_DAYS + 1 + step: 0.07 for step in range(KNIFE_DAYS)})
+        when = _INDEX[ex_index].date()
+        rates = {"1401": {when: ExDividend(rate=rate, special=0.0)}}
+        announced = {"1401": [(dt.date(2015, 1, 5), when)]}
+        return _database({"1401": closes}), rates, [("1401", _INDEX[crash].date())], announced
+
+    def test_a_zero_dividend_is_its_own_bucket(self) -> None:
+        database, rates, excluded, announced = self._one(rate=0.0)
+
+        found = audit_exclusions(database, excluded, rates, announced=announced)
+
+        assert found.zero_rate == 1
+        assert found.undecided == 0, "**0 を「判定できない」に落とさない。**"
+        assert found.kept_by_mistake == 1
+
+    def test_a_real_dividend_is_not_in_that_bucket(self) -> None:
+        """**両向きに置く。** 常にそのバケットに入るなら区別していない。"""
+        database, rates, excluded, announced = self._one(rate=20.0)
+
+        found = audit_exclusions(database, excluded, rates, announced=announced)
+
+        assert found.zero_rate == 0
+
+    def test_a_revised_date_is_its_own_bucket(self) -> None:
+        """**外したときの日が最終データに無い。** 「基準日」に化けさせない。"""
+        crash = _at("2015-06-10")
+        closes = _walk(0, {crash - KNIFE_DAYS + 1 + step: 0.07 for step in range(KNIFE_DAYS)})
+        # 公表時は crash-2、最終データには入っていない。
+        announced = {"1401": [(dt.date(2015, 1, 5), _INDEX[crash - 2].date())]}
+
+        found = audit_exclusions(
+            _database({"1401": closes}),
+            [("1401", _INDEX[crash].date())],
+            {"1401": {}},
+            announced=announced,
+        )
+
+        assert found.revised == 1
+        assert found.outside_window == 0, "**訂正を「基準日の配当」に化けさせない。**"
+
+
 class TestTheBreakdownAddsUp:
     """**内訳が合わなければ、作った時点で落ちる。** `ExDateCoverage` と同じ作り。"""
 
@@ -276,6 +328,8 @@ class TestTheBreakdownAddsUp:
                 still_qualifies=400,
                 rescued=200,
                 outside_window=0,
+                zero_rate=0,
+                revised=0,
                 undecided=0,
                 special=0,
                 median_yield=0.02,
@@ -289,15 +343,17 @@ class TestTheBreakdownAddsUp:
             still_qualifies=400,
             rescued=200,
             outside_window=119,
-            undecided=100,
+            zero_rate=40,
+            revised=10,
+            undecided=50,
             special=3,
             median_yield=0.02,
             by_month=(),
         )
 
-        assert found.decided == 719
-        assert found.kept_by_mistake == 519
-        assert found.wrongly_excluded == pytest.approx(519 / 719)
+        assert found.decided == 759
+        assert found.kept_by_mistake == 559
+        assert found.wrongly_excluded == pytest.approx(559 / 759)
 
 
 class TestDividendsInsideTheHoldingWindow:

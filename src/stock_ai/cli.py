@@ -6788,16 +6788,17 @@ def ex_date_audit(
     settings = get_settings()
     configure_logging(settings.log_level)
 
-    rates = ex_dividend_rates(Path(archive))
-    if not rates:
+    reading = ex_dividend_rates(Path(archive))
+    if not reading.rates:
         console.print(
             "[red]配当の額が1件も読めない。[/] `checks\\権利落ちは在るか.bat` を先に見ること。"
         )
         raise typer.Exit(code=1)
-    console.print(
-        f"[dim]{len(rates):,} 銘柄の配当を読んだ。**額は最後に公表された値**"
-        "——監査専用で、売買の判定には使わない。[/]"
-    )
+    rates = reading.rates
+    console.print(reading.summary())
+    for line in reading.warnings():
+        console.print(f"[yellow]{line}[/]")
+    console.print("[dim]**額は最後に公表された値**——監査専用で、売買の判定には使わない。[/]")
 
     database = Database()
     database.create_all()
@@ -6862,6 +6863,9 @@ def ex_date_audit(
                 database,
                 found.ex_date_events,
                 rates,
+                # **外したときと同じ引き方で理由の日を作り直す。** 最終データで
+                # 代用すると、訂正された日で外した件が「基準日」に化ける。
+                announced=announced,
                 progress=lambda done, total: progress.update(task, completed=done, total=total),
             )
     table = Table(title=f"権利落ちで外した急落（配当を戻して測り直す・{KNIFE_DAYS} 営業日）")
@@ -6883,6 +6887,12 @@ def ex_date_audit(
         f"{broken.outside_window:,}",
         f"{broken.outside_window / decided:.1%}" if decided else "—",
     )
+    table.add_row(
+        "額が 0 の権利落ちで外した（**外すべきでなかった**）",
+        f"{broken.zero_rate:,}",
+        f"{broken.zero_rate / decided:.1%}" if decided else "—",
+    )
+    table.add_row("外したときの日が最終データに無い（訂正）", f"{broken.revised:,}", "—")
     table.add_row("判定できない（**分母に入れない**）", f"{broken.undecided:,}", "—")
     table.add_section()
     table.add_row("外した合計", f"{broken.excluded:,}", "100.0%")

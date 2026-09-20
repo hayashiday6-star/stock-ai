@@ -53,6 +53,10 @@ SPAN = 2
 #: これを超える利回りは読み違いとして落とす。**1回の配当で株価の半分は落ちない。**
 MAX_YIELD = 0.5
 
+#: 下げと利回りが何倍まで違ってよいか。**両向きに当てる。**
+#: 3倍にしていたら、2.4倍のずれが通った（2026-09-20）。
+EXPLAINED_BAND = 1.5
+
 Rates = dict[str, dict[dt.date, ExDividend]]
 
 
@@ -100,7 +104,8 @@ class Alignment:
         return (
             f"{self.symbols:,} 銘柄・{self.events:,} 件の権利落ちを並べた。"
             f"配当利回りの中央値 {self.median_yield:.2%}。"
-            f"いちばん下がるのは **{self.lowest:+d} 日目**。"
+            f"いちばん下がるのは **{self.lowest:+d} 日目**"
+            f"（下げは利回りの {self.explained:.2f}倍）。"
         )
 
     def warnings(self) -> list[str]:
@@ -114,14 +119,26 @@ class Alignment:
                 "権利落ち日そのものではない。**この列を使って外した件は、"
                 "外す日を間違えている**——`#15` も同じ列で外している。"
             )
-        drop = dict(zip(self.offsets, self.medians, strict=True)).get(0)
-        if drop is not None and self.median_yield > 0 and -drop < self.median_yield / 3:
+        # **両向きに見る。** 片側だけだと、読み違いの向きが逆のときに黙る。
+        # **幅は 1.5倍。** 3倍にしていたら 2.4倍のずれが通った（2026-09-20）。
+        share = self.explained
+        if share is not None and not (1 / EXPLAINED_BAND <= share <= EXPLAINED_BAND):
+            drop = dict(zip(self.offsets, self.medians, strict=True))[0]
             found.append(
-                f"**権利落ち日の下げ（{drop:+.2%}）が、配当利回り"
-                f"（{self.median_yield:.2%}）に対して小さすぎる。** "
-                "既に配当を抜いた価格を読んでいるかもしれない。"
+                f"**権利落ち日の下げ（{drop:+.2%}）と配当利回り"
+                f"（{self.median_yield:.2%}）が合わない（{share:.2f}倍）。** "
+                "**どちらかの読み方が違う。** 落ちるのは配当ぶんのはずである"
+                "（税で少し小さくなることはあるが、倍の違いにはならない）。"
             )
         return found
+
+    @property
+    def explained(self) -> float | None:
+        """権利落ち日の下げが、配当利回りの何倍か。**1 に近いはず。**"""
+        if not self.events or self.median_yield <= 0:
+            return None
+        drop = dict(zip(self.offsets, self.medians, strict=True))[0]
+        return -drop / self.median_yield
 
 
 @dataclasses.dataclass(frozen=True)
@@ -144,8 +161,18 @@ class Exclusions:
     いるので、比を1つも動かさない。**除外の窓が1日広い。**
     """
 
+    zero_rate: int
+    """外した理由の配当が**額 0**だった。**外すべきでなかった。**
+
+    無配の公表にも `ExDate` は入る。`ex_dates_known_by` は額を見ないので、
+    **落ちるものが無い日で急落を外していた。**
+    """
+
+    revised: int
+    """公表時の権利落ち日が、最終データに無い。**訂正された。** 判定しない。"""
+
     undecided: int
-    """額が無い・値が引けないので判定できない。**分母に入れない。**"""
+    """額が読めないので判定できない。**分母に入れない。**"""
 
     special: int
     """特別配当が乗っていた件数。"""
@@ -162,23 +189,30 @@ class Exclusions:
         Raises:
             ValueError: 内訳の合計が外した件数に合わない。
         """
-        parts = self.still_qualifies + self.rescued + self.outside_window + self.undecided
+        parts = (
+            self.still_qualifies
+            + self.rescued
+            + self.outside_window
+            + self.zero_rate
+            + self.revised
+            + self.undecided
+        )
         if parts != self.excluded:
             raise ValueError(
                 f"内訳 {parts} 件（{self.still_qualifies} + {self.rescued} + "
-                f"{self.outside_window} + {self.undecided}）が、"
-                f"外した {self.excluded} 件に合わない。"
+                f"{self.outside_window} + {self.zero_rate} + {self.revised} + "
+                f"{self.undecided}）が、外した {self.excluded} 件に合わない。"
             )
 
     @property
     def decided(self) -> int:
         """判定できた件数。"""
-        return self.still_qualifies + self.rescued + self.outside_window
+        return self.kept_by_mistake + self.rescued
 
     @property
     def kept_by_mistake(self) -> int:
         """外すべきでなかった件数。"""
-        return self.still_qualifies + self.outside_window
+        return self.still_qualifies + self.outside_window + self.zero_rate
 
     @property
     def wrongly_excluded(self) -> float | None:
@@ -192,10 +226,9 @@ class Exclusions:
         share = self.wrongly_excluded
         told = "判定できた件が無い" if share is None else f"**{share:.1%} は外すべきでなかった**"
         return (
-            f"外した {self.excluded:,} 件のうち、判定できたのは {self.decided:,} 件"
-            f"（うち {self.outside_window:,} 件は**下げに効かない位置**の権利落ち）。"
-            f"{told}（配当を戻しても −{KNIFE_DROP:.0%} を超える）。"
-            f"配当利回りの中央値 {self.median_yield:.2%}、特別配当は {self.special:,} 件。"
+            f"外した {self.excluded:,} 件のうち、判定できたのは {self.decided:,} 件。"
+            f"{told}。配当利回りの中央値 {self.median_yield:.2%}、"
+            f"特別配当は {self.special:,} 件。"
         )
 
     def warnings(self) -> list[str]:
@@ -208,6 +241,17 @@ class Exclusions:
             found.append(
                 f"**{self.undecided:,} 件（{share:.1%}）は判定できなかった。** "
                 "配当の額か価格が引けない。**割合の分母に入れていない。**"
+            )
+        if self.zero_rate:
+            share = self.zero_rate / self.excluded
+            found.append(
+                f"**{self.zero_rate:,} 件（{share:.1%}）は、額 0 の権利落ちで外していた。** "
+                "無配の公表にも `ExDate` は入る。**落ちるものが無い日で外している。**"
+            )
+        if self.revised:
+            found.append(
+                f"**{self.revised:,} 件は、外したときの権利落ち日が最終データに無い。** "
+                "**訂正された日で外している。** 判定していない。"
             )
         if self.outside_window:
             found.append(
@@ -285,7 +329,8 @@ def _yield_on(rates: Rates, symbol: str, when: dt.date, before: float) -> float 
     if found is None or before <= 0:
         return None
     ratio = found.rate / before
-    if ratio <= 0 or ratio > MAX_YIELD:
+    # **0 は「読めない」ではなく「落ちるものが無い」。** 呼ぶ側が分ける。
+    if ratio < 0 or ratio > MAX_YIELD:
         return None
     return ratio
 
@@ -341,7 +386,8 @@ def measure_alignment(  # noqa: PLR0913 - 期間と刻みを全部受け取る
             if index is None or index - span - 1 < 0 or index + span >= len(closes):
                 continue
             ratio = _yield_on(rates, symbol, when, raw_closes[index - 1])
-            if ratio is None:
+            # **並べるのは実際に落ちた配当だけ。** 無配を混ぜると中央値が薄まる。
+            if not ratio:
                 continue
             events += 1
             yields.append(ratio)
@@ -359,10 +405,11 @@ def measure_alignment(  # noqa: PLR0913 - 期間と刻みを全部受け取る
     )
 
 
-def audit_exclusions(  # noqa: PLR0913 - 事前登録が固定した条件をすべて受け取る
+def audit_exclusions(  # noqa: PLR0913, PLR0912, PLR0915 - 処分を1件ずつ数えるので分岐が多い
     database: Database,
     excluded: Sequence[tuple[str, dt.date]],
     rates: Rates,
+    announced: dict[str, list[tuple[dt.date, dt.date]]] | None = None,
     drop: float = KNIFE_DROP,
     days: int = KNIFE_DAYS,
     progress: Callable[[int, int], None] | None = None,
@@ -371,10 +418,15 @@ def audit_exclusions(  # noqa: PLR0913 - 事前登録が固定した条件をす
 
     戻しても ``drop`` を超えるなら、**その急落は配当が作ったものではない。**
 
+    **外した理由になった日を、外したときと同じ引き方で作り直す**
+    （``announced`` を渡したとき）。最終データの権利落ち日で代用すると、
+    **訂正された日で外した件が「基準日の配当」に化ける。**
+
     Args:
         database: 価格の保存先。
         excluded: 権利落ちで外した ``(銘柄, 日)``。
         rates: :func:`~stock_ai.data.jquants_dividend.ex_dividend_rates` の形。
+        announced: ``(公表日, 権利落ち日)`` の並び。**外したときの引き方。**
         drop: 急落と呼ぶ幅。
         days: 急落を測る営業日数。
         progress: ``(済み, 全体)`` で呼ばれる。
@@ -382,7 +434,9 @@ def audit_exclusions(  # noqa: PLR0913 - 事前登録が固定した条件をす
     Returns:
         :class:`Exclusions`。
     """
-    still = saved = outside = undecided = special = 0
+    from stock_ai.backtest.gap_fill import known_ex_dates
+
+    still = saved = outside = zero = revised = undecided = special = 0
     yields: list[float] = []
     months: dict[int, int] = {}
 
@@ -395,39 +449,55 @@ def audit_exclusions(  # noqa: PLR0913 - 事前登録が固定した条件をす
             progress(position, len(by_symbol))
         when_of, closes, raw_closes = _sessions(database, symbol)
         index_of = {day: i for i, day in enumerate(when_of)}
+        own = (announced or {}).get(symbol)
         for when in by_symbol[symbol]:
             months[when.month] = months.get(when.month, 0) + 1
             index = index_of.get(when)
             if index is None or index - days < 0 or closes[index - days] <= 0:
                 undecided += 1
                 continue
+
+            # **外した理由になった日を、外したときと同じ引き方で作り直す。**
+            triggers = known_ex_dates(own, when) if own is not None else set(rates.get(symbol, {}))
             # **下げに効くのは ``days`` 日ぶんだけ。** 基準日に落ちた配当は
             # 比のどちらにも同じだけ乗るので、1つも動かさない。
-            known = [
+            here = [
                 when_of[step]
-                for step in range(max(index - days + 1, 1), index + 1)
-                if when_of[step] in rates.get(symbol, {})
+                for step in range(index - days + 1, index + 1)
+                if when_of[step] in triggers
             ]
-            if not known:
-                # **除外の理由になった権利落ちは、下げに効かない位置に在った。**
+            if not here:
                 outside += 1
                 continue
+
+            known = rates.get(symbol, {})
+            if any(day not in known for day in here):
+                # **外したときの日が、最終データに無い。** 訂正されている。
+                revised += 1
+                continue
+
             factor = 1.0
-            here: list[float] = []
-            for day in known:
-                step = index_of[day]
-                ratio = _yield_on(rates, symbol, day, raw_closes[step - 1])
+            unreadable = False
+            paid: list[float] = []
+            for day in here:
+                ratio = _yield_on(rates, symbol, day, raw_closes[index_of[day] - 1])
                 if ratio is None:
-                    continue
-                here.append(ratio)
-                factor /= 1.0 - ratio
-                if rates[symbol][day].has_special:
+                    unreadable = True
+                    break
+                if ratio > 0:
+                    paid.append(ratio)
+                    factor /= 1.0 - ratio
+                if known[day].has_special:
                     special += 1
-            if len(here) != len(known):
-                # **権利落ちは在るのに値付けできない。** 判定しない。
+            if unreadable:
                 undecided += 1
                 continue
-            yields.extend(here)
+            if not paid:
+                # **額が 0。** 落ちるものが無い日で外していた。
+                zero += 1
+                continue
+
+            yields.extend(paid)
             fell = closes[index] / closes[index - days] - 1.0
             without = (1.0 + fell) * factor - 1.0
             if without <= -drop:
@@ -440,6 +510,8 @@ def audit_exclusions(  # noqa: PLR0913 - 事前登録が固定した条件をす
         still_qualifies=still,
         rescued=saved,
         outside_window=outside,
+        zero_rate=zero,
+        revised=revised,
         undecided=undecided,
         special=special,
         median_yield=median(yields) if yields else 0.0,
@@ -490,7 +562,7 @@ def audit_holding_window(
             total = 0.0
             for step in range(index + 1, min(index + holding + 1, len(when_of))):
                 ratio = _yield_on(rates, symbol, when_of[step], raw_closes[step - 1])
-                if ratio is None:
+                if not ratio:
                     continue
                 total += ratio
                 yields.append(ratio)

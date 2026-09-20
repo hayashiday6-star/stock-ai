@@ -27,7 +27,7 @@ from stock_ai.backtest.knife import (
     build_events,
     knife_positions,
 )
-from stock_ai.data.schema import ADJ_CLOSE, CLOSE, HIGH, LOW, OPEN, VOLUME
+from stock_ai.data.schema import ADJ_CLOSE, CLOSE, HIGH, LOW, OPEN, VOLUME, split_adjusted
 from stock_ai.database.engine import Database
 from stock_ai.database.repository import PriceRepository
 
@@ -218,6 +218,48 @@ class TestCollectingTheCrashes:
         assert "特別配当" in told
         assert "読み違い" in told
         assert "押し出した" in told, "**配当が線の向こうに押し出した**場合が抜けている。"
+
+    def test_a_dividend_on_the_base_day_does_not_exclude(self) -> None:
+        """**基準日の配当は、比を1つも動かさない。**
+
+        `closes[index]` と `closes[index - days]` の**どちらにも同じだけ
+        乗る**ので、外す理由になりえない。窓を `days + 1` にしていて、
+        実データで 158 件をそれで外していた（2026-09-20）。
+        """
+        database, symbols, first = self._one_crash()
+        # **最初の急落の基準日。** そこに置いた配当は比を動かさない。
+        base_day = _INDEX[first - KNIFE_DAYS].date()
+        clean = build_events(database, {}, symbols=symbols)
+        announced = {symbols[0]: [(dt.date(2013, 1, 10), base_day)]}
+
+        found = build_events(database, announced, symbols=symbols)
+
+        assert found.excluded_ex_date == 0
+        assert len(found.events) == len(clean.events), "**外す理由になりえない日で外している。**"
+
+    def test_a_dividend_one_day_after_the_base_does_exclude(self) -> None:
+        """**片側だけ見ない。** 隣の日は比を動かすので、外す。"""
+        database, symbols, first = self._one_crash()
+        inside = _INDEX[first - KNIFE_DAYS + 1].date()
+        announced = {symbols[0]: [(dt.date(2013, 1, 10), inside)]}
+
+        found = build_events(database, announced, symbols=symbols)
+
+        assert found.excluded_ex_date > 0
+
+    @staticmethod
+    def _one_crash() -> tuple[Database, list[str], int]:
+        """1銘柄だけの盤面と、**実際に検出された最初の急落の位置。**
+
+        **位置を決め打たない。** 仕込んだ日と、−20% を割る日は違う
+        （乱数歩行なので銘柄ごとにもずれる）。
+        """
+        database, symbols = _database(count=1, crashes=(_at(_IS_CRASH), _at(_OOS_CRASH)))
+        with database.session() as session:
+            raw = PriceRepository(session).get_raw_prices(symbols[0])
+        closes = split_adjusted(raw)[CLOSE].to_numpy(dtype=float)
+        found = knife_positions(closes, np.ones(len(closes), dtype=bool))
+        return database, symbols, int(found[0])
 
     def test_the_excluded_crashes_come_back(self) -> None:
         """**「中身を見ること」と言うなら、中身を返す。**

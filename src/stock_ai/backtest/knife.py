@@ -30,6 +30,17 @@
 
 **そのうち何件が「外すべきでなかった」かは `ex_date_audit` が見る。**
 
+## 外す窓は、下げを作った日だけ
+
+**基準日に落ちた配当は、比を1つも動かさない**——`closes[index]` と
+`closes[index - days]` のどちらにも同じだけ乗るからである。**外す理由に
+なりえない日**を窓に入れていて、実データで 158 件をそれで外していた
+（2026-09-20）。
+
+**まだ残っている問題がある。** `known_ex_dates` は**額を見ない**ので、
+**無配の公表（`DivRate` が 0）でも外す。** `ex_date_audit` がその件数を
+数える。
+
 ## 急落の定義はここが正本
 
 `wall.scan`（壁の下見）も同じ規則を呼ぶ。**2つ持つと、下見で選んだ設計と
@@ -243,10 +254,16 @@ def build_events(  # noqa: PLR0913 - 事前登録が固定した条件をすべ�
                 if not liquid[index]:
                     thin += 1
                     continue
-                # **急落の5日に権利落ちが入っていたら外す。** 0 が想定である。
+                # **急落を作った ``days`` 日に権利落ちが入っていたら外す。**
+                #
+                # **基準日（``index - days``）は入れない。** そこで落ちた配当は
+                # ``closes[index] ÷ closes[index - days]`` の**どちらにも同じ
+                # だけ乗る**ので、比を1つも動かさない。**外す理由になりえない。**
+                # 窓を ``days + 1`` にしていて、実データで 158 件をそれで
+                # 外していた（2026-09-20、`ex-date-audit` が数えた）。
                 known = known_ex_dates(own, when)
                 if known and any(
-                    when_of[step] in known for step in range(max(index - days, 0), index + 1)
+                    when_of[step] in known for step in range(index - days + 1, index + 1)
                 ):
                     ex_dropped += 1
                     excluded.append((symbol, when))
