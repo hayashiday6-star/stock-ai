@@ -9,6 +9,7 @@ All price providers must return a DataFrame in this shape so downstream layers
 
 from __future__ import annotations
 
+import dataclasses
 import datetime as dt
 from collections.abc import Sequence
 
@@ -122,10 +123,75 @@ def split_adjusted(prices: pd.DataFrame) -> pd.DataFrame:
     return frame
 
 
+@dataclasses.dataclass(frozen=True)
+class DividendAdjustment:
+    """配当を落とした結果の内訳。**当てた件数と、当てなかった理由を返す。**
+
+    **黙って飛ばさないために在る。** 以前は倍率が 1 以上のとき ``continue``
+    していて、**「抜きすぎる」ではなく「1件も抜かない」に化けていた**——
+    どちらも件数が出ないので、出力からは区別できなかった。
+    """
+
+    applied: int = 0
+    """実際に当てた権利落ちの数。"""
+
+    unpublished: int = 0
+    """公表が権利落ち日より後。**使えば先読みになる。**"""
+
+    not_in_frame: int = 0
+    """その権利落ち日の足がこの銘柄に無い。"""
+
+    no_base: int = 0
+    """前日の終値が無い（先頭の足）か、0 以下。"""
+
+    not_a_drop: int = 0
+    """額が 0 以下。**無配の公表にも ``ExDate`` は入る。**"""
+
+    impossible: int = 0
+    """配当が前日終値以上。**正しい分母で割ればまず起きない。**
+
+    起きたら額か終値のどちらかが読み違いである。**0 でも数える**——黙って
+    飛ばすと、尺度を間違えたときにここが静かに増える。
+    """
+
+    @property
+    def skipped(self) -> int:
+        """当てなかった数。"""
+        return (
+            self.unpublished + self.not_in_frame + self.no_base + self.not_a_drop + self.impossible
+        )
+
+    def __add__(self, other: DividendAdjustment) -> DividendAdjustment:
+        """銘柄ごとの内訳を足し合わせる。"""
+        return DividendAdjustment(
+            applied=self.applied + other.applied,
+            unpublished=self.unpublished + other.unpublished,
+            not_in_frame=self.not_in_frame + other.not_in_frame,
+            no_base=self.no_base + other.no_base,
+            not_a_drop=self.not_a_drop + other.not_a_drop,
+            impossible=self.impossible + other.impossible,
+        )
+
+    def warnings(self) -> list[str]:
+        """気付かなくても目に入るべきこと。**早期 return しない。**"""
+        found: list[str] = []
+        if self.impossible:
+            found.append(
+                f"**配当が前日終値以上の権利落ちが {self.impossible:,} 件あった。** "
+                "額か終値のどちらかが読み違いである"
+                "——**正しい分母で割ればまず起きない。**"
+            )
+        if self.no_base:
+            found.append(f"前日の終値が無くて落とせなかった権利落ちが {self.no_base:,} 件。")
+        return found
+
+
 def dividend_adjusted(
     prices: pd.DataFrame,
     announced: Sequence[tuple[dt.date, dt.date, float]] | None,
-) -> pd.DataFrame:
+    *,
+    base: Sequence[float] | np.ndarray,
+) -> tuple[pd.DataFrame, DividendAdjustment]:
     """Take the dividend drop out of ``open``/``high``/``low``/``close``.
 
     **配当を落としてから測る。** そうしないと、権利落ちの値下がりが値動きに
@@ -144,43 +210,95 @@ def dividend_adjusted(
     ここは :func:`split_adjusted` の**後**に当てる。倍率は
     ``1 − 配当 ÷ 権利落ち日の前日終値``で、**その日より前**の足に掛かる。
 
+    ## 割る相手は、調整前の終値である（``base``）
+
+    **額は円建てで、分割では変わらない。** 割る相手に分割調整後の終値を使うと、
+    **分割より前の権利落ちが分割比のぶん余計に落ちる**——1:10 なら利回り
+    1.0% が 10.0% になる（2026-09-20 に再現）。
+
+    見つかったのは**監査が鳴ったから**である。
+    :class:`~stock_ai.backtest.ex_date_audit.HoldingDividends` が「窓の中の
+    配当 +0.007%/件 に対し、抜けたのは +0.036%/件」と出した。**「消えている
+    はず」と書いていたときは、この食い違いが見えていなかった。**
+
+    **倍率そのものは尺度によらない**ので、調整前の終値で出した比を調整後の
+    足に掛けるのが正しい。``base`` を**必須**にしてあるのは、渡し忘れが
+    黙って通る形を残さないためである。
+
     Args:
         prices: :func:`split_adjusted` を通した足。**日付の昇順**であること。
         announced: ``(公表日, 権利落ち日, 額)`` の並び
             （:func:`~stock_ai.data.jquants_dividend.ex_dividends_known_by`）。
             **その足より後に公表されたものは使わない**——使えば先読みになる。
+        base: **調整前の終値。** ``prices`` と同じ長さ・同じ並びであること。
+            分割調整を掛けていない足なら ``prices[CLOSE]`` そのものでよい。
 
     Returns:
-        新しい frame。入力は変えない。配当が1件も当たらなければそのまま。
+        ``(新しい frame, 内訳)``。入力は変えない。配当が1件も当たらなければ
+        frame はそのまま返る。**内訳は必ず返す**——数えずに済ませない。
+
+    Raises:
+        ValueError: ``base`` の長さが ``prices`` と違う。
     """
+    if len(base) != len(prices):
+        raise ValueError(
+            f"base の長さ {len(base)} が prices の {len(prices)} と違う。"
+            " **調整前の終値を、同じ並びで渡すこと。**"
+        )
     if not announced or CLOSE not in prices.columns or prices.empty:
-        return prices
+        return prices, DividendAdjustment()
 
     when_of = [stamp.date() for stamp in prices.index]
     index_of = {day: position for position, day in enumerate(when_of)}
-    close = pd.to_numeric(prices[CLOSE], errors="coerce").to_numpy(dtype=float)
+    unadjusted = np.asarray(base, dtype=float)
+
+    applied = unpublished = not_in_frame = no_base = not_a_drop = impossible = 0
 
     # **後ろから畳む。** 権利落ち日より前の足に、その日の倍率を掛けていく。
-    factor = np.ones(len(close), dtype=float)
+    factor = np.ones(len(prices), dtype=float)
     for published, ex_date, rate in announced:
         position = index_of.get(ex_date)
+        if position is None:
+            not_in_frame += 1
+            continue
         # **その日までに公表されたものだけ。** 公表が権利落ち日より後なら、
         # 落ちる時点では分かっていない。
-        if position is None or position == 0 or published > ex_date:
+        if published > ex_date:
+            unpublished += 1
             continue
-        before = close[position - 1]
-        if before <= 0 or rate <= 0:
+        if position == 0:
+            no_base += 1
+            continue
+        # **調整前の終値で割る。** 調整後で割ると、分割より前の権利落ちが
+        # 分割比のぶん余計に落ちる。
+        before = unadjusted[position - 1]
+        if before <= 0:
+            no_base += 1
+            continue
+        if rate <= 0:
+            not_a_drop += 1
             continue
         ratio = rate / before
-        if ratio <= 0 or ratio >= 1.0:
+        if ratio >= 1.0:
+            impossible += 1
             continue
         factor[:position] *= 1.0 - ratio
+        applied += 1
+
+    counted = DividendAdjustment(
+        applied=applied,
+        unpublished=unpublished,
+        not_in_frame=not_in_frame,
+        no_base=no_base,
+        not_a_drop=not_a_drop,
+        impossible=impossible,
+    )
 
     if np.all(factor == 1.0):
-        return prices
+        return prices, counted
 
     frame = prices.copy()
     for column in (OPEN, HIGH, LOW, CLOSE):
         if column in frame.columns:
             frame[column] = pd.to_numeric(frame[column], errors="coerce") * factor
-    return frame
+    return frame, counted

@@ -6741,7 +6741,7 @@ def knife_power(
     from stock_ai.backtest.universe_benchmark import equal_weighted_windows
     from stock_ai.core.logging import quiet_on_console
     from stock_ai.data.jquants_dividend import ex_dates_known_by, ex_dividends_known_by
-    from stock_ai.data.schema import dividend_adjusted
+    from stock_ai.data.schema import CLOSE, DividendAdjustment, dividend_adjusted
 
     settings = get_settings()
     configure_logging(settings.log_level)
@@ -6799,8 +6799,22 @@ def knife_power(
     # **保有する窓でも配当を落とす。** ショートは配当を払う側なので、
     # 落とさないと取り高が高く出る——**急落側だけ直すと非対称が残る**
     # （2026-09-20、ユーザーが指摘）。
-    def _net_of_dividends(symbol: str, frame: object) -> object:
-        return dividend_adjusted(frame, paid.get(symbol))  # type: ignore[arg-type]
+    #
+    # **割る相手は調整前の終値である。** 調整後で割ると、分割より前の
+    # 権利落ちが分割比のぶん余計に落ちる——1:10 なら利回り 1.0% が 10.0%
+    # になる（2026-09-20 に再現。監査が「窓の中の配当 +0.007%/件 に対し、
+    # 抜けたのは +0.036%/件」と鳴って見つかった）。
+    netting = DividendAdjustment()
+
+    def _net_of_dividends(symbol: str, frame: object, unadjusted: object) -> object:
+        nonlocal netting
+        netted, counted = dividend_adjusted(
+            frame,  # type: ignore[arg-type]
+            paid.get(symbol),
+            base=unadjusted[CLOSE].to_numpy(dtype=float),  # type: ignore[index]
+        )
+        netting = netting + counted
+        return netted
 
     with quiet_on_console("stock_ai.backtest.event_window"):
         sample = event_sample(
@@ -6813,6 +6827,14 @@ def knife_power(
             adjust=_net_of_dividends,
         )
     _report_event_disposition(sample, title="窓を当てた結果（IS のみ・件数）")
+    # **落とした配当の内訳を出す。** 黙って飛ばしていたので、尺度を
+    # 間違えていることが出力からは見えなかった（2026-09-20）。
+    for line in netting.warnings():
+        console.print(f"[yellow]{line}[/]")
+    console.print(
+        f"[dim]保有窓の配当: 当てた {netting.applied:,} 件、"
+        f"当てなかった {netting.skipped:,} 件。[/]"
+    )
     if len(sample.values) < 2:  # noqa: PLR2004 - 1日では散らばりが測れない
         console.print(f"[red]値動きの取れたイベント日が {len(sample.values)} しかない。[/]")
         raise typer.Exit(code=1)

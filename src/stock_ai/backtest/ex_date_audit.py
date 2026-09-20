@@ -297,7 +297,13 @@ def measure_adjustment(  # noqa: PLR0913 - 事前登録が固定した条件を�
             continue
         read += 1
         plain = split_adjusted(raw)
-        netted = dividend_adjusted(plain, rates.get(symbol))  # type: ignore[union-attr]
+        # **割る相手は調整前の終値。** 調整後で割ると、分割より前の権利落ちが
+        # 分割比のぶん余計に落ちる（2026-09-20 に再現）。
+        netted, _counted = dividend_adjusted(
+            plain,
+            rates.get(symbol),  # type: ignore[union-attr]
+            base=raw[CLOSE].to_numpy(dtype=float),
+        )
         when_of = [stamp.date() for stamp in plain.index]
         volumes = plain[VOLUME].to_numpy(dtype=float)
 
@@ -353,9 +359,16 @@ class HoldingDividends:
     """**保有する窓の中**の権利落ち。外していないほうである。"""
 
     kept: int
-    with_ex_date: int
-    median_yield: float
-    drag: float
+    measured: int = 0
+    """``drag`` と ``removed`` を**同じ窓で**数えられた急落の数。
+
+    **``kept`` より少ない。** 窓が最後まで無い足（上場廃止・期間の端）は
+    両方から外している——**片方だけ外すと、2つの列の分母が違う。**
+    """
+
+    with_ex_date: int = 0
+    median_yield: float = 0.0
+    drag: float = 0.0
     """**調整しなければ乗っていた**押し上げ。窓の中の配当の大きさである。
 
     **残っている量ではない。** ここは価格を調整したかどうかを1度も見て
@@ -373,16 +386,17 @@ class HoldingDividends:
 
     @property
     def share(self) -> float:
-        """窓の中に権利落ちが在った割合。"""
-        return self.with_ex_date / self.kept if self.kept else 0.0
+        """窓の中に権利落ちが在った割合。**分母は測れた数。**"""
+        return self.with_ex_date / self.measured if self.measured else 0.0
 
     def summary(self) -> str:
         """1行のまとめ。"""
         if not self.kept:
             return "使った急落が無い。"
         return (
-            f"使った {self.kept:,} 件のうち、**保有する {HOLDING} 営業日に"
-            f"権利落ちが在ったのは {self.with_ex_date:,} 件（{self.share:.1%}）。** "
+            f"使った {self.kept:,} 件のうち窓が最後まで在るのは {self.measured:,} 件。"
+            f"**保有する {HOLDING} 営業日に権利落ちが在ったのは "
+            f"{self.with_ex_date:,} 件（{self.share:.1%}）。** "
             f"利回りの中央値 {self.median_yield:.2%}。"
             f"**調整しなければ {self.drag:+.3%}/件 の押し上げ**になっていたところ、"
             f"**調整が抜いたのは {self.removed:+.3%}/件。**"
@@ -564,13 +578,12 @@ def audit_holding_window(  # noqa: PLR0913 - 前後を比べるので材料が�
             progress(position, len(by_symbol))
         when_of, plain, raw_closes = _sessions(database, symbol)
         if not when_of:
-            per_event.extend([0.0] * len(by_symbol[symbol]))
             continue
         # **調整の前と後で、同じ窓のリターンを出す。** 差が窓の中の配当に
         # 一致すれば、**調整が配当ぶんちょうど抜いたことが測れた**ことになる
         # ——「消えているはず」は主張であって確認ではない（2026-09-20、
         # ユーザーが出力の自己矛盾から指摘）。
-        netted = dividend_adjusted(plain, (paid or {}).get(symbol))
+        netted, _counted = dividend_adjusted(plain, (paid or {}).get(symbol), base=raw_closes)
         opens_plain = plain[OPEN].to_numpy(dtype=float)
         closes_plain = plain[CLOSE].to_numpy(dtype=float)
         opens_net = netted[OPEN].to_numpy(dtype=float)
@@ -579,16 +592,28 @@ def audit_holding_window(  # noqa: PLR0913 - 前後を比べるので材料が�
         for when in by_symbol[symbol]:
             index = index_of.get(when)
             if index is None:
-                per_event.append(0.0)
                 continue
             entry, exit_at = index + 1, index + holding
-            if exit_at < len(when_of) and opens_plain[entry] > 0 and opens_net[entry] > 0:
-                taken.append(
-                    (closes_net[exit_at] / opens_net[entry])
-                    - (closes_plain[exit_at] / opens_plain[entry])
-                )
+            # **窓が最後まで無い足は、両方から外す。** 片方だけ数えると
+            # `drag` と `removed` の分母が違ってしまう——**同じ行の2つの列が、
+            # 別々の標本を指す**形である（`CLAUDE.md`、3度踏んでいる）。
+            if exit_at >= len(when_of) or opens_plain[entry] <= 0 or opens_net[entry] <= 0:
+                continue
+            taken.append(
+                (closes_net[exit_at] / opens_net[entry])
+                - (closes_plain[exit_at] / opens_plain[entry])
+            )
+            # **entry 当日（``index + 1``）の権利落ちは数えない。** 株価は
+            # その日の**寄付きで**落ちるので、**その寄付きで入るこちらは
+            # 落ちた後の値段で入っており、配当は最初から乗っていない。**
+            #
+            # 倍率の側からも同じことが言える——権利落ちが entry 以前なら
+            # entry と exit の**両方に同じ倍率が掛かって相殺する**ので、
+            # `taken` は 0 になる。**置き方から確かめた**（2026-09-20）。
+            # 揃える前は `drag` だけがこの日を数えていて、**2つの列が1日
+            # 違う窓を見ていた。**
             total = 0.0
-            for step in range(index + 1, min(index + holding + 1, len(when_of))):
+            for step in range(index + 2, exit_at + 1):
                 ratio = _yield_on(rates, symbol, when_of[step], raw_closes[step - 1])
                 if not ratio:
                     continue
@@ -598,8 +623,14 @@ def audit_holding_window(  # noqa: PLR0913 - 前後を比べるので材料が�
                 touched += 1
             per_event.append(total)
 
+    if len(per_event) != len(taken):
+        raise ValueError(
+            f"drag を {len(per_event)} 件、removed を {len(taken)} 件で数えている。"
+            " **同じ窓で数えること。**"
+        )
     return HoldingDividends(
         kept=len(kept),
+        measured=len(per_event),
         with_ex_date=touched,
         median_yield=median(yields) if yields else 0.0,
         drag=fmean(per_event) if per_event else 0.0,

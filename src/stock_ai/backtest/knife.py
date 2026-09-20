@@ -68,7 +68,13 @@ from stock_ai.backtest.fall import fell_at_least
 from stock_ai.backtest.gap_fill import IS_END, IS_FROM, OOS_END, known_ex_dates, liquid_bars
 from stock_ai.backtest.pead import MIN_TURNOVER
 from stock_ai.core.logging import get_logger
-from stock_ai.data.schema import CLOSE, VOLUME, dividend_adjusted, split_adjusted
+from stock_ai.data.schema import (
+    CLOSE,
+    VOLUME,
+    DividendAdjustment,
+    dividend_adjusted,
+    split_adjusted,
+)
 from stock_ai.database.engine import Database
 
 logger = get_logger(__name__)
@@ -98,6 +104,14 @@ class KnifeEvents:
     symbols: int
     thin: int
     """**急落だったが**流動性で外した件数。**銘柄日ではない。**"""
+
+    dividends: DividendAdjustment = dataclasses.field(default_factory=DividendAdjustment)
+    """落とした配当の内訳。**当てた数と、当てなかった理由。**
+
+    以前は :func:`~stock_ai.data.schema.dividend_adjusted` が黙って飛ばして
+    いたので、**尺度を間違えていることが出力からは見えなかった**
+    （2026-09-20）。ここに出しておけば、次は静かに増えない。
+    """
 
     ex_date_events: list[tuple[str, dt.date]] = dataclasses.field(default_factory=list)
     """権利落ちで外した急落そのもの。**中身を見るために持って返る。**
@@ -138,8 +152,14 @@ class KnifeEvents:
     def warnings(self) -> list[str]:
         """気付かなくても目に入るべきこと。**早期 return しない。**"""
         found: list[str] = []
+        # **配当の内訳は、急落が 0 件でも出す。** 落とせなかった理由は急落の
+        # 有無と関係がない。下に早期 return が在るので、**その上に置く**
+        # ——`Alignment.warnings()` で、足した検査が先頭の return に黙らされた
+        # （2026-09-20）。
+        found.extend(self.dividends.warnings())
         if not self.events:
-            return ["**急落を1件も拾えなかった。**"]
+            found.append("**急落を1件も拾えなかった。**")
+            return found
         if self.excluded_ex_date:
             # **#15 とは逆で、0 でないほうが驚きである。** ただし、驚く理由を
             # 決め打たない——**最初そう書いて、説明を1つ書き落としていた**
@@ -234,6 +254,7 @@ def build_events(  # noqa: PLR0913 - 事前登録が固定した条件をすべ�
     is_days: set[dt.date] = set()
     oos_days: set[dt.date] = set()
     oos_events = ex_dropped = broken_dropped = thin = read = 0
+    dividends = DividendAdjustment()
 
     with database.session() as session:
         if symbols is None:
@@ -255,7 +276,10 @@ def build_events(  # noqa: PLR0913 - 事前登録が固定した条件をすべ�
             # 外す」そのものではなかった。**
             paid = (rates or {}).get(symbol)
             plain = split_adjusted(raw)
-            netted = dividend_adjusted(plain, paid)
+            # **割る相手は調整前の終値。** 調整後で割ると、分割より前の
+            # 権利落ちが分割比のぶん余計に落ちる（2026-09-20 に再現）。
+            netted, counted = dividend_adjusted(plain, paid, base=raw[CLOSE].to_numpy(dtype=float))
+            dividends = dividends + counted
             # **下げの判定だけ、配当を落とした値で行う。**
             closes = netted[CLOSE].to_numpy(dtype=float)
             volumes = plain[VOLUME].to_numpy(dtype=float)
@@ -326,6 +350,7 @@ def build_events(  # noqa: PLR0913 - 事前登録が固定した条件をすべ�
         days_oos=len(oos_days),
         events_oos=oos_events,
         excluded_ex_date=ex_dropped,
+        dividends=dividends,
         ex_date_events=sorted(excluded, key=lambda row: (row[1], row[0])),
         excluded_broken=broken_dropped,
         symbols=read,

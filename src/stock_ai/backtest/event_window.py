@@ -191,7 +191,7 @@ def event_sample(  # noqa: PLR0913, PLR0912, PLR0915 - 処分を1件ずつ数え
     benchmark: str = "1306",
     until: dt.date | None = None,
     subtract: object | None = None,
-    adjust: Callable[[str, object], object] | None = None,
+    adjust: Callable[[str, object, object], object] | None = None,
 ) -> EventSample:
     """窓を当てて、**使えた分と捨てた分の両方**を返す。
 
@@ -216,10 +216,16 @@ def event_sample(  # noqa: PLR0913, PLR0912, PLR0915 - 処分を1件ずつ数え
         subtract: :class:`~stock_ai.backtest.universe_benchmark.UniverseBenchmark`。
             渡すと**こちらが控除される**——持ち方と同じ等加重になる。
             ``benchmark`` は暦と診断だけに使われる。
-        adjust: ``(銘柄, 足) -> 足``。:func:`~stock_ai.data.schema.split_adjusted`
-            の後に当てる。**既定は素通し**——渡した説だけが変わる。
-            `#16` は配当を落とすのに使う（ショートは配当を払う側なので、
-            落とさないと取り高が高く出る）。
+        adjust: ``(銘柄, 調整後の足, 調整前の足) -> 足``。
+            :func:`~stock_ai.data.schema.split_adjusted` の後に当てる。
+            **既定は素通し**——渡した説だけが変わる。`#16` は配当を落とす
+            のに使う（ショートは配当を払う側なので、落とさないと取り高が
+            高く出る）。
+
+            **調整前の足も渡すのは、割る相手が要るからである。** 円建ての
+            配当額を分割調整後の終値で割ると、**分割より前の権利落ちが
+            分割比のぶん余計に落ちる**（2026-09-20 に再現）。調整後しか
+            渡していなかったので、**呼ぶ側が正しい分母を作れなかった。**
 
     Returns:
         :class:`EventSample`。
@@ -268,7 +274,7 @@ def event_sample(  # noqa: PLR0913, PLR0912, PLR0915 - 処分を1件ずつ数え
                 # **配当を落としてから測る。** ショートは配当を払う側なので、
                 # 落とさないと取り高が高く出る（`#16`、2026-09-20）。
                 # **既定は素通し**なので、他の説は1行も変わらない。
-                adjusted = adjust(symbol, adjusted)
+                adjusted = adjust(symbol, adjusted, raw)
             index = adjusted.index
             at = {stamp.date(): position for position, stamp in enumerate(index)}
             opens = adjusted[OPEN].to_numpy(dtype=float)

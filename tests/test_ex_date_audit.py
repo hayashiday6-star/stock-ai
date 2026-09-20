@@ -312,6 +312,34 @@ class TestDividendsInsideTheHoldingWindow:
 
         assert audit_holding_window(database, kept, rates, paid).warnings() == []
 
+    def test_a_dividend_on_the_entry_day_counts_in_neither_column(self) -> None:
+        """**entry 当日の権利落ちは、どちらの列にも入らない。**
+
+        株価はその日の**寄付きで**落ちるので、**その寄付きで入るこちらは
+        落ちた後の値段で入っており、配当は乗っていない。** 倍率の側からも
+        同じで、entry と exit の両方に同じだけ掛かって相殺する。
+
+        揃える前は `drag` だけがこの日を数えていて、**2つの列が1日違う窓を
+        見ていた**（2026-09-20）。
+        """
+        database, rates, kept, paid = self._one(offset=1)
+
+        found = audit_holding_window(database, kept, rates, paid)
+
+        assert found.with_ex_date == 0, "**drag が entry 当日を数えている。**"
+        assert found.drag == 0.0
+        assert found.removed == pytest.approx(0.0, abs=1e-12)
+        assert found.matched
+
+    def test_both_columns_count_the_same_events(self) -> None:
+        """**分母が揃っていること。** 片方だけ数えると2つの列がずれる。"""
+        database, rates, kept, paid = self._one(offset=2)
+
+        found = audit_holding_window(database, kept, rates, paid)
+
+        assert found.measured == len(kept)
+        assert found.share == found.with_ex_date / found.measured
+
 
 def test_the_crash_definition_is_not_copied_here() -> None:
     """**急落の定数は `knife` から取る。** 2つ持つと黙ってずれる。"""
@@ -408,9 +436,10 @@ class TestAdjustingMovesTheCrashSet:
 
         from stock_ai.data import schema
 
-        def _wrong(prices, announced):
+        def _wrong(prices, announced, *, base):
+            counted = schema.DividendAdjustment()
             if not announced:
-                return prices
+                return prices, counted
             when_of = [stamp.date() for stamp in prices.index]
             index_of = {day: i for i, day in enumerate(when_of)}
             factor = np_.ones(len(prices), dtype=float)
@@ -418,13 +447,13 @@ class TestAdjustingMovesTheCrashSet:
                 position = index_of.get(ex_date)
                 if position is None or position == 0:
                     continue
-                before = float(prices[CLOSE].to_numpy()[position - 1])
+                before = float(np_.asarray(base, dtype=float)[position - 1])
                 if before <= 0 or rate <= 0:
                     continue
                 factor[position:] *= 1.0 - rate / before  # ← 向きが逆
             frame = prices.copy()
             frame[CLOSE] = prices[CLOSE].to_numpy(dtype=float) * factor
-            return frame
+            return frame, counted
 
         monkeypatch = pytest.MonkeyPatch()
         monkeypatch.setattr(schema, "dividend_adjusted", _wrong)
