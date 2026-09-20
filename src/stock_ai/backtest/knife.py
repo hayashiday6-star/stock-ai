@@ -20,9 +20,15 @@
 **調整漏れの分割・併合は、まさに「5営業日で −20%」に見える**（1:2 の分割は
 −50%）。壁の下見の1回目で、これを外さずに SD 273%／イベント日 を出した。
 
-**権利落ちも外す。ただし 0 が想定である**——20% の下げを配当では作れない。
-それでも外すのは、特別配当のような大きいものが在れば**機械的な値下がりで
-戻らない**からで、この説の事象としては偽物である。
+**権利落ちも外す。** 特別配当のような大きいものが在れば**機械的な値下がりで
+戻らない**ので、この説の事象としては偽物である。
+
+**「0 が想定」と書いたが、実データは 819 件だった**（2026-09-20）。予想が
+外れたのは、**配当が 20% を作る必要が無い**からである——除外の窓は急落の
+6営業日なので、**19% 下げた銘柄を線の向こうに押し出せば足りる。** しかも
+「20% 下げた」で絞る時点で、押し出された側が選ばれる。
+
+**そのうち何件が「外すべきでなかった」かは `ex_date_audit` が見る。**
 
 ## 急落の定義はここが正本
 
@@ -73,6 +79,29 @@ class KnifeEvents:
     thin: int
     """**急落だったが**流動性で外した件数。**銘柄日ではない。**"""
 
+    ex_date_events: list[tuple[str, dt.date]] = dataclasses.field(default_factory=list)
+    """権利落ちで外した急落そのもの。**中身を見るために持って返る。**
+
+    「中身を見ること」と警告に書いておきながら、**見る道具が無かった**
+    （2026-09-20、ユーザーが指摘）。件数だけ返すと、外したものが何だったか
+    を後から調べられない。
+    """
+
+    def __post_init__(self) -> None:
+        """外した件数と、外したものの数が合うこと。
+
+        **数と中身を別々に持つと、片方だけ直したときに黙ってずれる。**
+        `ExDateCoverage` と同じ作りである。
+
+        Raises:
+            ValueError: 件数と中身の数が合わない。
+        """
+        if self.ex_date_events and len(self.ex_date_events) != self.excluded_ex_date:
+            raise ValueError(
+                f"権利落ちで外した件数 {self.excluded_ex_date} と、"
+                f"持って返った {len(self.ex_date_events)} 件が合わない。"
+            )
+
     def summary(self) -> str:
         """1行のまとめ。**平均は出さない**——§0 が判定を先食いしないため。"""
         if not self.events:
@@ -92,11 +121,18 @@ class KnifeEvents:
         if not self.events:
             return ["**急落を1件も拾えなかった。**"]
         if self.excluded_ex_date:
-            # **#15 とは逆で、0 でないほうが驚きである。**
+            # **#15 とは逆で、0 でないほうが驚きである。** ただし、驚く理由を
+            # 決め打たない——**最初そう書いて、説明を1つ書き落としていた**
+            # （2026-09-20）。**配当が 20% を作る必要は無い。** 除外の窓は
+            # 急落の6営業日なので、**19% 下げた銘柄を線の向こうに押し出せば
+            # 足りる。** しかも「20% 下げた」で絞る時点で、押し出された側が
+            # 選ばれる。
             found.append(
                 f"**権利落ちで {self.excluded_ex_date:,} 件外した。** "
-                "20% の下げを配当では作れないはずなので、**特別配当か、"
-                "`ExDate` の読み違いである。** 中身を見ること。"
+                "説明は3つある——**特別配当**、**`ExDate` の読み違い**、"
+                "そして**窓が6営業日あるので、配当が線の向こうに押し出した**。"
+                "3つ目なら、**外すべきでない急落を外している。** "
+                "`checks\\権利落ちの日は合っているか.bat` が見分ける。"
             )
         if not self.days_oos:
             found.append("**OOS に急落が1日も無い。** 判定に使えない。")
@@ -170,6 +206,7 @@ def build_events(  # noqa: PLR0913 - 事前登録が固定した条件をすべ�
     from stock_ai.database.repository import PriceRepository, list_securities
 
     events: list[tuple[str, dt.date]] = []
+    excluded: list[tuple[str, dt.date]] = []
     is_days: set[dt.date] = set()
     oos_days: set[dt.date] = set()
     oos_events = ex_dropped = broken_dropped = thin = read = 0
@@ -212,6 +249,7 @@ def build_events(  # noqa: PLR0913 - 事前登録が固定した条件をすべ�
                     when_of[step] in known for step in range(max(index - days, 0), index + 1)
                 ):
                     ex_dropped += 1
+                    excluded.append((symbol, when))
                     continue
                 # **急落そのものと、その後の窓に不連続が無いこと。**
                 if spans_break(prefix, max(index - days, 0), min(index + holding, last)):
@@ -237,6 +275,7 @@ def build_events(  # noqa: PLR0913 - 事前登録が固定した条件をすべ�
         days_oos=len(oos_days),
         events_oos=oos_events,
         excluded_ex_date=ex_dropped,
+        ex_date_events=sorted(excluded, key=lambda row: (row[1], row[0])),
         excluded_broken=broken_dropped,
         symbols=read,
         thin=thin,

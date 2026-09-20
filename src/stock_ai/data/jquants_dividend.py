@@ -340,6 +340,73 @@ def ex_dates_known_by(directory: Path) -> dict[str, list[tuple[dt.date, dt.date]
     return found
 
 
+@dataclasses.dataclass(frozen=True)
+class ExDividend:
+    """ある権利落ち日に落ちる配当。**普通と特別を分けて持つ。**"""
+
+    rate: float
+    """1株あたりの合計。**円。調整前の終値で割ること。**"""
+
+    special: float
+    """うち特別配当。**大きければ「特別配当だった」と言える。**"""
+
+    @property
+    def has_special(self) -> bool:
+        """特別配当が乗っているか。"""
+        return self.special > 0
+
+
+def ex_dividend_rates(directory: Path) -> dict[str, dict[dt.date, ExDividend]]:
+    """銘柄・権利落ち日ごとの **1株あたり配当**。**監査専用である。**
+
+    **最後に公表された値を採る**ので、先読みが入る。**売買の判定に使わない**
+    ——外した件数の中身を見るためだけのものである（`ex-date-audit`）。
+    先読みを外して権利落ち日を引くのは :func:`ex_dates_known_by`。
+
+    **`DivRate` は1株あたりの円**で、分割の前後で尺度が変わる。**割るのは
+    調整前の終値**であること（調整後で割ると分割ぶんずれる）。
+
+    Args:
+        directory: 原本の置き場所。
+
+    Returns:
+        ``銘柄 -> {権利落ち日: :class:`ExDividend`}``。**額の無い行は入らない。**
+    """
+    from stock_ai.data.jquants_archive import path_for, read_manifest
+    from stock_ai.data.jquants_read import endpoint_of, read_archived
+
+    # **同じ権利落ち日に複数の期が乗ることがある**（普通配当と記念配当が
+    # 別行）。**足す。** 落ちるのは合計だからである。期と `RefNo` で1本に
+    # まとめ、後から出た公表で上書きする。
+    seen: dict[str, dict[dt.date, dict[tuple[str, str], tuple[dt.date, float, float]]]] = {}
+    for key in sorted(read_manifest(directory)):
+        if endpoint_of(key) != "/fins/dividend":
+            continue
+        try:
+            found = parse_dividends(read_archived(path_for(directory, key)))
+        except Exception as exc:  # noqa: BLE001 - どこで読めないかが記録に値する
+            logger.warning("配当の原本を読めなかった: %s: %s", key, exc)
+            continue
+        for item in found:
+            if item.ex_date is None or item.rate is None:
+                continue
+            slot = seen.setdefault(item.symbol, {}).setdefault(item.ex_date, {})
+            tag = (item.term, item.reference)
+            previous = slot.get(tag)
+            if previous is None or previous[0] <= item.published_on:
+                slot[tag] = (item.published_on, item.rate, item.special_rate or 0.0)
+    return {
+        symbol: {
+            when: ExDividend(
+                rate=sum(rate for _published, rate, _special in rows.values()),
+                special=sum(special for _published, _rate, special in rows.values()),
+            )
+            for when, rows in dates.items()
+        }
+        for symbol, dates in seen.items()
+    }
+
+
 def _ex_date_rows(directory: Path) -> Iterable[tuple[str, dt.date, dt.date]]:
     """原本から ``(銘柄, 公表日, 権利落ち日)`` を1行ずつ。**取りには行かない。**"""
     from stock_ai.data.jquants_archive import path_for, read_manifest

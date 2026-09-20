@@ -346,7 +346,7 @@ class TestTheGateIsTheSharedOne:
         ).read_text(encoding="utf-8")
 
         assert "_events_needed" not in body
-        assert body.count('Table(title="この設計で検出するのに要るイベント日数")') == 1
+        assert body.count("この設計で検出するのに要るイベント日数") == 1
 
     def test_no_table_ladders_over_the_detectable_difference(self) -> None:
         """**どの表も、検出できる差を「検出したい効果」に入れない。**
@@ -479,19 +479,28 @@ class TestTheYearsColumnUsesTheSameUnitAsThePeriods:
     """`periods_needed` が返すのは**イベント日**である。**件数で割らない。**
 
     2,113日 ÷ 6,313件/年 = 0.33 で「0年」と出ていた（2026-09-19）。
+
+    **この教室の最初の版は、直した先を取り違えていた**（2026-09-20）。
+    「率は呼ぶ側に作らせない」まではよかったが、**`_event_gate` の中で
+    `len(values) / span_years`（IS の率）を作っていることを、そのまま
+    assert していた。** 名前は「`periods` と同じ単位で数える」と言って
+    いるのに、**中身は逆を固定していた。**
+
+    `periods` は OOS のイベント日なので、率も OOS から作る。
     """
 
-    def test_the_helper_makes_the_rate_itself(self) -> None:
-        """**呼ぶ側に作らせない。** 件数を渡されたら、そこで単位が壊れる。"""
+    def test_the_rate_comes_from_the_judgement_window(self) -> None:
+        """**推定に使った標本の件数から率を作らない。**"""
         import inspect
 
         from stock_ai import cli
 
         body = inspect.getsource(cli._event_gate)
 
-        assert "per_year = len(values) / span_years" in body
+        assert "len(values) /" not in body
+        assert "power.requirement" in body or "requirement," in body
 
-    def test_both_callers_pass_a_span_not_a_rate(self) -> None:
+    def test_both_callers_pass_the_judgement_span(self) -> None:
         import inspect
 
         from stock_ai import cli
@@ -499,8 +508,9 @@ class TestTheYearsColumnUsesTheSameUnitAsThePeriods:
         for command in (cli.gap_fill_power, cli.revision_power):
             body = inspect.getsource(command)
 
-            assert "span_years=" in body, command.__name__
+            assert "period_years=" in body, command.__name__
             assert "per_year=" not in body, command.__name__
+            assert "span_years=" not in body, command.__name__
 
     def test_two_effects_that_display_the_same_are_one_row(self) -> None:
         """**1.20% が2行並んでいた。** 表示して同じなら1行。
@@ -540,7 +550,7 @@ class TestTheNeededTableSaysSomething:
             committed=0.012,
             holding=20,
             reach="ためし",
-            span_years=5.0,
+            period_years=8.67,
         )
         return capsys.readouterr().out
 
@@ -582,3 +592,18 @@ class TestTheNeededTableSaysSomething:
         out = self._run(values, capsys)
 
         assert "1.20%" in out
+
+    def test_the_table_carries_what_is_already_there(self, capsys) -> None:
+        """**「いま在る」を表の中に置く。**
+
+        外に置くと、読む側が別の標本の数字（脚注の「手元は IS 5.0年」）と
+        突き合わせる——**それが「6.9年 要る」と「足りている」が並んだ形**
+        である（2026-09-20、ユーザーが発見）。
+        """
+        rng = np.random.default_rng(0)
+        values = [float(value) + 0.002 for value in rng.normal(0.0, 0.05, 400)]
+
+        out = self._run(values, capsys)
+
+        assert "いま在る" in out
+        assert "8.7年" in out, "**判定に使う窓の年数が、表に出ていない。**"

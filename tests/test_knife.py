@@ -4,8 +4,9 @@
 
 1. **急落の定義は1つだけ。** 壁の下見（`wall`）も同じ規則を呼ぶ
 2. **不連続を外す。** 1:2 の分割は −50% で、まさに「急落」に見える
-3. **権利落ちも外す。ただし 0 が想定**——20% を配当では作れない。
-   **#15 とは逆で、0 でないほうが驚きである**
+3. **権利落ちも外す。** 「0 が想定」と書いたが実データは 819 件だった
+   ——**配当は 20% を作らなくてよく、線の向こうに押し出せば足りる**
+   （2026-09-20）。**驚く理由を決め打たない**
 4. **符号の反転は1箇所だけ。** 測るのはショートの取り高である
 5. **窓は5営業日。** 格言が急落直後の話だからで、検出力のためではない
 """
@@ -22,6 +23,7 @@ from stock_ai.backtest.knife import (
     HOLDING,
     KNIFE_DAYS,
     KNIFE_DROP,
+    KnifeEvents,
     build_events,
     knife_positions,
 )
@@ -196,7 +198,57 @@ class TestCollectingTheCrashes:
 
         found = build_events(database, announced, symbols=symbols)
 
-        assert any("配当では作れないはず" in line for line in found.warnings())
+        assert any("権利落ちで" in line for line in found.warnings())
+
+    def test_the_warning_offers_all_three_explanations(self) -> None:
+        """**驚く理由を決め打たない。**
+
+        最初の文面は「特別配当か、`ExDate` の読み違いである」と2つに
+        決めていた。**3つ目——窓が6営業日あるので、配当が線の向こうに
+        押し出した——を書き落としていた**（2026-09-20）。3つ目なら、
+        **外すべきでない急落を外している。**
+        """
+        where = _at(_IS_CRASH)
+        database, symbols = _database(crashes=(where, _at(_OOS_CRASH)))
+        crash_day = _INDEX[where + KNIFE_DAYS].date()
+        announced = {symbol: [(dt.date(2013, 1, 10), crash_day)] for symbol in symbols}
+
+        told = " ".join(build_events(database, announced, symbols=symbols).warnings())
+
+        assert "特別配当" in told
+        assert "読み違い" in told
+        assert "押し出した" in told, "**配当が線の向こうに押し出した**場合が抜けている。"
+
+    def test_the_excluded_crashes_come_back(self) -> None:
+        """**「中身を見ること」と言うなら、中身を返す。**
+
+        件数だけ返していたので、外したものが何だったかを後から調べられ
+        なかった（2026-09-20、ユーザーが指摘）。
+        """
+        where = _at(_IS_CRASH)
+        database, symbols = _database(crashes=(where, _at(_OOS_CRASH)))
+        crash_day = _INDEX[where + KNIFE_DAYS].date()
+        announced = {symbol: [(dt.date(2013, 1, 10), crash_day)] for symbol in symbols}
+
+        found = build_events(database, announced, symbols=symbols)
+
+        assert len(found.ex_date_events) == found.excluded_ex_date
+        assert all(when == crash_day for _symbol, when in found.ex_date_events)
+
+    def test_a_count_that_disagrees_with_the_contents_is_refused(self) -> None:
+        """**数と中身がずれたら、作った時点で落ちる。**"""
+        with pytest.raises(ValueError, match="合わない"):
+            KnifeEvents(
+                events=[],
+                days_is=0,
+                days_oos=0,
+                events_oos=0,
+                excluded_ex_date=5,
+                excluded_broken=0,
+                symbols=1,
+                thin=0,
+                ex_date_events=[("1301", dt.date(2013, 3, 28))],
+            )
 
     def test_a_clean_run_says_nothing_about_dividends(self) -> None:
         database, symbols = _database(crashes=(_at(_IS_CRASH), _at(_OOS_CRASH)))
