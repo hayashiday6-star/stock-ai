@@ -157,6 +157,16 @@ SHAPES: tuple[Shape, ...] = (
         source="PREREG_GAP_FILL_JP.md §0（IS 31,542 件が 1,220 日。OOS は 2,109 日）",
         pipe="event",
     ),
+    Shape(
+        name="#16 の形（落ちるナイフ・イベント型・5営業日）",
+        sd=0.0991,
+        inflation=1.37,
+        periods=1886,
+        unit="イベント日",
+        per_year=0,
+        source="PREREG_KNIFE_JP.md §0（IS 5,456 件が 1,008 日。OOS は 1,886 日）",
+        pipe="event",
+    ),
 )
 
 #: 合格の条件。**手順そのもの。** 番号は文書と揃える。
