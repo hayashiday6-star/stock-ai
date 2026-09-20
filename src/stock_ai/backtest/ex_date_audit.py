@@ -301,20 +301,24 @@ def measure_adjustment(  # noqa: PLR0913 - 事前登録が固定した条件を�
         when_of = [stamp.date() for stamp in plain.index]
         volumes = plain[VOLUME].to_numpy(dtype=float)
 
+        # **流動性は落とす前の値で見る。** 両方の枝で同じにしないと、
+        # 比較が「下げの変化」ではなく「流動性の変化」を拾う
+        # （2026-09-20、ユーザーが件数の食い違いから見つけた）。
+        liquid = liquid_bars(plain[CLOSE].to_numpy(dtype=float), volumes, min_turnover)
+
         def _hits(
             frame: object,
             *,
             _when=when_of,
-            _volumes=volumes,
+            _liquid=liquid,
         ) -> tuple[set[int], np.ndarray]:
             closes = frame[CLOSE].to_numpy(dtype=float)  # type: ignore[index]
-            liquid = liquid_bars(closes, _volumes, min_turnover)
             fall = np.full(len(closes), np.nan)
             fall[days:] = closes[days:] / np.where(closes[:-days] > 0, closes[:-days], np.nan) - 1
             return (
                 {
                     index
-                    for index in knife_positions(closes, liquid, drop, days)
+                    for index in knife_positions(closes, _liquid, drop, days)
                     if first <= _when[index] <= last
                 },
                 fall,

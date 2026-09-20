@@ -253,12 +253,22 @@ def build_events(  # noqa: PLR0913 - 事前登録が固定した条件をすべ�
             # 指摘）。**外す規則は代理であって、§3 の「機械的な値下がりを
             # 外す」そのものではなかった。**
             paid = (rates or {}).get(symbol)
-            adjusted = dividend_adjusted(split_adjusted(raw), paid)
-            closes = adjusted[CLOSE].to_numpy(dtype=float)
-            volumes = adjusted[VOLUME].to_numpy(dtype=float)
-            when_of = [stamp.date() for stamp in adjusted.index]
-            liquid = liquid_bars(closes, volumes, min_turnover)
-            prefix = crossings(session_breaks(adjusted[CLOSE]))
+            plain = split_adjusted(raw)
+            netted = dividend_adjusted(plain, paid)
+            # **下げの判定だけ、配当を落とした値で行う。**
+            closes = netted[CLOSE].to_numpy(dtype=float)
+            volumes = plain[VOLUME].to_numpy(dtype=float)
+            when_of = [stamp.date() for stamp in plain.index]
+            # **流動性は落とす前の値で見る。** 配当調整はリターンのための
+            # もので、**規模のためのものではない。** 落とした値で売買代金を
+            # 測ると実際より小さく出て、**古い足ほど強く削られる**——14年・
+            # 年2回・利回り 1.3% なら、いちばん古い足は 0.69倍になる。
+            # **1億円の線の上下にいる銘柄が、時期によって違う基準で落ちる**
+            # （2026-09-20、ユーザーが件数の食い違いから見つけた）。
+            liquid = liquid_bars(plain[CLOSE].to_numpy(dtype=float), volumes, min_turnover)
+            # **不連続も落とす前の値で見る。** 50% の段差に配当は効かないが、
+            # 他の説と同じ系列で見るほうが揃う。
+            prefix = crossings(session_breaks(plain[CLOSE]))
             last = len(closes) - 1
             # **落とせなかった権利落ちだけ、外す側に残す。** 額が一度も公表
             # されていない日は調整のしようが無く、**機械的な値下がりが値動きに

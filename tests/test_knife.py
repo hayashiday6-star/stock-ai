@@ -133,16 +133,20 @@ _IS_CRASH = "2015-03-23"
 _OOS_CRASH = "2019-03-21"
 
 
-def _database(count: int = 6, crashes=(), merger=None) -> tuple[Database, list[str]]:
+def _database(
+    count: int = 6, crashes=(), merger=None, turnover: float | None = None
+) -> tuple[Database, list[str]]:
     database = Database("sqlite:///:memory:")
     database.create_all()
     symbols = [f"{1400 + index:04d}" for index in range(count)]
     with database.session() as session:
         repo = PriceRepository(session)
         for index, symbol in enumerate(symbols):
-            repo.upsert_prices(
-                symbol, _prices(seed=index, crashes=crashes, merger=merger), market="JP"
-            )
+            frame = _prices(seed=index, crashes=crashes, merger=merger)
+            if turnover is not None:
+                # **売買代金を狙った水準に合わせる。** 終値で割って出来高を決める。
+                frame[VOLUME] = turnover / frame[CLOSE].to_numpy(dtype=float)
+            repo.upsert_prices(symbol, frame, market="JP")
     return database, symbols
 
 
@@ -271,18 +275,46 @@ class TestCollectingTheCrashes:
         assert found.excluded_ex_date > 0
 
     @staticmethod
-    def _one_crash() -> tuple[Database, list[str], int]:
+    def _one_crash(turnover: float | None = None) -> tuple[Database, list[str], int]:
         """1銘柄だけの盤面と、**実際に検出された最初の急落の位置。**
 
         **位置を決め打たない。** 仕込んだ日と、−20% を割る日は違う
         （乱数歩行なので銘柄ごとにもずれる）。
         """
-        database, symbols = _database(count=1, crashes=(_at(_IS_CRASH), _at(_OOS_CRASH)))
+        database, symbols = _database(
+            count=1, crashes=(_at(_IS_CRASH), _at(_OOS_CRASH)), turnover=turnover
+        )
         with database.session() as session:
             raw = PriceRepository(session).get_raw_prices(symbols[0])
         closes = split_adjusted(raw)[CLOSE].to_numpy(dtype=float)
         found = knife_positions(closes, np.ones(len(closes), dtype=bool))
         return database, symbols, int(found[0])
+
+    def test_a_dividend_does_not_push_a_symbol_below_the_turnover_floor(self) -> None:
+        """**流動性は配当を落とす前の値で見る。**
+
+        配当調整はリターンのためのもので、**規模のためのものではない。**
+        落とした値で売買代金を測ると実際より小さく出て、**古い足ほど強く
+        削られる**（14年・年2回・利回り 1.3% なら 0.69倍）。**1億円の線の
+        上下にいる銘柄が、時期によって違う基準で落ちる。**
+
+        実データで、除外を 303 件やめたのに事象が 169 件**減った**ことから
+        見つかった（2026-09-20、ユーザーが指摘）。
+        """
+        from stock_ai.backtest.pead import MIN_TURNOVER
+
+        # **線のすぐ上に売買代金を置く。** 少しでも縮めば落ちる。
+        database, symbols, first = self._one_crash(turnover=MIN_TURNOVER * 1.05)
+        clean = build_events(database, {}, symbols=symbols)
+        assert clean.events, "**足場が線の上に乗っていない。** 検査にならない。"
+
+        # 履歴じゅうに配当を置く（実データと同じく、古い足ほど強く縮む）。
+        paid = [
+            (dt.date(2012, 7, 2), _INDEX[step].date(), 20.0) for step in range(60, len(_INDEX), 120)
+        ]
+        found = build_events(database, {}, {symbols[0]: paid}, symbols=symbols)
+
+        assert len(found.events) == len(clean.events), "**配当のせいで流動性から落ちている。**"
 
     def test_the_excluded_crashes_come_back(self) -> None:
         """**「中身を見ること」と言うなら、中身を返す。**
