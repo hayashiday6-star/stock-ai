@@ -123,6 +123,39 @@ def split_adjusted(prices: pd.DataFrame) -> pd.DataFrame:
     return frame
 
 
+#: 飛ばした行を何件まで持って返るか。**全部持つと、銘柄数ぶん積み上がる。**
+#:
+#: **件数は別に数えている**ので、ここが上限に当たっても数は正しい。
+#: 中身は「1件取り出して額と終値を並べる」ために在る。
+MAX_SKIPPED_KEPT = 200
+
+
+@dataclasses.dataclass(frozen=True)
+class SkippedDividend:
+    """当てなかった権利落ち1件。**件数だけでは追えないので中身を持つ。**
+
+    **「中身を見ること」と書いて、見る道具が無かった**のを2度やらない
+    （`CLAUDE.md`）。`impossible` が 53 件と出たとき、**銘柄も日付も額も
+    出ていなかったので、どちら側の読み違いか決められなかった**
+    （2026-09-20、ユーザーが指摘）。
+    """
+
+    symbol: str
+    ex_date: dt.date
+    rate: float
+    """公表された1株あたりの額（円）。"""
+
+    base: float
+    """割る相手にした**調整前の前日終値**。"""
+
+    reason: str
+
+    @property
+    def ratio(self) -> float | None:
+        """利回り。**分母が使えなければ ``None``。**"""
+        return self.rate / self.base if self.base > 0 else None
+
+
 @dataclasses.dataclass(frozen=True)
 class DividendAdjustment:
     """配当を落とした結果の内訳。**当てた件数と、当てなかった理由を返す。**
@@ -148,10 +181,23 @@ class DividendAdjustment:
     """額が 0 以下。**無配の公表にも ``ExDate`` は入る。**"""
 
     impossible: int = 0
-    """配当が前日終値以上。**正しい分母で割ればまず起きない。**
+    r"""配当が前日終値以上。**額か終値のどちらかが読み違いである。**
 
-    起きたら額か終値のどちらかが読み違いである。**0 でも数える**——黙って
-    飛ばすと、尺度を間違えたときにここが静かに増える。
+    **「正しい分母で割ればまず起きない」と書いていたが、起きた**——分母を
+    直した後の実データで 53 件（急落側）と 17 件（保有窓側）が残った
+    （2026-09-20、ユーザーが指摘）。**書いた前提は、成り立つことを確かめる
+    か、前提が要らない形に変える。**
+
+    **原因はまだ分かっていない。** だから :attr:`rows` に中身を持って返り、
+    `checks\権利落ちの日は合っているか.bat` が額と前日終値を並べる。
+    """
+
+    rows: tuple[SkippedDividend, ...] = ()
+    """当てなかった行そのもの。**`MAX_SKIPPED_KEPT` 件で打ち切る。**
+
+    **件数とは一致しない**（上限があるので）。`KnifeEvents.ex_date_events`
+    とはそこが違う——あちらは件数と中身を突き合わせて落とすが、こちらは
+    **上限つきの標本**である。
     """
 
     @property
@@ -170,7 +216,24 @@ class DividendAdjustment:
             no_base=self.no_base + other.no_base,
             not_a_drop=self.not_a_drop + other.not_a_drop,
             impossible=self.impossible + other.impossible,
+            rows=(self.rows + other.rows)[:MAX_SKIPPED_KEPT],
         )
+
+    def breakdown(self) -> list[tuple[str, int]]:
+        """理由ごとの数。**合計だけにしない。**
+
+        **列ごとに独立に数える**（`CLAUDE.md`）。「当てなかった 2,264 件」
+        とだけ出していたので、**どれか1つが大きくてもその中に紛れた**
+        （2026-09-20、ユーザーが指摘）。
+        """
+        return [
+            ("当てた", self.applied),
+            ("公表が権利落ちより後（先読みになる）", self.unpublished),
+            ("その日の足が無い", self.not_in_frame),
+            ("前日の終値が無い", self.no_base),
+            ("額が 0 以下", self.not_a_drop),
+            ("額が前日終値以上", self.impossible),
+        ]
 
     def warnings(self) -> list[str]:
         """気付かなくても目に入るべきこと。**早期 return しない。**"""
@@ -178,8 +241,8 @@ class DividendAdjustment:
         if self.impossible:
             found.append(
                 f"**配当が前日終値以上の権利落ちが {self.impossible:,} 件あった。** "
-                "額か終値のどちらかが読み違いである"
-                "——**正しい分母で割ればまず起きない。**"
+                "額か終値のどちらかが読み違いである。**原因はまだ分かっていない** "
+                r"——`checks\権利落ちの日は合っているか.bat` が中身を並べる。"
             )
         if self.no_base:
             found.append(f"前日の終値が無くて落とせなかった権利落ちが {self.no_base:,} 件。")
@@ -191,6 +254,7 @@ def dividend_adjusted(
     announced: Sequence[tuple[dt.date, dt.date, float]] | None,
     *,
     base: Sequence[float] | np.ndarray,
+    symbol: str = "",
 ) -> tuple[pd.DataFrame, DividendAdjustment]:
     """Take the dividend drop out of ``open``/``high``/``low``/``close``.
 
@@ -232,6 +296,8 @@ def dividend_adjusted(
             **その足より後に公表されたものは使わない**——使えば先読みになる。
         base: **調整前の終値。** ``prices`` と同じ長さ・同じ並びであること。
             分割調整を掛けていない足なら ``prices[CLOSE]`` そのものでよい。
+        symbol: 飛ばした行に付ける名札。**数えるだけなら要らないが、
+            中身を見るときに銘柄が分からないと追えない。**
 
     Returns:
         ``(新しい frame, 内訳)``。入力は変えない。配当が1件も当たらなければ
@@ -253,6 +319,16 @@ def dividend_adjusted(
     unadjusted = np.asarray(base, dtype=float)
 
     applied = unpublished = not_in_frame = no_base = not_a_drop = impossible = 0
+    skipped: list[SkippedDividend] = []
+
+    def _skip(ex_date: dt.date, rate: float, before: float, reason: str) -> None:
+        """飛ばした行を残す。**上限まで。** 件数は呼ぶ側が別に数える。"""
+        if len(skipped) < MAX_SKIPPED_KEPT:
+            skipped.append(
+                SkippedDividend(
+                    symbol=symbol, ex_date=ex_date, rate=rate, base=before, reason=reason
+                )
+            )
 
     # **後ろから畳む。** 権利落ち日より前の足に、その日の倍率を掛けていく。
     factor = np.ones(len(prices), dtype=float)
@@ -260,20 +336,24 @@ def dividend_adjusted(
         position = index_of.get(ex_date)
         if position is None:
             not_in_frame += 1
+            _skip(ex_date, rate, 0.0, "その日の足が無い")
             continue
         # **その日までに公表されたものだけ。** 公表が権利落ち日より後なら、
         # 落ちる時点では分かっていない。
         if published > ex_date:
             unpublished += 1
+            _skip(ex_date, rate, 0.0, "公表が権利落ちより後")
             continue
         if position == 0:
             no_base += 1
+            _skip(ex_date, rate, 0.0, "先頭の足（前日が無い）")
             continue
         # **調整前の終値で割る。** 調整後で割ると、分割より前の権利落ちが
         # 分割比のぶん余計に落ちる。
         before = unadjusted[position - 1]
         if before <= 0:
             no_base += 1
+            _skip(ex_date, rate, before, "前日の終値が 0 以下")
             continue
         if rate <= 0:
             not_a_drop += 1
@@ -281,6 +361,7 @@ def dividend_adjusted(
         ratio = rate / before
         if ratio >= 1.0:
             impossible += 1
+            _skip(ex_date, rate, before, "額が前日終値以上")
             continue
         factor[:position] *= 1.0 - ratio
         applied += 1
@@ -292,6 +373,7 @@ def dividend_adjusted(
         no_base=no_base,
         not_a_drop=not_a_drop,
         impossible=impossible,
+        rows=tuple(skipped),
     )
 
     if np.all(factor == 1.0):

@@ -6988,6 +6988,7 @@ def ex_date_audit(
     console.print(found.summary())
     for line in found.warnings():
         console.print(f"[yellow]{line}[/]")
+    _print_dividend_breakdown(found.dividends, "急落を集めるときに落とした配当")
 
     with spinner() as progress:
         task = progress.add_task("保有窓の中の権利落ちを数えています", total=None)
@@ -7009,6 +7010,52 @@ def ex_date_audit(
     )
     for line in inside.warnings():
         console.print(f"[yellow]{line}[/]")
+    console.print(inside.aside())
+
+
+def _print_dividend_breakdown(counted: object, title: str) -> None:
+    """Print the dividend-adjustment breakdown, and the rows it skipped.
+
+    **落とした配当の内訳と、飛ばした行の中身を出す。**
+
+    **合計だけにしない。** 「当てなかった 2,264 件」とだけ出していたので、
+    **どれか1つが大きくてもその中に紛れた**（2026-09-20、ユーザーが指摘）。
+    `CLAUDE.md`「列ごとに独立に数える」。
+
+    そして**中身も出す。** 「額か終値のどちらかが読み違いである」と書いて
+    おきながら、**銘柄も日付も額も出ていなかった**ので、どちら側かを決め
+    られなかった。**警告に次の一手を書くなら、その一手が打てる形にして返す。**
+
+    Args:
+        counted: :class:`~stock_ai.data.schema.DividendAdjustment`。
+        title: 表の見出し。**件数を入れない**（`COUNTS_IN_PROSE`）。
+    """
+    table = Table(title=title)
+    table.add_column("どうなったか", overflow="fold")
+    table.add_column("件数", justify="right")
+    for label, count in counted.breakdown():  # type: ignore[attr-defined]
+        table.add_row(label, f"{count:,}")
+    console.print(table)
+
+    rows = [row for row in counted.rows if row.reason != "公表が権利落ちより後"]  # type: ignore[attr-defined]
+    if not rows:
+        return
+    # **1件取り出して、額と前日終値を並べる。** どちら側の読み違いかは、
+    # それを見れば決まる。**上限つきの標本である**——件数は上の表が持つ。
+    sample = Table(title="当てなかった権利落ちの中身（標本）")
+    for column in ("銘柄", "権利落ち日", "額（円）", "前日終値（調整前）", "利回り", "理由"):
+        sample.add_column(column, overflow="fold", justify="right" if "額" in column else "left")
+    for row in rows[:10]:
+        ratio = row.ratio
+        sample.add_row(
+            row.symbol,
+            f"{row.ex_date}",
+            f"{row.rate:,.2f}",
+            f"{row.base:,.2f}" if row.base > 0 else "—",
+            f"{ratio:.1%}" if ratio is not None else "—",
+            row.reason,
+        )
+    console.print(sample)
 
 
 @app.command(name="wall-survey")

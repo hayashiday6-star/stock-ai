@@ -61,6 +61,15 @@ EXPLAINED_BAND = 1.5
 #: 意味のある差はこれよりはるかに大きい（−20% に対して 1e-9）。
 _TIE = 1e-9
 
+#: `drag` と `removed` が釣り合っているとみなす相対幅。**丸めを吸うだけ。**
+#:
+#: **同じ式・同じ額・同じ窓で組んである**ので、ぴったり一致するのが正しい。
+#: 広く取ると、量そのものが違っていることが幅の中に隠れる。
+_MATCH_BAND = 1e-6
+
+#: これを超える押し上げは線に効く。**0.1%。**
+_MATERIAL = 0.001
+
 #: 額 0 の群で、権利落ち日にこれを超える段差が出たら読み違いを疑う。
 #: **利回りの中央値（約1.3%）の4分の1。** 無配なら段差は出ない。
 ZERO_STEP_LIMIT = 0.003
@@ -371,18 +380,33 @@ class HoldingDividends:
     drag: float = 0.0
     """**調整しなければ乗っていた**押し上げ。窓の中の配当の大きさである。
 
-    **残っている量ではない。** ここは価格を調整したかどうかを1度も見て
-    いない——「消えているはず」と書いていたが、**それは主張であって確認
-    ではなかった**（2026-09-20、ユーザーが出力の自己矛盾から指摘）。
-    確認するのは :attr:`removed` のほう。
+    **`removed` と同じ額から作る**——調整に渡したのと同じ
+    :func:`~stock_ai.data.jquants_dividend.ex_dividends_known_by` の行である。
+
+    **前は違う額を見ていた。** こちらは監査専用の
+    :func:`~stock_ai.data.jquants_dividend.ex_dividend_rates`（**最後に公表
+    された値**＝先読みあり）から作り、`removed` は先読みを外した額を反映して
+    いた。**同じ行の2つの列が、別々の標本を指していた**——実データで 3.0倍
+    ずれ、ユーザーが指摘した（2026-09-20）。
     """
 
     removed: float = 0.0
     """**調整が実際に抜いた分。** 同じ窓のリターンを、調整の前と後で引いた差。
 
-    :attr:`drag` と一致すれば、**配当ぶんちょうど抜けたことが測れた**ことに
+    :attr:`drag` と一致すれば、**渡したとおりに当てたことが測れた**ことに
     なる。0 なら調整が当たっていない。2倍なら二重に抜いている。
     """
+
+    final_yield: float = 0.0
+    """**最終データ**（先読みあり）で見た、同じ窓の配当。**判定には使わない。**
+
+    `drag` と食い違うのは、**後から訂正された**か、**額が公表される前だった**
+    かである。**「その日に知りようがなかったこと」で過去の判断を裁かない**
+    ので、別の欄に置く（`CLAUDE.md`）。
+    """
+
+    final_only: int = 0
+    """最終データにだけ額が在った窓の数。**訂正の量を見るため。**"""
 
     @property
     def share(self) -> float:
@@ -402,17 +426,29 @@ class HoldingDividends:
             f"**調整が抜いたのは {self.removed:+.3%}/件。**"
         )
 
+    def aside(self) -> str:
+        """最終データ側の数。**判定には使わない**ので、別の行で出す。"""
+        return (
+            f"[dim]最終データ（先読みあり）で見ると {self.final_yield:+.3%}/件。"
+            f"そちらにだけ額が在った窓が {self.final_only:,} 件"
+            "——**後から訂正された分である。判定には使わない。**[/]"
+        )
+
     @property
     def matched(self) -> bool:
-        """抜けた分が、窓の中の配当と釣り合っているか。
+        """抜けた分が、渡した配当と釣り合っているか。
 
-        **ぴったり同じにはならない。** 抜けるのは `利回り × (1 + リターン)`
-        で、窓のリターンぶんだけ大きい。**5営業日なら数 % のずれ**なので、
-        **4分の1の幅**で見る——0 なら当たっていない、2倍なら二重である。
+        **いまは同じ式・同じ額・同じ窓で組んである**ので、**ぴったり一致
+        するのが正しい。** 幅は丸めを吸うぶんだけでよい。
+
+        **前は 4分の1 の幅だった。** `drag` を利回りの単純和で、しかも
+        監査専用（先読みあり）の額から作っていたので、**そもそも同じ量を
+        測っていなかった。** 幅を広く取ると、**そのずれが幅の中に隠れる**
+        ——`CLAUDE.md`「広すぎる幅は、狭すぎる幅より悪い」。
         """
         if not self.drag:
-            return not self.removed
-        return abs(self.removed - self.drag) <= 0.25 * abs(self.drag)
+            return abs(self.removed) <= _MATCH_BAND
+        return abs(self.removed - self.drag) <= _MATCH_BAND * abs(self.drag)
 
     def warnings(self) -> list[str]:
         """気付かなくても目に入るべきこと。**早期 return しない。**"""
@@ -423,10 +459,22 @@ class HoldingDividends:
                 f"{self.removed:+.3%}/件。** 釣り合っていない——"
                 "**0 なら当たっていない、2倍なら二重に抜いている。**"
             )
-        if self.drag > 0.001 and not self.removed:  # noqa: PLR2004 - 0.1% は線に効く
+        if self.drag > _MATERIAL and not self.removed:
             found.append(
                 f"**押し上げ {self.drag:+.3%}/件 が抜けていない。** ショートでは"
                 "配当を払う側なので、**払っていない価格で測っている。**"
+            )
+        # **渡し忘れを、独立な相手で捕まえる。** `drag` と `removed` を同じ
+        # 入力から作るようにしたので、**`paid` を渡さなければ両方 0 になり、
+        # 釣り合ってしまう**——直した拍子に、渡し忘れの検査が死んだ
+        # （2026-09-20、テストが落ちて気付いた）。
+        #
+        # **最終データはここでだけ使う。** 判定には混ぜない。
+        if self.final_yield > _MATERIAL and not self.drag:
+            found.append(
+                f"**最終データでは窓の中に {self.final_yield:+.3%}/件 の配当が在るのに、"
+                "調整には1件も渡っていない。** `paid` を渡し忘れているか、"
+                "**その時点では額が一度も公表されていなかった**かである。"
             )
         return found
 
@@ -555,9 +603,12 @@ def audit_holding_window(  # noqa: PLR0913 - 前後を比べるので材料が�
         database: 価格の保存先。
         kept: 実際に使った ``(銘柄, 日)``。
         rates: :func:`~stock_ai.data.jquants_dividend.ex_dividend_rates` の形。
+            **最後に公表された値＝先読みあり。** :attr:`HoldingDividends.final_yield`
+            にしか使わない——**判定の側に混ぜない。**
         paid: :func:`~stock_ai.data.jquants_dividend.ex_dividends_known_by` の形。
             **測る側が使っているのと同じもの**を渡すこと——渡さなければ
             「抜けた分」は 0 になり、**調整を当てていないのと区別がつかない。**
+            ``drag`` も ``removed`` も**こちらから作る。**
         holding: 保有営業日数。
         progress: ``(済み, 全体)`` で呼ばれる。
 
@@ -567,7 +618,8 @@ def audit_holding_window(  # noqa: PLR0913 - 前後を比べるので材料が�
     per_event: list[float] = []
     yields: list[float] = []
     taken: list[float] = []
-    touched = 0
+    final: list[float] = []
+    touched = final_only = 0
 
     by_symbol: dict[str, list[dt.date]] = {}
     for symbol, when in kept:
@@ -583,7 +635,14 @@ def audit_holding_window(  # noqa: PLR0913 - 前後を比べるので材料が�
         # 一致すれば、**調整が配当ぶんちょうど抜いたことが測れた**ことになる
         # ——「消えているはず」は主張であって確認ではない（2026-09-20、
         # ユーザーが出力の自己矛盾から指摘）。
-        netted, _counted = dividend_adjusted(plain, (paid or {}).get(symbol), base=raw_closes)
+        own = (paid or {}).get(symbol)
+        netted, _counted = dividend_adjusted(plain, own, base=raw_closes, symbol=symbol)
+        # **`drag` は、調整に渡したのと同じ行から作る。** 監査専用の `rates`
+        # （最後に公表された値＝先読みあり）から作っていたので、**2つの列が
+        # 別々の額を見ていた**（2026-09-20、実データで 3.0倍）。
+        given: dict[dt.date, float] = {}
+        for _published, ex_date, rate in own or []:
+            given[ex_date] = rate
         opens_plain = plain[OPEN].to_numpy(dtype=float)
         closes_plain = plain[CLOSE].to_numpy(dtype=float)
         opens_net = netted[OPEN].to_numpy(dtype=float)
@@ -612,16 +671,37 @@ def audit_holding_window(  # noqa: PLR0913 - 前後を比べるので材料が�
             # `taken` は 0 になる。**置き方から確かめた**（2026-09-20）。
             # 揃える前は `drag` だけがこの日を数えていて、**2つの列が1日
             # 違う窓を見ていた。**
-            total = 0.0
+            # **`removed` と同じ式で組む。** 抜ける量は `1/∏(1−利回り) − 1`
+            # に窓の総リターンを掛けたものであって、**利回りの単純和ではない。**
+            # 小さい利回りなら一致するが、0.6 なら 0.6 対 1.5 に開く
+            # （2026-09-20 に盤面で確かめた）。**同じ量を測っていない列を
+            # 比べても、釣り合うかどうかは言えない。**
+            keep = 1.0
+            aside = 0.0
             for step in range(index + 2, exit_at + 1):
-                ratio = _yield_on(rates, symbol, when_of[step], raw_closes[step - 1])
-                if not ratio:
-                    continue
-                total += ratio
-                yields.append(ratio)
+                before = raw_closes[step - 1]
+                # **調整と同じ規則で数える。** `_yield_on` は監査用に
+                # `MAX_YIELD` で切っているが、`dividend_adjusted` は
+                # `0 < 利回り < 1` しか見ない。**片方だけに絞りが掛かって
+                # いると、2つの列が同じものを数えない。**
+                rate = given.get(when_of[step])
+                if rate is not None and before > 0:
+                    ratio = rate / before
+                    if 0.0 < ratio < 1.0:
+                        keep *= 1.0 - ratio
+                        yields.append(ratio)
+                # **最終データ側は別に足す。** 判定には使わない。
+                seen = _yield_on(rates, symbol, when_of[step], before)
+                if seen:
+                    aside += seen
+            gross = closes_plain[exit_at] / opens_plain[entry]
+            total = gross * (1.0 / keep - 1.0) if keep > 0 else 0.0
             if total:
                 touched += 1
+            if aside and not total:
+                final_only += 1
             per_event.append(total)
+            final.append(aside)
 
     if len(per_event) != len(taken):
         raise ValueError(
@@ -635,4 +715,6 @@ def audit_holding_window(  # noqa: PLR0913 - 前後を比べるので材料が�
         median_yield=median(yields) if yields else 0.0,
         drag=fmean(per_event) if per_event else 0.0,
         removed=fmean(taken) if taken else 0.0,
+        final_yield=fmean(final) if final else 0.0,
+        final_only=final_only,
     )

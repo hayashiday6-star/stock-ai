@@ -240,9 +240,14 @@ class TestDividendsInsideTheHoldingWindow:
         return _database({"1401": closes}), rates, [("1401", _INDEX[entry].date())], paid
 
     def test_a_dividend_inside_the_window_is_counted(self) -> None:
-        database, rates, kept, _paid = self._one(offset=2)
+        """**`drag` は、調整に渡したのと同じ行から作る。**
 
-        found = audit_holding_window(database, kept, rates)
+        前は監査専用の `rates`（最後に公表された値＝先読みあり）から作って
+        いて、**2つの列が別々の額を見ていた**（2026-09-20、実データで 3.0倍）。
+        """
+        database, rates, kept, paid = self._one(offset=2)
+
+        found = audit_holding_window(database, kept, rates, paid)
 
         assert found.with_ex_date == 1
         assert found.share == 1.0
@@ -267,15 +272,19 @@ class TestDividendsInsideTheHoldingWindow:
 
         渡さなければ抜けた分は 0。**調整を当てていないのと同じ形**なので、
         黙って通してはいけない。
+
+        **`drag` と `removed` を同じ入力から作った拍子に、この検査が死んだ**
+        ——両方 0 になって釣り合ってしまう（2026-09-20）。**独立な相手**
+        （最終データ）で捕まえ直している。
         """
         database, rates, kept, _paid = self._one(offset=2)
 
         found = audit_holding_window(database, kept, rates)
 
         assert found.removed == 0.0
-        assert not found.matched
-        assert any("釣り合っていない" in line for line in found.warnings())
-        assert any("抜けていない" in line for line in found.warnings())
+        assert found.drag == 0.0
+        assert found.final_yield > 0.0, "**突き合わせる相手が空では、何も捕まらない。**"
+        assert any("1件も渡っていない" in line for line in found.warnings())
 
     def test_a_double_adjustment_is_caught(self) -> None:
         """**2倍抜いても落ちる。** 片側だけの検査にしない。"""
@@ -330,6 +339,61 @@ class TestDividendsInsideTheHoldingWindow:
         assert found.drag == 0.0
         assert found.removed == pytest.approx(0.0, abs=1e-12)
         assert found.matched
+
+    def test_a_dividend_revised_to_zero_still_balances(self) -> None:
+        """**最終データが 0 でも、渡した額で測る。**
+
+        調整は**その日までに公表された額**で当たる。監査が最後に公表された
+        値（0）で数えると、**同じ行の2つの列が別々の額を見る**——実データで
+        3.0倍ずれた（2026-09-20、ユーザーが指摘）。
+        """
+        database, _rates, kept, paid = self._one(offset=2)
+        when = paid["1401"][0][1]
+        revised = {"1401": {when: ExDividend(rate=0.0, special=0.0)}}
+
+        found = audit_holding_window(database, kept, revised, paid)
+
+        assert found.drag > 0.0, "**渡した額を数えていない。**"
+        assert found.matched
+        assert found.final_yield == 0.0
+        assert found.final_only == 0
+
+    def test_a_large_yield_balances_too(self) -> None:
+        """**式の形も揃える。** 抜けるのは利回りの単純和ではない。
+
+        抜ける量は `窓の総リターン × (1/∏(1−利回り) − 1)` である。
+        **利回り 0.6 なら 1.5**——和で数えると 0.6 のままで、**同じ量を
+        測っていない**（2026-09-20 に盤面で確かめた）。
+
+        **値動きが平らな足で見る。** 価格が配当ぶん下がる足だと、総リターン
+        が `1−利回り` に近づいて**両方の式がたまたま一致する**——この
+        テストを最初そう書いて、違いが出なかった。
+        """
+        crash = _at("2015-06-10")
+        closes = np.full(_BARS, 1_000.0)  # **平ら。** 配当で下げない
+        when = _INDEX[crash + 2].date()
+        rates = {"1401": {when: ExDividend(rate=600.0, special=0.0)}}
+        paid = {"1401": [(dt.date(2015, 1, 5), when, 600.0)]}
+        kept = [("1401", _INDEX[crash].date())]
+
+        found = audit_holding_window(_database({"1401": closes}), kept, rates, paid)
+
+        assert found.drag == pytest.approx(0.6 / 0.4, rel=1e-6), "**単純和なら 0.6 で止まる。**"
+        assert found.matched
+
+    def test_the_final_data_is_kept_out_of_the_judgement(self) -> None:
+        """**最終データにだけ在る額は、別の欄に置く。**
+
+        「その日に知りようがなかったこと」で過去の判断を裁かない。
+        """
+        database, rates, kept, _paid = self._one(offset=2)
+
+        found = audit_holding_window(database, kept, rates, {"1401": []})
+
+        assert found.drag == 0.0
+        assert found.final_yield > 0.0
+        assert found.final_only == 1
+        assert "判定には使わない" in found.aside()
 
     def test_both_columns_count_the_same_events(self) -> None:
         """**分母が揃っていること。** 片方だけ数えると2つの列がずれる。"""
