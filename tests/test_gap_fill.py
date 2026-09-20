@@ -318,12 +318,62 @@ class TestTheGateIsTheSharedOne:
 
         assert "_event_gate(" in body
 
-    def test_the_revision_command_calls_it_too(self) -> None:
+    def test_every_event_command_calls_it(self) -> None:
+        """**3つ目の写しが `margin_power` に残っていた**（2026-09-20）。
+
+        しかも `_events_needed` という**別の「要る件数」ヘルパー**を持って
+        いて、**同語反復の行をそのまま抱えていた**——`_event_gate` のほうだけ
+        直したので、**片方だけ緩んでいた。**
+        """
         import inspect
 
         from stock_ai import cli
 
-        assert "_event_gate(" in inspect.getsource(cli.revision_power)
+        for command in (cli.revision_power, cli.margin_power, cli.gap_fill_power):
+            assert "_event_gate(" in inspect.getsource(command), command.__name__
+
+    def test_there_is_no_second_needed_table_for_this_pipe(self) -> None:
+        """**イベント型の表は1つだけ。** 2つあれば、片方が古くなる。
+
+        `power-gate` にも同じ題の表が在るが、**あちらは見込みの帯（下限・
+        中央・上限）を並べている**——「何段階か並べる表」で、同語反復の行は
+        入っていない。**別物なので数えない。**
+        """
+        import pathlib as _pathlib
+
+        body = (
+            _pathlib.Path(__file__).resolve().parent.parent / "src" / "stock_ai" / "cli.py"
+        ).read_text(encoding="utf-8")
+
+        assert "_events_needed" not in body
+        assert body.count('Table(title="この設計で検出するのに要るイベント日数")') == 1
+
+    def test_no_table_ladders_over_the_detectable_difference(self) -> None:
+        """**どの表も、検出できる差を「検出したい効果」に入れない。**
+
+        入れると、答えが必ず「ちょうど足りる」になる行ができる。
+        """
+        import inspect
+
+        from stock_ai import cli
+
+        for command in (cli._event_gate, cli.power_gate):
+            body = inspect.getsource(command)
+            ladder = body[body.index("for effect") :] if "for effect" in body else ""
+            ladder += body[body.index("for annual") :] if "for annual" in body else ""
+
+            assert "detectable" not in ladder.split("console.print")[0], command.__name__
+
+    def test_the_short_side_is_flipped_by_the_caller(self) -> None:
+        """**符号の反転は呼ぶ側で1箇所だけ。** 表示の札は別に渡す。"""
+        import inspect
+
+        from stock_ai import cli
+
+        body = inspect.getsource(cli.margin_power)
+
+        assert "-value - COST_ROUND_TRIP" in body
+        assert 'side="ショート"' in body
 
     def test_the_floor_is_three_times_the_cost(self) -> None:
         """**#5・#8 と同じ規則。** 同じ管なら線の置き方も揃える。"""
