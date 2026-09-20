@@ -24,6 +24,7 @@ from stock_ai.data.schema import (
     CLOSE,
     HIGH,
     LOW,
+    MAX_SKIPPED_PER_REASON,
     OPEN,
     VOLUME,
     DividendAdjustment,
@@ -160,6 +161,92 @@ class TestNothingIsSkippedSilently:
         assert both.impossible == 1
         assert both.no_base == 4
         assert both.skipped == 5
+
+
+class TestTheSampleShowsWhatYouCameToSee:
+    """**多い理由が、少ない理由を標本から押し出さない。**
+
+    実データで「その日の足が無い」6,562 件が上限を埋め切り、**見たかった
+    「額が前日終値以上」53 件が1行も出なかった**（2026-09-20、ユーザーが
+    指摘）。**標本は、見たいものを見るために在る。**
+    """
+
+    @staticmethod
+    def _counted(rows):
+        raw = _raw(split=False)
+        _frame, counted = dividend_adjusted(
+            split_adjusted(raw), rows, base=raw[CLOSE].to_numpy(dtype=float), symbol="1401"
+        )
+        return counted
+
+    def test_a_rare_reason_survives_a_common_one(self) -> None:
+        """**この検査が落ちる条件を、実際に作る。**
+
+        上限の何倍もの「足が無い」を先に並べ、そのあとに1件だけ
+        「額が前日終値以上」を置く。**全体で1つの上限なら、後者は消える。**
+        """
+        first = _INDEX[0].date()
+        common = [
+            (first, dt.date(1999, 1, 4) + dt.timedelta(days=index), 10.0)
+            for index in range(MAX_SKIPPED_PER_REASON * 5)
+        ]
+        rare = [(first, _INDEX[_EX_AT].date(), 99_999.0)]
+
+        counted = self._counted([*common, *rare])
+
+        assert counted.not_in_frame == MAX_SKIPPED_PER_REASON * 5
+        assert counted.impossible == 1
+        assert len(counted.sample_of("額が前日終値以上")) == 1, "**押し出されている。**"
+        assert len(counted.sample_of("その日の足が無い")) == MAX_SKIPPED_PER_REASON
+
+    def test_every_call_site_passes_the_symbol(self) -> None:
+        """**呼ぶ側を機械的に見る。** 1箇所忘れると、その経路だけ名札が消える。
+
+        実データで**標本の銘柄が10行とも空**だった（2026-09-20、ユーザーが
+        指摘）——`symbol=` を足したのに、`build_events` 側で渡していなかった。
+        **見る道具を置いたのに、見えない。**
+
+        経路ごとにテストを足す方式だと、**次の1本を書き忘れた瞬間に同じ
+        ことが起きる**（`tests/test_deferred_imports.py` と同じ理由）。
+        """
+        import ast
+        import pathlib
+
+        missing: list[str] = []
+        for path in sorted(pathlib.Path("src/stock_ai").rglob("*.py")):
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.Call):
+                    continue
+                name = node.func.id if isinstance(node.func, ast.Name) else None
+                if name != "dividend_adjusted":
+                    continue
+                if not any(word.arg == "symbol" for word in node.keywords):
+                    missing.append(f"{path}:{node.lineno}")
+
+        assert not missing, f"**symbol= を渡していない経路がある: {missing}**"
+
+    def test_the_sample_carries_the_symbol(self) -> None:
+        """**名札が付くこと。** 銘柄が分からないと、こちらから引けない。"""
+        counted = self._counted([(_INDEX[0].date(), _INDEX[_EX_AT].date(), 99_999.0)])
+
+        row = counted.sample_of("額が前日終値以上")[0]
+
+        assert row.symbol == "1401"
+        assert row.ex_date == _INDEX[_EX_AT].date()
+        assert row.rate == 99_999.0
+        assert row.base > 0
+        assert row.ratio is not None
+
+    def test_merging_keeps_the_cap_per_reason(self) -> None:
+        """銘柄ごとに足し合わせても、理由ごとの上限は保たれる。"""
+        one = self._counted([(_INDEX[0].date(), _INDEX[_EX_AT].date(), 99_999.0)])
+
+        many = one
+        for _ in range(MAX_SKIPPED_PER_REASON * 3):
+            many = many + one
+
+        assert len(many.sample_of("額が前日終値以上")) == MAX_SKIPPED_PER_REASON
 
 
 class TestTheBaseMustLineUp:

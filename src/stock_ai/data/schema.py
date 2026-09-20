@@ -123,11 +123,15 @@ def split_adjusted(prices: pd.DataFrame) -> pd.DataFrame:
     return frame
 
 
-#: 飛ばした行を何件まで持って返るか。**全部持つと、銘柄数ぶん積み上がる。**
+#: 飛ばした行を**理由ごとに**何件まで持って返るか。
+#:
+#: **全体で1つの上限にしない。** 実データで「その日の足が無い」6,562 件が
+#: 上限を埋め切り、**見たかった「額が前日終値以上」53 件が標本に1行も出な
+#: かった**（2026-09-20、ユーザーが指摘）。**件数の多い理由が、少ない理由を
+#: 押し出す。**
 #:
 #: **件数は別に数えている**ので、ここが上限に当たっても数は正しい。
-#: 中身は「1件取り出して額と終値を並べる」ために在る。
-MAX_SKIPPED_KEPT = 200
+MAX_SKIPPED_PER_REASON = 20
 
 
 @dataclasses.dataclass(frozen=True)
@@ -154,6 +158,16 @@ class SkippedDividend:
     def ratio(self) -> float | None:
         """利回り。**分母が使えなければ ``None``。**"""
         return self.rate / self.base if self.base > 0 else None
+
+
+def _capped_by_reason(rows: Sequence[SkippedDividend]) -> tuple[SkippedDividend, ...]:
+    """理由ごとに上限まで残す。**多い理由が少ない理由を押し出さないように。**"""
+    kept: dict[str, list[SkippedDividend]] = {}
+    for row in rows:
+        bucket = kept.setdefault(row.reason, [])
+        if len(bucket) < MAX_SKIPPED_PER_REASON:
+            bucket.append(row)
+    return tuple(row for bucket in kept.values() for row in bucket)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -193,12 +207,19 @@ class DividendAdjustment:
     """
 
     rows: tuple[SkippedDividend, ...] = ()
-    """当てなかった行そのもの。**`MAX_SKIPPED_KEPT` 件で打ち切る。**
+    """当てなかった行そのもの。**理由ごとに `MAX_SKIPPED_PER_REASON` 件まで。**
 
     **件数とは一致しない**（上限があるので）。`KnifeEvents.ex_date_events`
     とはそこが違う——あちらは件数と中身を突き合わせて落とすが、こちらは
     **上限つきの標本**である。
+
+    **理由ごとに採るのは、押し出されないようにするため。** 全体で1つの上限に
+    していたら、6,562 件の理由が 53 件の理由を標本から締め出した。
     """
+
+    def sample_of(self, reason: str) -> tuple[SkippedDividend, ...]:
+        """その理由の標本だけ。"""
+        return tuple(row for row in self.rows if row.reason == reason)
 
     @property
     def skipped(self) -> int:
@@ -216,7 +237,7 @@ class DividendAdjustment:
             no_base=self.no_base + other.no_base,
             not_a_drop=self.not_a_drop + other.not_a_drop,
             impossible=self.impossible + other.impossible,
-            rows=(self.rows + other.rows)[:MAX_SKIPPED_KEPT],
+            rows=_capped_by_reason(self.rows + other.rows),
         )
 
     def breakdown(self) -> list[tuple[str, int]]:
@@ -322,8 +343,8 @@ def dividend_adjusted(
     skipped: list[SkippedDividend] = []
 
     def _skip(ex_date: dt.date, rate: float, before: float, reason: str) -> None:
-        """飛ばした行を残す。**上限まで。** 件数は呼ぶ側が別に数える。"""
-        if len(skipped) < MAX_SKIPPED_KEPT:
+        """飛ばした行を残す。**理由ごとに上限まで。** 件数は別に数える。"""
+        if sum(1 for row in skipped if row.reason == reason) < MAX_SKIPPED_PER_REASON:
             skipped.append(
                 SkippedDividend(
                     symbol=symbol, ex_date=ex_date, rate=rate, base=before, reason=reason

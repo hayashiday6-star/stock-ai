@@ -395,6 +395,39 @@ class TestDividendsInsideTheHoldingWindow:
         assert found.final_only == 1
         assert "判定には使わない" in found.aside()
 
+    def test_a_dividend_published_after_the_ex_date_counts_in_neither(self) -> None:
+        """**公表日も同じ規則で見る。**
+
+        `dividend_adjusted` は公表が権利落ちより後の行を飛ばす（実データで
+        4,406 件）。`drag` が公表日を見ていなかったので、**調整が当てて
+        いない配当を片方だけが数えていた**——残りの 1.05倍がこれだった
+        （2026-09-20、ユーザーが「1.05倍で鳴り続けている」と指摘）。
+        """
+        database, rates, kept, paid = self._one(offset=2)
+        published, when, amount = paid["1401"][0]
+        assert published < when, "**足場が前提を満たしていない。**"
+        late = {"1401": [(when + dt.timedelta(days=30), when, amount)]}
+
+        found = audit_holding_window(database, kept, rates, late)
+
+        assert found.drag == 0.0, "**調整が当てていない配当を数えている。**"
+        assert found.removed == 0.0
+        assert found.matched
+
+    def test_the_warning_says_how_many_times_off(self) -> None:
+        """**割り算を読む側にさせない。** 2つ並べるだけでは倍率が出ない。"""
+        database, rates, kept, paid = self._one(offset=2)
+        twice = {symbol: rows + rows for symbol, rows in paid.items()}
+
+        found = audit_holding_window(database, kept, rates, twice)
+
+        assert found.times is not None
+        assert found.times > 1.5
+        assert any("倍）" in line for line in found.warnings())
+        # **文面が、当てている条件と同じことを言っていること。**
+        assert any("ぴったり一致するはず" in line for line in found.warnings())
+        assert not any("2倍なら二重" in line for line in found.warnings())
+
     def test_both_columns_count_the_same_events(self) -> None:
         """**分母が揃っていること。** 片方だけ数えると2つの列がずれる。"""
         database, rates, kept, paid = self._one(offset=2)
@@ -500,7 +533,7 @@ class TestAdjustingMovesTheCrashSet:
 
         from stock_ai.data import schema
 
-        def _wrong(prices, announced, *, base):
+        def _wrong(prices, announced, *, base, symbol=""):
             counted = schema.DividendAdjustment()
             if not announced:
                 return prices, counted

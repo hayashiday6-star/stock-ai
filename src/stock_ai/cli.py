@@ -6812,6 +6812,7 @@ def knife_power(
             frame,  # type: ignore[arg-type]
             paid.get(symbol),
             base=unadjusted[CLOSE].to_numpy(dtype=float),  # type: ignore[index]
+            symbol=symbol,
         )
         netting = netting + counted
         return netted
@@ -7042,10 +7043,16 @@ def _print_dividend_breakdown(counted: object, title: str) -> None:
         return
     # **1件取り出して、額と前日終値を並べる。** どちら側の読み違いかは、
     # それを見れば決まる。**上限つきの標本である**——件数は上の表が持つ。
-    sample = Table(title="当てなかった権利落ちの中身（標本）")
+    #
+    # **少ない理由から出す。** 件数順に出すと、6,562 件の「足が無い」が
+    # 53 件の「額が前日終値以上」を押し出す（2026-09-20、実際にそうなった）。
+    # **標本は、見たいものを見るために在る。**
+    order = dict(counted.breakdown())  # type: ignore[attr-defined]
+    rows.sort(key=lambda row: (order.get(row.reason, 0), row.reason, row.ex_date))
+    sample = Table(title="当てなかった権利落ちの中身（理由の少ない順）")
     for column in ("銘柄", "権利落ち日", "額（円）", "前日終値（調整前）", "利回り", "理由"):
         sample.add_column(column, overflow="fold", justify="right" if "額" in column else "left")
-    for row in rows[:10]:
+    for row in rows[:12]:
         ratio = row.ratio
         sample.add_row(
             row.symbol,

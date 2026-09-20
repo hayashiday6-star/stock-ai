@@ -312,6 +312,7 @@ def measure_adjustment(  # noqa: PLR0913 - 事前登録が固定した条件を�
             plain,
             rates.get(symbol),  # type: ignore[union-attr]
             base=raw[CLOSE].to_numpy(dtype=float),
+            symbol=symbol,
         )
         when_of = [stamp.date() for stamp in plain.index]
         volumes = plain[VOLUME].to_numpy(dtype=float)
@@ -426,6 +427,11 @@ class HoldingDividends:
             f"**調整が抜いたのは {self.removed:+.3%}/件。**"
         )
 
+    @property
+    def times(self) -> float | None:
+        """抜けた分が、窓の中の配当の何倍か。**割り算を読む側にさせない。**"""
+        return self.removed / self.drag if self.drag else None
+
     def aside(self) -> str:
         """最終データ側の数。**判定には使わない**ので、別の行で出す。"""
         return (
@@ -454,10 +460,19 @@ class HoldingDividends:
         """気付かなくても目に入るべきこと。**早期 return しない。**"""
         found: list[str] = []
         if not self.matched:
+            # **文面は、当てている条件と同じことを言う。** 前は「0 なら当たって
+            # いない、2倍なら二重」と書きながら 1e-6 を当てていて、**1.05倍で
+            # 鳴り続けていた**（2026-09-20、ユーザーが指摘）。**警告が約束して
+            # いることと、コードが守っていることを突き合わせる。**
+            #
+            # **幅は広げなかった。** 1.05倍には原因があり（公表日を見ていな
+            # かった）、2倍の幅に広げるとそれが中に隠れる。
+            times = f"{self.removed / self.drag:.3f}倍" if self.drag else "分母が 0"
             found.append(
-                f"**窓の中の配当は {self.drag:+.3%}/件 なのに、調整が抜いたのは "
-                f"{self.removed:+.3%}/件。** 釣り合っていない——"
-                "**0 なら当たっていない、2倍なら二重に抜いている。**"
+                f"**窓の中の配当 {self.drag:+.4%}/件 に対し、抜けたのは "
+                f"{self.removed:+.4%}/件（{times}）。** "
+                "**同じ額・同じ式・同じ窓で組んであるので、ぴったり一致するはず** "
+                "——ずれているなら、**どちらかが別のものを数えている。**"
             )
         if self.drag > _MATERIAL and not self.removed:
             found.append(
@@ -641,7 +656,13 @@ def audit_holding_window(  # noqa: PLR0913 - 前後を比べるので材料が�
         # （最後に公表された値＝先読みあり）から作っていたので、**2つの列が
         # 別々の額を見ていた**（2026-09-20、実データで 3.0倍）。
         given: dict[dt.date, float] = {}
-        for _published, ex_date, rate in own or []:
+        for published, ex_date, rate in own or []:
+            # **公表日も同じ規則で見る。** `dividend_adjusted` は公表が権利
+            # 落ちより後の行を飛ばす（実データで 4,406 件）。ここで見ないと、
+            # **調整が当てていない配当を `drag` だけが数える**——それが残り
+            # の 1.05倍だった（2026-09-20 に盤面で確かめた）。
+            if published > ex_date:
+                continue
             given[ex_date] = rate
         opens_plain = plain[OPEN].to_numpy(dtype=float)
         closes_plain = plain[CLOSE].to_numpy(dtype=float)

@@ -278,7 +278,9 @@ def build_events(  # noqa: PLR0913 - 事前登録が固定した条件をすべ�
             plain = split_adjusted(raw)
             # **割る相手は調整前の終値。** 調整後で割ると、分割より前の
             # 権利落ちが分割比のぶん余計に落ちる（2026-09-20 に再現）。
-            netted, counted = dividend_adjusted(plain, paid, base=raw[CLOSE].to_numpy(dtype=float))
+            netted, counted = dividend_adjusted(
+                plain, paid, base=raw[CLOSE].to_numpy(dtype=float), symbol=symbol
+            )
             dividends = dividends + counted
             # **下げの判定だけ、配当を落とした値で行う。**
             closes = netted[CLOSE].to_numpy(dtype=float)
