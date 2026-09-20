@@ -42,7 +42,7 @@ import numpy as np
 from stock_ai.backtest.knife import HOLDING, KNIFE_DAYS, KNIFE_DROP, MIN_TURNOVER
 from stock_ai.core.logging import get_logger
 from stock_ai.data.jquants_dividend import ExDividend
-from stock_ai.data.schema import CLOSE, split_adjusted
+from stock_ai.data.schema import CLOSE, OPEN, dividend_adjusted, split_adjusted
 from stock_ai.database.engine import Database
 
 logger = get_logger(__name__)
@@ -356,7 +356,20 @@ class HoldingDividends:
     with_ex_date: int
     median_yield: float
     drag: float
-    """1イベントあたり、ショートの取り高を押し上げている分。"""
+    """**調整しなければ乗っていた**押し上げ。窓の中の配当の大きさである。
+
+    **残っている量ではない。** ここは価格を調整したかどうかを1度も見て
+    いない——「消えているはず」と書いていたが、**それは主張であって確認
+    ではなかった**（2026-09-20、ユーザーが出力の自己矛盾から指摘）。
+    確認するのは :attr:`removed` のほう。
+    """
+
+    removed: float = 0.0
+    """**調整が実際に抜いた分。** 同じ窓のリターンを、調整の前と後で引いた差。
+
+    :attr:`drag` と一致すれば、**配当ぶんちょうど抜けたことが測れた**ことに
+    なる。0 なら調整が当たっていない。2倍なら二重に抜いている。
+    """
 
     @property
     def share(self) -> float:
@@ -370,32 +383,52 @@ class HoldingDividends:
         return (
             f"使った {self.kept:,} 件のうち、**保有する {HOLDING} 営業日に"
             f"権利落ちが在ったのは {self.with_ex_date:,} 件（{self.share:.1%}）。** "
-            f"利回りの中央値 {self.median_yield:.2%}、"
-            f"ショートの取り高を **{self.drag:+.3%}/件** 押し上げている。"
+            f"利回りの中央値 {self.median_yield:.2%}。"
+            f"**調整しなければ {self.drag:+.3%}/件 の押し上げ**になっていたところ、"
+            f"**調整が抜いたのは {self.removed:+.3%}/件。**"
         )
 
+    @property
+    def matched(self) -> bool:
+        """抜けた分が、窓の中の配当と釣り合っているか。
+
+        **ぴったり同じにはならない。** 抜けるのは `利回り × (1 + リターン)`
+        で、窓のリターンぶんだけ大きい。**5営業日なら数 % のずれ**なので、
+        **4分の1の幅**で見る——0 なら当たっていない、2倍なら二重である。
+        """
+        if not self.drag:
+            return not self.removed
+        return abs(self.removed - self.drag) <= 0.25 * abs(self.drag)
+
     def warnings(self) -> list[str]:
-        """気付かなくても目に入るべきこと。"""
-        if self.drag > 0.001:  # noqa: PLR2004 - 0.1% は 1.2% の線に対して効く
-            return [
-                f"**押し上げ {self.drag:+.3%}/件 は無視できない。** ショートでは"
+        """気付かなくても目に入るべきこと。**早期 return しない。**"""
+        found: list[str] = []
+        if not self.matched:
+            found.append(
+                f"**窓の中の配当は {self.drag:+.3%}/件 なのに、調整が抜いたのは "
+                f"{self.removed:+.3%}/件。** 釣り合っていない——"
+                "**0 なら当たっていない、2倍なら二重に抜いている。**"
+            )
+        if self.drag > 0.001 and not self.removed:  # noqa: PLR2004 - 0.1% は線に効く
+            found.append(
+                f"**押し上げ {self.drag:+.3%}/件 が抜けていない。** ショートでは"
                 "配当を払う側なので、**払っていない価格で測っている。**"
-            ]
-        return []
+            )
+        return found
 
 
-def _sessions(database: Database, symbol: str) -> tuple[list[dt.date], np.ndarray, np.ndarray]:
-    """``(営業日, 調整後終値, 調整前終値)``。**利回りは調整前で割る。**"""
+def _sessions(database: Database, symbol: str):
+    """``(営業日, 分割調整後の足, 調整前終値)``。**利回りは調整前で割る。**"""
     from stock_ai.database.repository import PriceRepository
 
     with database.session() as session:
         raw = PriceRepository(session).get_raw_prices(symbol)
     if raw.empty:
-        return [], np.array([]), np.array([])
-    adjusted = split_adjusted(raw)
+        return [], None, np.array([])
+    plain = split_adjusted(raw)
     return (
-        [stamp.date() for stamp in adjusted.index],
-        adjusted[CLOSE].to_numpy(dtype=float),
+        [stamp.date() for stamp in plain.index],
+        plain,
         raw[CLOSE].to_numpy(dtype=float),
     )
 
@@ -452,9 +485,10 @@ def measure_alignment(  # noqa: PLR0913 - 期間と刻みを全部受け取る
     for position, symbol in enumerate(names, start=1):
         if progress is not None:
             progress(position, len(names))
-        when_of, closes, raw_closes = _sessions(database, symbol)
+        when_of, plain, raw_closes = _sessions(database, symbol)
         if not when_of:
             continue
+        closes = plain[CLOSE].to_numpy(dtype=float)
         symbols += 1
         index_of = {day: i for i, day in enumerate(when_of)}
         for when in sorted(rates[symbol]):
@@ -490,10 +524,11 @@ def measure_alignment(  # noqa: PLR0913 - 期間と刻みを全部受け取る
     )
 
 
-def audit_holding_window(
+def audit_holding_window(  # noqa: PLR0913 - 前後を比べるので材料が多い
     database: Database,
     kept: Sequence[tuple[str, dt.date]],
     rates: Rates,
+    paid: dict[str, list[tuple[dt.date, dt.date, float]]] | None = None,
     holding: int = HOLDING,
     progress: Callable[[int, int], None] | None = None,
 ) -> HoldingDividends:
@@ -506,6 +541,9 @@ def audit_holding_window(
         database: 価格の保存先。
         kept: 実際に使った ``(銘柄, 日)``。
         rates: :func:`~stock_ai.data.jquants_dividend.ex_dividend_rates` の形。
+        paid: :func:`~stock_ai.data.jquants_dividend.ex_dividends_known_by` の形。
+            **測る側が使っているのと同じもの**を渡すこと——渡さなければ
+            「抜けた分」は 0 になり、**調整を当てていないのと区別がつかない。**
         holding: 保有営業日数。
         progress: ``(済み, 全体)`` で呼ばれる。
 
@@ -514,6 +552,7 @@ def audit_holding_window(
     """
     per_event: list[float] = []
     yields: list[float] = []
+    taken: list[float] = []
     touched = 0
 
     by_symbol: dict[str, list[dt.date]] = {}
@@ -523,13 +562,31 @@ def audit_holding_window(
     for position, symbol in enumerate(sorted(by_symbol), start=1):
         if progress is not None:
             progress(position, len(by_symbol))
-        when_of, _closes, raw_closes = _sessions(database, symbol)
+        when_of, plain, raw_closes = _sessions(database, symbol)
+        if not when_of:
+            per_event.extend([0.0] * len(by_symbol[symbol]))
+            continue
+        # **調整の前と後で、同じ窓のリターンを出す。** 差が窓の中の配当に
+        # 一致すれば、**調整が配当ぶんちょうど抜いたことが測れた**ことになる
+        # ——「消えているはず」は主張であって確認ではない（2026-09-20、
+        # ユーザーが出力の自己矛盾から指摘）。
+        netted = dividend_adjusted(plain, (paid or {}).get(symbol))
+        opens_plain = plain[OPEN].to_numpy(dtype=float)
+        closes_plain = plain[CLOSE].to_numpy(dtype=float)
+        opens_net = netted[OPEN].to_numpy(dtype=float)
+        closes_net = netted[CLOSE].to_numpy(dtype=float)
         index_of = {day: i for i, day in enumerate(when_of)}
         for when in by_symbol[symbol]:
             index = index_of.get(when)
             if index is None:
                 per_event.append(0.0)
                 continue
+            entry, exit_at = index + 1, index + holding
+            if exit_at < len(when_of) and opens_plain[entry] > 0 and opens_net[entry] > 0:
+                taken.append(
+                    (closes_net[exit_at] / opens_net[entry])
+                    - (closes_plain[exit_at] / opens_plain[entry])
+                )
             total = 0.0
             for step in range(index + 1, min(index + holding + 1, len(when_of))):
                 ratio = _yield_on(rates, symbol, when_of[step], raw_closes[step - 1])
@@ -546,4 +603,5 @@ def audit_holding_window(
         with_ex_date=touched,
         median_yield=median(yields) if yields else 0.0,
         drag=fmean(per_event) if per_event else 0.0,
+        removed=fmean(taken) if taken else 0.0,
     )

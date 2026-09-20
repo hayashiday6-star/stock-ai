@@ -6974,13 +6974,16 @@ def ex_date_audit(
                 database,
                 found.events,
                 rates,
+                # **測る側と同じ調整を渡す。** 渡さないと「抜けた分」が 0 に
+                # なり、**調整を当てていないのと区別がつかない。**
+                paid,
                 progress=lambda done, total: progress.update(task, completed=done, total=total),
             )
     console.print()
     console.print(inside.summary())
     console.print(
-        f"[dim]**落とした後なので、押し上げは消えているはず。** 急落を作った {KNIFE_DAYS} "
-        f"営業日と保有する {HOLDING} 営業日を、同じに扱っている。[/]"
+        f"[dim]**「消えているはず」ではなく、抜けた分を測っている。** 急落を作った "
+        f"{KNIFE_DAYS} 営業日と保有する {HOLDING} 営業日を、同じに扱っている。[/]"
     )
     for line in inside.warnings():
         console.print(f"[yellow]{line}[/]")

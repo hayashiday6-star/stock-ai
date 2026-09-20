@@ -221,24 +221,26 @@ class TestFindingWhereTheStepIs:
 
 
 class TestDividendsInsideTheHoldingWindow:
-    """**そちらは外していない。** ショートでは配当は払う側である。"""
+    """**ショートは配当を払う側。** 落とさずに測ると取り高が高く出る。
+
+    そして**「消えているはず」は主張であって確認ではない**（2026-09-20、
+    ユーザーが出力の自己矛盾から指摘）。**抜けた分を測る。**
+    """
 
     @staticmethod
-    def _one(offset: int, yield_on_day: float = 0.02) -> tuple[Database, dict, list]:
+    def _one(offset: int, yield_on_day: float = 0.02):
+        """``(DB, 額の表, 使った件, 調整に渡す形)`` を作る。"""
         entry = _at("2015-06-10")
         ex_index = entry + offset
         closes = _walk(0, {ex_index: yield_on_day})
-        rates = {
-            "1401": {
-                _INDEX[ex_index].date(): ExDividend(
-                    rate=closes[ex_index - 1] * yield_on_day, special=0.0
-                )
-            }
-        }
-        return _database({"1401": closes}), rates, [("1401", _INDEX[entry].date())]
+        when = _INDEX[ex_index].date()
+        amount = closes[ex_index - 1] * yield_on_day
+        rates = {"1401": {when: ExDividend(rate=amount, special=0.0)}}
+        paid = {"1401": [(dt.date(2015, 1, 5), when, amount)]}
+        return _database({"1401": closes}), rates, [("1401", _INDEX[entry].date())], paid
 
     def test_a_dividend_inside_the_window_is_counted(self) -> None:
-        database, rates, kept = self._one(offset=2)
+        database, rates, kept, _paid = self._one(offset=2)
 
         found = audit_holding_window(database, kept, rates)
 
@@ -246,11 +248,50 @@ class TestDividendsInsideTheHoldingWindow:
         assert found.share == 1.0
         assert found.drag == pytest.approx(0.02, abs=0.001)
 
-    def test_a_dividend_before_the_entry_is_not(self) -> None:
-        """**急落側の配当を二重に数えない。** そちらは除外の担当である。"""
-        database, rates, kept = self._one(offset=-2)
+    def test_the_adjustment_removes_what_the_window_holds(self) -> None:
+        """**抜けた分が、窓の中の配当と釣り合う。**
+
+        これが「調整が効いている」の確認である。**釣り合えば、配当ぶん
+        ちょうど抜けたことが測れた**ことになる。
+        """
+        database, rates, kept, paid = self._one(offset=2)
+
+        found = audit_holding_window(database, kept, rates, paid)
+
+        assert found.removed == pytest.approx(found.drag, rel=0.1)
+        assert found.matched
+        assert found.warnings() == []
+
+    def test_not_passing_the_adjustment_is_caught(self) -> None:
+        """**この検査が落ちる条件を、実際に作る。**
+
+        渡さなければ抜けた分は 0。**調整を当てていないのと同じ形**なので、
+        黙って通してはいけない。
+        """
+        database, rates, kept, _paid = self._one(offset=2)
 
         found = audit_holding_window(database, kept, rates)
+
+        assert found.removed == 0.0
+        assert not found.matched
+        assert any("釣り合っていない" in line for line in found.warnings())
+        assert any("抜けていない" in line for line in found.warnings())
+
+    def test_a_double_adjustment_is_caught(self) -> None:
+        """**2倍抜いても落ちる。** 片側だけの検査にしない。"""
+        database, rates, kept, paid = self._one(offset=2)
+        twice = {symbol: rows + rows for symbol, rows in paid.items()}
+
+        found = audit_holding_window(database, kept, rates, twice)
+
+        assert found.removed > found.drag * 1.5
+        assert not found.matched
+
+    def test_a_dividend_before_the_entry_is_not_counted(self) -> None:
+        """**急落側の配当を二重に数えない。** そちらは除外の担当である。"""
+        database, rates, kept, paid = self._one(offset=-2)
+
+        found = audit_holding_window(database, kept, rates, paid)
 
         assert found.with_ex_date == 0
         assert found.drag == 0.0
@@ -259,24 +300,17 @@ class TestDividendsInsideTheHoldingWindow:
         """**窓の外は数えない。** 境界を1つ作って確かめる。"""
         from stock_ai.backtest.knife import HOLDING
 
-        database, rates, kept = self._one(offset=HOLDING + 1)
+        database, rates, kept, paid = self._one(offset=HOLDING + 1)
 
-        found = audit_holding_window(database, kept, rates)
+        found = audit_holding_window(database, kept, rates, paid)
 
         assert found.with_ex_date == 0
 
-    def test_a_big_enough_drag_warns(self) -> None:
-        database, rates, kept = self._one(offset=2, yield_on_day=0.02)
-
-        found = audit_holding_window(database, kept, rates)
-
-        assert any("無視できない" in line for line in found.warnings())
-
     def test_a_clean_window_says_nothing(self) -> None:
         """**両向きに置く。** 常に鳴る旗は何も区別しない。"""
-        database, rates, kept = self._one(offset=-2)
+        database, rates, kept, paid = self._one(offset=-2)
 
-        assert audit_holding_window(database, kept, rates).warnings() == []
+        assert audit_holding_window(database, kept, rates, paid).warnings() == []
 
 
 def test_the_crash_definition_is_not_copied_here() -> None:
