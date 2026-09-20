@@ -582,3 +582,114 @@ class TestAZeroDividendIsNotAnExDate:
         assert found.kept == 1
         assert found.unknown_amount == 1
         assert found.dropped_zero == 0
+
+
+class TestTheRawRowsComeBackWhole:
+    """**読み口が捨てている列は、読み口からは見えない。**
+
+    `parse_dividends` は 23 列のうち 7 列しか採らず、``DeemDiv``（みなし配当）
+    ・``DeemCapGains``・``NetAssetDecRatio``・``DistAmt``・``RetEarn`` を
+    捨てている。**「額が前日終値以上」の 53 件を追うには、そこが要る**
+    （2026-09-20。実際の段差の 24〜85倍が記録されていて、**倍率が銘柄ごとに
+    ばらばら**なので単一の係数では説明が付かない）。
+    """
+
+    @staticmethod
+    def _archive(tmp_path, body: str):
+        import gzip
+
+        from stock_ai.data.jquants_archive import MANIFEST, MANIFEST_COLUMNS
+
+        key = "fins/dividend/dividend_2014.csv.gz"
+        target = tmp_path / key
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(gzip.compress(body.encode("utf-8")))
+        (tmp_path / MANIFEST).write_text(
+            ",".join(MANIFEST_COLUMNS) + "\n" + f"/{key},1,1,x,,2026-09-20\n",
+            encoding="utf-8",
+        )
+        return tmp_path
+
+    @staticmethod
+    def _body() -> str:
+        """**実物の配布サンプルの列**を使う。列名を手で書き写さない。"""
+        header = SAMPLE.read_text(encoding="utf-8-sig").splitlines()[0]
+        names = header.split(",")
+        wanted = {
+            "Code": "21310",
+            "PubDate": "2014-02-14",
+            "ExDate": "2014-03-27",
+            "DivRate": "5600.0",
+            "DeemDiv": "12.34",
+            "NetAssetDecRatio": "0.5",
+            "StatCode": "1",
+        }
+        row = ",".join(wanted.get(name, "") for name in names)
+        other = ",".join(
+            {"Code": "99990", "PubDate": "2014-02-14", "ExDate": "2014-03-27"}.get(name, "")
+            for name in names
+        )
+        return "\n".join([header, row, other]) + "\n"
+
+    def test_it_returns_every_column_including_the_discarded_ones(self, tmp_path) -> None:
+        import datetime as dt
+
+        from stock_ai.data.jquants_dividend import raw_rows
+
+        found = raw_rows(self._archive(tmp_path, self._body()), [("2131", dt.date(2014, 3, 27))])
+
+        assert len(found) == 1
+        symbol, ex_date, key, row = found[0]
+        assert symbol == "2131"
+        assert ex_date == dt.date(2014, 3, 27)
+        assert key.endswith("dividend_2014.csv.gz")
+        # **読み口が採っている列。**
+        assert row["DivRate"] == "5600.0"
+        # **読み口が捨てている列。ここが出ないなら、この道具は要らない。**
+        assert row["DeemDiv"] == "12.34"
+        assert row["NetAssetDecRatio"] == "0.5"
+        assert "DistAmt" in row
+        assert "RetEarn" in row
+        assert "DeemCapGains" in row
+        assert "IFCode" in row
+
+    def test_it_leaves_out_what_was_not_asked_for(self, tmp_path) -> None:
+        """**両向きに置く。** 全部返すなら、絞れていない。"""
+        import datetime as dt
+
+        from stock_ai.data.jquants_dividend import raw_rows
+
+        found = raw_rows(self._archive(tmp_path, self._body()), [("2131", dt.date(2014, 3, 27))])
+
+        assert [symbol for symbol, *_rest in found] == ["2131"]
+
+    def test_asking_for_nothing_reads_nothing(self, tmp_path) -> None:
+        from stock_ai.data.jquants_dividend import raw_rows
+
+        assert raw_rows(self._archive(tmp_path, self._body()), []) == []
+
+    def test_every_matching_row_comes_back(self, tmp_path) -> None:
+        """**1行に畳まない。** どれを採ったかが見えなくなる。"""
+        import datetime as dt
+
+        from stock_ai.data.jquants_dividend import raw_rows
+
+        header = SAMPLE.read_text(encoding="utf-8-sig").splitlines()[0]
+        names = header.split(",")
+
+        def _row(ref: str, rate: str) -> str:
+            values = {
+                "Code": "21310",
+                "PubDate": "2014-02-14",
+                "ExDate": "2014-03-27",
+                "RefNo": ref,
+                "DivRate": rate,
+            }
+            return ",".join(values.get(name, "") for name in names)
+
+        body = "\n".join([header, _row("1", "5600.0"), _row("2", "56.0")]) + "\n"
+
+        found = raw_rows(self._archive(tmp_path, body), [("2131", dt.date(2014, 3, 27))])
+
+        assert len(found) == 2
+        assert {row["DivRate"] for *_rest, row in found} == {"5600.0", "56.0"}

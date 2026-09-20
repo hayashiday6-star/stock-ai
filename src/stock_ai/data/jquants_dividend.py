@@ -598,10 +598,11 @@ def ex_dividends_known_by(directory: Path) -> dict[str, list[tuple[dt.date, dt.d
     return found
 
 
-def _ex_date_rows(directory: Path) -> Iterable[tuple[str, dt.date, dt.date, float | None]]:
-    """原本から ``(銘柄, 公表日, 権利落ち日, 額)`` を1行ずつ。**取りには行かない。**
+def _dividend_files(directory: Path) -> Iterable[tuple[str, bytes]]:
+    """配当の原本を1本ずつ ``(鍵, 中身)`` で。**取りには行かない。**
 
-    **額も返す。** 額を落とすと、呼ぶ側は無配の公表と区別できない。
+    **歩き方をここ1箇所に置く。** :func:`_ex_date_rows` と :func:`raw_rows`
+    が同じ順で同じファイルを見る——2つ書くと、片方だけ範囲がずれる。
     """
     from stock_ai.data.jquants_archive import path_for, read_manifest
     from stock_ai.data.jquants_read import endpoint_of, read_archived
@@ -610,7 +611,66 @@ def _ex_date_rows(directory: Path) -> Iterable[tuple[str, dt.date, dt.date, floa
         if endpoint_of(key) != "/fins/dividend":
             continue
         try:
-            found = parse_dividends(read_archived(path_for(directory, key)))
+            yield key, read_archived(path_for(directory, key))
+        except Exception as exc:  # noqa: BLE001 - どこで読めないかが記録に値する
+            logger.warning("配当の原本を開けなかった: %s: %s", key, exc)
+
+
+def raw_rows(
+    directory: Path, wanted: Iterable[tuple[str, dt.date]]
+) -> list[tuple[str, dt.date, str, dict[str, str]]]:
+    """``(銘柄, 権利落ち日)`` に当たる**原本の行を、全列そのまま**返す。
+
+    **読み口が捨てている列は、読み口からは見えない**（`CLAUDE.md`）。
+    :func:`parse_dividends` は 23 列のうち 7 列しか採らず、``DeemDiv``
+    （みなし配当）・``DeemCapGains``・``NetAssetDecRatio``・``DistAmt``・
+    ``RetEarn`` を捨てている。
+
+    **「額が前日終値以上」の 53 件を追うために在る**（2026-09-20）。実際の
+    段差の 24〜85倍が記録されていて、**倍率が銘柄ごとにばらばら**なので、
+    単一の係数では説明が付かない。**原本を見るしかない。**
+
+    Args:
+        directory: 原本の置き場所。
+        wanted: 追いたい ``(銘柄, 権利落ち日)``。
+
+    Returns:
+        ``(銘柄, 権利落ち日, 原本の鍵, 行そのもの)`` の並び。**解析しない。**
+        同じ鍵に複数行あればすべて返す——**1行に畳むと、どれを採ったかが
+        見えなくなる。**
+    """
+    from stock_ai.data.universe import four_digit_code
+
+    keys = {(symbol, when) for symbol, when in wanted}
+    if not keys:
+        return []
+
+    found: list[tuple[str, dt.date, str, dict[str, str]]] = []
+    for key, payload in _dividend_files(directory):
+        try:
+            rows = records_from_csv(payload)
+        except Exception as exc:  # noqa: BLE001 - どこで読めないかが記録に値する
+            logger.warning("配当の原本を読めなかった: %s: %s", key, exc)
+            continue
+        for row in rows:
+            symbol = four_digit_code((row.get("Code") or "").strip())
+            ex_date = parse_date(row.get("ExDate"))
+            if symbol is None or ex_date is None:
+                continue
+            if (symbol, ex_date) in keys:
+                found.append((symbol, ex_date, key, dict(row)))
+    found.sort(key=lambda item: (item[1], item[0], item[2]))
+    return found
+
+
+def _ex_date_rows(directory: Path) -> Iterable[tuple[str, dt.date, dt.date, float | None]]:
+    """原本から ``(銘柄, 公表日, 権利落ち日, 額)`` を1行ずつ。**取りには行かない。**
+
+    **額も返す。** 額を落とすと、呼ぶ側は無配の公表と区別できない。
+    """
+    for key, payload in _dividend_files(directory):
+        try:
+            found = parse_dividends(payload)
         except Exception as exc:  # noqa: BLE001 - どこで読めないかが記録に値する
             logger.warning("配当の原本を読めなかった: %s: %s", key, exc)
             continue

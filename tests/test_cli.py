@@ -1,6 +1,7 @@
 """Tests for the command-line interface."""
 
 import io
+from unittest import mock
 
 import pytest
 from typer.testing import CliRunner
@@ -1921,3 +1922,124 @@ class TestTheGateRowIsMarked:
 
         assert "いま在る（判定に使える）" in text
         assert "8.7年" in text
+
+
+class TestTheRawDividendRowsReachTheScreen:
+    """**「原本を見る」は、画面に出て初めて道具になる。**
+
+    23 列を横に並べると入らないので**縦に並べている**。日本語の札が `…` で
+    切れて意味が消えたのと同じ轍を踏まないよう、**幅を決めて刷る**
+    （2026-09-20）。
+    """
+
+    @staticmethod
+    def _counted():
+        import datetime as dt
+
+        from stock_ai.data.schema import DividendAdjustment, SkippedDividend
+
+        return DividendAdjustment(
+            impossible=1,
+            rows=(
+                SkippedDividend(
+                    symbol="2131",
+                    ex_date=dt.date(2014, 3, 27),
+                    rate=5600.0,
+                    base=1333.0,
+                    reason="額が前日終値以上",
+                ),
+            ),
+        )
+
+    @staticmethod
+    def _archive(tmp_path):
+        import csv
+        import gzip
+        import io
+        import pathlib as _p
+
+        from stock_ai.data.jquants_archive import MANIFEST, MANIFEST_COLUMNS
+
+        sample = _p.Path("tests/fixtures/jquants_dividend_sample.csv")
+        names = sample.read_text(encoding="utf-8-sig").splitlines()[0].split(",")
+        out = io.StringIO()
+        writer = csv.DictWriter(out, fieldnames=names, lineterminator="\n")
+        writer.writeheader()
+        writer.writerow(
+            {
+                **dict.fromkeys(names, ""),
+                "Code": "21310",
+                "PubDate": "2014-02-14",
+                "ExDate": "2014-03-27",
+                "DivRate": "5600.0",
+                "DeemDiv": "12.34",
+                "NetAssetDecRatio": "0.5",
+            }
+        )
+        key = "fins/dividend/dividend_2014.csv.gz"
+        target = tmp_path / key
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(gzip.compress(out.getvalue().encode("utf-8")))
+        (tmp_path / MANIFEST).write_text(
+            ",".join(MANIFEST_COLUMNS) + "\n" + f"/{key},1,1,x,,2026-09-20\n",
+            encoding="utf-8",
+        )
+        return tmp_path
+
+    @pytest.mark.parametrize("width", [80, 100, 120])
+    def test_the_discarded_columns_are_printed(self, tmp_path, width: int) -> None:
+        """**捨てている列が出ること。** 出ないなら、この道具は要らない。"""
+        from rich.console import Console
+
+        from stock_ai import cli
+
+        console = Console(file=io.StringIO(), width=width, no_color=True)
+        with mock.patch.object(cli, "console", console):
+            cli._print_raw_dividend_rows(self._archive(tmp_path), self._counted())
+        printed = console.file.getvalue()  # type: ignore[attr-defined]
+
+        assert "…" not in printed, "**幅で切れている。** 意味が末尾に在る。"
+        for name in ("DeemDiv", "DeemCapGains", "NetAssetDecRatio", "DistAmt", "RetEarn"):
+            assert name in printed, f"**捨てている列 {name} が出ていない。**"
+        assert "DivRate" in printed
+        assert "2131" in printed
+
+    def test_nothing_is_printed_when_nothing_was_flagged(self, tmp_path) -> None:
+        """**両向きに置く。** 常に出る表は、何も区別しない。"""
+        from rich.console import Console
+
+        from stock_ai import cli
+        from stock_ai.data.schema import DividendAdjustment
+
+        console = Console(file=io.StringIO(), width=100, no_color=True)
+        with mock.patch.object(cli, "console", console):
+            cli._print_raw_dividend_rows(self._archive(tmp_path), DividendAdjustment())
+
+        assert console.file.getvalue() == ""  # type: ignore[attr-defined]
+
+    def test_it_says_so_when_the_original_has_no_such_row(self, tmp_path) -> None:
+        """**引き当てられないことも、出力に出す。** 黙って空にしない。"""
+        import datetime as dt
+
+        from rich.console import Console
+
+        from stock_ai import cli
+        from stock_ai.data.schema import DividendAdjustment, SkippedDividend
+
+        absent = DividendAdjustment(
+            impossible=1,
+            rows=(
+                SkippedDividend(
+                    symbol="9999",
+                    ex_date=dt.date(1999, 1, 4),
+                    rate=1.0,
+                    base=1.0,
+                    reason="額が前日終値以上",
+                ),
+            ),
+        )
+        console = Console(file=io.StringIO(), width=100, no_color=True)
+        with mock.patch.object(cli, "console", console):
+            cli._print_raw_dividend_rows(self._archive(tmp_path), absent)
+
+        assert "見つからない" in console.file.getvalue()  # type: ignore[attr-defined]

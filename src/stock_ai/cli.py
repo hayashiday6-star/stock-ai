@@ -6990,6 +6990,7 @@ def ex_date_audit(
     for line in found.warnings():
         console.print(f"[yellow]{line}[/]")
     _print_dividend_breakdown(found.dividends, "急落を集めるときに落とした配当")
+    _print_raw_dividend_rows(Path(archive), found.dividends)
 
     with spinner() as progress:
         task = progress.add_task("保有窓の中の権利落ちを数えています", total=None)
@@ -7063,6 +7064,62 @@ def _print_dividend_breakdown(counted: object, title: str) -> None:
             row.reason,
         )
     console.print(sample)
+
+
+def _print_raw_dividend_rows(archive: Path, counted: object, limit: int = 4) -> None:
+    """Print every raw column for the rows the adjustment called impossible.
+
+    **原本そのものの列名も出す。**
+
+    `parse_dividends` は 23 列のうち 7 列しか採っていない。捨てているのは
+    ``DistAmt`` / ``RetEarn`` / ``DeemDiv``（みなし配当）/ ``DeemCapGains`` /
+    ``NetAssetDecRatio`` / ``IFCode`` / ``FRCode`` などで、**そこに答えが
+    在れば、読み口からは永久に見えない**（`CLAUDE.md`、#5 で同じ形を踏んだ）。
+
+    **銘柄コードを焼き付けない。** その回に出た行を引く——次に中身が
+    変われば、表も変わる。
+
+    Args:
+        archive: 原本の置き場所。
+        counted: :class:`~stock_ai.data.schema.DividendAdjustment`。
+        limit: 並べる行数。**列が23個あるので横には並べられない。**
+    """
+    from stock_ai.data.jquants_dividend import raw_rows
+
+    flagged = [row for row in counted.rows if row.reason == "額が前日終値以上"]  # type: ignore[attr-defined]
+    if not flagged:
+        return
+    wanted = [(row.symbol, row.ex_date) for row in flagged[:limit]]
+    found = raw_rows(archive, wanted)
+    if not found:
+        console.print(
+            "[yellow]**原本にその行が見つからない。** "
+            "額が前日終値以上と数えたのに、引き当てられない。[/]"
+        )
+        return
+
+    # **縦に並べる。** 23 列を横にすると入らない——日本語の札が `…` で切れた
+    # のと同じ轍（2026-09-20）。列名を行にすれば、幅に関係なく全部出る。
+    table = Table(title="原本そのもの（額が前日終値以上の行・全列）")
+    table.add_column("列", overflow="fold")
+    names: list[str] = []
+    for _symbol, _when, _key, row in found:
+        for name in row:
+            if name not in names:
+                names.append(name)
+    for symbol, when, _key, _row in found:
+        table.add_column(f"{symbol}\n{when}", overflow="fold", justify="right")
+    for name in names:
+        # **空の列も出す。** 無いことは出力に出ない——埋まっていないことが
+        # 分かるのも答えのうちである。
+        table.add_row(name, *[(row.get(name) or "—").strip() or "—" for *_h, row in found])
+    console.print(table)
+    console.print(
+        "[dim]**読み口が採っているのは "
+        "`Code` / `PubDate` / `PubTime` / `RefNo` / `IFTerm` / `DivRate` / "
+        "`CommDivRate` / `SpecDivRate` / `ExDate` / `RecDate` / `PayDate` / "
+        "`StatCode` だけである。** 額は `DivRate` から来ている。[/]"
+    )
 
 
 @app.command(name="wall-survey")
