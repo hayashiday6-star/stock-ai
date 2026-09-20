@@ -64,6 +64,7 @@ from collections.abc import Callable
 import numpy as np
 
 from stock_ai.backtest.discontinuity import crossings, session_breaks, spans_break
+from stock_ai.backtest.fall import fell_at_least
 from stock_ai.backtest.gap_fill import IS_END, IS_FROM, OOS_END, known_ex_dates, liquid_bars
 from stock_ai.backtest.pead import MIN_TURNOVER
 from stock_ai.core.logging import get_logger
@@ -187,10 +188,10 @@ def knife_positions(
     if len(closes) <= days:
         return np.array([], dtype=int)
 
-    before, after = closes[:-days], closes[days:]
-    usable = (before > 0) & (after > 0)
-    fell = np.zeros(len(before), dtype=bool)
-    fell[usable] = after[usable] / before[usable] - 1.0 <= -drop
+    # **線の当て方は `fall.fell_at_least` が正本。** ここで書き直さない
+    # ——`a/b - 1.0 <= -drop` は割り算の丸めで**ちょうど −20% を落とす**
+    # （2026-09-20、ユーザーが 2461 の 680→544 で見つけた）。
+    fell = fell_at_least(closes[:-days], closes[days:], drop)
     return np.flatnonzero(fell & liquid[days:]) + days
 
 

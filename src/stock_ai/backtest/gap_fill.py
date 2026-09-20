@@ -40,6 +40,7 @@ import numpy as np
 import pandas as pd
 
 from stock_ai.backtest.discontinuity import crossings, session_breaks, spans_break
+from stock_ai.backtest.fall import fell_at_least
 from stock_ai.backtest.pead import MIN_TURNOVER, TURNOVER_WINDOW
 from stock_ai.core.logging import get_logger
 from stock_ai.data.schema import CLOSE, OPEN, VOLUME, split_adjusted
@@ -154,10 +155,9 @@ def gap_positions(
     if len(opens) < 2:  # noqa: PLR2004 - 前日が無ければ窓は作れない
         return np.array([], dtype=int)
 
-    previous, opened = closes[:-1], opens[1:]
-    usable = (previous > 0) & (opened > 0)
-    fell = np.zeros(len(previous), dtype=bool)
-    fell[usable] = opened[usable] / previous[usable] - 1.0 <= -gap
+    # **線の当て方は `fall.fell_at_least` が正本。** #16 と同じ式を2つ持って
+    # いて、**どちらも割り当てが「未満」になっていた**（2026-09-20）。
+    fell = fell_at_least(closes[:-1], opens[1:], gap)
     return np.flatnonzero(fell & liquid[1:]) + 1
 
 

@@ -340,32 +340,29 @@ class TestAdjustingMovesTheCrashSet:
 
         assert moved.after <= moved.before
 
-    def test_a_tie_on_the_line_does_not_look_like_a_wrong_direction(self) -> None:
-        """**線の上にちょうど乗った件は、丸めでどちらにも転ぶ。**
+    def test_a_tie_on_the_line_is_not_counted_as_a_dividend_made_crash(self) -> None:
+        """**線の上にちょうど乗った件は、丸めで転ぶ。** 配当のせいにしない。
 
-        `1000 → 800` はちょうど −20% で、**日本株ではよくある形**である。
-        両辺に同じ倍率を掛けると `(800f)/(1000f)` は `0.8` からずれ、
-        **「事象になる」ほうに転ぶこともある。**
+        `680 → 544` はちょうど −20%。両辺に同じ倍率を掛けると、`(544f)`
+        と `(680f)*0.8` の丸めがずれて**事象でなくなる**ことがある。
+        **配当が作った下げではない**ので、`lost` に数えてはいけない。
 
-        初めは増加そのものを禁じていて、**実データ（2461）で落ちた**
-        （2026-09-20、ユーザーの PC）。ここはその形を作って、
-        **落ちないこと**と**同点として数えること**を見る。
+        線の当て方を直す前は**増える側**に転んでいて、**ユーザーの PC で
+        落ちた**（2026-09-20、2461）。直した後は**失う側にしか転ばない**
+        （近傍 600万通りで 9,208 対 0）。
         """
-        # `100000 → 80000` はちょうど −20%。float では -0.19999999999999996 で、
-        # **線をわずかに超えない**（事象ではない）。両辺に 1 円の配当ぶんの
-        # 倍率を掛けると -0.20000000000000007 になり、**事象になる。**
         crash = _at("2015-06-10")
-        closes = np.full(_BARS, 100_000.0)
-        closes[crash : crash + 3] = 80_000.0  # 落ちて、すぐ戻る
-        # **権利落ちは窓より後**に置く（窓の両辺が同じ倍率で縮む）。しかも
-        # **前日終値が 100,000 の日**に置く——倍率が 1 − 1/100000 になる。
+        closes = np.full(_BARS, 680.0)
+        closes[crash : crash + 3] = 544.0  # ちょうど −20%、すぐ戻る
+        # **権利落ちは窓より後**（両辺が同じ倍率で縮む）。**前日終値 680 で
+        # 140 円**——この倍率でちょうど転ぶ。
         ex_index = crash + 20
-        rates = {"1401": [(dt.date(2015, 1, 5), _INDEX[ex_index].date(), 1.0)]}
+        rates = {"1401": [(dt.date(2015, 1, 5), _INDEX[ex_index].date(), 140.0)]}
 
         moved = measure_adjustment(_database({"1401": closes}), rates, _FIRST, _LAST)
 
         assert moved.ties > 0, "**同点の経路を通っていない。** 検査になっていない。"
-        assert moved.after > moved.before, "**増える形を作れていない。**"
+        assert moved.lost == 0, "**丸めで転んだ分を「配当が作った」に数えている。**"
 
     def test_a_genuinely_deeper_fall_still_raises(self) -> None:
         """**同点を許しても、本当に深くなったら落ちる。**
