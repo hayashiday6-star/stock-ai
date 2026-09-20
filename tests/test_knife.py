@@ -1,0 +1,322 @@
+"""#16「落ちるナイフをつかむな」— 急落した銘柄を買うと、その後も下回るか。
+
+ここで押さえるのは5つ。
+
+1. **急落の定義は1つだけ。** 壁の下見（`wall`）も同じ規則を呼ぶ
+2. **不連続を外す。** 1:2 の分割は −50% で、まさに「急落」に見える
+3. **権利落ちも外す。ただし 0 が想定**——20% を配当では作れない。
+   **#15 とは逆で、0 でないほうが驚きである**
+4. **符号の反転は1箇所だけ。** 測るのはショートの取り高である
+5. **窓は5営業日。** 格言が急落直後の話だからで、検出力のためではない
+"""
+
+from __future__ import annotations
+
+import datetime as dt
+
+import numpy as np
+import pandas as pd
+import pytest
+
+from stock_ai.backtest.knife import (
+    HOLDING,
+    KNIFE_DAYS,
+    KNIFE_DROP,
+    build_events,
+    knife_positions,
+)
+from stock_ai.data.schema import ADJ_CLOSE, CLOSE, HIGH, LOW, OPEN, VOLUME
+from stock_ai.database.engine import Database
+from stock_ai.database.repository import PriceRepository
+
+
+class TestWhatCountsAsACrash:
+    @staticmethod
+    def _closes(*values: float) -> tuple[np.ndarray, np.ndarray]:
+        closes = np.array(values, dtype=float)
+        return closes, np.ones(len(closes), dtype=bool)
+
+    def test_a_deep_enough_fall_is_one(self) -> None:
+        closes, liquid = self._closes(100.0, 100.0, 100.0, 100.0, 100.0, 75.0)
+
+        assert knife_positions(closes, liquid).tolist() == [5]
+
+    def test_a_shallower_one_is_not(self) -> None:
+        """**この検査が落ちる条件を、実際に1つ作る。**"""
+        closes, liquid = self._closes(100.0, 100.0, 100.0, 100.0, 100.0, 85.0)
+
+        assert knife_positions(closes, liquid).tolist() == []
+
+    def test_it_is_measured_over_five_sessions(self) -> None:
+        """**5営業日で測る。** 同じ下げでも、もっとゆっくりなら事象ではない。"""
+        slow = np.array([100.0, 98.0, 96.0, 94.0, 92.0, 90.0, 88.0, 86.0], dtype=float)
+
+        assert knife_positions(slow, np.ones(len(slow), dtype=bool)).tolist() == []
+
+    def test_a_rise_is_not(self) -> None:
+        closes, liquid = self._closes(100.0, 100.0, 100.0, 100.0, 100.0, 140.0)
+
+        assert knife_positions(closes, liquid).tolist() == []
+
+    def test_the_illiquid_day_is_dropped(self) -> None:
+        closes, _ = self._closes(100.0, 100.0, 100.0, 100.0, 100.0, 75.0)
+        liquid = np.ones(6, dtype=bool)
+        liquid[5] = False
+
+        assert knife_positions(closes, liquid).tolist() == []
+
+    def test_the_first_days_can_never_be_one(self) -> None:
+        """前が足りない。**そこを数えると、上場直後が毎回入る。**"""
+        closes, liquid = self._closes(100.0, 50.0, 40.0)
+
+        assert knife_positions(closes, liquid).tolist() == []
+
+    def test_mismatched_lengths_are_refused(self) -> None:
+        with pytest.raises(ValueError, match="長さが違う"):
+            knife_positions(np.array([1.0, 2.0]), np.array([True]))
+
+    def test_zero_days_is_refused(self) -> None:
+        with pytest.raises(ValueError, match="days must be at least 1"):
+            knife_positions(np.ones(10), np.ones(10, dtype=bool), days=0)
+
+    def test_the_wall_survey_calls_the_same_rule(self) -> None:
+        """**2つ持つと、下見で選んだ設計と判定に使う設計が黙ってずれる。**"""
+        import inspect
+
+        from stock_ai.backtest import wall
+
+        source = inspect.getsource(wall)
+
+        assert "knife_positions(" in source
+        assert "after[usable] / before[usable]" not in source
+
+
+_INDEX = pd.bdate_range("2012-07-02", "2019-12-31", name="date")
+_BARS = len(_INDEX)
+
+
+def _at(when: str) -> int:
+    return int(_INDEX.get_loc(pd.Timestamp(when)))
+
+
+def _prices(seed: int, crashes: tuple[int, ...] = (), merger: int | None = None) -> pd.DataFrame:
+    """乱数歩行に、急落を決め打ちの位置で仕込む。
+
+    **定数の足を置かない**（`CLAUDE.md`）。
+    """
+    rng = np.random.default_rng(seed)
+    steps = rng.normal(0.0, 0.01, _BARS)
+    for start in crashes:
+        # **定数から出す。** 幅を書き写すと、定数を動かしたとき仕込みが古くなる。
+        steps[start : start + KNIFE_DAYS] = np.log(1.0 - KNIFE_DROP) / KNIFE_DAYS * 1.3
+    close = 1_000.0 * np.exp(np.cumsum(steps))
+    if merger is not None:
+        close[merger:] *= 0.001
+    opens = close.copy()
+    opens[1:] = close[:-1] * (1.0 + rng.normal(0.0, 0.002, _BARS - 1))
+    return pd.DataFrame(
+        {
+            OPEN: opens,
+            HIGH: np.maximum(close, opens),
+            LOW: np.minimum(close, opens),
+            CLOSE: close,
+            ADJ_CLOSE: close,
+            VOLUME: [500_000.0] * _BARS,
+        },
+        index=_INDEX,
+    )
+
+
+_IS_CRASH = "2015-03-23"
+_OOS_CRASH = "2019-03-21"
+
+
+def _database(count: int = 6, crashes=(), merger=None) -> tuple[Database, list[str]]:
+    database = Database("sqlite:///:memory:")
+    database.create_all()
+    symbols = [f"{1400 + index:04d}" for index in range(count)]
+    with database.session() as session:
+        repo = PriceRepository(session)
+        for index, symbol in enumerate(symbols):
+            repo.upsert_prices(
+                symbol, _prices(seed=index, crashes=crashes, merger=merger), market="JP"
+            )
+    return database, symbols
+
+
+class TestCollectingTheCrashes:
+    def test_it_finds_them_in_both_halves(self) -> None:
+        database, symbols = _database(crashes=(_at(_IS_CRASH), _at(_OOS_CRASH)))
+
+        found = build_events(database, {}, symbols=symbols)
+
+        assert found.events
+        assert found.days_is >= 1
+        assert found.days_oos >= 1
+
+    def test_a_merger_is_not_a_crash(self) -> None:
+        """**1:2 の分割は −50%。** 調整漏れは、まさに急落に見える。"""
+        where = _at(_IS_CRASH)
+        database, symbols = _database(merger=where)
+
+        found = build_events(database, {}, symbols=symbols)
+
+        assert _INDEX[where].date() not in [when for _symbol, when in found.events]
+        assert found.excluded_broken > 0
+
+    def test_an_ex_date_inside_the_fall_is_excluded(self) -> None:
+        """**0 が想定だが、口は開けてある。**"""
+        where = _at(_IS_CRASH)
+        database, symbols = _database(crashes=(where,))
+        crash_day = _INDEX[where + KNIFE_DAYS].date()
+        announced = {symbol: [(dt.date(2013, 1, 10), crash_day)] for symbol in symbols}
+
+        found = build_events(database, announced, symbols=symbols)
+
+        assert found.excluded_ex_date > 0
+
+    def test_an_ex_date_announced_later_does_not_exclude(self) -> None:
+        """**この検査が落ちる条件を、実際に1つ作る。**"""
+        where = _at(_IS_CRASH)
+        database, symbols = _database(crashes=(where,))
+        crash_day = _INDEX[where + KNIFE_DAYS].date()
+        announced = {symbol: [(dt.date(2019, 1, 10), crash_day)] for symbol in symbols}
+
+        found = build_events(database, announced, symbols=symbols)
+
+        assert found.excluded_ex_date == 0
+        assert found.events
+
+    def test_the_warning_fires_when_a_dividend_was_excluded(self) -> None:
+        """**#15 とは逆。** ここは 0 でないほうが驚きである。"""
+        where = _at(_IS_CRASH)
+        database, symbols = _database(crashes=(where, _at(_OOS_CRASH)))
+        crash_day = _INDEX[where + KNIFE_DAYS].date()
+        announced = {symbol: [(dt.date(2013, 1, 10), crash_day)] for symbol in symbols}
+
+        found = build_events(database, announced, symbols=symbols)
+
+        assert any("配当では作れないはず" in line for line in found.warnings())
+
+    def test_a_clean_run_says_nothing_about_dividends(self) -> None:
+        database, symbols = _database(crashes=(_at(_IS_CRASH), _at(_OOS_CRASH)))
+
+        found = build_events(database, {}, symbols=symbols)
+
+        assert not any("配当" in line for line in found.warnings())
+
+    def test_the_liquidity_drop_is_counted_in_events(self) -> None:
+        """**急落だったが外した件数。** 足の数ではない。"""
+        database = Database("sqlite:///:memory:")
+        database.create_all()
+        with database.session() as session:
+            frame = _prices(seed=1, crashes=(_at(_IS_CRASH),))
+            frame[VOLUME] = 1.0
+            PriceRepository(session).upsert_prices("1400", frame, market="JP")
+
+        found = build_events(database, {}, symbols=["1400"])
+
+        assert found.events == []
+        assert 0 < found.thin < 10  # noqa: PLR2004 - 足の数（約1,900）ではない
+
+    def test_an_empty_universe_is_refused(self) -> None:
+        database = Database("sqlite:///:memory:")
+        database.create_all()
+
+        with pytest.raises(ValueError, match="銘柄が1つも無い"):
+            build_events(database, {}, symbols=[])
+
+
+class TestTheShortSideAndTheWindow:
+    def test_the_command_flips_the_sign_once(self) -> None:
+        """**符号の反転は1箇所だけ**（#8 と同じ作法）。"""
+        import inspect
+
+        from stock_ai import cli
+
+        body = inspect.getsource(cli.knife_power)
+
+        assert body.count("-value - COST_ROUND_TRIP") == 1
+        assert 'side="ショート"' in body
+
+    def test_the_command_uses_the_shared_gate(self) -> None:
+        import inspect
+
+        from stock_ai import cli
+
+        assert "_event_gate(" in inspect.getsource(cli.knife_power)
+
+    def test_the_periods_are_days_not_events(self) -> None:
+        import inspect
+
+        from stock_ai import cli
+
+        body = inspect.getsource(cli.knife_power)
+
+        assert "periods=found.days_oos" in body
+        assert "periods=found.events_oos" not in body
+
+    def test_it_says_the_line_was_measured_at_another_window(self) -> None:
+        """**線 3.30 は窓20営業日で測った値である**（事前登録 §0・§10）。"""
+        import inspect
+
+        from stock_ai import cli
+
+        assert "5営業日の対照を回してから封印する" in inspect.getsource(cli.knife_power)
+
+    def test_the_window_matches_the_preregistration(self) -> None:
+        assert HOLDING == KNIFE_DAYS
+        assert pytest.approx(0.20) == KNIFE_DROP
+
+
+class TestTheCommandRunsOnARealDatabase:
+    """**本物のコマンドを、中身の入った DB で1本通す。**"""
+
+    def test_it_runs_all_the_way_through(self, tmp_path, monkeypatch) -> None:
+        import gzip
+        import pathlib
+
+        from stock_ai import cli
+        from stock_ai.data.jquants_archive import MANIFEST, MANIFEST_COLUMNS
+        from stock_ai.database import engine
+        from tests.test_jquants_dividend import TestHowManyExDatesTheArchiveCanSupply as Rows
+
+        monkeypatch.setattr(engine, "DATA_DIR", tmp_path)
+        symbols = [f"{1400 + index:04d}" for index in range(40)]
+        # **1日だけだと手前で終わる。** 散らばりを測るには日が要る。
+        days = ("2015-03-23", "2015-09-21", "2016-05-23", "2017-02-20")
+        database = Database(f"sqlite:///{tmp_path / 'stock_ai.db'}")
+        database.create_all()
+        with database.session() as session:
+            repo = PriceRepository(session)
+            repo.upsert_prices("1306", _prices(seed=999), market="JP")
+            for index, symbol in enumerate(symbols):
+                repo.upsert_prices(
+                    symbol,
+                    _prices(seed=index, crashes=tuple(_at(day) for day in (*days, _OOS_CRASH))),
+                    market="JP",
+                )
+
+        key = "fins/dividend/dividend_2015.csv.gz"
+        target = pathlib.Path(tmp_path) / key
+        target.parent.mkdir(parents=True, exist_ok=True)
+        body = Rows._rows({"Code": "14000", "ExDate": "2015-06-29", "RefNo": "1"})
+        target.write_bytes(gzip.compress(body.encode("utf-8")))
+        (pathlib.Path(tmp_path) / MANIFEST).write_text(
+            ",".join(MANIFEST_COLUMNS) + "\n" + f"/{key},1,1,x,,2026-09-20\n",
+            encoding="utf-8",
+        )
+
+        cli.knife_power(archive=str(tmp_path), benchmark="1306")
+
+    def test_it_stops_when_there_are_no_ex_dates(self, tmp_path, monkeypatch) -> None:
+        """**外さずには測らない。** 手前で止まる側も通す。"""
+        import typer
+
+        from stock_ai import cli
+        from stock_ai.database import engine
+
+        monkeypatch.setattr(engine, "DATA_DIR", tmp_path)
+
+        with pytest.raises(typer.Exit):
+            cli.knife_power(archive=str(tmp_path), benchmark="1306")

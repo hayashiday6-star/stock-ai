@@ -6588,6 +6588,119 @@ def gap_fill_power(
     )
 
 
+@app.command(name="knife-power")
+def knife_power(
+    archive: str = typer.Option(
+        str(DEFAULT_ARCHIVE_DIR), "--dir", help="Where the archived originals live."
+    ),
+    benchmark: str = typer.Option(BENCHMARK, "--benchmark", help="Calendar for the windows."),
+) -> None:
+    """Measure the IS window for #16, so the gate table can be filled - not judge it.
+
+    **段2（自分の IS から推定する）の材料を出す。** 文献はこの環境から読めない
+    ので、見込みはここから置く（`docs/PREREG_KNIFE_JP.md` §0）。
+
+    **事象は「5営業日で −20%」、窓は 5営業日。** 窓が短いのは**格言が急落直後
+    の話だから**であって、検出力のためではない（§0）。
+
+    **測るのはショートの取り高である。** 「つかむな」は買うと損をすると言って
+    いる——**向きは格言から取った。#15 の結果からではない**（§1）。
+
+    **判定ではない。** IS は 2013-01〜2017-12 で、OOS は**件数しか数えない。**
+
+    **線 3.30 は窓20営業日で測った値である。** §0 を通った場合だけ、
+    **5営業日の対照を回してから封印する**（§10）。
+    """
+    from stock_ai.backtest.event_window import event_sample
+    from stock_ai.backtest.gap_fill import IS_END, IS_FROM
+    from stock_ai.backtest.knife import (
+        HOLDING,
+        KNIFE_DAYS,
+        KNIFE_DROP,
+        build_events,
+    )
+    from stock_ai.backtest.multiplicity import HYPOTHESIS_BUDGET, calibrated_t
+    from stock_ai.backtest.universe_benchmark import equal_weighted_windows
+    from stock_ai.core.logging import quiet_on_console
+    from stock_ai.data.jquants_dividend import ex_dates_known_by
+
+    settings = get_settings()
+    configure_logging(settings.log_level)
+
+    announced = ex_dates_known_by(Path(archive))
+    if not announced:
+        console.print(
+            "[red]権利落ちの原本が無い。[/] **外さずには測らない**"
+            "——特別配当は機械的な値下がりで、戻らない（事前登録 §3）。"
+            " `checks\\権利落ちは在るか.bat` で先に確かめること。"
+        )
+        raise typer.Exit(code=1)
+    console.print(
+        f"[dim]IS は {IS_FROM} 〜 {IS_END}。OOS は件数だけ数える。"
+        f"急落は {KNIFE_DAYS} 営業日で −{KNIFE_DROP:.0%}、窓は {HOLDING} 営業日。"
+        "**測るのはショートの取り高である。**[/]"
+    )
+
+    database = Database()
+    database.create_all()
+
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        BarColumn(),
+        TaskProgressColumn(),
+        TimeRemainingColumn(),
+        console=console,
+    ) as progress:
+        task = progress.add_task("急落を集めています", total=None)
+
+        def step(done: int, total: int) -> None:
+            progress.update(task, completed=done, total=total)
+
+        with quiet_on_console("stock_ai.backtest.knife"):
+            found = build_events(database, announced, progress=step)
+    console.print(found.summary())
+    for line in found.warnings():
+        console.print(f"[yellow]{line}[/]")
+    if not found.events or not found.days_oos:
+        raise typer.Exit(code=1)
+
+    console.print("[dim]引く相手（等加重の宇宙）を作っています...[/]")
+    with quiet_on_console("stock_ai.backtest.universe_benchmark"):
+        subtract = equal_weighted_windows(database, HOLDING)
+    for line in subtract.warnings():
+        console.print(f"[yellow]{line}[/]")
+
+    with quiet_on_console("stock_ai.backtest.event_window"):
+        sample = event_sample(database, found.events, HOLDING, benchmark, IS_END, subtract)
+    _report_event_disposition(sample, title="窓を当てた結果（IS のみ・件数）")
+    if len(sample.values) < 2:  # noqa: PLR2004 - 1日では散らばりが測れない
+        console.print(f"[red]値動きの取れたイベント日が {len(sample.values)} しかない。[/]")
+        raise typer.Exit(code=1)
+
+    # **ショートの取り高に直す。** 仮説は超過リターンが負だと言っている（§1）。
+    # 符号の反転はここ1箇所だけで行う。費用は往復 0.4%（§4）。
+    take = [-value - COST_ROUND_TRIP for value in sample.values]
+    # **等加重の宇宙を引いている**ので、そちらで測った膨張を当てる。
+    target = calibrated_t(HYPOTHESIS_BUDGET, inflation=_event_inflation("universe"))
+    years = (IS_END - IS_FROM).days / 365.25
+    _event_gate(
+        take,
+        periods=found.days_oos,
+        target=target,
+        committed=3 * COST_ROUND_TRIP,
+        holding=HOLDING,
+        reach=f"**OOS の {found.events_oos:,} 件が固まった日数。件数ではない**",
+        span_years=years,
+        footnote=(
+            f"[dim]手元は IS {years:.1f}年で {found.days_is:,} イベント日"
+            f"（{len(found.events):,} 件）。**線 {target:.2f} は窓20営業日で測った値**"
+            "——§0 を通ったら、**5営業日の対照を回してから封印する。**[/]"
+        ),
+        side="ショート",
+    )
+
+
 @app.command(name="wall-survey")
 def wall_survey(
     into: str | None = typer.Option(None, "--write", help="Regenerate docs/WALL.md."),
