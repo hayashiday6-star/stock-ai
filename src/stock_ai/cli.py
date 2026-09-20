@@ -2382,12 +2382,38 @@ def _event_gate(  # noqa: PLR0913 - §0 の材料をすべて受け取る
     # **期数と同じ単位で数える。** `periods_needed` が返すのはイベント日で
     # あって、件数ではない。
     per_year = len(values) / span_years
+
+    # **検出できる差を「検出したい効果」に入れない。** それに要る期数は、
+    # 定義上いま在る期数そのものである——**答えが必ず「ちょうど足りる」に
+    # なる行**で、何も言えない（2026-09-20、ユーザーが発見）。しかも #15 では
+    # 線と偶然ほぼ一致し、**同じ 1.20% が2行並んで「あと4件」に読めた。**
+    #
+    # **`CLAUDE.md`「落ちようのない検査を『合格』と読まない」の表版である。**
+    targets = {round(committed, 4)}
+    if floor_estimate > 0:
+        # **見込みの下限。** #12・#13 の「下限を検出するには何年要るか」と同じ。
+        targets.add(round(floor_estimate, 4))
+
+    if mean <= 0:
+        # **向きが逆なら、期数の話ではない。** 増やしても通らない。
+        hypothetical = periods_needed(estimate.daily_sd, estimate.inflation, committed, target)
+        console.print()
+        console.print(
+            f"[dim]**期数の問題ではない。** 取り高が {mean:+.2%} で、"
+            "**向きが逆である。** 増やしても、この向きのままなら通らない。"
+            f"（仮に線の大きさ {committed:.1%} が本当だったとすれば、要るのは "
+            f"{hypothetical:,} イベント日＝{hypothetical / per_year:,.1f}年。"
+            f"手元は {periods:,} 日。**これは「あと少し」という意味ではない。**）[/]"
+        )
+        if footnote:
+            console.print(footnote)
+        return
+
     console.print()
     needed = Table(title="この設計で検出するのに要るイベント日数")
     for column in ("検出したい効果", "要るイベント日", "年数", "いまとの差"):
         needed.add_column(column, justify="left" if column == "検出したい効果" else "right")
-    # **表示して同じになる値は1行にまとめる。** 1.20% が2行並んでいた。
-    for effect in sorted({round(value, 4) for value in (committed, detectable) if value > 0}):
+    for effect in sorted(targets):
         count = periods_needed(estimate.daily_sd, estimate.inflation, effect, target)
         needed.add_row(
             f"1イベント {effect:.2%}",

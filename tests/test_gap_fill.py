@@ -453,11 +453,82 @@ class TestTheYearsColumnUsesTheSameUnitAsThePeriods:
             assert "per_year=" not in body, command.__name__
 
     def test_two_effects_that_display_the_same_are_one_row(self) -> None:
-        """**1.20% が2行並んでいた。** 表示して同じなら1行。"""
+        """**1.20% が2行並んでいた。** 表示して同じなら1行。
+
+        **集合で持つ。** 丸めてから入れるので、表示が同じものは1つになる。
+        """
         import inspect
 
         from stock_ai import cli
 
         body = inspect.getsource(cli._event_gate)
 
-        assert "round(value, 4)" in body
+        assert "targets = {round(committed, 4)}" in body
+        assert "targets.add(round(floor_estimate, 4))" in body
+
+
+class TestTheNeededTableSaysSomething:
+    """**検出できる差を「検出したい効果」に入れない**（2026-09-20、ユーザーが発見）。
+
+    それに要る期数は、定義上いま在る期数そのものである——**答えが必ず
+    「ちょうど足りる」になる行。** `CLAUDE.md`「落ちようのない検査を『合格』と
+    読まない」の表版である。
+
+    #15 では線（1.2%）と検出できる差（1.2043%）が偶然ほぼ一致し、**同じ
+    1.20% が2行並んで「あと4件」に読めた。** 閉じた理由は向きであって、
+    期数ではない。
+    """
+
+    @staticmethod
+    def _run(values: list[float], capsys) -> str:
+        from stock_ai import cli
+
+        cli._event_gate(
+            values,
+            periods=2_109,
+            target=3.30,
+            committed=0.012,
+            holding=20,
+            reach="ためし",
+            span_years=5.0,
+        )
+        return capsys.readouterr().out
+
+    def test_the_detectable_difference_is_not_a_target(self) -> None:
+        import inspect
+
+        from stock_ai import cli
+
+        body = inspect.getsource(cli._event_gate)
+
+        assert "for value in (committed, detectable)" not in body
+        assert "targets = {round(committed, 4)}" in body
+
+    def test_a_wrong_sign_gets_no_table(self, capsys) -> None:
+        """**向きが逆なら、期数の話ではない。**"""
+        rng = np.random.default_rng(0)
+        values = [float(value) - 0.02 for value in rng.normal(0.0, 0.05, 400)]
+
+        out = self._run(values, capsys)
+
+        assert "期数の問題ではない" in out
+        assert "これは「あと少し」という意味ではない" in out
+        assert "検出したい効果" not in out
+
+    def test_a_small_positive_effect_gets_the_table(self, capsys) -> None:
+        """**この検査が落ちる条件を、実際に1つ作る。** 正なら表が出る。"""
+        rng = np.random.default_rng(0)
+        values = [float(value) + 0.002 for value in rng.normal(0.0, 0.05, 400)]
+
+        out = self._run(values, capsys)
+
+        assert "検出したい効果" in out
+        assert "期数の問題ではない" not in out
+
+    def test_the_committed_line_is_always_one_row(self, capsys) -> None:
+        rng = np.random.default_rng(0)
+        values = [float(value) + 0.002 for value in rng.normal(0.0, 0.05, 400)]
+
+        out = self._run(values, capsys)
+
+        assert "1.20%" in out
