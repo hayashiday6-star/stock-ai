@@ -88,7 +88,13 @@ class GapEvents:
 
     symbols: int
     thin: int
-    """流動性で外した銘柄日。"""
+    """**下窓だったが**流動性で外した件数。
+
+    **銘柄日ではない。** 最初は全銘柄日の非流動を数えていて、隣に並ぶ
+    「権利落ちで外した」「不連続で外した」と**単位が違っていた**
+    （2026-09-19、1,300万 対 4,015）。`CLAUDE.md`「同じ列に、2つの単位を
+    並べない」。
+    """
 
     def summary(self) -> str:
         """1行のまとめ。**平均は出さない**——§0 が判定を先食いしないため。"""
@@ -100,7 +106,7 @@ class GapEvents:
             f"（**{self.days_oos:,} 日**）。"
             f"権利落ちで外した {self.excluded_ex_date:,} 件、"
             f"不連続で外した {self.excluded_broken:,} 件、"
-            f"流動性で外した {self.thin:,} 銘柄日。"
+            f"流動性で外した {self.thin:,} 件。"
         )
 
     def warnings(self) -> list[str]:
@@ -239,14 +245,19 @@ def build_events(  # noqa: PLR0913 - 事前登録が固定した条件をすべ�
             volumes = adjusted[VOLUME].to_numpy(dtype=float)
             days = [stamp.date() for stamp in adjusted.index]
             liquid = liquid_bars(closes, volumes, min_turnover)
-            thin += int((~liquid[1:]).sum())
             prefix = crossings(session_breaks(adjusted[CLOSE]))
             last = len(closes) - 1
             own = announced.get(symbol)
 
-            for index in gap_positions(opens, closes, liquid, gap):
+            # **絞りの前に数える。** 外した件数を、外す対象と同じ単位
+            # （＝下窓の件数）で出すため。
+            everything = np.ones(len(opens), dtype=bool)
+            for index in gap_positions(opens, closes, everything, gap):
                 when = days[index]
                 if when < IS_FROM or when > OOS_END:
+                    continue
+                if not liquid[index]:
+                    thin += 1
                     continue
                 # **権利落ちは、その日より前に公表されたものだけで外す。**
                 if when in known_ex_dates(own, when):

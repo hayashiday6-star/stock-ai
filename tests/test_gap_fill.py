@@ -382,3 +382,82 @@ class TestTheInflationMatchesWhatIsSubtracted:
         from stock_ai import cli
 
         assert cli._event_inflation("universe") != cli._event_inflation("index")
+
+
+class TestTheCountsAreAllInTheSameUnit:
+    """**同じ文の中で単位を変えない**（`CLAUDE.md`、2026-09-19 に3度目）。
+
+    「権利落ちで外した 4,015 件、不連続で外した 216 件、流動性で外した
+    **13,078,937 銘柄日**」——最後だけ全銘柄日を数えていた。
+    """
+
+    def test_the_liquidity_drop_is_counted_in_events(self) -> None:
+        """**下窓だったが外した件数。** 足の数ではない。"""
+        where = _at(_IS_GAP)
+        database = Database("sqlite:///:memory:")
+        database.create_all()
+        symbols = ["1400"]
+        with database.session() as session:
+            repo = PriceRepository(session)
+            frame = _prices(seed=1, gaps=(where,))
+            frame[VOLUME] = 1.0  # 日商が足りない
+            repo.upsert_prices("1400", frame, market="JP")
+
+        found = build_events(database, {}, symbols=symbols)
+
+        assert found.events == []
+        # **1件。** 直す前は足の数（約1,900）だった。
+        assert found.thin == 1
+
+    def test_a_liquid_name_drops_nothing(self) -> None:
+        """**この検査が落ちる条件を、実際に1つ作る。**"""
+        database, symbols = _database(count=1, gaps=(_at(_IS_GAP),))
+
+        found = build_events(database, {}, symbols=symbols)
+
+        assert found.thin == 0
+
+    def test_the_summary_does_not_say_symbol_days(self) -> None:
+        database, symbols = _database(count=1, gaps=(_at(_IS_GAP),))
+
+        found = build_events(database, {}, symbols=symbols)
+
+        assert "銘柄日" not in found.summary()
+
+
+class TestTheYearsColumnUsesTheSameUnitAsThePeriods:
+    """`periods_needed` が返すのは**イベント日**である。**件数で割らない。**
+
+    2,113日 ÷ 6,313件/年 = 0.33 で「0年」と出ていた（2026-09-19）。
+    """
+
+    def test_the_helper_makes_the_rate_itself(self) -> None:
+        """**呼ぶ側に作らせない。** 件数を渡されたら、そこで単位が壊れる。"""
+        import inspect
+
+        from stock_ai import cli
+
+        body = inspect.getsource(cli._event_gate)
+
+        assert "per_year = len(values) / span_years" in body
+
+    def test_both_callers_pass_a_span_not_a_rate(self) -> None:
+        import inspect
+
+        from stock_ai import cli
+
+        for command in (cli.gap_fill_power, cli.revision_power):
+            body = inspect.getsource(command)
+
+            assert "span_years=" in body, command.__name__
+            assert "per_year=" not in body, command.__name__
+
+    def test_two_effects_that_display_the_same_are_one_row(self) -> None:
+        """**1.20% が2行並んでいた。** 表示して同じなら1行。"""
+        import inspect
+
+        from stock_ai import cli
+
+        body = inspect.getsource(cli._event_gate)
+
+        assert "round(value, 4)" in body

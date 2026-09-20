@@ -147,6 +147,16 @@ SHAPES: tuple[Shape, ...] = (
         source="PREREG_REVISION_JP.md §0（1,827 件が 831 日。OOS は約 950 日）",
         pipe="event",
     ),
+    Shape(
+        name="#15 の形（窓は埋まる・イベント型・20営業日）",
+        sd=0.0998,
+        inflation=1.68,
+        periods=2109,
+        unit="イベント日",
+        per_year=0,
+        source="PREREG_GAP_FILL_JP.md §0（IS 31,542 件が 1,220 日。OOS は 2,109 日）",
+        pipe="event",
+    ),
 )
 
 #: 合格の条件。**手順そのもの。** 番号は文書と揃える。

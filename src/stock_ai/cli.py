@@ -2286,11 +2286,10 @@ def revision_power(  # noqa: PLR0913 - §0 が固定した条件をすべて受�
         committed=3 * COST_ROUND_TRIP,
         holding=holding,
         reach=f"**OOS の {counted.events_oos:,} 件が固まった日数。件数ではない**",
-        per_year=counted.after_liquidity / span if span > 0 else 0.0,
+        span_years=span,
         footnote=(
-            f"[dim]手元は 1年あたり {counted.after_liquidity / span if span > 0 else 0:.0f} 件"
-            f"（絞り込んだ後、{span:.1f}年で {counted.after_liquidity:,} 件）。"
-            "**データはここから増えない。**[/]"
+            f"[dim]手元は {span:.1f}年で {counted.after_liquidity:,} 件"
+            "（絞り込んだ後）。**データはここから増えない。**[/]"
         ),
     )
 
@@ -2302,7 +2301,7 @@ def _event_gate(  # noqa: PLR0913 - §0 の材料をすべて受け取る
     committed: float,
     holding: int,
     reach: str,
-    per_year: float = 0.0,
+    span_years: float = 0.0,
     footnote: str = "",
 ) -> None:
     """Print the event-pipe gate: table, line, verdict, events needed.
@@ -2320,7 +2319,10 @@ def _event_gate(  # noqa: PLR0913 - §0 の材料をすべて受け取る
         committed: 測る前にコミットした「封印しない線」。
         holding: 保有営業日数。Newey-West のラグに使う。
         reach: 「判定に使える期数」の出どころ。
-        per_year: 1年あたりの件数。**0 なら「要る件数」を出さない。**
+        span_years: ``values`` が何年ぶんか。**0 なら「要る期数」を出さない。**
+            **1年あたりの期数はここで作る**——呼ぶ側に作らせると、件数を
+            渡されて日数と割り算される（2026-09-19、`periods_needed` が返す
+            のは日なのに 件/年 で割って「0年」と出た）。
         footnote: 最後に出す1行。
     """
     from stock_ai.backtest.power import estimate_power, gate, periods_needed, trimmed_variance
@@ -2374,19 +2376,23 @@ def _event_gate(  # noqa: PLR0913 - §0 の材料をすべて受け取る
         if decision.passed:
             return
 
-    # **「検出力不足」で終わらせない。** 何イベントあれば足りるかを出す。
-    if per_year <= 0:
+    # **「検出力不足」で終わらせない。** 何期あれば足りるかを出す。
+    if span_years <= 0:
         return
+    # **期数と同じ単位で数える。** `periods_needed` が返すのはイベント日で
+    # あって、件数ではない。
+    per_year = len(values) / span_years
     console.print()
-    needed = Table(title="この設計で検出するのに要るイベント数")
-    for column in ("検出したい効果", "要るイベント", "年数", "いまとの差"):
+    needed = Table(title="この設計で検出するのに要るイベント日数")
+    for column in ("検出したい効果", "要るイベント日", "年数", "いまとの差"):
         needed.add_column(column, justify="left" if column == "検出したい効果" else "right")
-    for effect in sorted({round(value, 6) for value in (committed, detectable) if value > 0}):
+    # **表示して同じになる値は1行にまとめる。** 1.20% が2行並んでいた。
+    for effect in sorted({round(value, 4) for value in (committed, detectable) if value > 0}):
         count = periods_needed(estimate.daily_sd, estimate.inflation, effect, target)
         needed.add_row(
             f"1イベント {effect:.2%}",
             f"{count:,}",
-            f"{count / per_year:,.0f}年",
+            f"{count / per_year:,.1f}年",
             f"{count - periods:+,}" if count > periods else "足りている",
         )
     console.print(needed)
@@ -6544,10 +6550,10 @@ def gap_fill_power(
         committed=3 * COST_ROUND_TRIP,
         holding=HOLDING,
         reach=f"**OOS の {found.events_oos:,} 件が固まった日数。件数ではない**",
-        per_year=len(found.events) / years if years > 0 else 0.0,
+        span_years=years,
         footnote=(
-            f"[dim]手元は 1年あたり {len(found.events) / years:.0f} 件"
-            f"（IS {years:.1f}年で {len(found.events):,} 件）。"
+            f"[dim]手元は IS {years:.1f}年で {found.days_is:,} イベント日"
+            f"（{len(found.events):,} 件）。"
             "**`ExDate` が 2012-12 からしか無いので、ここから増えない。**[/]"
         ),
     )
