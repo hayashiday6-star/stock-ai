@@ -447,3 +447,100 @@ class TestReadingTheAmountDoesNotAddRowsUp:
         assert found.rates["1301"][dt.date(2015, 3, 30)].is_zero
         assert found.zero_rate == 1
         assert any("額が 0" in line for line in found.warnings())
+
+
+class TestAZeroDividendIsNotAnExDate:
+    """**無配の公表にも `ExDate` は入る。**
+
+    額を見ずに外すと、**落ちるものが無い日で事象を外す。** `#16` が急落
+    371 件（判定できた分の 56.1%）をそれで外していた（2026-09-20、ユーザーが
+    指摘）。**`#15` も同じ口を使っている。**
+    """
+
+    _rows = staticmethod(TestHowManyExDatesTheArchiveCanSupply._rows)
+    _archive = classmethod(TestHowManyExDatesTheArchiveCanSupply._archive.__func__)
+
+    def test_a_zero_amount_date_is_dropped(self, tmp_path) -> None:
+        from stock_ai.data.jquants_dividend import ex_dates_known_by
+
+        body = self._rows(
+            {"Code": "13010", "ExDate": "2015-03-30", "RefNo": "1", "DivRate": "0"},
+        )
+
+        found = ex_dates_known_by(self._archive(tmp_path, body))
+
+        assert found.by_symbol == {}
+        assert found.dropped_zero == 1
+        assert found.kept == 0
+
+    def test_a_positive_amount_date_is_kept(self, tmp_path) -> None:
+        """**両向きに置く。** 全部落とす形に倒しても緑にならないように。"""
+        from stock_ai.data.jquants_dividend import ex_dates_known_by
+
+        body = self._rows(
+            {"Code": "13010", "ExDate": "2015-03-30", "RefNo": "1", "DivRate": "10"},
+        )
+
+        found = ex_dates_known_by(self._archive(tmp_path, body))
+
+        assert found.by_symbol["1301"] == [(dt.date(2022, 3, 22), dt.date(2015, 3, 30))]
+        assert found.dropped_zero == 0
+        assert found.kept == 1
+
+    def test_an_unknown_amount_is_kept_and_named(self, tmp_path) -> None:
+        """**額が未公表なら外す側に倒す。** ただし黙って混ぜない。"""
+        from stock_ai.data.jquants_dividend import ex_dates_known_by
+
+        body = self._rows(
+            {"Code": "13010", "ExDate": "2015-03-30", "RefNo": "1", "DivRate": ""},
+        )
+
+        found = ex_dates_known_by(self._archive(tmp_path, body))
+
+        assert found.kept == 1
+        assert found.unknown_amount == 1
+        assert any("未公表" in line for line in found.warnings())
+
+    def test_a_later_zero_does_not_undo_an_earlier_positive(self, tmp_path) -> None:
+        """**その時点で正の額が公表されていれば、権利落ちとして扱う。**
+
+        後から 0 に訂正されたことを使えば**先読み**になる。
+        """
+        from stock_ai.data.jquants_dividend import ex_dates_known_by
+
+        body = self._rows(
+            {
+                "Code": "13010",
+                "ExDate": "2015-03-30",
+                "RefNo": "1",
+                "PubDate": "2015-02-01",
+                "DivRate": "10",
+            },
+            {
+                "Code": "13010",
+                "ExDate": "2015-03-30",
+                "RefNo": "2",
+                "PubDate": "2015-03-01",
+                "DivRate": "0",
+            },
+        )
+
+        found = ex_dates_known_by(self._archive(tmp_path, body))
+
+        assert found.by_symbol["1301"] == [(dt.date(2015, 2, 1), dt.date(2015, 3, 30))]
+        assert found.dropped_zero == 0
+
+    def test_each_date_appears_once(self, tmp_path) -> None:
+        """同じ権利落ち日を2度入れない。**件数が二重になる。**"""
+        from stock_ai.data.jquants_dividend import ex_dates_known_by
+
+        body = self._rows(
+            {"Code": "13010", "ExDate": "2015-03-30", "RefNo": "1", "DivRate": "10"},
+            {"Code": "13010", "ExDate": "2015-03-30", "RefNo": "2", "DivRate": ""},
+        )
+
+        found = ex_dates_known_by(self._archive(tmp_path, body))
+
+        assert len(found.by_symbol["1301"]) == 1
+        assert found.kept == 1
+        assert found.unknown_amount == 0

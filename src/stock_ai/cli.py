@@ -6559,7 +6559,8 @@ def gap_fill_power(
     settings = get_settings()
     configure_logging(settings.log_level)
 
-    announced = ex_dates_known_by(Path(archive))
+    known = ex_dates_known_by(Path(archive))
+    announced = known.by_symbol
     if not announced:
         console.print(
             "[red]権利落ちの原本が無い。[/] **外さずには測らない**"
@@ -6568,9 +6569,11 @@ def gap_fill_power(
         )
         raise typer.Exit(code=1)
     console.print(
-        f"[dim]権利落ちを {sum(len(rows) for rows in announced.values()):,} 件読んだ"
-        f"（{len(announced):,} 銘柄）。**公表がその日より前のものだけで外す。**[/]"
+        f"[dim]{known.summary()} {len(announced):,} 銘柄。"
+        "**公表がその日より前のものだけで外す。**[/]"
     )
+    for line in known.warnings():
+        console.print(f"[yellow]{line}[/]")
     console.print(
         f"[dim]IS は {IS_FROM} 〜 {IS_END}。OOS は件数だけ数える。"
         f"下窓 {GAP_DOWN:.0%}、窓 {HOLDING} 営業日。[/]"
@@ -6679,7 +6682,8 @@ def knife_power(
     settings = get_settings()
     configure_logging(settings.log_level)
 
-    announced = ex_dates_known_by(Path(archive))
+    known = ex_dates_known_by(Path(archive))
+    announced = known.by_symbol
     if not announced:
         console.print(
             "[red]権利落ちの原本が無い。[/] **外さずには測らない**"
@@ -6687,6 +6691,9 @@ def knife_power(
             " `checks\\権利落ちは在るか.bat` で先に確かめること。"
         )
         raise typer.Exit(code=1)
+    console.print(f"[dim]{known.summary()}[/]")
+    for line in known.warnings():
+        console.print(f"[yellow]{line}[/]")
     console.print(
         f"[dim]IS は {IS_FROM} 〜 {IS_END}。OOS は件数だけ数える。"
         f"急落は {KNIFE_DAYS} 営業日で −{KNIFE_DROP:.0%}、窓は {HOLDING} 営業日。"
@@ -6752,6 +6759,47 @@ def knife_power(
         ),
         side="ショート",
     )
+
+
+def _exclusion_table(broken: object, drop: float, days: int) -> Table:
+    """Build the table of what the ex-dividend rule threw out.
+
+    **札は短くする。** 日本語は空白が無いので rich から見れば1語で、列に
+    入らないと**末尾が `…` で消える**——実際に「（**外すべきでなかった**）」
+    が消えた（2026-09-20、ユーザーが2度指摘）。意味はその末尾に在った。
+
+    **説明は警告の行に置く。** そちらは `console.print` が折り返す。
+
+    Args:
+        broken: :class:`~stock_ai.backtest.ex_date_audit.Exclusions`。
+        drop: 急落と呼ぶ幅。
+        days: 急落を測る営業日数。
+
+    Returns:
+        描く前の表。**幅を決めた `Console` で刷れるように返す。**
+    """
+    table = Table(title=f"権利落ちで外した急落（配当を戻して測り直す・{days} 営業日）")
+    table.add_column("処分", overflow="fold")
+    table.add_column("件数", justify="right")
+    table.add_column("判定できた分", justify="right")
+    decided = broken.decided  # type: ignore[attr-defined]
+
+    def share(count: int) -> str:
+        return f"{count / decided:.1%}" if decided else "—"
+
+    rows = (
+        (f"戻しても −{drop:.0%}（外すべきでなかった）", broken.still_qualifies),  # type: ignore[attr-defined]
+        ("額 0 で外した（外すべきでなかった）", broken.zero_rate),  # type: ignore[attr-defined]
+        ("下げに効かない位置（外すべきでなかった）", broken.outside_window),  # type: ignore[attr-defined]
+        ("戻すと届かない（外して正しい）", broken.rescued),  # type: ignore[attr-defined]
+    )
+    for label, count in rows:
+        table.add_row(label, f"{count:,}", share(count))
+    table.add_row("外したときの日が無い（訂正）", f"{broken.revised:,}", "—")  # type: ignore[attr-defined]
+    table.add_row("判定できない（分母に入れない）", f"{broken.undecided:,}", "—")  # type: ignore[attr-defined]
+    table.add_section()
+    table.add_row("外した合計", f"{broken.excluded:,}", "100.0%")  # type: ignore[attr-defined]
+    return table
 
 
 @app.command(name="ex-date-audit")
@@ -6845,7 +6893,9 @@ def ex_date_audit(
     console.print("[green]段差は権利落ち日そのものに在る。[/] `ExDate` の読み違いではない。")
 
     # --- 2. 外した急落は、外すべきだったか ------------------------------
-    announced = ex_dates_known_by(Path(archive))
+    known = ex_dates_known_by(Path(archive))
+    announced = known.by_symbol
+    console.print(f"[dim]{known.summary()}[/]")
     with spinner() as progress:
         task = progress.add_task("急落を集め直しています", total=None)
         with quiet_on_console("stock_ai.backtest.knife"):
@@ -6868,35 +6918,7 @@ def ex_date_audit(
                 announced=announced,
                 progress=lambda done, total: progress.update(task, completed=done, total=total),
             )
-    table = Table(title=f"権利落ちで外した急落（配当を戻して測り直す・{KNIFE_DAYS} 営業日）")
-    for column in ("処分", "件数", "判定できた分の割合"):
-        table.add_column(column, justify="left" if column == "処分" else "right")
-    decided = broken.decided
-    table.add_row(
-        f"戻しても −{KNIFE_DROP:.0%} を超える（**外すべきでなかった**）",
-        f"{broken.still_qualifies:,}",
-        f"{broken.still_qualifies / decided:.1%}" if decided else "—",
-    )
-    table.add_row(
-        "戻すと届かない（配当が作った下げ）",
-        f"{broken.rescued:,}",
-        f"{broken.rescued / decided:.1%}" if decided else "—",
-    )
-    table.add_row(
-        "配当が下げに効かない位置（**外すべきでなかった**）",
-        f"{broken.outside_window:,}",
-        f"{broken.outside_window / decided:.1%}" if decided else "—",
-    )
-    table.add_row(
-        "額が 0 の権利落ちで外した（**外すべきでなかった**）",
-        f"{broken.zero_rate:,}",
-        f"{broken.zero_rate / decided:.1%}" if decided else "—",
-    )
-    table.add_row("外したときの日が最終データに無い（訂正）", f"{broken.revised:,}", "—")
-    table.add_row("判定できない（**分母に入れない**）", f"{broken.undecided:,}", "—")
-    table.add_section()
-    table.add_row("外した合計", f"{broken.excluded:,}", "100.0%")
-    console.print(table)
+    console.print(_exclusion_table(broken, KNIFE_DROP, KNIFE_DAYS))
     console.print(broken.summary())
     if broken.by_month:
         spread = "、".join(f"{month}月 {count:,}" for month, count in broken.by_month)

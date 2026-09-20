@@ -1,5 +1,7 @@
 """Tests for the command-line interface."""
 
+import io
+
 import pytest
 from typer.testing import CliRunner
 
@@ -1820,3 +1822,71 @@ class TestTheJudgementWindowIsNotShadowed:
             f"{name} が `OOS_FROM` を gap_fill から import していない。"
             "**書かないと `pead` の 2024-01-01 を黙って掴む。**"
         )
+
+
+# --- 表の札が、幅で切れていないか ----------------------------------------
+
+
+class TestTableLabelsSurviveANarrowConsole:
+    """**日本語の札は rich から見れば1語**なので、列に入らないと `…` で消える。
+
+    「（**外すべきでなかった**）」が消えた——**意味はその末尾に在った**
+    （2026-09-20、ユーザーが2度指摘。1度目は「件数 0 だから実害は減ったが
+    幅の問題は残っている」と言われた）。
+
+    **`--help` の幅に賭けるのとは別である。** あちらは端末の幅がこちらの手元
+    と CI で違うのが問題だった。ここは `Console(width=...)` で幅を固定する
+    ので、どこで走らせても同じ答えになる。
+    """
+
+    @staticmethod
+    def _rendered(width: int) -> str:
+        from rich.console import Console
+
+        from stock_ai.backtest.ex_date_audit import Exclusions
+        from stock_ai.cli import _exclusion_table
+
+        broken = Exclusions(
+            excluded=661,
+            still_qualifies=190,
+            rescued=100,
+            outside_window=0,
+            zero_rate=371,
+            revised=0,
+            undecided=0,
+            special=7,
+            median_yield=0.0127,
+            by_month=(),
+        )
+        out = Console(width=width, record=True, file=io.StringIO())
+        out.print(_exclusion_table(broken, 0.20, 5))
+        return out.export_text()
+
+    @pytest.mark.parametrize("width", [80, 100, 120])
+    def test_nothing_is_cut_off(self, width: int) -> None:
+        assert "…" not in self._rendered(width), "**札が幅で切れている。**"
+
+    @pytest.mark.parametrize("width", [80, 100, 120])
+    def test_the_part_that_carries_the_meaning_is_there(self, width: int) -> None:
+        """**末尾が消えると、意味が消える。** そこを名指しで見る。"""
+        text = self._rendered(width)
+
+        assert text.count("外すべきでなかった") == 3
+        assert "外して正しい" in text
+
+    def test_a_long_label_would_be_cut(self) -> None:
+        """**この検査が落ちる条件を、実際に1つ作る。**
+
+        折り返さない列に長い札を入れれば `…` が出る。出なければ、上の検査は
+        何も守っていない。
+        """
+        from rich.console import Console
+        from rich.table import Table
+
+        table = Table()
+        table.add_column("処分")  # overflow を指定しない＝壊れていたときの形
+        table.add_row("配当が下げに効かない位置（**外すべきでなかった**）")
+        out = Console(width=40, record=True, file=io.StringIO())
+        out.print(table)
+
+        assert "…" in out.export_text()
