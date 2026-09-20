@@ -2158,12 +2158,6 @@ def revision_power(  # noqa: PLR0913 - §0 が固定した条件をすべて受�
         calibrated_t,
     )
     from stock_ai.backtest.pead import TURNOVER_WINDOW
-    from stock_ai.backtest.power import (
-        estimate_power,
-        gate,
-        periods_needed,
-        trimmed_variance,
-    )
     from stock_ai.backtest.reversal import COST_ROUND_TRIP
     from stock_ai.backtest.revision_census import REVISION_TYPE, census, find_upward
     from stock_ai.data.jquants_bulk import records_from_csv
@@ -2277,20 +2271,69 @@ def revision_power(  # noqa: PLR0913 - §0 が固定した条件をすべて受�
     # 符号は反転しない。費用は往復 0.4%（§4）。
     take = [value - COST_ROUND_TRIP for value in values]
 
-    estimate = estimate_power(take, lags=holding)
     # **膨張は「管 × 引く相手」ごとに測ってある。** 引く相手を替えると数字が
     # 動いた（0.94 → 1.09）ので、**いま引いている相手の値を当てる。**
     target = calibrated_t(HYPOTHESIS_BUDGET, inflation=_event_inflation(subtract))
-    mean = fmean(take)
-    stderr = estimate.standard_error(len(take))
-    # **片側95%。** 事前登録 §0 が片側で書いている。
-    floor_estimate = mean - 1.645 * stderr
     # **独立な観測は「日」である。** 系列は日ごとの等加重バスケットなので、
     # 件数で割ると n を水増しする。IS は 1,827 件が 831 日にまとまっていた
     # ——2.2倍で、検出できる差は平方根ぶん **1.48倍甘く出ていた**（2026-09-17）。
     periods = counted.days_oos or counted.events_oos
+    span = (counted.last - counted.first).days / 365.25 if counted.first else 0.0
+    _event_gate(
+        take,
+        periods=periods,
+        target=target,
+        committed=3 * COST_ROUND_TRIP,
+        holding=holding,
+        reach=f"**OOS の {counted.events_oos:,} 件が固まった日数。件数ではない**",
+        span_years=span,
+        footnote=(
+            f"[dim]手元は {span:.1f}年で {counted.after_liquidity:,} 件"
+            "（絞り込んだ後）。**データはここから増えない。**[/]"
+        ),
+    )
+
+
+def _event_gate(  # noqa: PLR0913 - §0 の材料をすべて受け取る
+    values: list[float],
+    periods: int,
+    target: float,
+    committed: float,
+    holding: int,
+    reach: str,
+    span_years: float = 0.0,
+    footnote: str = "",
+) -> None:
+    """Print the event-pipe gate: table, line, verdict, events needed.
+
+    **イベント型の §0 を、表・線・関門・要る件数の順に出す。**
+
+    **#5 が書いたものを、#15 も呼ぶ。** 同じ管の §0 を2つ書けば、片方が緩む
+    ——`power-gate` が校正前の線を使っていた件、`january-power` が上限と
+    比べていた件と同じ形である（`CLAUDE.md`）。
+
+    Args:
+        values: 1イベント日あたりの超過リターン。**費用を引いた後。**
+        periods: 判定に使える期数。**OOS のイベント日数。件数ではない。**
+        target: 封印に使う線。
+        committed: 測る前にコミットした「封印しない線」。
+        holding: 保有営業日数。Newey-West のラグに使う。
+        reach: 「判定に使える期数」の出どころ。
+        span_years: ``values`` が何年ぶんか。**0 なら「要る期数」を出さない。**
+            **1年あたりの期数はここで作る**——呼ぶ側に作らせると、件数を
+            渡されて日数と割り算される（2026-09-19、`periods_needed` が返す
+            のは日なのに 件/年 で割って「0年」と出た）。
+        footnote: 最後に出す1行。
+    """
+    from stock_ai.backtest.power import estimate_power, gate, periods_needed, trimmed_variance
+
+    estimate = estimate_power(values, lags=holding)
+    mean = fmean(values)
+    stderr = estimate.standard_error(len(values))
+    # **片側95%。** 事前登録 §0 が片側で書いている。
+    floor_estimate = mean - 1.645 * stderr
     detectable = estimate.detectable(periods, target_t=target)
-    trimmed, dropped = trimmed_variance(take, fraction=0.01)
+    trimmed, dropped = trimmed_variance(values, fraction=0.01)
 
     table = Table(title="§0 に入れる材料（IS から。判定ではない）")
     for column in ("項目", "値", "どこから"):
@@ -2303,11 +2346,7 @@ def revision_power(  # noqa: PLR0913 - §0 が固定した条件をすべて受�
         f"{dropped} 件を除いた。**外れ値で膨らんでいないか**",
     )
     table.add_row("重なりの膨張", f"{estimate.inflation:.2f}x", f"Newey-West({holding})。実測")
-    table.add_row(
-        "判定に使える期数",
-        f"{periods:,}",
-        f"**OOS の {counted.events_oos:,} 件が固まった日数。件数ではない**",
-    )
+    table.add_row("判定に使える期数", f"{periods:,}", reach)
     table.add_row("検出できる差", f"{detectable:.2%}", f"t≥{target:.2f}・1イベントあたり")
     table.add_row("費用", f"{COST_ROUND_TRIP:.2%}", "往復。#6 の実測値を引く")
     console.print(table)
@@ -2318,7 +2357,6 @@ def revision_power(  # noqa: PLR0913 - §0 が固定した条件をすべて受�
     )
 
     console.print()
-    committed = 3 * COST_ROUND_TRIP
     if floor_estimate < committed:
         console.print(
             f"[red]封印しない。[/] 片側95%の下限 {floor_estimate:+.2%} が、"
@@ -2331,34 +2369,61 @@ def revision_power(  # noqa: PLR0913 - §0 が固定した条件をすべて受�
         )
     else:
         console.print(f"[green]線（{committed:.1%}）は上回った。[/] 次は §0 のゲートである。")
+        # **当てはめは `power.gate` に聞く。** ここで書き直さない。
         decision = gate(detectable, floor_estimate, mean + 1.645 * stderr)
         colour = "green" if decision.passed else "red"
         console.print(f"[bold {colour}]{decision.verdict}[/] {decision.reading}")
         if decision.passed:
             return
 
-    # **「検出力不足」で終わらせない。** 何イベントあれば足りるかを出す。
-    span = (counted.last - counted.first).days / 365.25 if counted.first else 0.0
-    per_year = counted.after_liquidity / span if span > 0 else 0.0
-    if per_year <= 0:
+    # **「検出力不足」で終わらせない。** 何期あれば足りるかを出す。
+    if span_years <= 0:
         return
+    # **期数と同じ単位で数える。** `periods_needed` が返すのはイベント日で
+    # あって、件数ではない。
+    per_year = len(values) / span_years
+
+    # **検出できる差を「検出したい効果」に入れない。** それに要る期数は、
+    # 定義上いま在る期数そのものである——**答えが必ず「ちょうど足りる」に
+    # なる行**で、何も言えない（2026-09-20、ユーザーが発見）。しかも #15 では
+    # 線と偶然ほぼ一致し、**同じ 1.20% が2行並んで「あと4件」に読めた。**
+    #
+    # **`CLAUDE.md`「落ちようのない検査を『合格』と読まない」の表版である。**
+    targets = {round(committed, 4)}
+    if floor_estimate > 0:
+        # **見込みの下限。** #12・#13 の「下限を検出するには何年要るか」と同じ。
+        targets.add(round(floor_estimate, 4))
+
+    if mean <= 0:
+        # **向きが逆なら、期数の話ではない。** 増やしても通らない。
+        hypothetical = periods_needed(estimate.daily_sd, estimate.inflation, committed, target)
+        console.print()
+        console.print(
+            f"[dim]**期数の問題ではない。** 取り高が {mean:+.2%} で、"
+            "**向きが逆である。** 増やしても、この向きのままなら通らない。"
+            f"（仮に線の大きさ {committed:.1%} が本当だったとすれば、要るのは "
+            f"{hypothetical:,} イベント日＝{hypothetical / per_year:,.1f}年。"
+            f"手元は {periods:,} 日。**これは「あと少し」という意味ではない。**）[/]"
+        )
+        if footnote:
+            console.print(footnote)
+        return
+
     console.print()
-    needed = Table(title="この設計で検出するのに要るイベント数")
-    for column in ("検出したい効果", "要るイベント", "年数", "いまとの差"):
+    needed = Table(title="この設計で検出するのに要るイベント日数")
+    for column in ("検出したい効果", "要るイベント日", "年数", "いまとの差"):
         needed.add_column(column, justify="left" if column == "検出したい効果" else "right")
-    for effect in sorted({round(value, 6) for value in (committed, detectable) if value > 0}):
+    for effect in sorted(targets):
         count = periods_needed(estimate.daily_sd, estimate.inflation, effect, target)
         needed.add_row(
             f"1イベント {effect:.2%}",
             f"{count:,}",
-            f"{count / per_year:,.0f}年",
+            f"{count / per_year:,.1f}年",
             f"{count - periods:+,}" if count > periods else "足りている",
         )
     console.print(needed)
-    console.print(
-        f"[dim]手元は 1年あたり {per_year:.0f} 件（絞り込んだ後、{span:.1f}年で "
-        f"{counted.after_liquidity:,} 件）。**データはここから増えない。**[/]"
-    )
+    if footnote:
+        console.print(footnote)
 
 
 @app.command(name="revision-census")
@@ -6271,6 +6336,535 @@ def january_power(
         )
 
 
+def _wall_document(walls: list[object], missing: list[object], span: str) -> str:
+    """Build the body of `docs/WALL.md` - a generated file, never edited by hand.
+
+    Args:
+        walls: 測れた設計。
+        missing: 材料が無くて測れなかった候補。
+        span: 何を読んだか。
+
+    Returns:
+        文書の全文。
+    """
+    lines = [
+        "# 壁の下見 — まだ登録していない説の、検出できる差",
+        "",
+        "**この文書は生成物である。** 手で直さない——"
+        "`uv run stock-ai wall-survey --write docs/WALL.md` が作り直す。",
+        "",
+        "**効果（平均）は1つも出していない。** 検出できる差は `線 × SD ÷ √n` で、"
+        "**散らばりと観測数だけで決まる。** だから、これを見ても答えを先に見た"
+        "ことにならない（`backtest/wall.py` の冒頭に理由を書いた）。",
+        "",
+        f"**読んだもの:** {span}",
+        "",
+        "## 壁の高さ",
+        "",
+        "| 候補 | 設計 | 管 | n | 1観測あたりのSD | 重なりの膨張 | 線 | **検出できる差** |",
+        "|---|---|---|---|---|---|---|---|",
+    ]
+    for wall in walls:
+        annual = wall.annual  # type: ignore[attr-defined]
+        size = (
+            f"年 {annual:.1%}" if annual is not None else f"1{wall.unit} {wall.detectable:.2%}"  # type: ignore[attr-defined]
+        )
+        lines.append(
+            f"| {wall.candidate} | {wall.name} | {wall.pipe} | "  # type: ignore[attr-defined]
+            f"{wall.observations:,} | {wall.sd:.2%}／{wall.unit} | "  # type: ignore[attr-defined]
+            f"{wall.inflation:.2f}x | "  # type: ignore[attr-defined]
+            f"`t ≥ {wall.line:.2f}` | **{size}** |"  # type: ignore[attr-defined]
+        )
+    lines += [
+        "",
+        "**イベント型は年率に直していない。** 資金をどれだけ張るかを決めないと"
+        "直せない（`docs/PASSING.md` と同じ扱い）。",
+        "",
+        "## 材料が無くて測れなかった候補",
+        "",
+        "| 候補 | 説 | なぜ測れないか |",
+        "|---|---|---|",
+    ]
+    for item in missing:
+        lines.append(
+            f"| {item.candidate} | {item.name} | {item.reason} |"  # type: ignore[attr-defined]
+        )
+    lines += [
+        "",
+        "**無いことは、出力に出ない。** だから、測れなかったほうも表にする。",
+        "",
+        "## これをどう使うか",
+        "",
+        "**壁を越えうる設計にだけ、事前登録を書く。** 越えられないものは、"
+        "この表の数字を添えて候補のまま残す——**書かない理由が数字で残る。**",
+        "",
+        "**壁を比べても、どの説が正しいかは分からない。** ここに出ているのは"
+        "「見分けられる最小の大きさ」だけで、**効果は測っていない。**",
+        "",
+        "**窓やしきい値を変えれば壁も動く。** イベント型はどれも 20営業日で"
+        "揃えてある（`docs/PREREG_REVISION_JP.md` の #5 と同じ物差し）。"
+        "事前登録が別の窓を選ぶなら、**そこで測り直す。**",
+        "",
+    ]
+    return "\n".join(lines)
+
+
+@app.command(name="ex-date-coverage")
+def ex_date_coverage_command(
+    directory: str = typer.Option(
+        str(DEFAULT_ARCHIVE_DIR), "--dir", help="Where the archived originals live."
+    ),
+) -> None:
+    """Count how many ex-dividend dates the archive can supply - nothing is fetched.
+
+    **#9（窓は埋まる）の設計がこれに掛かっている。** 前日終値から −3% の下窓
+    は、**権利落ちがまさにそう見える。** 外せなければ、事象の定義が配当を拾う。
+
+    `/fins/dividend` は **Premium のエンドポイント**なので、解約後は原本に
+    在るものがすべてである。**取りには行かない。**
+
+    **列ごとに独立に数える。** 行が読めたことと、`ExDate` が埋まっている
+    ことは別である。
+    """
+    from stock_ai.data.jquants_dividend import ex_date_coverage
+
+    settings = get_settings()
+    configure_logging(settings.log_level)
+
+    found = ex_date_coverage(Path(directory))
+    console.print(found.summary())
+    for line in found.warnings():
+        console.print(f"[yellow]{line}[/]")
+
+    table = Table(title="権利落ち日（#9 で外す材料）")
+    for column in ("項目", "値", "なぜ見るか"):
+        table.add_column(column, overflow="fold")
+    table.add_row("原本の本数", f"{found.files:,}", "0 なら保存できていない")
+    table.add_row("行", f"{found.rows:,}", "**行。** 外す対象の単位ではない")
+    table.add_row(
+        "`ExDate` が在る行",
+        f"{found.with_ex_date:,}",
+        "**行。** 読めたことと、埋まっていることは別",
+    )
+    table.add_row(
+        "別々の権利落ち",
+        f"{found.days:,}",
+        "**外す対象はこれ**（銘柄 × 日）。**下の3つはこれを分けたもの**",
+    )
+    table.add_row("　IS（〜2017-12）", f"{found.in_is:,}", "銘柄 × 日。**行ではない**")
+    table.add_row("　OOS（2018-01〜2026-08）", f"{found.in_oos:,}", "同上")
+    table.add_row("　OOS より後", f"{found.after_oos:,}", "配当は前もって公表される")
+    console.print(table)
+    console.print(
+        "[dim]**下の3つは足すと「別々の権利落ち」になる**（合わなければ生成時に"
+        "落ちる）。**行と（銘柄 × 日）を同じ列に並べていた**——2026-09-19 に"
+        "ユーザーが見つけた。2.6倍ずれていた。[/]"
+    )
+
+    if not found.days:
+        console.print(
+            "[red]外す材料が無い。[/] **#9 の設計を変えることになる**"
+            "——分割日だけで代用するか、決算期末を機械的に外すか。"
+        )
+        raise typer.Exit(code=1)
+    console.print("[green]権利落ちを外せる。[/] 事前登録の §2 にそう書く。")
+
+
+@app.command(name="gap-fill-power")
+def gap_fill_power(
+    archive: str = typer.Option(
+        str(DEFAULT_ARCHIVE_DIR), "--dir", help="Where the archived originals live."
+    ),
+    benchmark: str = typer.Option(BENCHMARK, "--benchmark", help="Calendar for the windows."),
+) -> None:
+    """Measure the IS window for #15, so the gate table can be filled - not judge it.
+
+    **段2（自分の IS から推定する）の材料を出す。** 文献はこの環境から読めない
+    ので、見込みはここから置く（`docs/PREREG_GAP_FILL_JP.md` §0）。
+
+    **事象は下窓 3%**（前日終値から当日始値）。**権利落ちと不連続を外す**
+    ——どちらも 3% の下窓にそう見えるからである。**外した件数は別々に出す。**
+
+    **入るのは D+1 の寄付き、降りるのは D+20 の終値。** 窓は寄付きで開くので、
+    D の寄付きには間に合わない。費用は往復 0.4% を引く。
+
+    **判定ではない。** IS は 2013-01〜2017-12（`ExDate` が 2012-12 からしか
+    無い）で、OOS（2018-01〜2026-08）は**件数しか数えない。**
+    """
+    from stock_ai.backtest.event_window import event_sample
+    from stock_ai.backtest.gap_fill import (
+        GAP_DOWN,
+        HOLDING,
+        IS_END,
+        IS_FROM,
+        build_events,
+    )
+    from stock_ai.backtest.multiplicity import HYPOTHESIS_BUDGET, calibrated_t
+    from stock_ai.backtest.universe_benchmark import equal_weighted_windows
+    from stock_ai.core.logging import quiet_on_console
+    from stock_ai.data.jquants_dividend import ex_dates_known_by
+
+    settings = get_settings()
+    configure_logging(settings.log_level)
+
+    announced = ex_dates_known_by(Path(archive))
+    if not announced:
+        console.print(
+            "[red]権利落ちの原本が無い。[/] **外さずには測らない**"
+            "——3% の下窓は、権利落ちがそう見える（事前登録 §3）。"
+            " `checks\\権利落ちは在るか.bat` で先に確かめること。"
+        )
+        raise typer.Exit(code=1)
+    console.print(
+        f"[dim]権利落ちを {sum(len(rows) for rows in announced.values()):,} 件読んだ"
+        f"（{len(announced):,} 銘柄）。**公表がその日より前のものだけで外す。**[/]"
+    )
+    console.print(
+        f"[dim]IS は {IS_FROM} 〜 {IS_END}。OOS は件数だけ数える。"
+        f"下窓 {GAP_DOWN:.0%}、窓 {HOLDING} 営業日。[/]"
+    )
+
+    database = Database()
+    database.create_all()
+
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        BarColumn(),
+        TaskProgressColumn(),
+        TimeRemainingColumn(),
+        console=console,
+    ) as progress:
+        task = progress.add_task("下窓を集めています", total=None)
+
+        def step(done: int, total: int) -> None:
+            progress.update(task, completed=done, total=total)
+
+        with quiet_on_console("stock_ai.backtest.gap_fill"):
+            found = build_events(database, announced, progress=step)
+    console.print(found.summary())
+    for line in found.warnings():
+        console.print(f"[yellow]{line}[/]")
+    if not found.events or not found.days_oos:
+        raise typer.Exit(code=1)
+
+    console.print("[dim]引く相手（等加重の宇宙）を作っています...[/]")
+    with quiet_on_console("stock_ai.backtest.universe_benchmark"):
+        subtract = equal_weighted_windows(database, HOLDING)
+    for line in subtract.warnings():
+        console.print(f"[yellow]{line}[/]")
+
+    with quiet_on_console("stock_ai.backtest.event_window"):
+        sample = event_sample(database, found.events, HOLDING, benchmark, IS_END, subtract)
+    _report_event_disposition(sample, title="窓を当てた結果（IS のみ・件数）")
+    if len(sample.values) < 2:  # noqa: PLR2004 - 1日では散らばりが測れない
+        console.print(f"[red]値動きの取れたイベント日が {len(sample.values)} しかない。[/]")
+        raise typer.Exit(code=1)
+
+    # **ロングである。** 仮説は超過リターンが正だと言っている（§1）ので、
+    # 符号は反転しない。費用は往復 0.4%（§4）。
+    take = [value - COST_ROUND_TRIP for value in sample.values]
+    # **膨張は「管 × 引く相手」ごとに測ってある。** ここは等加重の宇宙を引く
+    # （事前登録 §2）ので、そちらで測った 1.09 を当てる。**引く相手を替えたら
+    # 数字が動いた**（0.94 → 1.09）。
+    target = calibrated_t(HYPOTHESIS_BUDGET, inflation=_event_inflation("universe"))
+    years = (IS_END - IS_FROM).days / 365.25
+    _event_gate(
+        take,
+        periods=found.days_oos,
+        target=target,
+        committed=3 * COST_ROUND_TRIP,
+        holding=HOLDING,
+        reach=f"**OOS の {found.events_oos:,} 件が固まった日数。件数ではない**",
+        span_years=years,
+        footnote=(
+            f"[dim]手元は IS {years:.1f}年で {found.days_is:,} イベント日"
+            f"（{len(found.events):,} 件）。"
+            "**`ExDate` が 2012-12 からしか無いので、ここから増えない。**[/]"
+        ),
+    )
+
+
+@app.command(name="wall-survey")
+def wall_survey(
+    into: str | None = typer.Option(None, "--write", help="Regenerate docs/WALL.md."),
+    benchmark: str = typer.Option(BENCHMARK, "--benchmark", help="Calendar and index."),
+    rosters: str = typer.Option(
+        str(DEFAULT_SNAPSHOT_DIR), "--rosters", help="Where the dated rosters live."
+    ),
+) -> None:
+    """Measure how big an effect each unregistered candidate would need - no effects.
+
+    **事前登録を書く前に、壁の高さだけを見る。** 検出できる差は
+    `線 × SD ÷ √n` で、**散らばりと観測数だけで決まる**ので、これを見ても
+    答えを先に見たことにならない。
+
+    **効果（平均）は1つも計算しない。** `Wall` に平均の欄が無いのはそのため
+    である——入れられる形にすると「効果がありそうだから通す」が書けてしまう。
+
+    **IS（〜2017-12）のリターンだけを読む。** イベントの**件数**だけは OOS も
+    数える——判定に使える観測数がそこで決まるためで、件数は効果ではない。
+
+    価格を4回なめる（走査・等加重の宇宙・イベント2種）。**時間がかかる。**
+    """
+    from stock_ai.backtest.event_window import event_sample
+    from stock_ai.backtest.multiplicity import line_for, student_t_line
+    from stock_ai.backtest.power import estimate_power, trimmed_variance
+    from stock_ai.backtest.quantile_series import build_panel
+    from stock_ai.backtest.universe_benchmark import equal_weighted_windows
+    from stock_ai.backtest.wall import (
+        GAP_DOWN,
+        HOLDING,
+        IS_END,
+        KNIFE_DAYS,
+        KNIFE_DROP,
+        OOS_END,
+        OOS_FROM,
+        Missing,
+        Wall,
+        complete_halloween_years,
+        halloween_episodes,
+        scan,
+        usable_rebalances,
+    )
+    from stock_ai.core.logging import quiet_on_console
+    from stock_ai.data.schema import split_adjusted
+
+    settings = get_settings()
+    configure_logging(settings.log_level)
+
+    snapshots = membership(Path(rosters))
+    if not snapshots:
+        console.print("[red]名簿が無い。[/] **渡さないと生存バイアスが入る。**")
+        raise typer.Exit(code=1)
+
+    console.print(
+        f"[dim]IS（〜{IS_END}）のリターンだけを読みます。イベントの件数だけ "
+        f"OOS（{OOS_FROM}〜{OOS_END}）も数えます。**効果は1つも出しません。**[/]"
+    )
+
+    database = Database()
+    database.create_all()
+
+    # --- 3 Sell in May ------------------------------------------------------
+    returns, dates, _month_ends = _calendar_pipe(benchmark)
+    years, episodes = halloween_episodes(returns, dates, end=IS_END)
+    walls: list[Wall] = []
+    # **裾の感度を見るために、系列そのものを取っておく。** 平均は取らない。
+    sampled: dict[str, list[float]] = {}
+    if len(episodes) >= 3:  # noqa: PLR2004 - 3点無いと散らばりが測れない
+        oos_years = complete_halloween_years(OOS_FROM, OOS_END)
+        sampled["Sell in May（冬 − 夏）"] = episodes
+        with quiet_on_console("stock_ai.backtest.power"):
+            # **n=7 では Newey-West が不安定。** 膨張は 1.0 に固定する（#14）。
+            estimate = estimate_power(episodes, lags=0)
+        sd, inflation = estimate.daily_sd, estimate.inflation
+        walls.append(
+            Wall(
+                candidate=3,
+                name="Sell in May（冬 − 夏）",
+                pipe="年1観測の暦",
+                unit="年",
+                observations=oos_years,
+                sd=sd,
+                inflation=inflation,
+                # **自由度で線を引く。** n が小さいと `t` が正規から離れる（#14）。
+                line=student_t_line(max(oos_years - 1, 1)),
+                source=f"{benchmark} の日次、IS {years[0]}〜{years[-1]} の {len(years)} 年",
+                per_year=1.0,
+            )
+        )
+    else:
+        console.print("[yellow]**Sell in May の観測が3年に満たない。** 壁を出せない。[/]")
+
+    # --- 価格を1度だけなめる -------------------------------------------------
+    console.print("[dim]価格を走査しています（1銘柄1行は出しません）...[/]")
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        BarColumn(),
+        TaskProgressColumn(),
+        TimeRemainingColumn(),
+        console=console,
+    ) as progress:
+        task = progress.add_task("走査", total=None)
+
+        def step(done: int, total: int) -> None:
+            progress.update(task, completed=done, total=total)
+
+        with quiet_on_console("stock_ai.backtest.wall"):
+            materials = scan(database, progress=step)
+    console.print(materials.summary())
+
+    # --- 5 新値には黙ってつけ（52週高値への近さ）-----------------------------
+    with quiet_on_console("stock_ai.backtest.quantile_series"):
+        panel = build_panel(
+            database,
+            materials.high52,
+            end=IS_END,
+            snapshots=snapshots,
+        )
+    if len(panel.months) >= 3:  # noqa: PLR2004 - 3点無いと散らばりが測れない
+        spread = [row[-1] - row[0] for row in panel.quantiles]
+        with database.session() as session:
+            calendar = split_adjusted(PriceRepository(session).get_raw_prices(benchmark)).index
+        oos_months = usable_rebalances(calendar, OOS_FROM, OOS_END)
+        sampled["新値には黙ってつけ"] = spread
+        with quiet_on_console("stock_ai.backtest.power"):
+            estimate = estimate_power(spread, lags=3)
+        sd, inflation = estimate.daily_sd, estimate.inflation
+        walls.append(
+            Wall(
+                candidate=5,
+                name="新値には黙ってつけ（52週高値への近さ）",
+                pipe="月次・分位ロングショート",
+                unit="月",
+                observations=oos_months,
+                sd=sd,
+                inflation=inflation,
+                line=line_for("monthly"),
+                source=f"IS {len(panel.months)} ヶ月、5分位・等加重",
+                per_year=12.0,
+                notes=(f"近さを作れず外した銘柄月 {panel.skipped_no_value:,}",),
+            )
+        )
+    else:
+        console.print("[yellow]**52週高値の分位が3ヶ月に満たない。** 壁を出せない。[/]")
+
+    # --- 9・10 イベント型 ----------------------------------------------------
+    console.print("[dim]引く相手（等加重の宇宙）を作っています...[/]")
+    with quiet_on_console("stock_ai.backtest.universe_benchmark"):
+        universe = equal_weighted_windows(database, HOLDING)
+    for line in universe.warnings():
+        console.print(f"[yellow]{line}[/]")
+
+    events = (
+        (9, f"窓は埋まる（下窓 {GAP_DOWN:.0%}）", materials.gaps_is, materials.gaps_oos_days),
+        (
+            10,
+            f"落ちるナイフ（{KNIFE_DAYS}営業日で −{KNIFE_DROP:.0%}）",
+            materials.knives_is,
+            materials.knives_oos_days,
+        ),
+    )
+    for candidate, name, drawn, oos_days in events:
+        if len(drawn) < 2:  # noqa: PLR2004 - 1件では散らばりが測れない
+            console.print(f"[yellow]**{name} のイベントが {len(drawn)} 件しか無い。**[/]")
+            continue
+        with quiet_on_console("stock_ai.backtest.event_window"):
+            sample = event_sample(database, drawn, HOLDING, benchmark, IS_END, universe)
+        if len(sample.values) < 2:  # noqa: PLR2004 - 同上
+            console.print(f"[yellow]**{name} の使えたイベント日が足りない。**[/]")
+            continue
+        if not oos_days:
+            console.print(f"[yellow]**{name} は OOS に1日も無い。** 壁を出せない。[/]")
+            continue
+        sampled[name] = sample.values
+        with quiet_on_console("stock_ai.backtest.power"):
+            # **窓が20営業日、入口は毎日。** 重なりは大きい side である。
+            estimate = estimate_power(sample.values, lags=HOLDING)
+        sd, inflation = estimate.daily_sd, estimate.inflation
+        walls.append(
+            Wall(
+                candidate=candidate,
+                name=name,
+                pipe="イベント型（等加重を引く）",
+                unit="イベント日",
+                observations=oos_days,
+                sd=sd,
+                inflation=inflation,
+                line=line_for("event"),
+                source=(f"IS {sample.drawn:,} 件が {len(sample.values):,} 日、窓 {HOLDING} 営業日"),
+                notes=(
+                    f"価格が1本も無くて捨てた {sample.no_prices:,}、"
+                    f"その日に足が無くて捨てた {sample.not_trading:,}",
+                ),
+            )
+        )
+
+    if not walls:
+        console.print("[red]壁を1つも出せなかった。[/]")
+        raise typer.Exit(code=1)
+
+    walls.sort(key=lambda wall: (wall.annual is None, wall.annual or wall.detectable))
+
+    # **SD は IS で測り、n は OOS で数えている。** IS が薄ければ、壁の高さ
+    # そのものが当てにならない——**表に出るのは1つの数なので、薄さは見えない。**
+    for wall in walls:
+        if wall.observations < THIN_OBSERVATIONS:
+            console.print(
+                f"[yellow]**{wall.name}: 判定に使える観測が {wall.observations} しか無い。** "
+                "壁の高さも、その推定も当てにならない。[/]"
+            )
+
+    # **SD が数日でできていないか。** 1% を落として半分以下になるなら、それは
+    # 「毎日どれくらい散らばるか」ではなく「まれに何が起きるか」を測っている
+    # （`power.trimmed_variance`）。**壁の高さも、その数日で決まる。**
+    for label, values in sampled.items():
+        if len(values) < 100:  # noqa: PLR2004 - 1% を落とせる最小の数
+            continue
+        variance, dropped = trimmed_variance(values, fraction=0.01)
+        trimmed = variance**0.5
+        with quiet_on_console("stock_ai.backtest.power"):
+            plain = estimate_power(values, lags=0).daily_sd
+        if trimmed > 0 and (plain / trimmed) > TAIL_DRIVEN:
+            console.print(
+                f"[yellow]**{label}: 散らばりの大半が数日でできている。** "
+                f"外れた {dropped} 件を落とすと SD が {trimmed:.2%} まで下がる"
+                f"（{len(values):,} 件中）。**壁の高さも、その数日で決まっている。**[/]"
+            )
+
+    table = Table(title="壁の下見（**効果は出していない**）")
+    for column in ("候補", "設計", "n", "1観測あたりのSD", "重なりの膨張", "線", "検出できる差"):
+        table.add_column(column, overflow="fold")
+    for wall in walls:
+        annual = wall.annual
+        size = f"年 {annual:.1%}" if annual is not None else f"1{wall.unit} {wall.detectable:.2%}"
+        table.add_row(
+            f"{wall.candidate}",
+            wall.name,
+            f"{wall.observations:,}",
+            f"{wall.sd:.2%}／{wall.unit}",
+            f"{wall.inflation:.2f}x",
+            f"{wall.line:.2f}",
+            f"[bold]{size}[/]",
+        )
+    console.print(table)
+    for wall in walls:
+        for note in wall.notes:
+            console.print(f"[dim]{wall.candidate}: {note}[/]")
+
+    missing = [
+        Missing(6, "悲観の中に生まれ", "心理指標（調査・資金フロー・報道）を1つも持っていない"),
+        Missing(
+            7,
+            "需給はすべての材料に優先する",
+            "信用残と空売り比率は在るが、**設計が決まっていない。** 何を1観測とするかから",
+        ),
+        Missing(8, "噂で買って事実で売る", "「噂」の初出時点を客観的に取る口が無い"),
+    ]
+    absent = Table(title="材料が無くて測れなかった候補")
+    for column in ("候補", "説", "なぜ測れないか"):
+        absent.add_column(column, overflow="fold")
+    for item in missing:
+        absent.add_row(f"{item.candidate}", item.name, item.reason)
+    console.print(absent)
+
+    console.print(
+        "[dim]**壁を比べても、どの説が正しいかは分からない。** "
+        "ここに出ているのは見分けられる最小の大きさだけである。[/]"
+    )
+
+    if into:
+        span = (
+            f"IS は〜{IS_END} のリターン、イベントの件数は {OOS_FROM}〜{OOS_END} も。"
+            f"イベント型の窓は {HOLDING} 営業日に揃えた"
+        )
+        target = Path(into)
+        target.write_text(_wall_document(walls, missing, span), encoding="utf-8")
+        console.print(f"[green]{target} を書き直した。[/] **生成物である。手で直さない。**")
+
+
 @app.command(name="valuation-monthly")
 def valuation_monthly(
     directory: str = typer.Option(
@@ -7645,6 +8239,21 @@ MOMENTUM_FLOOR = 0.02
 #:
 #: **甘いほうを採った**（#13 と同じ扱い）。**測ってから動かさない。**
 JANUARY_FLOOR = 0.004
+
+
+#: 壁の下見で「薄い」と言う観測数。**これを下回ったら警告を出す。**
+#:
+#: 表に出るのは壁の高さ1つなので、**その裏に何観測あるかは見えない。**
+#: 10 は暦から出した値ではなく、**「片手で数えられる」を超えるところ**に
+#: 置いただけである——そう書いておく。
+THIN_OBSERVATIONS = 10
+
+#: SD が裾でできていると言う比。**1% を落として、これだけ縮んだら警告。**
+#:
+#: `power.trimmed_variance` の言うとおり、**推定量ではなく感度である。**
+#: 2 に根拠は無い——「半分以下になる」を数にしただけで、そう書いておく。
+#: **壁の高さが数日で決まっているなら、その壁は当てにならない。**
+TAIL_DRIVEN = 2.0
 
 
 def _oos_session_count(database: Database, benchmark: str, holding: int) -> int:

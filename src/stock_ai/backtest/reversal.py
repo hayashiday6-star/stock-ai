@@ -37,6 +37,8 @@ from dataclasses import dataclass, field
 import numpy as np
 import pandas as pd
 
+from stock_ai.backtest.discontinuity import MAX_SESSION_MOVE as _MAX_SESSION_MOVE
+from stock_ai.backtest.discontinuity import session_breaks
 from stock_ai.backtest.pead import MIN_TURNOVER, TURNOVER_WINDOW, Period
 from stock_ai.backtest.reversal_census import HOLDING_DAYS, LOOKBACK_DAYS, QUANTILES
 from stock_ai.core.logging import get_logger
@@ -90,23 +92,10 @@ DETECTABLE = 0.0085
 
 #: 1営業日でこれを超える動きは、日本株では値動きではない。
 #:
-#: **東証には値幅制限がある。** 制限は株価帯ごとに決まっていて、いちばん緩い
-#: 低位株でも1日で ±50% を超えることはまず無い。超えているなら、価格の系列が
-#: そこで**不連続**になっている——分割・併合か、売買停止をまたいだ再開である。
-#:
-#: 実測（8308、2005年）:
-#:
-#:   2005-07-26  終値     197   調整後     2.0   調整係数 0.0100
-#:   （2005-07-27 〜 08-01 は足が無い＝併合による売買停止）
-#:   2005-08-02  終値 204,000   調整後 2,040.0   調整係数 0.0100
-#:
-#: **調整係数は前後とも 0.0100 のまま**である。1:1000 の株式併合を、系列が
-#: またいでいない。``adj_close`` 自体が不連続なので、``split_adjusted`` を
-#: 通しても直らない。
-#:
-#: 検出は「直前に値のあった日」と比べる。暦に載せ替えたあとの NaN と比べると、
-#: **売買停止を挟んだ併合が必ず素通りする**（8308 がまさにこれ）。
-MAX_SESSION_MOVE = 0.5
+#: **正本は `discontinuity.MAX_SESSION_MOVE` にある。** 同じ4行が5箇所に
+#: 書かれていたので、規則ごと1箇所に移した。**ここは名前を残すためだけ**
+#: である（`lowvol` など4つが `reversal` から import している）。
+MAX_SESSION_MOVE = _MAX_SESSION_MOVE
 
 #: これを超えるフォワードリターンは、20営業日の値動きとしては説明がつかない。
 #: 実測では 8308 の 2005-07-25 が **+125,028%** で、これ1件だけで162銘柄の
@@ -342,11 +331,7 @@ def build_series(
 
             # **不連続の検出は「直前に値のあった日」と比べる。** 暦に載せ替えた
             # あとの NaN と比べると、売買停止を挟んだ併合が素通りする。
-            filled = adjusted[CLOSE].ffill().to_numpy(dtype=float)
-            with np.errstate(divide="ignore", invalid="ignore"):
-                step = filled[1:] / filled[:-1]
-            broken = np.zeros(len(calendar), dtype=bool)
-            broken[1:] = np.isfinite(step) & (np.abs(step - 1.0) > MAX_SESSION_MOVE)
+            broken = session_breaks(adjusted[CLOSE])
             # breaks[i] = 位置 i より前にある不連続の数。区間 [a, b] の個数は
             # breaks[b + 1] - breaks[a] で取れる。
             breaks = np.concatenate(([0], np.cumsum(broken)))

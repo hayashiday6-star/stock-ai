@@ -70,8 +70,10 @@ class Shape:
         return line_for(self.pipe)
 
     def standard_error(self) -> float:
-        """OOS の平均の標準誤差。"""
-        return self.sd * self.inflation / self.periods**0.5
+        """OOS の平均の標準誤差。**式は `power` に1つだけ置いてある。**"""
+        from stock_ai.backtest.power import standard_error
+
+        return standard_error(self.sd, self.inflation, self.periods)
 
     def required(self, target: float) -> float:
         """合格に要る、1期あたりの大きさ。"""
@@ -143,6 +145,16 @@ SHAPES: tuple[Shape, ...] = (
         unit="イベント日",
         per_year=0,
         source="PREREG_REVISION_JP.md §0（1,827 件が 831 日。OOS は約 950 日）",
+        pipe="event",
+    ),
+    Shape(
+        name="#15 の形（窓は埋まる・イベント型・20営業日）",
+        sd=0.0998,
+        inflation=1.68,
+        periods=2109,
+        unit="イベント日",
+        per_year=0,
+        source="PREREG_GAP_FILL_JP.md §0（IS 31,542 件が 1,220 日。OOS は 2,109 日）",
         pipe="event",
     ),
 )

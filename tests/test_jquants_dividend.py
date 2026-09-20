@@ -10,6 +10,8 @@ import dataclasses
 import datetime as dt
 from pathlib import Path
 
+import pytest
+
 from stock_ai.data.jquants_dividend import (
     Dividend,
     latest_by_term,
@@ -156,3 +158,221 @@ def test_a_dividend_without_dates_is_not_reported_as_straddling() -> None:
 
     assert not straddles_a_split(item, [dt.date(2022, 3, 31)])
     assert item.ex_date is None  # 呼ぶ側はこれを見る
+
+
+class TestHowManyExDatesTheArchiveCanSupply:
+    """#9（窓は埋まる）の設計が、これに掛かっている。
+
+    **3% の下窓は、権利落ちがまさにそう見える。** 外せなければ、事象の定義が
+    配当を拾う。
+
+    ここで押さえるのは2つ。
+
+    1. **列ごとに独立に数える。** 行が読めたことと、`ExDate` が埋まっている
+       ことは別である
+    2. **外す対象は（銘柄, 日）**であって、行ではない。同じ日に複数行ある
+    """
+
+    @staticmethod
+    def _rows(*changes: dict[str, str]) -> str:
+        """**実物から作る。** 列名を発明すると、読み口に届かない。
+
+        配布サンプルの1行目を写し、変えたい列だけ差し替える。
+        """
+        import csv
+        import io
+
+        text = SAMPLE.read_text(encoding="utf-8-sig").splitlines()
+        reader = csv.DictReader(text)
+        template = next(iter(reader))
+        out = io.StringIO()
+        writer = csv.DictWriter(out, fieldnames=list(template))
+        writer.writeheader()
+        for change in changes:
+            writer.writerow({**template, **change})
+        return out.getvalue()
+
+    @classmethod
+    def _archive(cls, tmp_path, rows: str):
+        import gzip
+
+        from stock_ai.data.jquants_archive import MANIFEST, MANIFEST_COLUMNS
+
+        key = "fins/dividend/dividend_2015.csv.gz"
+        target = tmp_path / key
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(gzip.compress(rows.encode("utf-8")))
+        (tmp_path / MANIFEST).write_text(
+            ",".join(MANIFEST_COLUMNS) + "\n" + f"/{key},1,1,x,,2026-09-19\n",
+            encoding="utf-8",
+        )
+        return tmp_path
+
+    def test_it_counts_rows_and_dates_separately(self, tmp_path) -> None:
+        from stock_ai.data.jquants_dividend import ex_date_coverage
+
+        body = self._rows(
+            {"Code": "13010", "ExDate": "2015-03-30", "RefNo": "1"},
+            {"Code": "13020", "ExDate": "", "RefNo": "2"},
+        )
+        found = ex_date_coverage(self._archive(tmp_path, body))
+
+        assert found.rows == 2
+        assert found.with_ex_date == 1
+
+    def test_the_missing_column_is_warned_about(self, tmp_path) -> None:
+        """**0 を「読めた」と読まない。** 表の1行では気付かない。"""
+        from stock_ai.data.jquants_dividend import ex_date_coverage
+
+        body = self._rows(
+            {"Code": "13010", "ExDate": "2015-03-30", "RefNo": "1"},
+            {"Code": "13020", "ExDate": "", "RefNo": "2"},
+        )
+        found = ex_date_coverage(self._archive(tmp_path, body))
+
+        assert any("`ExDate` が空" in line for line in found.warnings())
+
+    def test_the_same_symbol_and_day_counts_once(self, tmp_path) -> None:
+        """**外す対象は（銘柄, 日）である。** 行で数えると多く見える。"""
+        from stock_ai.data.jquants_dividend import ex_date_coverage
+
+        body = self._rows(
+            {"Code": "13010", "ExDate": "2015-03-30", "RefNo": "1"},
+            {"Code": "13010", "ExDate": "2015-03-30", "RefNo": "2"},
+        )
+        found = ex_date_coverage(self._archive(tmp_path, body))
+
+        assert found.rows == 2
+        assert found.days == 1
+
+    def test_it_splits_the_two_halves(self, tmp_path) -> None:
+        from stock_ai.data.jquants_dividend import ex_date_coverage
+
+        body = self._rows(
+            {"Code": "13010", "ExDate": "2015-03-30", "RefNo": "1"},
+            {"Code": "13020", "ExDate": "2020-03-30", "RefNo": "2"},
+        )
+        found = ex_date_coverage(self._archive(tmp_path, body))
+
+        assert found.in_is == 1
+        assert found.in_oos == 1
+
+    def test_an_empty_archive_says_so_rather_than_returning_zero_quietly(self, tmp_path) -> None:
+        from stock_ai.data.jquants_dividend import ex_date_coverage
+
+        found = ex_date_coverage(tmp_path)
+
+        assert found.rows == 0
+        assert "1行も読めなかった" in found.summary()
+        assert found.warnings()
+
+    def test_one_sided_coverage_is_warned_about(self, tmp_path) -> None:
+        """**この検査が落ちる条件を、実際に1つ作る。**"""
+        from stock_ai.data.jquants_dividend import ex_date_coverage
+
+        body = self._rows({"Code": "13010", "ExDate": "2015-03-30", "RefNo": "1"})
+        found = ex_date_coverage(self._archive(tmp_path, body))
+
+        assert any("OOS" in line for line in found.warnings())
+        assert not any("IS（〜2017-12）に権利落ちが1件も無い" in line for line in found.warnings())
+
+    def test_the_command_refuses_when_there_is_nothing_to_exclude(self, tmp_path) -> None:
+        """**手前で止まる側も通す。**"""
+        import typer
+
+        from stock_ai import cli
+
+        with pytest.raises(typer.Exit):
+            cli.ex_date_coverage_command(directory=str(tmp_path))
+
+    def test_the_command_runs_on_a_real_archive(self, tmp_path) -> None:
+        """**本物のコマンドを、中身の入った原本で1本通す。**"""
+        from stock_ai import cli
+
+        body = self._rows(
+            {"Code": "13010", "ExDate": "2015-03-30", "RefNo": "1"},
+            {"Code": "13020", "ExDate": "2020-03-30", "RefNo": "2"},
+        )
+        cli.ex_date_coverage_command(directory=str(self._archive(tmp_path, body)))
+
+
+class TestTheHalvesAreCountedInTheSameUnitAsTheRowAbove:
+    """**同じ列に、行と（銘柄 × 日）を混ぜていた**（2026-09-19、ユーザーが発見）。
+
+    `IS 92,831 + OOS 206,515 = 299,346` は**行**の数で、すぐ上に出ている
+    「別々の権利落ち 114,942」とは **2.6倍**違っていた。**同じ列に2つの単位が
+    並んでいた。**
+
+    `CLAUDE.md`「独立な観測を、件数で数えない」「系列を作るときの単位と、
+    検出力を計算するときの単位を揃える」に当たる形である。**例外は出ない。**
+    """
+
+    _MAKE = TestHowManyExDatesTheArchiveCanSupply
+
+    def test_two_rows_for_the_same_day_count_once_in_the_half(self, tmp_path) -> None:
+        """**直す前のコードなら 2 になる。** 行で数えていたので。"""
+        from stock_ai.data.jquants_dividend import ex_date_coverage
+
+        body = self._MAKE._rows(
+            {"Code": "13010", "ExDate": "2015-03-30", "RefNo": "1"},
+            {"Code": "13010", "ExDate": "2015-03-30", "RefNo": "2"},
+        )
+        found = ex_date_coverage(self._MAKE._archive(tmp_path, body))
+
+        assert found.rows == 2
+        assert found.days == 1
+        assert found.in_is == 1
+
+    def test_the_parts_add_up(self, tmp_path) -> None:
+        """**足して合わなければ生成時に落ちる。** それが、この形の見張りである。"""
+        from stock_ai.data.jquants_dividend import ex_date_coverage
+
+        body = self._MAKE._rows(
+            {"Code": "13010", "ExDate": "2015-03-30", "RefNo": "1"},
+            {"Code": "13010", "ExDate": "2015-03-30", "RefNo": "2"},
+            {"Code": "13020", "ExDate": "2020-03-30", "RefNo": "3"},
+            {"Code": "13030", "ExDate": "2027-03-30", "RefNo": "4"},
+        )
+        found = ex_date_coverage(self._MAKE._archive(tmp_path, body))
+
+        assert found.in_is + found.in_oos + found.after_oos == found.days
+
+    def test_a_date_past_the_judgement_window_has_its_own_bucket(self, tmp_path) -> None:
+        """**在る。** 配当は前もって公表されるので、2027年の権利落ちが原本に入る。"""
+        from stock_ai.data.jquants_dividend import ex_date_coverage
+
+        body = self._MAKE._rows({"Code": "13030", "ExDate": "2027-08-30", "RefNo": "1"})
+        found = ex_date_coverage(self._MAKE._archive(tmp_path, body))
+
+        assert found.after_oos == 1
+        assert found.in_oos == 0
+        assert any("OOS より後" in line for line in found.warnings())
+
+    def test_parts_that_do_not_add_up_are_refused(self) -> None:
+        """**この検査が落ちる条件を、実際に1つ作る。**"""
+        from stock_ai.data.jquants_dividend import ExDateCoverage
+
+        with pytest.raises(ValueError, match="単位が混ざっている"):
+            ExDateCoverage(
+                files=1,
+                rows=2,
+                with_ex_date=2,
+                symbols=1,
+                days=1,
+                first=dt.date(2015, 3, 30),
+                last=dt.date(2015, 3, 30),
+                in_is=2,
+                in_oos=0,
+                after_oos=0,
+            )
+
+    def test_the_table_says_which_rows_are_which_unit(self) -> None:
+        """**読む側が単位を取り違えない形にする。**"""
+        import inspect
+
+        from stock_ai import cli
+
+        body = inspect.getsource(cli.ex_date_coverage_command)
+
+        assert "外す対象の単位ではない" in body
+        assert "銘柄 × 日。**行ではない**" in body

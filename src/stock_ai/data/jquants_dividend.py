@@ -42,11 +42,15 @@ from __future__ import annotations
 import dataclasses
 import datetime as dt
 from collections.abc import Iterable
+from pathlib import Path
 
+from stock_ai.core.logging import get_logger
 from stock_ai.data.jquants_bulk import records_from_csv
 from stock_ai.data.jquants_details import parse_time
 from stock_ai.data.jquants_margin import parse_date, parse_number
 from stock_ai.data.universe import four_digit_code
+
+logger = get_logger(__name__)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -139,3 +143,216 @@ def straddles_a_split(dividend: Dividend, split_days: Iterable[dt.date]) -> bool
         return False
     low, high = (start, end) if start <= end else (end, start)
     return any(low <= day <= high for day in split_days)
+
+
+@dataclasses.dataclass
+class ExDateCoverage:
+    """権利落ち日が、原本にどれだけ入っているか。
+
+    **#9（窓は埋まる）の設計がこれに掛かっている。** 3% の下窓は、権利落ちが
+    そう見える——外せなければ、事象の定義が配当を拾う。
+
+    **列ごとに独立に数える。** 行が読めたことと、`ExDate` が埋まっていることは
+    別である（`CLAUDE.md`「0 を『読めた』と読まない」）。
+    """
+
+    files: int
+    rows: int
+    with_ex_date: int
+    """`ExDate` が埋まっていた行。**行数と別に数える。**"""
+
+    symbols: int
+    days: int
+    """**別々の（銘柄, 権利落ち日）の数。** 外す対象はこれである。"""
+
+    first: dt.date | None
+    last: dt.date | None
+    in_is: int
+    """IS に入る**（銘柄, 日）**。**行ではない。**"""
+
+    in_oos: int
+    """OOS に入る**（銘柄, 日）**。"""
+
+    after_oos: int
+    """OOS より後の**（銘柄, 日）**。
+
+    **在る。** 配当は前もって公表されるので、判定期間の先の権利落ち日が原本に
+    入っている（実データで 2027年まで）。**別に数えないと、3つ目が黙って
+    どこかに混ざる。**
+    """
+
+    def __post_init__(self) -> None:
+        """**3つの内訳が、別々の（銘柄, 日）の数に足し合わさること。**
+
+        **同じ列に行と（銘柄 × 日）を混ぜていた**（2026-09-19、ユーザーが
+        発見）。IS と OOS を行で数えていて、すぐ上の「外す対象」の行とは
+        **2.6倍違う数**が同じ列に並んでいた。
+
+        `CLAUDE.md`「独立な観測を、件数で数えない」「系列を作るときの単位と、
+        検出力を計算するときの単位を揃える」に当たる形である。**そして
+        例外は出ない**——だから、**足して合わなければここで落とす。**
+
+        Raises:
+            ValueError: 内訳が ``days`` に足し合わさらない。
+        """
+        parts = self.in_is + self.in_oos + self.after_oos
+        if parts != self.days:
+            raise ValueError(
+                f"内訳 {parts} が、別々の権利落ち {self.days} に合わない。"
+                "**単位が混ざっている**（行と（銘柄 × 日））。"
+            )
+
+    def summary(self) -> str:
+        """1行のまとめ。"""
+        if not self.rows:
+            return "配当の原本が1行も読めなかった。**外す材料が無い。**"
+        span = f"{self.first} 〜 {self.last}" if self.first else "日付が1つも無い"
+        return (
+            f"{self.files:,} 本、{self.rows:,} 行。"
+            f"`ExDate` が埋まっていたのは {self.with_ex_date:,} 行"
+            f"（{self.with_ex_date / self.rows:.1%}）。"
+            f"{self.symbols:,} 銘柄、**別々の権利落ち {self.days:,} 件**（{span}）。"
+        )
+
+    def warnings(self) -> list[str]:
+        """気付かなくても目に入るべきこと。**早期 return しない。**"""
+        found: list[str] = []
+        if not self.rows:
+            return ["**配当の原本が1行も読めなかった。**"]
+        if self.after_oos:
+            found.append(
+                f"**{self.after_oos:,} 件は OOS より後の権利落ちである。** "
+                "配当は前もって公表されるので、判定期間の先が入っている。"
+            )
+        missing = self.rows - self.with_ex_date
+        if missing:
+            found.append(
+                f"**{missing:,} 行は `ExDate` が空だった**（{missing / self.rows:.1%}）。"
+                "その配当は外せない。"
+            )
+        if not self.in_is:
+            found.append("**IS（〜2017-12）に権利落ちが1件も無い。** 推定に使えない。")
+        if not self.in_oos:
+            found.append("**OOS（2018-01〜）に権利落ちが1件も無い。** 判定に使えない。")
+        return found
+
+
+def ex_date_coverage(
+    directory: Path,
+    is_end: dt.date = dt.date(2017, 12, 31),
+    oos_from: dt.date = dt.date(2018, 1, 1),
+    oos_end: dt.date = dt.date(2026, 8, 31),
+) -> ExDateCoverage:
+    """保存済みの原本から、権利落ち日がどれだけ取れるかを数える。
+
+    **落としには行かない。** `/fins/dividend` は Premium のエンドポイントなので、
+    解約後はここに在るものがすべてである。
+
+    Args:
+        directory: 原本の置き場所。
+        is_end: IS の最終日。
+        oos_from: OOS の初日。
+        oos_end: OOS の最終日。**これより後は別に数える。**
+
+    Returns:
+        :class:`ExDateCoverage`。
+    """
+    from stock_ai.data.jquants_archive import path_for, read_manifest
+    from stock_ai.data.jquants_read import endpoint_of, read_archived
+
+    files = rows = with_ex = 0
+    symbols: set[str] = set()
+    days: set[tuple[str, dt.date]] = set()
+    for key in sorted(read_manifest(directory)):
+        if endpoint_of(key) != "/fins/dividend":
+            continue
+        files += 1
+        try:
+            found = parse_dividends(read_archived(path_for(directory, key)))
+        except Exception as exc:  # noqa: BLE001 - どこで読めないかが記録に値する
+            logger.warning("配当の原本を読めなかった: %s: %s", key, exc)
+            continue
+        for item in found:
+            rows += 1
+            symbols.add(item.symbol)
+            if item.ex_date is None:
+                continue
+            with_ex += 1
+            days.add((item.symbol, item.ex_date))
+
+    # **期間で分けるのは、別々の（銘柄, 日）になってからである。** 行ごとに
+    # 数えると、同じ列に2つの単位が並ぶ（2026-09-19 に 2.6倍ずれていた）。
+    dates = [when for _symbol, when in days]
+    in_is = sum(1 for when in dates if when <= is_end)
+    in_oos = sum(1 for when in dates if oos_from <= when <= oos_end)
+    after = sum(1 for when in dates if when > oos_end)
+    return ExDateCoverage(
+        files=files,
+        rows=rows,
+        with_ex_date=with_ex,
+        symbols=len(symbols),
+        days=len(days),
+        first=min(dates) if dates else None,
+        last=max(dates) if dates else None,
+        in_is=in_is,
+        in_oos=in_oos,
+        after_oos=after,
+    )
+
+
+def ex_dates(directory: Path) -> dict[str, set[dt.date]]:
+    """銘柄ごとの権利落ち日。**公表がその日より前のものだけを集めるのは呼ぶ側。**
+
+    ここが返すのは ``(公表日, 権利落ち日)`` ではなく**権利落ち日の集合**である
+    ——外す側は「その日が権利落ちか」しか要らない。
+
+    **先読みを入れないための口は、別に置いてある**（:func:`ex_dates_known_by`）。
+
+    Args:
+        directory: 原本の置き場所。
+
+    Returns:
+        ``銘柄 -> 権利落ち日の集合``。
+    """
+    found: dict[str, set[dt.date]] = {}
+    for symbol, _published, when in _ex_date_rows(directory):
+        found.setdefault(symbol, set()).add(when)
+    return found
+
+
+def ex_dates_known_by(directory: Path) -> dict[str, list[tuple[dt.date, dt.date]]]:
+    """銘柄ごとの ``(公表日, 権利落ち日)``。**先読みを外すのに使う。**
+
+    権利落ち日は前もって分かる情報だが、**後から出た訂正を使えば先読みになる。**
+    呼ぶ側は ``公表日 <= その日`` のものだけを見ること。
+
+    Args:
+        directory: 原本の置き場所。
+
+    Returns:
+        ``銘柄 -> [(公表日, 権利落ち日), ...]``。**公表日の順に並ぶ。**
+    """
+    found: dict[str, list[tuple[dt.date, dt.date]]] = {}
+    for symbol, published, when in _ex_date_rows(directory):
+        found.setdefault(symbol, []).append((published, when))
+    for rows in found.values():
+        rows.sort()
+    return found
+
+
+def _ex_date_rows(directory: Path) -> Iterable[tuple[str, dt.date, dt.date]]:
+    """原本から ``(銘柄, 公表日, 権利落ち日)`` を1行ずつ。**取りには行かない。**"""
+    from stock_ai.data.jquants_archive import path_for, read_manifest
+    from stock_ai.data.jquants_read import endpoint_of, read_archived
+
+    for key in sorted(read_manifest(directory)):
+        if endpoint_of(key) != "/fins/dividend":
+            continue
+        try:
+            found = parse_dividends(read_archived(path_for(directory, key)))
+        except Exception as exc:  # noqa: BLE001 - どこで読めないかが記録に値する
+            logger.warning("配当の原本を読めなかった: %s: %s", key, exc)
+            continue
+        for item in found:
+            if item.ex_date is not None:
+                yield item.symbol, item.published_on, item.ex_date
