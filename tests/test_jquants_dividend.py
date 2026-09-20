@@ -544,3 +544,41 @@ class TestAZeroDividendIsNotAnExDate:
         assert len(found.by_symbol["1301"]) == 1
         assert found.kept == 1
         assert found.unknown_amount == 0
+
+    def test_a_blank_row_does_not_rescue_a_zero(self, tmp_path) -> None:
+        """**「分からない」と「0 と書いてある」を、行単位で混ぜない。**
+
+        同じ権利落ち日に平均2.4行ある。最初の版は**額が空の行が1つでも
+        あれば未公表扱い**にしていて、**落とすのは全部の行が 0 のときだけ**
+        になっていた。実データで 81 件がそこから漏れた（2026-09-20、
+        ユーザーが発見）。
+
+        **別の行が 0 と言っているなら、分かっている。**
+        """
+        from stock_ai.data.jquants_dividend import ex_dates_known_by
+
+        body = self._rows(
+            {"Code": "13010", "ExDate": "2015-03-30", "RefNo": "1", "DivRate": "0"},
+            {"Code": "13010", "ExDate": "2015-03-30", "RefNo": "2", "DivRate": ""},
+        )
+
+        found = ex_dates_known_by(self._archive(tmp_path, body))
+
+        assert found.by_symbol == {}, "**空の行が 0 を打ち消している。**"
+        assert found.dropped_zero == 1
+        assert found.unknown_amount == 0
+
+    def test_a_date_with_no_amount_at_all_is_still_kept(self, tmp_path) -> None:
+        """**両向きに置く。** 額が1行も無ければ、やはり外す側に倒す。"""
+        from stock_ai.data.jquants_dividend import ex_dates_known_by
+
+        body = self._rows(
+            {"Code": "13010", "ExDate": "2015-03-30", "RefNo": "1", "DivRate": ""},
+            {"Code": "13010", "ExDate": "2015-03-30", "RefNo": "2", "DivRate": ""},
+        )
+
+        found = ex_dates_known_by(self._archive(tmp_path, body))
+
+        assert found.kept == 1
+        assert found.unknown_amount == 1
+        assert found.dropped_zero == 0

@@ -385,28 +385,35 @@ def ex_dates_known_by(directory: Path) -> AnnouncedExDates:
     """
     # **(銘柄, 権利落ち日) ごとに、いちばん早い「額が 0 でない」公表日を採る。**
     # 額 0 の公表しか無ければ、その日は権利落ちとして扱わない。
+    # **「分からない」と「0 と書いてある」を、行単位で混ぜない。**
+    # 額が空の行が1つあっても、**別の行が 0 と言っているなら分かっている**
+    # ——最初の版は「空の行が1つでもあれば未公表」にしていて、**落とすのは
+    # 全部の行が 0 のときだけ**になっていた（2026-09-20、ユーザーが発見）。
     positive: dict[tuple[str, dt.date], dt.date] = {}
-    unknown: dict[tuple[str, dt.date], dt.date] = {}
-    zero: set[tuple[str, dt.date]] = set()
+    earliest: dict[tuple[str, dt.date], dt.date] = {}
+    has_amount: set[tuple[str, dt.date]] = set()
     for symbol, published, when, rate in _ex_date_rows(directory):
         key = (symbol, when)
+        current = earliest.get(key)
+        if current is None or published < current:
+            earliest[key] = published
         if rate is None:
-            current = unknown.get(key)
-            if current is None or published < current:
-                unknown[key] = published
-        elif rate > 0:
+            continue
+        has_amount.add(key)
+        if rate > 0:
             current = positive.get(key)
             if current is None or published < current:
                 positive[key] = published
-        else:
-            zero.add(key)
+
+    # **額が1行も公表されていないときだけ未公表扱い。**
+    unknown = {key: when for key, when in earliest.items() if key not in has_amount}
+    # **額は公表されていて、どれも 0。** 落ちるものが無い。
+    zero = has_amount - set(positive)
 
     found: dict[str, list[tuple[dt.date, dt.date]]] = {}
     kept = 0
     for source in (positive, unknown):
         for (symbol, when), published in source.items():
-            if when in {day for _p, day in found.get(symbol, [])}:
-                continue
             found.setdefault(symbol, []).append((published, when))
             kept += 1
     for rows in found.values():
@@ -415,8 +422,8 @@ def ex_dates_known_by(directory: Path) -> AnnouncedExDates:
     return AnnouncedExDates(
         by_symbol=found,
         kept=kept,
-        dropped_zero=len(zero - set(positive) - set(unknown)),
-        unknown_amount=len(set(unknown) - set(positive)),
+        dropped_zero=len(zero),
+        unknown_amount=len(unknown),
     )
 
 

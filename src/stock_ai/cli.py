@@ -6852,13 +6852,13 @@ def _exclusion_table(broken: object, drop: float, days: int) -> Table:
 
     rows = (
         (f"戻しても −{drop:.0%}（外すべきでなかった）", broken.still_qualifies),  # type: ignore[attr-defined]
-        ("額 0 で外した（外すべきでなかった）", broken.zero_rate),  # type: ignore[attr-defined]
         ("下げに効かない位置（外すべきでなかった）", broken.outside_window),  # type: ignore[attr-defined]
         ("戻すと届かない（外して正しい）", broken.rescued),  # type: ignore[attr-defined]
+        ("後に無配へ訂正（外した時点では正しい）", broken.revised_to_zero),  # type: ignore[attr-defined]
+        ("額が一度も公表されず（外す側に倒した）", broken.no_amount),  # type: ignore[attr-defined]
     )
     for label, count in rows:
         table.add_row(label, f"{count:,}", share(count))
-    table.add_row("外したときの日が無い（訂正）", f"{broken.revised:,}", "—")  # type: ignore[attr-defined]
     table.add_row("判定できない（分母に入れない）", f"{broken.undecided:,}", "—")  # type: ignore[attr-defined]
     table.add_section()
     table.add_row("外した合計", f"{broken.excluded:,}", "100.0%")  # type: ignore[attr-defined]
@@ -6943,6 +6943,12 @@ def ex_date_audit(
         table.add_row(label, f"{value:+.3%}", f"{count:,}")
     console.print(table)
     console.print(lined.summary())
+    if lined.zero_events:
+        console.print(
+            f"[dim]額 0 と読んだ {lined.zero_events:,} 件の権利落ち日は "
+            f"**{lined.zero_on_the_day:+.3%}**。**無配なら段差は出ない**"
+            "——正の額の 0.99倍と同じ裏取りを、0 側にも当てている。[/]"
+        )
     console.print(
         f"[dim]配当利回りの中央値は {lined.median_yield:.2%}。"
         "**相場は引いていない**——隣り合う日どうしを比べるので、"
@@ -7002,8 +7008,8 @@ def ex_date_audit(
     console.print()
     console.print(inside.summary())
     console.print(
-        "[dim]**こちらは外していない。** 除外の窓は急落の"
-        f"{KNIFE_DAYS + 1} 営業日だけで、保有する {HOLDING} 営業日は見ていない。[/]"
+        "[dim]**こちらは外していない。** 除外の窓は急落を作った"
+        f"{KNIFE_DAYS} 営業日だけで、保有する {HOLDING} 営業日は見ていない。[/]"
     )
     for line in inside.warnings():
         console.print(f"[yellow]{line}[/]")

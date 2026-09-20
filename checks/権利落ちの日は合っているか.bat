@@ -11,30 +11,35 @@ echo ==================================================
 echo   stock-ai : are the ex-dividend dates right?
 echo ==================================================
 echo.
-echo #16 threw out 819 crashes because a dividend fell
-echo inside them, and the warning said "look at what
-echo they were". This is that look.
+echo #16 throws out some crashes because a dividend
+echo fell inside them. This looks at what they were.
 echo.
-echo There are three explanations and they can be told
-echo apart:
+echo No counts are printed here on purpose: the run
+echo itself counts them. A number written into this
+echo header goes stale the moment the code changes,
+echo and nothing tells you it has.
 echo.
-echo   the ExDate column is off - the price does not
-echo   drop on the day the column claims
+echo Each thrown-out crash is measured again with the
+echo dividend added back:
 echo.
-echo   special dividends - the yield is large
+echo   still down twenty per cent - the dividend did
+echo   not cause the fall, so a real crash was dropped
 echo.
-echo   the window is simply wide - the yield is one or
-echo   two per cent, and the fall is still twenty per
-echo   cent once the dividend is added back
+echo   no longer down twenty per cent - the dividend
+echo   pushed it over the line, correctly dropped
 echo.
-echo The third one means real crashes are being thrown
-echo away.
+echo   later revised to no dividend - correct at the
+echo   time it was dropped; using the revision would
+echo   be hindsight
+echo.
+echo   no amount ever published - unknown, so it was
+echo   dropped to be safe
 echo.
 echo The first table lines up every known ex-dividend
-echo date, not just the 819, so it also checks the
-echo dates #15 used. If the step is not on day zero the
-echo run stops there: if the day is wrong, nothing
-echo below it means anything.
+echo date, not just the thrown-out ones, so it also
+echo checks the dates #15 used. If the step is not on
+echo day zero the run stops there: if the day is wrong,
+echo nothing below it means anything.
 echo.
 echo NO RETURNS ARE COMPUTED. This looks at the data,
 echo not at whether the idea works.

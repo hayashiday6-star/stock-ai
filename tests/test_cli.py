@@ -1847,12 +1847,12 @@ class TestTableLabelsSurviveANarrowConsole:
         from stock_ai.cli import _exclusion_table
 
         broken = Exclusions(
-            excluded=661,
-            still_qualifies=190,
-            rescued=100,
+            excluded=368,
+            still_qualifies=189,
+            rescued=98,
             outside_window=0,
-            zero_rate=371,
-            revised=0,
+            revised_to_zero=81,
+            no_amount=0,
             undecided=0,
             special=7,
             median_yield=0.0127,
@@ -1871,8 +1871,9 @@ class TestTableLabelsSurviveANarrowConsole:
         """**末尾が消えると、意味が消える。** そこを名指しで見る。"""
         text = self._rendered(width)
 
-        assert text.count("外すべきでなかった") == 3
+        assert text.count("外すべきでなかった") == 2
         assert "外して正しい" in text
+        assert "外した時点では正しい" in text
 
     def test_a_long_label_would_be_cut(self) -> None:
         """**この検査が落ちる条件を、実際に1つ作る。**

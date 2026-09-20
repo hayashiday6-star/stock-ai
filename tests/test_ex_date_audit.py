@@ -154,6 +154,67 @@ class TestFindingWhereTheStepIs:
 
         assert any("合わない" in line for line in lined.warnings())
 
+    @staticmethod
+    def _mixed(zero_group_drops: bool):
+        """半分は配当あり（段差あり）、半分は額 0。**実データと同じ混ざり方。**"""
+        series: dict[str, np.ndarray] = {}
+        rates: dict[str, dict[dt.date, ExDividend]] = {}
+        for index in range(8):
+            symbol = f"{1400 + index:04d}"
+            pays = index < 4  # noqa: PLR2004 - 半分ずつ
+            drops = {_at(day): _YIELD for day in _EX_DAYS} if pays or zero_group_drops else {}
+            series[symbol] = _walk(index, drops)
+            rates[symbol] = {
+                _INDEX[_at(day)].date(): ExDividend(
+                    rate=1_000.0 * _YIELD if pays else 0.0, special=0.0
+                )
+                for day in _EX_DAYS
+            }
+        return _database(series), rates
+
+    def test_a_zero_amount_group_with_no_step_says_nothing(self) -> None:
+        """**額 0 の群も価格で確かめる。** 無配なら段差は出ない。"""
+        database, rates = self._mixed(zero_group_drops=False)
+
+        lined = measure_alignment(database, rates, _FIRST, _LAST)
+
+        assert lined.zero_events == 4 * len(_EX_DAYS)
+        assert lined.events == 4 * len(_EX_DAYS)
+        assert lined.warnings() == []
+
+    def test_a_zero_amount_group_with_a_step_is_caught(self) -> None:
+        """**この検査が落ちる条件を、実際に作る。**
+
+        額を 0 と読んでいるのに権利落ち日が下がるなら、**額の読み方が違う。**
+        正の額を 0.99倍で裏取りしたのと同じ形を、0 側にも当てる。
+        """
+        database, rates = self._mixed(zero_group_drops=True)
+
+        lined = measure_alignment(database, rates, _FIRST, _LAST)
+
+        assert any("額の読み方が違う" in line for line in lined.warnings())
+
+    def test_a_group_with_no_priced_dividend_still_says_something(self) -> None:
+        """**早期 return で新しい検査を黙らせない。**
+
+        `warnings()` が「1件も値付けできなかった」で `return` していて、
+        **その下に置いた額 0 の検査が動かなかった**（2026-09-20、自分で
+        踏んだ）。
+        """
+        series = {f"{1400 + i:04d}": _walk(i, {}) for i in range(4)}
+        rates = {
+            symbol: {_INDEX[_at(day)].date(): ExDividend(rate=0.0, special=0.0) for day in _EX_DAYS}
+            for symbol in series
+        }
+
+        lined = measure_alignment(_database(series), rates, _FIRST, _LAST)
+
+        assert lined.events == 0
+        assert lined.zero_events > 0
+        told = " ".join(lined.warnings())
+        assert "1件も値付けできなかった" not in told
+        assert "すべて額 0" in told
+
     def test_a_zero_span_is_refused(self) -> None:
         with pytest.raises(ValueError, match="span must be at least 1"):
             measure_alignment(_database({}), {}, _FIRST, _LAST, span=0)
@@ -269,8 +330,13 @@ class TestWhetherTheCrashesShouldHaveBeenDropped:
 class TestTheZeroDividendCase:
     """**額 0 は「読めない」ではなく「落ちるものが無い」。**
 
-    無配の公表にも `ExDate` は入る。`ex_dates_known_by` は額を見ないので、
-    **落ちるものが無い日で急落を外していた**（2026-09-20）。
+    無配の公表にも `ExDate` は入る。`ex_dates_known_by` が額を見ていなかった
+    ので、**落ちるものが無い日で急落を外していた**（2026-09-20 に直した）。
+
+    **残るのは「公表時は配当が在り、後に無配へ訂正された」だけ。** これは
+    **外した時点では正しい判断**なので、「外すべきでなかった」に数えない
+    ——最終データだけで裁くと、**その日に知りようがなかったことで過去の
+    判断を裁く**ことになる。
     """
 
     @staticmethod
@@ -283,14 +349,16 @@ class TestTheZeroDividendCase:
         announced = {"1401": [(dt.date(2015, 1, 5), when)]}
         return _database({"1401": closes}), rates, [("1401", _INDEX[crash].date())], announced
 
-    def test_a_zero_dividend_is_its_own_bucket(self) -> None:
+    def test_a_dividend_revised_to_zero_is_its_own_bucket(self) -> None:
+        """公表時は在り、最終データでは 0。**外した時点では正しい。**"""
         database, rates, excluded, announced = self._one(rate=0.0)
 
         found = audit_exclusions(database, excluded, rates, announced=announced)
 
-        assert found.zero_rate == 1
+        assert found.revised_to_zero == 1
         assert found.undecided == 0, "**0 を「判定できない」に落とさない。**"
-        assert found.kept_by_mistake == 1
+        assert found.kept_by_mistake == 0, "**その日に知りようがなかったことで裁いている。**"
+        assert found.decided == 1
 
     def test_a_real_dividend_is_not_in_that_bucket(self) -> None:
         """**両向きに置く。** 常にそのバケットに入るなら区別していない。"""
@@ -298,10 +366,10 @@ class TestTheZeroDividendCase:
 
         found = audit_exclusions(database, excluded, rates, announced=announced)
 
-        assert found.zero_rate == 0
+        assert found.revised_to_zero == 0
 
-    def test_a_revised_date_is_its_own_bucket(self) -> None:
-        """**外したときの日が最終データに無い。** 「基準日」に化けさせない。"""
+    def test_a_date_with_no_amount_is_its_own_bucket(self) -> None:
+        """**額が一度も公表されていない。** 「基準日」に化けさせない。"""
         crash = _at("2015-06-10")
         closes = _walk(0, {crash - KNIFE_DAYS + 1 + step: 0.07 for step in range(KNIFE_DAYS)})
         # 公表時は crash-2、最終データには入っていない。
@@ -314,8 +382,9 @@ class TestTheZeroDividendCase:
             announced=announced,
         )
 
-        assert found.revised == 1
-        assert found.outside_window == 0, "**訂正を「基準日の配当」に化けさせない。**"
+        assert found.no_amount == 1
+        assert found.outside_window == 0, "**未公表を「基準日の配当」に化けさせない。**"
+        assert found.kept_by_mistake == 0
 
 
 class TestTheBreakdownAddsUp:
@@ -328,8 +397,8 @@ class TestTheBreakdownAddsUp:
                 still_qualifies=400,
                 rescued=200,
                 outside_window=0,
-                zero_rate=0,
-                revised=0,
+                revised_to_zero=0,
+                no_amount=0,
                 undecided=0,
                 special=0,
                 median_yield=0.02,
@@ -343,17 +412,17 @@ class TestTheBreakdownAddsUp:
             still_qualifies=400,
             rescued=200,
             outside_window=119,
-            zero_rate=40,
-            revised=10,
+            revised_to_zero=40,
+            no_amount=10,
             undecided=50,
             special=3,
             median_yield=0.02,
             by_month=(),
         )
 
-        assert found.decided == 759
-        assert found.kept_by_mistake == 559
-        assert found.wrongly_excluded == pytest.approx(559 / 759)
+        assert found.decided == 769
+        assert found.kept_by_mistake == 519
+        assert found.wrongly_excluded == pytest.approx(519 / 769)
 
 
 class TestDividendsInsideTheHoldingWindow:
