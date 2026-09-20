@@ -333,11 +333,11 @@ class TestTheGateIsTheSharedOne:
             assert "_event_gate(" in inspect.getsource(command), command.__name__
 
     def test_there_is_no_second_needed_table_for_this_pipe(self) -> None:
-        """**イベント型の表は1つだけ。** 2つあれば、片方が古くなる。
+        """**「要る期数」の表は1つの関数が組む。** 2つあれば、片方が古くなる。
 
-        `power-gate` にも同じ題の表が在るが、**あちらは見込みの帯（下限・
-        中央・上限）を並べている**——「何段階か並べる表」で、同語反復の行は
-        入っていない。**別物なので数えない。**
+        `power-gate` にも同じ形の表が在る。**どちらも `_needed_table` を
+        呼ぶ**——2026-09-20 に「どの行が関門か」を書き足したとき、片方だけ
+        直せば、もう片方で同じ誤読が残る。
         """
         import pathlib as _pathlib
 
@@ -346,7 +346,10 @@ class TestTheGateIsTheSharedOne:
         ).read_text(encoding="utf-8")
 
         assert "_events_needed" not in body
-        assert body.count("この設計で検出するのに要るイベント日数") == 1
+        assert body.count("§0 を通すのに要るイベント日数") == 1
+        # **表を組むのは1箇所だけ。** `Table(title=...)` を直書きで増やさない。
+        assert body.count("def _needed_table(") == 1
+        assert body.count("_needed_table(") == 3  # 定義1 + 呼ぶ側2
 
     def test_no_table_ladders_over_the_detectable_difference(self) -> None:
         """**どの表も、検出できる差を「検出したい効果」に入れない。**
@@ -573,7 +576,7 @@ class TestTheNeededTableSaysSomething:
 
         assert "期数の問題ではない" in out
         assert "これは「あと少し」という意味ではない" in out
-        assert "検出したい効果" not in out
+        assert "この大きさが本当なら" not in out
 
     def test_a_small_positive_effect_gets_the_table(self, capsys) -> None:
         """**この検査が落ちる条件を、実際に1つ作る。** 正なら表が出る。"""
@@ -582,7 +585,7 @@ class TestTheNeededTableSaysSomething:
 
         out = self._run(values, capsys)
 
-        assert "検出したい効果" in out
+        assert "この大きさが本当なら" in out
         assert "期数の問題ではない" not in out
 
     def test_the_committed_line_is_always_one_row(self, capsys) -> None:

@@ -216,8 +216,11 @@ class TestCollectingTheCrashes:
         told = " ".join(build_events(database, announced, symbols=symbols).warnings())
 
         assert "特別配当" in told
-        assert "読み違い" in told
         assert "押し出した" in told, "**配当が線の向こうに押し出した**場合が抜けている。"
+        # **片付いた説明は「片付いた」と書く。** 並べたままだと、見分けが
+        # 済んでいないように読める（2026-09-20、ユーザーが指摘）。
+        assert "否定済み" in told
+        assert "額 0 の公表では外さない" in told
 
     def test_a_dividend_on_the_base_day_does_not_exclude(self) -> None:
         """**基準日の配当は、比を1つも動かさない。**

@@ -14,7 +14,7 @@ import shutil
 import sys
 import time
 from collections import Counter
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from pathlib import Path
 from statistics import fmean, median, stdev
 
@@ -2296,6 +2296,58 @@ def revision_power(  # noqa: PLR0913 - §0 が固定した条件をすべて受�
     )
 
 
+def _needed_table(  # noqa: PLR0913 - 表の材料をすべて受け取る
+    title: str,
+    unit: str,
+    rows: Sequence[tuple[str, bool, int, float]],
+    have_periods: int,
+    have_years: float,
+) -> Table:
+    """Build the "how many periods would be needed" table, marking the gate row.
+
+    **どの行が関門かを、行そのものに書く。** 書かないと、参考の行の
+    「足りる」が**説が通る**という意味に読める——実際そう読まれた
+    （2026-09-20、ユーザーが発見）。
+
+    §0 が見るのは**見込みの下限**の行だけである。コミットした線の行は
+    「線の大きさの効果なら見分けられたか」を言っているだけで、**通る条件では
+    ない。** #16 では下限に 5,726年、線に 6.4年 と出て、**6.4年 のほうが
+    読まれた。**
+
+    **差の数は出さない。** 「+4」が「あと4件で足りる」に読めた回がある
+    （#15）。**要る数といま在る数を並べれば、引き算は読む側でできる。**
+
+    Args:
+        title: 表題。
+        unit: 期の呼び方（「イベント日」「期」など）。
+        rows: ``(札, 関門か, 要る期数, 要る年数)``。
+        have_periods: いま在る期数。
+        have_years: それが何年ぶんか。
+
+    Returns:
+        描く前の表。
+    """
+    table = Table(title=title)
+    table.add_column("この大きさが本当なら", overflow="fold")
+    table.add_column(f"要る{unit}", justify="right")
+    table.add_column("年数", justify="right")
+    table.add_column("いま在る分で", justify="right")
+    for label, is_gate, count, years in rows:
+        mark = "[bold]§0 の関門[/] — " if is_gate else "参考 — "
+        enough = count <= have_periods
+        table.add_row(
+            f"{mark}{label}",
+            f"{count:,}",
+            f"{years:,.1f}年",
+            "足りる" if enough else "[red]足りない[/]",
+        )
+    table.add_section()
+    table.add_row(
+        "[dim]いま在る（判定に使える）[/]", f"{have_periods:,}", f"{have_years:,.1f}年", "—"
+    )
+    return table
+
+
 def _judgement_years(start: dt.date | None, end: dt.date | None) -> float:
     """How many years the judgement window spans - not the estimation window.
 
@@ -2453,22 +2505,33 @@ def _event_gate(  # noqa: PLR0913 - §0 の材料をすべて受け取る
     console.print()
     # **「いま在る」を表の中に置く。** 外に置くと、読む側が別の標本の数字と
     # 突き合わせる（脚注の「手元は IS 5.0年」がそれだった）。
-    needed = Table(title="この設計で検出するのに要るイベント日数（判定に使う窓で数える）")
-    for column in ("検出したい効果", "要るイベント日", "年数", "いまとの差"):
-        needed.add_column(column, justify="left" if column == "検出したい効果" else "right")
+    lines: list[tuple[str, bool, int, float]] = []
     for effect in sorted(targets):
         row = needed_for(effect)
-        needed.add_row(
-            f"1イベント {effect:.2%}",
-            f"{row.periods:,}",
-            f"{row.years:,.1f}年",
-            "足りている" if row.enough else f"{row.shortfall:+,}",
+        gated = floor_estimate > 0 and effect == round(floor_estimate, 4)
+        label = (
+            f"見込みの下限 1イベント {effect:.2%}"
+            if gated
+            else f"コミットした線 1イベント {effect:.2%}"
         )
-    needed.add_section()
-    needed.add_row(
-        "[dim]いま在る（判定に使える）[/]", f"{periods:,}", f"{period_years:,.1f}年", "—"
+        lines.append((label, gated, row.periods, row.years))
+    console.print(
+        _needed_table(
+            "§0 を通すのに要るイベント日数（判定に使う窓で数える）",
+            "イベント日",
+            lines,
+            periods,
+            period_years,
+        )
     )
-    console.print(needed)
+    if floor_estimate <= 0:
+        # **関門の行が出ない。** 参考の行だけ残ると、また同じ誤読になる。
+        console.print(
+            "[dim]**関門の行は出していない。** 見込みの下限が "
+            f"{floor_estimate:+.2%} で、**0 以下では要る期数が決まらない**"
+            "——増やしても通らない。上の行は「線の大きさの効果なら見分けられたか」"
+            "を言っているだけである。[/]"
+        )
     if footnote:
         console.print(footnote)
 
@@ -11053,20 +11116,16 @@ def power_gate(
     # 打ち手が浮かばない。年数にすれば、手元の年数と引き算ができる。
     if not result.passed:
         console.print()
-        needed = Table(title="この設計で検出するのに要る期数")
-        for column in ("検出したい効果", "要る期数", "年数", "いまとの差"):
-            needed.add_column(column, justify="left" if column == "検出したい効果" else "right")
+        lines: list[tuple[str, bool, int, float]] = []
         for annual in sorted({low, (low + high) / 2, high}):
             if annual <= 0:
                 continue
             count = periods_needed(per_period_sd, inflation, annual / 100.0 / per_year, target_t)
-            needed.add_row(
-                f"年 {annual:.1f}%",
-                f"{count:,}",
-                f"{count / per_year:.0f}年",
-                f"{count - periods:+,}" if count > periods else "足りている",
-            )
-        console.print(needed)
+            # **§0 が見るのは下限だけ。** 中央も上限も参考である。
+            lines.append((f"年 {annual:.1f}%", annual == low, count, count / per_year))
+        console.print(
+            _needed_table("§0 を通すのに要る期数", "期数", lines, periods, periods / per_year)
+        )
         console.print()
         if floor <= 0:
             # **下限が 0 以下なら「何倍改善すれば通る」は計算できない。**

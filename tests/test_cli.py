@@ -1890,3 +1890,63 @@ class TestTableLabelsSurviveANarrowConsole:
         out.print(table)
 
         assert "…" in out.export_text()
+
+
+class TestTheGateRowIsMarked:
+    """**どの行が関門かを、行そのものに書く。**
+
+    書かないと、参考の行の「足りる」が**説が通る**という意味に読める
+    ——実際そう読まれた（2026-09-20、ユーザーが発見）。#16 では
+    見込みの下限に **5,726年**、コミットした線に **6.4年** と出て、
+    **6.4年 のほうが読まれた。** §0 が見るのは下限の行だけである。
+    """
+
+    @staticmethod
+    def _rendered(width: int) -> str:
+        from rich.console import Console
+
+        from stock_ai.cli import _needed_table
+
+        rows = [
+            ("見込みの下限 1イベント 0.04%", True, 1_246_614, 5725.8),
+            ("コミットした線 1イベント 1.20%", False, 1_386, 6.4),
+        ]
+        out = Console(width=width, record=True, file=io.StringIO())
+        out.print(_needed_table("§0 を通すのに要るイベント日数", "イベント日", rows, 1886, 8.7))
+        return out.export_text()
+
+    @pytest.mark.parametrize("width", [80, 100, 120])
+    def test_the_gate_row_says_so(self, width: int) -> None:
+        text = self._rendered(width)
+
+        assert text.count("§0 の関門") == 1, "**関門の行が1つに定まっていない。**"
+        assert "参考" in text
+
+    @pytest.mark.parametrize("width", [80, 100, 120])
+    def test_nothing_is_cut_off(self, width: int) -> None:
+        assert "…" not in self._rendered(width)
+
+    def test_the_gate_row_and_the_reference_row_read_differently(self) -> None:
+        """**関門は足りず、参考は足りる**——その2つが同じ札にならないこと。"""
+        text = self._rendered(100)
+
+        assert "足りない" in text
+        assert "足りる" in text
+
+    def test_no_difference_column(self) -> None:
+        """**差の数は出さない。** 「+4」が「あと4件で足りる」に読めた（#15）。
+
+        要る数といま在る数が並んでいるので、引き算は読む側でできる。
+        """
+        text = self._rendered(120)
+
+        assert "+1,244,728" not in text
+        assert "1,246,614" in text
+        assert "1,886" in text
+
+    def test_the_available_row_is_there(self) -> None:
+        """**「いま在る」を表の中に置く。** 外に置くと別の標本と突き合わされる。"""
+        text = self._rendered(100)
+
+        assert "いま在る（判定に使える）" in text
+        assert "8.7年" in text
