@@ -581,21 +581,95 @@ def ex_dividends_known_by(directory: Path) -> dict[str, list[tuple[dt.date, dt.d
     Returns:
         ``銘柄 -> [(公表日, 権利落ち日, 額), ...]``。**公表日の順に並ぶ。**
     """
-    best: dict[tuple[str, dt.date], tuple[dt.date, float]] = {}
-    for symbol, published, when, rate in _ex_date_rows(directory):
-        if rate is None or rate <= 0:
-            continue
-        key = (symbol, when)
-        current = best.get(key)
-        if current is None or published < current[0]:
-            best[key] = (published, rate)
-
     found: dict[str, list[tuple[dt.date, dt.date, float]]] = {}
-    for (symbol, when), (published, rate) in best.items():
+    for (symbol, when), (published, rate) in known_at_ex_date(directory).items():
+        if rate <= 0:
+            # **0 は「落とすものが無い」。** 当てる相手が無いので入れない
+            # ——外すかどうかは :func:`ex_dates_known_by` が決める。
+            continue
         found.setdefault(symbol, []).append((published, when, rate))
     for rows in found.values():
         rows.sort()
     return found
+
+
+def known_at_ex_date(directory: Path) -> dict[tuple[str, dt.date], tuple[dt.date, float]]:
+    """``(銘柄, 権利落ち日)`` ごとに、**権利落ち日までに公表された最新の額**。
+
+    **「公表順で後」と「権利落ち日より後」は別である。**
+
+    前は「**いちばん早く正の額が公表された時点**」を採っていた。先読みを
+    外すための規則だったが、**訂正前の額を掴んでいた**——実データで、
+    最初の公表が 100倍の誤記で、**訂正が権利落ちの10か月前**に出ていた行が
+    ある（2026-09-20、ユーザーが原本で確かめた。2131 は 5600.0 → 56.0 で
+    訂正が 2013-05-20、権利落ちは 2014-03-27）。**その時点で正しい額は
+    分かっていた。**
+
+    先読みになるのは**権利落ち日より後**の公表だけなので、そこで切る。
+
+    ## 0 の扱い
+
+    **権利落ち日より前に 0 へ訂正されていれば、0 を採る。** その時点で無配と
+    分かっていたということである。**権利落ち日より後の訂正は、そもそも
+    ここに入らない。**
+
+    前の規則が 0 を避けていたのは、この2つを分けていなかったためである。
+
+    Args:
+        directory: 原本の置き場所。
+
+    Returns:
+        ``(銘柄, 権利落ち日) -> (公表日, 額)``。**額が 0 の鍵も入る**
+        ——「落とすものが無い」と「分からない」は別である。
+    """
+    best: dict[tuple[str, dt.date], tuple[tuple[dt.date, dt.time, str], dt.date, float]] = {}
+    for item in _ex_date_items(directory):
+        if item.rate is None or item.ex_date is None:
+            continue
+        # **権利落ち日より後の公表は使わない。** そこだけが先読みになる。
+        if item.published_on > item.ex_date:
+            continue
+        key = (item.symbol, item.ex_date)
+        rank = _order(item)
+        current = best.get(key)
+        if current is None or rank > current[0]:
+            best[key] = (rank, item.published_on, item.rate)
+    return {key: (published, rate) for key, (_rank, published, rate) in best.items()}
+
+
+def revisions_before_ex_date(
+    directory: Path,
+) -> dict[tuple[str, dt.date], tuple[float, float]]:
+    """**最初の正の額**と**権利落ち日時点の額**が食い違う鍵だけ。
+
+    **直す前に測るために在る。** 4件の訂正比がどれも 100 だったからといって、
+    **「訂正はいつも 100 倍」にはならない**（`CLAUDE.md`「ゼロでないことを
+    根拠に断定しない」）。**割合で見る。**
+
+    **直した後も残す。** 直しが何を変えたかが、そこに出る。
+
+    Returns:
+        ``(銘柄, 権利落ち日) -> (最初の正の額, 権利落ち日時点の額)``。
+        **一致する鍵は入らない。**
+    """
+    earliest: dict[tuple[str, dt.date], tuple[dt.date, float]] = {}
+    for item in _ex_date_items(directory):
+        if item.rate is None or item.rate <= 0 or item.ex_date is None:
+            continue
+        key = (item.symbol, item.ex_date)
+        current = earliest.get(key)
+        if current is None or item.published_on < current[0]:
+            earliest[key] = (item.published_on, item.rate)
+
+    now = known_at_ex_date(directory)
+    moved: dict[tuple[str, dt.date], tuple[float, float]] = {}
+    for key, (_published, first) in earliest.items():
+        current = now.get(key)
+        if current is None:
+            continue
+        if first != current[1]:
+            moved[key] = (first, current[1])
+    return moved
 
 
 def _dividend_files(directory: Path) -> Iterable[tuple[str, bytes]]:
@@ -663,10 +737,11 @@ def raw_rows(
     return found
 
 
-def _ex_date_rows(directory: Path) -> Iterable[tuple[str, dt.date, dt.date, float | None]]:
-    """原本から ``(銘柄, 公表日, 権利落ち日, 額)`` を1行ずつ。**取りには行かない。**
+def _ex_date_items(directory: Path) -> Iterable[Dividend]:
+    """原本から、権利落ち日のある :class:`Dividend` を1つずつ。**取りには行かない。**
 
-    **額も返す。** 額を落とすと、呼ぶ側は無配の公表と区別できない。
+    **公表の順序に要るもの（`PubTime` / `RefNo`）ごと返す。** 日付だけに
+    落とすと、**同じ日に並んだ訂正の前後が決まらない。**
     """
     for key, payload in _dividend_files(directory):
         try:
@@ -676,4 +751,14 @@ def _ex_date_rows(directory: Path) -> Iterable[tuple[str, dt.date, dt.date, floa
             continue
         for item in found:
             if item.ex_date is not None:
-                yield item.symbol, item.published_on, item.ex_date, item.rate
+                yield item
+
+
+def _ex_date_rows(directory: Path) -> Iterable[tuple[str, dt.date, dt.date, float | None]]:
+    """原本から ``(銘柄, 公表日, 権利落ち日, 額)`` を1行ずつ。**取りには行かない。**
+
+    **額も返す。** 額を落とすと、呼ぶ側は無配の公表と区別できない。
+    """
+    for item in _ex_date_items(directory):
+        assert item.ex_date is not None
+        yield item.symbol, item.published_on, item.ex_date, item.rate

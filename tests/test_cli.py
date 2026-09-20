@@ -1925,12 +1925,26 @@ class TestTheGateRowIsMarked:
 
 
 class TestTheRawDividendRowsReachTheScreen:
-    """**「原本を見る」は、画面に出て初めて道具になる。**
+    """**「原本を見る」は、読める形で画面に出て初めて道具になる。**
 
-    23 列を横に並べると入らないので**縦に並べている**。日本語の札が `…` で
-    切れて意味が消えたのと同じ轍を踏まないよう、**幅を決めて刷る**
-    （2026-09-20）。
+    転置して列名を行にしたら、**同じ鍵に平均2.4行あるので16列**になり、
+    列名が1文字ずつ縦に割れて **200行近く**になった（2026-09-20、ユーザーが
+    指摘）。
+
+    **前のテストは2つとも的を外していた。**
+
+    1. `assert "…" not in printed` ——`overflow="fold"` は `…` を出さない。
+       **守る失敗の形が違った**
+    2. 盤面が1鍵1行だったので、**列が増える形が入っていなかった**
     """
+
+    #: **壊れる形。** 1鍵に4行、しかも長い `RefNo` が入る。
+    _ROWS = (
+        ("21310", "2013-05-09", "5600.0", "1"),
+        ("21310", "2013-05-20", "56.0", "2"),
+        ("21310", "2014-02-14", "56.0", "2"),
+        ("21310", "2014-03-10", "56.0", "1"),
+    )
 
     @staticmethod
     def _counted():
@@ -1951,11 +1965,10 @@ class TestTheRawDividendRowsReachTheScreen:
             ),
         )
 
-    @staticmethod
-    def _archive(tmp_path):
+    @classmethod
+    def _archive(cls, tmp_path):
         import csv
         import gzip
-        import io
         import pathlib as _p
 
         from stock_ai.data.jquants_archive import MANIFEST, MANIFEST_COLUMNS
@@ -1965,17 +1978,19 @@ class TestTheRawDividendRowsReachTheScreen:
         out = io.StringIO()
         writer = csv.DictWriter(out, fieldnames=names, lineterminator="\n")
         writer.writeheader()
-        writer.writerow(
-            {
-                **dict.fromkeys(names, ""),
-                "Code": "21310",
-                "PubDate": "2014-02-14",
-                "ExDate": "2014-03-27",
-                "DivRate": "5600.0",
-                "DeemDiv": "12.34",
-                "NetAssetDecRatio": "0.5",
-            }
-        )
+        for index, (code, published, rate, status) in enumerate(cls._ROWS):
+            writer.writerow(
+                {
+                    **dict.fromkeys(names, ""),
+                    "Code": code,
+                    "PubDate": published,
+                    "PubTime": "15:30",
+                    "RefNo": f"{published.replace('-', '')}1B0012{index}",
+                    "StatCode": status,
+                    "ExDate": "2014-03-27",
+                    "DivRate": rate,
+                }
+            )
         key = "fins/dividend/dividend_2014.csv.gz"
         target = tmp_path / key
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -1986,44 +2001,64 @@ class TestTheRawDividendRowsReachTheScreen:
         )
         return tmp_path
 
-    @pytest.mark.parametrize("width", [80, 100, 120])
-    def test_the_discarded_columns_are_printed(self, tmp_path, width: int) -> None:
-        """**捨てている列が出ること。** 出ないなら、この道具は要らない。"""
+    @classmethod
+    def _printed(cls, tmp_path, width: int, counted=None) -> str:
         from rich.console import Console
 
         from stock_ai import cli
 
         console = Console(file=io.StringIO(), width=width, no_color=True)
         with mock.patch.object(cli, "console", console):
-            cli._print_raw_dividend_rows(self._archive(tmp_path), self._counted())
-        printed = console.file.getvalue()  # type: ignore[attr-defined]
+            cli._print_raw_dividend_rows(cls._archive(tmp_path), counted or cls._counted())
+        return console.file.getvalue()  # type: ignore[attr-defined]
 
-        assert "…" not in printed, "**幅で切れている。** 意味が末尾に在る。"
+    @pytest.mark.parametrize("width", [80, 100, 120])
+    def test_it_stays_short_enough_to_paste(self, tmp_path, width: int) -> None:
+        """**行数で見る。** 潰れたときに増えるのは行数である。
+
+        4行のレコードなので、枠と脚注を入れても 20 行あれば足りる。
+        転置していたときは同じ中身が 200行近くになった。
+        """
+        printed = self._printed(tmp_path, width)
+
+        assert len(printed.splitlines()) <= 20, f"**幅 {width} で潰れている。**"
+
+    @pytest.mark.parametrize("width", [80, 100, 120])
+    def test_no_column_name_is_broken_across_lines(self, tmp_path, width: int) -> None:
+        """**列名が丸ごと1行に出ること。** 1文字ずつ割れたら読めない。"""
+        printed = self._printed(tmp_path, width)
+        lines = printed.splitlines()
+
+        for name in ("Code", "PubDate", "DivRate", "StatCode", "ExDate"):
+            assert any(name in line for line in lines), f"**{name} が割れている。**"
+
+    @pytest.mark.parametrize("width", [80, 100, 120])
+    def test_every_row_of_the_key_is_shown(self, tmp_path, width: int) -> None:
+        """**1鍵に複数行あれば全部出す。** どれを採ったかが見えなくなる。"""
+        printed = self._printed(tmp_path, width)
+
+        assert "5600.0" in printed, "**訂正前の額が出ていない。**"
+        assert "56.0" in printed, "**訂正後の額が出ていない。**"
+        assert "4 行" in printed
+
+    def test_the_empty_columns_are_named(self, tmp_path) -> None:
+        """**空の列も名前は出す。** そこに答えが無かったことも答えである。"""
+        printed = self._printed(tmp_path, 100)
+
+        assert "全行で空だった列" in printed
         for name in ("DeemDiv", "DeemCapGains", "NetAssetDecRatio", "DistAmt", "RetEarn"):
             assert name in printed, f"**捨てている列 {name} が出ていない。**"
-        assert "DivRate" in printed
-        assert "2131" in printed
 
     def test_nothing_is_printed_when_nothing_was_flagged(self, tmp_path) -> None:
         """**両向きに置く。** 常に出る表は、何も区別しない。"""
-        from rich.console import Console
-
-        from stock_ai import cli
         from stock_ai.data.schema import DividendAdjustment
 
-        console = Console(file=io.StringIO(), width=100, no_color=True)
-        with mock.patch.object(cli, "console", console):
-            cli._print_raw_dividend_rows(self._archive(tmp_path), DividendAdjustment())
-
-        assert console.file.getvalue() == ""  # type: ignore[attr-defined]
+        assert self._printed(tmp_path, 100, DividendAdjustment()) == ""
 
     def test_it_says_so_when_the_original_has_no_such_row(self, tmp_path) -> None:
         """**引き当てられないことも、出力に出す。** 黙って空にしない。"""
         import datetime as dt
 
-        from rich.console import Console
-
-        from stock_ai import cli
         from stock_ai.data.schema import DividendAdjustment, SkippedDividend
 
         absent = DividendAdjustment(
@@ -2038,8 +2073,5 @@ class TestTheRawDividendRowsReachTheScreen:
                 ),
             ),
         )
-        console = Console(file=io.StringIO(), width=100, no_color=True)
-        with mock.patch.object(cli, "console", console):
-            cli._print_raw_dividend_rows(self._archive(tmp_path), absent)
 
-        assert "見つからない" in console.file.getvalue()  # type: ignore[attr-defined]
+        assert "見つからない" in self._printed(tmp_path, 100, absent)

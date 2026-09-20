@@ -693,3 +693,144 @@ class TestTheRawRowsComeBackWhole:
 
         assert len(found) == 2
         assert {row["DivRate"] for *_rest, row in found} == {"5600.0", "56.0"}
+
+
+class TestTheAmountKnownAtTheExDate:
+    """**「公表順で後」と「権利落ち日より後」は別である。**
+
+    前は「いちばん早く正の額が公表された時点」を採っていた。先読みを外す
+    ための規則だったが、**訂正前の額を掴んでいた**——2131 は最初の公表が
+    `5600.0`（100倍の誤記）で、訂正 `56.0` は **2013-05-20**、権利落ちは
+    **2014-03-27** である（2026-09-20、ユーザーが原本で確かめた）。
+    **10か月前に正しい額が分かっていた。**
+    """
+
+    #: **2131 の実際の並び。** 1行だけだと「いちばん早い」を選ぶ経路が通らない。
+    _2131 = (
+        ("2013-05-09", "5600.0", "1"),
+        ("2013-05-20", "56.0", "2"),
+        ("2014-02-14", "56.0", "2"),
+        ("2014-03-10", "56.0", "1"),
+    )
+
+    @classmethod
+    def _archive(cls, tmp_path, rows=None, ex_date: str = "2014-03-27"):
+        import csv
+        import gzip
+        import io as _io
+
+        from stock_ai.data.jquants_archive import MANIFEST, MANIFEST_COLUMNS
+
+        names = SAMPLE.read_text(encoding="utf-8-sig").splitlines()[0].split(",")
+        out = _io.StringIO()
+        writer = csv.DictWriter(out, fieldnames=names, lineterminator="\n")
+        writer.writeheader()
+        for index, (published, rate, status) in enumerate(rows or cls._2131):
+            writer.writerow(
+                {
+                    **dict.fromkeys(names, ""),
+                    "Code": "21310",
+                    "PubDate": published,
+                    "PubTime": "15:30",
+                    "RefNo": f"{published.replace('-', '')}1B0012{index}",
+                    "StatCode": status,
+                    "IFTerm": "2014-03",
+                    "ExDate": ex_date,
+                    "DivRate": rate,
+                }
+            )
+        key = "fins/dividend/dividend_2014.csv.gz"
+        target = tmp_path / key
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(gzip.compress(out.getvalue().encode("utf-8")))
+        (tmp_path / MANIFEST).write_text(
+            ",".join(MANIFEST_COLUMNS) + "\n" + f"/{key},1,1,x,,2026-09-20\n",
+            encoding="utf-8",
+        )
+        return tmp_path
+
+    def test_the_correction_wins_when_it_came_before_the_ex_date(self, tmp_path) -> None:
+        """**直す前は 5600.0 を掴んだ。** 訂正は10か月前に出ている。"""
+        import datetime as dt
+
+        from stock_ai.data.jquants_dividend import ex_dividends_known_by
+
+        found = ex_dividends_known_by(self._archive(tmp_path))
+
+        assert found["2131"] == [(dt.date(2014, 3, 10), dt.date(2014, 3, 27), 56.0)]
+
+    def test_a_correction_after_the_ex_date_is_not_used(self, tmp_path) -> None:
+        """**そこだけが先読みである。** 権利落ち日より後の訂正は使わない。"""
+        import datetime as dt
+
+        from stock_ai.data.jquants_dividend import ex_dividends_known_by
+
+        rows = (
+            ("2014-02-14", "56.0", "1"),
+            ("2014-06-30", "99.0", "2"),  # 権利落ちより後
+        )
+        found = ex_dividends_known_by(self._archive(tmp_path, rows))
+
+        assert found["2131"] == [(dt.date(2014, 2, 14), dt.date(2014, 3, 27), 56.0)]
+
+    def test_a_zero_before_the_ex_date_is_taken_as_zero(self, tmp_path) -> None:
+        """**その時点で無配と分かっていた。** 落とすものが無い。"""
+        from stock_ai.data.jquants_dividend import ex_dividends_known_by, known_at_ex_date
+
+        rows = (
+            ("2013-05-09", "56.0", "1"),
+            ("2014-02-14", "0.0", "2"),
+        )
+        directory = self._archive(tmp_path, rows)
+
+        assert known_at_ex_date(directory)[("2131", _date("2014-03-27"))][1] == 0.0
+        # **0 は調整に渡さない**——当てる相手が無い。
+        assert "2131" not in ex_dividends_known_by(directory)
+
+    def test_a_zero_after_the_ex_date_does_not_erase_what_was_known(self, tmp_path) -> None:
+        """**両向きに置く。** 後からの無配訂正で、当時の額を消さない。"""
+        import datetime as dt
+
+        from stock_ai.data.jquants_dividend import ex_dividends_known_by
+
+        rows = (
+            ("2013-05-09", "56.0", "1"),
+            ("2014-06-30", "0.0", "2"),
+        )
+        found = ex_dividends_known_by(self._archive(tmp_path, rows))
+
+        assert found["2131"] == [(dt.date(2013, 5, 9), dt.date(2014, 3, 27), 56.0)]
+
+    def test_the_same_day_is_broken_by_the_reference(self, tmp_path) -> None:
+        """同じ日に並んだら `RefNo` の大きいほうを後とみなす（`_order` と同じ）。"""
+        from stock_ai.data.jquants_dividend import known_at_ex_date
+
+        rows = (
+            ("2014-02-14", "5600.0", "1"),
+            ("2014-02-14", "56.0", "2"),
+        )
+        found = known_at_ex_date(self._archive(tmp_path, rows))
+
+        assert found[("2131", _date("2014-03-27"))][1] == 56.0
+
+    def test_the_revisions_are_counted_before_they_are_fixed(self, tmp_path) -> None:
+        """**割合で見る。** 4件が 100 でも「訂正はいつも 100」ではない。"""
+        from stock_ai.data.jquants_dividend import revisions_before_ex_date
+
+        moved = revisions_before_ex_date(self._archive(tmp_path))
+
+        assert moved[("2131", _date("2014-03-27"))] == (5600.0, 56.0)
+
+    def test_nothing_is_reported_when_no_revision_happened(self, tmp_path) -> None:
+        """**両向きに置く。** 常に鳴る旗は何も区別しない。"""
+        from stock_ai.data.jquants_dividend import revisions_before_ex_date
+
+        rows = (("2014-02-14", "56.0", "1"),)
+
+        assert revisions_before_ex_date(self._archive(tmp_path, rows)) == {}
+
+
+def _date(value: str):
+    import datetime as dt
+
+    return dt.date.fromisoformat(value)

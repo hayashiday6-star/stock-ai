@@ -6991,6 +6991,7 @@ def ex_date_audit(
         console.print(f"[yellow]{line}[/]")
     _print_dividend_breakdown(found.dividends, "急落を集めるときに落とした配当")
     _print_raw_dividend_rows(Path(archive), found.dividends)
+    _print_dividend_revisions(Path(archive))
 
     with spinner() as progress:
         task = progress.add_task("保有窓の中の権利落ちを数えています", total=None)
@@ -7066,15 +7067,23 @@ def _print_dividend_breakdown(counted: object, title: str) -> None:
     console.print(sample)
 
 
-def _print_raw_dividend_rows(archive: Path, counted: object, limit: int = 4) -> None:
-    """Print every raw column for the rows the adjustment called impossible.
+def _print_raw_dividend_rows(archive: Path, counted: object, limit: int = 3) -> None:
+    """Print the raw archive rows behind the "amount exceeds the close" flag.
 
     **原本そのものの列名も出す。**
 
-    `parse_dividends` は 23 列のうち 7 列しか採っていない。捨てているのは
+    `parse_dividends` は 23 列のうち 12 列しか採っていない。捨てているのは
     ``DistAmt`` / ``RetEarn`` / ``DeemDiv``（みなし配当）/ ``DeemCapGains`` /
     ``NetAssetDecRatio`` / ``IFCode`` / ``FRCode`` などで、**そこに答えが
     在れば、読み口からは永久に見えない**（`CLAUDE.md`、#5 で同じ形を踏んだ）。
+
+    **1行1レコードで、列を横に並べる。** 転置して列名を行にしたら、同じ鍵に
+    平均2.4行あるので**16列になり、列名が1文字ずつ縦に割れて 200行近く**に
+    なった（2026-09-20、ユーザーが指摘）。**幅はこちらの手元にしか無い条件
+    である。**
+
+    **全行で空だった列は、名前を1行にまとめる。** 「空だった」ことは残す
+    ——無いことは出力に出ない。
 
     **銘柄コードを焼き付けない。** その回に出た行を引く——次に中身が
     変われば、表も変わる。
@@ -7082,7 +7091,7 @@ def _print_raw_dividend_rows(archive: Path, counted: object, limit: int = 4) -> 
     Args:
         archive: 原本の置き場所。
         counted: :class:`~stock_ai.data.schema.DividendAdjustment`。
-        limit: 並べる行数。**列が23個あるので横には並べられない。**
+        limit: 引く**鍵**の数。1鍵に複数行あれば、その行は全部出す。
     """
     from stock_ai.data.jquants_dividend import raw_rows
 
@@ -7098,27 +7107,68 @@ def _print_raw_dividend_rows(archive: Path, counted: object, limit: int = 4) -> 
         )
         return
 
-    # **縦に並べる。** 23 列を横にすると入らない——日本語の札が `…` で切れた
-    # のと同じ轍（2026-09-20）。列名を行にすれば、幅に関係なく全部出る。
-    table = Table(title="原本そのもの（額が前日終値以上の行・全列）")
-    table.add_column("列", overflow="fold")
     names: list[str] = []
     for _symbol, _when, _key, row in found:
         for name in row:
             if name not in names:
                 names.append(name)
-    for symbol, when, _key, _row in found:
-        table.add_column(f"{symbol}\n{when}", overflow="fold", justify="right")
-    for name in names:
-        # **空の列も出す。** 無いことは出力に出ない——埋まっていないことが
-        # 分かるのも答えのうちである。
-        table.add_row(name, *[(row.get(name) or "—").strip() or "—" for *_h, row in found])
+    filled = [name for name in names if any((row.get(name) or "").strip() for *_h, row in found)]
+    empty = [name for name in names if name not in filled]
+
+    table = Table(title="原本そのもの（額が前日終値以上の権利落ち）")
+    for name in filled:
+        table.add_column(name, overflow="fold", no_wrap=False)
+    for *_head, row in found:
+        table.add_row(*[(row.get(name) or "").strip() or "—" for name in filled])
+    console.print(table)
+    if empty:
+        # **空の列も名前は出す。** そこに答えが無かったことが分かるのも答え。
+        console.print(f"[dim]全行で空だった列: {' / '.join(empty)}[/]")
+    console.print(
+        f"[dim]{len(wanted)} 件ぶんを引いて {len(found)} 行。"
+        "**読み口が採っているのは `Code` / `PubDate` / `PubTime` / `RefNo` / "
+        "`IFTerm` / `DivRate` / `CommDivRate` / `SpecDivRate` / `ExDate` / "
+        "`RecDate` / `PayDate` / `StatCode` だけである。** 額は `DivRate`。[/]"
+    )
+
+
+def _print_dividend_revisions(archive: Path) -> None:
+    """Report how often the amount was corrected before the ex-date, and by how much.
+
+    **割合で見る。** 4件の訂正比がどれも 100 だったからといって、
+    **「訂正はいつも 100 倍」にはならない**（`CLAUDE.md`「ゼロでないことを
+    根拠に断定しない」）。**100 以外が在るかどうかは、全部数えないと出ない。**
+
+    **直した後も残す。** 「いちばん早い正の額」から「権利落ち日時点の額」に
+    変えたので、ここに出るのが**その直しが動かした鍵**である。
+
+    Args:
+        archive: 原本の置き場所。
+    """
+    from stock_ai.data.jquants_dividend import revisions_before_ex_date
+
+    moved = revisions_before_ex_date(archive)
+    if not moved:
+        console.print("[dim]権利落ち日までに額が訂正された権利落ちは無かった。[/]")
+        return
+
+    ratios = sorted(after / before for before, after in moved.values() if before)
+    exactly = sum(1 for value in ratios if abs(value - 0.01) < 1e-9)  # noqa: PLR2004 - 1/100
+    table = Table(title="権利落ち日までに額が訂正された権利落ち")
+    table.add_column("項目", overflow="fold")
+    table.add_column("値", justify="right")
+    table.add_row("訂正があった権利落ち", f"{len(moved):,}")
+    table.add_row("うち ちょうど 1/100 に直ったもの", f"{exactly:,}")
+    table.add_row("それ以外", f"{len(moved) - exactly:,}")
+    if ratios:
+        table.add_row("比（後 ÷ 前）の最小", f"{ratios[0]:.6g}")
+        table.add_row("比の中央値", f"{ratios[len(ratios) // 2]:.6g}")
+        table.add_row("比の最大", f"{ratios[-1]:.6g}")
     console.print(table)
     console.print(
-        "[dim]**読み口が採っているのは "
-        "`Code` / `PubDate` / `PubTime` / `RefNo` / `IFTerm` / `DivRate` / "
-        "`CommDivRate` / `SpecDivRate` / `ExDate` / `RecDate` / `PayDate` / "
-        "`StatCode` だけである。** 額は `DivRate` から来ている。[/]"
+        "[dim]**採るのは「権利落ち日までに公表された中でいちばん新しい額」である。** "
+        "前は「いちばん早い正の額」を採っていて、**訂正前の額を掴んでいた**"
+        "——`1/100` 以外が在れば、**倍率で直す形にしなくて正しかった**ことになる。[/]"
     )
 
 
