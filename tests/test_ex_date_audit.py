@@ -340,11 +340,38 @@ class TestAdjustingMovesTheCrashSet:
 
         assert moved.after <= moved.before
 
-    def test_a_backwards_adjustment_is_refused(self, monkeypatch) -> None:
-        """**この検査が落ちる条件を、実際に作る。**
+    def test_a_tie_on_the_line_does_not_look_like_a_wrong_direction(self) -> None:
+        """**線の上にちょうど乗った件は、丸めでどちらにも転ぶ。**
 
-        **権利落ち日より「後」を縮める**調整を差し込む。書き間違いとして
-        ありうる形で、こうすると窓をまたぐ下げが深くなり、急落が増える。
+        `1000 → 800` はちょうど −20% で、**日本株ではよくある形**である。
+        両辺に同じ倍率を掛けると `(800f)/(1000f)` は `0.8` からずれ、
+        **「事象になる」ほうに転ぶこともある。**
+
+        初めは増加そのものを禁じていて、**実データ（2461）で落ちた**
+        （2026-09-20、ユーザーの PC）。ここはその形を作って、
+        **落ちないこと**と**同点として数えること**を見る。
+        """
+        # `100000 → 80000` はちょうど −20%。float では -0.19999999999999996 で、
+        # **線をわずかに超えない**（事象ではない）。両辺に 1 円の配当ぶんの
+        # 倍率を掛けると -0.20000000000000007 になり、**事象になる。**
+        crash = _at("2015-06-10")
+        closes = np.full(_BARS, 100_000.0)
+        closes[crash : crash + 3] = 80_000.0  # 落ちて、すぐ戻る
+        # **権利落ちは窓より後**に置く（窓の両辺が同じ倍率で縮む）。しかも
+        # **前日終値が 100,000 の日**に置く——倍率が 1 − 1/100000 になる。
+        ex_index = crash + 20
+        rates = {"1401": [(dt.date(2015, 1, 5), _INDEX[ex_index].date(), 1.0)]}
+
+        moved = measure_adjustment(_database({"1401": closes}), rates, _FIRST, _LAST)
+
+        assert moved.ties > 0, "**同点の経路を通っていない。** 検査になっていない。"
+        assert moved.after > moved.before, "**増える形を作れていない。**"
+
+    def test_a_genuinely_deeper_fall_still_raises(self) -> None:
+        """**同点を許しても、本当に深くなったら落ちる。**
+
+        許容が広すぎれば、`CLAUDE.md`「落ちようのない検査を『合格』と
+        読まない」に戻る。
         """
         import numpy as np_
 
@@ -368,11 +395,14 @@ class TestAdjustingMovesTheCrashSet:
             frame[CLOSE] = prices[CLOSE].to_numpy(dtype=float) * factor
             return frame
 
+        monkeypatch = pytest.MonkeyPatch()
         monkeypatch.setattr(schema, "dividend_adjusted", _wrong)
-        database, rates = self._one(fall=0.14, yield_on_day=0.10)
-
-        with pytest.raises(ValueError, match="向きが逆"):
-            measure_adjustment(database, rates, _FIRST, _LAST)
+        try:
+            database, rates = self._one(fall=0.14, yield_on_day=0.10)
+            with pytest.raises(ValueError, match="向きが逆"):
+                measure_adjustment(database, rates, _FIRST, _LAST)
+        finally:
+            monkeypatch.undo()
 
     def test_no_dividend_means_no_change(self) -> None:
         """**落ちようのない検査にしない。** 配当が無ければ集合は動かない。"""
@@ -386,12 +416,12 @@ class TestAdjustingMovesTheCrashSet:
 
     def test_the_breakdown_adds_up(self) -> None:
         """**足して合わない内訳は、作った時点で落ちる。**"""
-        with pytest.raises(ValueError, match="合わない"):
-            AdjustmentEffect(before=10, lost=12, symbols=1)
+        with pytest.raises(ValueError, match="向きが逆"):
+            AdjustmentEffect(before=10, after=20, lost=0, ties=0, symbols=1)
 
     def test_a_consistent_breakdown_is_accepted(self) -> None:
         """**落ちようのない検査にしない。** 合う組み合わせは通る。"""
-        effect = AdjustmentEffect(before=10, lost=1, symbols=1)
+        effect = AdjustmentEffect(before=10, after=9, lost=1, ties=0, symbols=1)
 
         assert effect.before == 10
         assert effect.after == 9

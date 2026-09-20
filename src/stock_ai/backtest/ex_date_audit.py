@@ -57,6 +57,10 @@ MAX_YIELD = 0.5
 #: 3倍にしていたら、2.4倍のずれが通った（2026-09-20）。
 EXPLAINED_BAND = 1.5
 
+#: 線の上にちょうど乗っているとみなす幅。**丸めの 1 ulp を吸うだけ**で、
+#: 意味のある差はこれよりはるかに大きい（−20% に対して 1e-9）。
+_TIE = 1e-9
+
 #: 額 0 の群で、権利落ち日にこれを超える段差が出たら読み違いを疑う。
 #: **利回りの中央値（約1.3%）の4分の1。** 無配なら段差は出ない。
 ZERO_STEP_LIMIT = 0.003
@@ -181,38 +185,52 @@ class AdjustmentEffect:
     before: int
     """落とさずに数えた急落（銘柄 × 日）。"""
 
+    after: int
+    """落として数えた急落。"""
+
     lost: int
     """**落としたら事象でなくなった。** 配当が線の向こうに押し出していた。"""
+
+    ties: int
+    """**線の上にちょうど乗っていて、丸めで転んだ件数。**
+
+    `1000 → 800` はちょうど −20% で、**日本株ではよくある形**である。
+    両辺に同じ倍率を掛けると、`(800f)/(1000f)` は `0.8` からずれることが
+    あり、**どちらにも転ぶ**（実測では「事象になる」ほうが多い）。
+
+    **理屈の上では増えないが、浮動小数では増える。** 初め増加そのものを
+    禁じていて、実データで落ちた（2026-09-20、ユーザーの PC で 2461）。
+    """
 
     symbols: int
 
     def __post_init__(self) -> None:
-        """落とした後が、落とす前を超えないこと。
+        """増えたぶんが、同点で説明できる範囲に収まること。
+
+        **理屈の上では増えない**——窓の中の権利落ちは分母（基準日）だけを
+        下げるので、落とせば下げは必ず浅くなる。**増えるとすれば線の上に
+        ちょうど乗っていた分だけ**である。
 
         Raises:
-            ValueError: 落とした後のほうが多い。
+            ValueError: 数が負、または同点で説明できないほど増えた。
         """
-        if not 0 <= self.lost <= self.before:
-            raise ValueError(f"落とした後 {self.after} 件が、前 {self.before} 件と合わない。")
-
-    @property
-    def after(self) -> int:
-        """落として数えた急落。
-
-        **増えることはない。** 窓の中の権利落ちは分母（基準日）だけを下げる
-        ので、**落とせば下げは必ず浅くなる。** だから調整後の集合は調整前の
-        部分集合である——`measure_adjustment` がそれを確かめている。
-        """
-        return self.before - self.lost
+        if min(self.before, self.after, self.lost, self.ties) < 0:
+            raise ValueError("件数が負になっている。")
+        if self.after > self.before + self.ties:
+            raise ValueError(
+                f"落とした後 {self.after} 件が、前 {self.before} 件＋同点 "
+                f"{self.ties} 件を超えた。**調整の向きが逆である。**"
+            )
 
     def summary(self) -> str:
         """1行のまとめ。"""
         if not self.before:
             return "急落を1件も拾えなかった。**比べていない。**"
+        tied = f"（うち線の上にちょうど乗っていたのが {self.ties:,} 件）" if self.ties else ""
         return (
             f"{self.symbols:,} 銘柄。配当を落とす前 {self.before:,} 件、"
             f"落とした後 {self.after:,} 件——**配当が作っていた {self.lost:,} 件"
-            f"（{self.lost / self.before:.1%}）が消えた。**"
+            f"（{self.lost / self.before:.1%}）が消えた。**{tied}"
         )
 
     def warnings(self) -> list[str]:
@@ -269,7 +287,7 @@ def measure_adjustment(  # noqa: PLR0913 - 事前登録が固定した条件を�
     if not names:
         raise ValueError("銘柄が1つも無い。価格を取り込んでいない。")
 
-    before = lost = read = 0
+    before = after = lost = ties = read = 0
     for position, symbol in enumerate(sorted(names), start=1):
         if progress is not None:
             progress(position, len(names))
@@ -288,28 +306,42 @@ def measure_adjustment(  # noqa: PLR0913 - 事前登録が固定した条件を�
             *,
             _when=when_of,
             _volumes=volumes,
-        ) -> set[dt.date]:
+        ) -> tuple[set[int], np.ndarray]:
             closes = frame[CLOSE].to_numpy(dtype=float)  # type: ignore[index]
             liquid = liquid_bars(closes, _volumes, min_turnover)
-            return {
-                _when[index]
-                for index in knife_positions(closes, liquid, drop, days)
-                if first <= _when[index] <= last
-            }
+            fall = np.full(len(closes), np.nan)
+            fall[days:] = closes[days:] / np.where(closes[:-days] > 0, closes[:-days], np.nan) - 1
+            return (
+                {
+                    index
+                    for index in knife_positions(closes, liquid, drop, days)
+                    if first <= _when[index] <= last
+                },
+                fall,
+            )
 
-        was, now = _hits(plain), _hits(netted)
-        # **増えたら、調整の向きが逆である。** 窓の中の権利落ちは分母だけを
-        # 下げるので、落とせば下げは必ず浅くなる。**増えることはありえない。**
-        appeared = now - was
-        if appeared:
+        was, was_fall = _hits(plain)
+        now, now_fall = _hits(netted)
+        # **理屈の上では増えない。** 窓の中の権利落ちは分母（基準日）だけを
+        # 下げるので、落とせば下げは必ず浅くなる。**ただし線の上にちょうど
+        # 乗っていると、丸めでどちらにも転ぶ**——`1000 → 800` はちょうど
+        # −20% で、日本株ではよくある形である（2026-09-20、実データで落ちた）。
+        #
+        # **だから「増えた」ではなく「本当に深くなった」で見る。**
+        deeper = [index for index in now - was if now_fall[index] < was_fall[index] - _TIE]
+        if deeper:
             raise ValueError(
-                f"{symbol}: 配当を落としたら急落が {len(appeared)} 件増えた。"
+                f"{symbol}: 配当を落としたら下げが深くなった（{len(deeper)} 件）。"
                 "**調整の向きが逆である。**"
             )
+        moved = was ^ now
+        tied = {index for index in moved if abs(now_fall[index] - was_fall[index]) <= _TIE}
         before += len(was)
-        lost += len(was - now)
+        after += len(now)
+        ties += len(tied)
+        lost += len((was - now) - tied)
 
-    return AdjustmentEffect(before=before, lost=lost, symbols=read)
+    return AdjustmentEffect(before=before, after=after, lost=lost, ties=ties, symbols=read)
 
 
 @dataclasses.dataclass(frozen=True)
