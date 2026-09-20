@@ -320,6 +320,107 @@ def periods_needed(
     return math.ceil((target_t * sd * inflation / effect) ** 2)
 
 
+@dataclass(frozen=True)
+class Requirement:
+    """「この効果を検出するのに要る期数」の1行。
+
+    **期数と年数を、同じ標本で数える。** 別々に作ると、片方が推定した窓
+    （IS）、もう片方が判定する窓（OOS）を指す——`_event_gate` が実際に
+    そうなっていて、**「6.9年 要る」と「足りている」が同じ行に並んだ**
+    （2026-09-20、ユーザーが発見）。読む側はどちらの枠とも取れて、
+    **答えが食い違う。**
+
+    ここでは ``years`` を**手元の率から割り出す**ので、
+    ``years ÷ have_years == periods ÷ have_periods`` が**構成上いつでも
+    成り立つ。** 2つの標本を混ぜる余地が無い。
+    """
+
+    effect: float
+    """検出したい差（1期あたり）。"""
+
+    periods: int
+    """それに要る期数。"""
+
+    years: float
+    """**手元と同じ率**で数えた年数。"""
+
+    have_periods: int
+    """いま在る期数。"""
+
+    have_years: float
+    """いま在る期数が何年ぶんか。"""
+
+    def __post_init__(self) -> None:
+        """枠が揃っていることを、作った時点で確かめる。
+
+        Raises:
+            ValueError: 手元の期数・年数が正でない、または比が一致しない。
+        """
+        if self.have_periods <= 0 or self.have_years <= 0:
+            raise ValueError(
+                f"have_periods and have_years must be positive; "
+                f"got {self.have_periods}, {self.have_years}."
+            )
+        # **比で見る。** 差で見ると、単位が違っても通ってしまう。
+        want = self.periods / self.have_periods
+        got = self.years / self.have_years
+        if abs(want - got) > 1e-9 * max(1.0, want):
+            raise ValueError(
+                f"期数の比 {want} と年数の比 {got} が合わない。**別々の標本で数えている。**"
+            )
+
+    @property
+    def enough(self) -> bool:
+        """いま在る期数で足りるか。"""
+        return self.periods <= self.have_periods
+
+    @property
+    def shortfall(self) -> int:
+        """あと何期要るか。足りていれば 0。"""
+        return max(self.periods - self.have_periods, 0)
+
+
+def requirement(  # noqa: PLR0913 - 効果と手元の枠を両方受け取る
+    effect: float,
+    sd: float,
+    inflation: float,
+    have_periods: int,
+    have_years: float,
+    target_t: float = TARGET_T,
+) -> Requirement:
+    """``effect`` を検出するのに要る期数を、**手元と同じ枠で**出す。
+
+    **1年あたりの期数は、``have_periods ÷ have_years`` から作る。**
+    推定に使った標本の件数から作らない——それが枠の食い違いの出どころで
+    ある（:class:`Requirement`）。
+
+    Args:
+        effect: 検出したい差（1期あたり、``sd`` と同じ単位）。
+        sd: 1期あたりの標準偏差。
+        inflation: 重なりによる標準誤差の膨張。
+        have_periods: **判定に使える**期数。
+        have_years: その期数が何年ぶんか。
+        target_t: 合格に要する t。
+
+    Returns:
+        :class:`Requirement`。
+
+    Raises:
+        ValueError: ``have_years`` が 0 以下。
+    """
+    if have_years <= 0:
+        raise ValueError(f"have_years must be positive; got {have_years}.")
+    count = periods_needed(sd, inflation, effect, target_t)
+    per_year = have_periods / have_years
+    return Requirement(
+        effect=effect,
+        periods=count,
+        years=count / per_year,
+        have_periods=have_periods,
+        have_years=have_years,
+    )
+
+
 def required_improvement(detectable: float, plausible_low: float) -> float:
     """通すのに要る「推定量の改善倍率」。
 

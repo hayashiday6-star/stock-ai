@@ -549,3 +549,66 @@ class TestACombinationIsNeverShippedUnexercised:
             if f"class {name}" not in bodies
         ]
         assert not missing, missing
+
+
+# --- ランチャーの文面に、測った件数を焼き付けない ------------------------
+
+#: **測った件数を文面に書いているファイル。** 減る方向にしか動かさない。
+#:
+#: `ex-date-audit` の見出しが **819 件のまま2世代古かった**（2026-09-20、
+#: ユーザーが発見）。実際に外しているのは 368 件で、819 は直す前の値である。
+#: **数字が固定文言に焼き付くと、次に変わってもそこだけ古いままになる。**
+#: `docs/PASSING.md` を生成物にしているのと同じ理由。
+#:
+#: **新しいランチャーは1つも書かない。** ここに足すのではなく、文面から
+#: 数字を抜くこと——その回の出力が数える。
+COUNTS_IN_PROSE: frozenset[str] = frozenset(
+    {
+        "delisted-harvest.ps1",
+        "event-census.ps1",
+        "high-census.ps1",
+        "high-power.ps1",
+        "jquants-bulk-fetch.ps1",
+        "jquants-statements-backfill.ps1",
+        "price-coverage.ps1",
+        "rehearsal-events.ps1",
+        "revision-census-upward.ps1",
+        "roster-prices.ps1",
+        "symbol-probe.ps1",
+        "turn-of-month-power.ps1",
+    }
+)
+
+#: 「1件ずつ」のような数え方は件数ではない。**2桁以上だけを見る。**
+_A_COUNT = re.compile(r"[0-9][0-9,]+\s*件")
+
+
+class TestNoMeasuredCountIsBakedIntoALauncher:
+    """**その回の出力が数えるものを、文面に書かない。**
+
+    書けば、次に変わったとき**そこだけ古いまま**になる。しかも読む側は
+    それが古いと分からない——`819` は2世代前の値だった。
+    """
+
+    @staticmethod
+    def _offenders() -> set[str]:
+        root = pathlib.Path(__file__).resolve().parent.parent
+        found: set[str] = set()
+        for pattern in ("*.ps1", "scripts/*.ps1", "*.bat", "*/*.bat"):
+            for path in sorted(root.glob(pattern)):
+                text = path.read_text(encoding="utf-8-sig", errors="replace")
+                if _A_COUNT.search(text):
+                    found.add(path.name)
+        return found
+
+    def test_no_new_launcher_states_a_count(self) -> None:
+        extra = self._offenders() - COUNTS_IN_PROSE
+        assert not extra, {
+            "件数を書いているのに登録が無い": sorted(extra),
+            "どうするか": "文面から数字を抜く。その回の出力が数える。",
+        }
+
+    def test_the_list_only_shrinks(self) -> None:
+        """**直したら消す。** 残しておくと、何が残っているか分からなくなる。"""
+        stale = COUNTS_IN_PROSE - self._offenders()
+        assert not stale, {"もう書いていないのに登録が残っている": sorted(stale)}

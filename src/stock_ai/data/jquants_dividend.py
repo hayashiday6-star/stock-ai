@@ -315,33 +315,294 @@ def ex_dates(directory: Path) -> dict[str, set[dt.date]]:
         ``銘柄 -> 権利落ち日の集合``。
     """
     found: dict[str, set[dt.date]] = {}
-    for symbol, _published, when in _ex_date_rows(directory):
+    for symbol, _published, when, _rate in _ex_date_rows(directory):
         found.setdefault(symbol, set()).add(when)
     return found
 
 
-def ex_dates_known_by(directory: Path) -> dict[str, list[tuple[dt.date, dt.date]]]:
+@dataclasses.dataclass(frozen=True)
+class AnnouncedExDates:
+    """先読みを入れずに引ける権利落ち日と、**落とした理由の数。**"""
+
+    by_symbol: dict[str, list[tuple[dt.date, dt.date]]]
+    """``銘柄 -> [(公表日, 権利落ち日), ...]``。**公表日の順に並ぶ。**"""
+
+    kept: int
+    """権利落ちとして扱う ``(銘柄, 日)``。"""
+
+    dropped_zero: int
+    """**額 0 で落とした ``(銘柄, 日)``。** 無配の公表にも `ExDate` は入る。"""
+
+    unknown_amount: int
+    """額が未公表。**残す側に倒している**（外し漏れより外し過ぎを採る）。"""
+
+    def summary(self) -> str:
+        """1行のまとめ。"""
+        return (
+            f"権利落ちとして扱うのは {self.kept:,} 件"
+            f"（**額 0 で落とした {self.dropped_zero:,} 件**、"
+            f"額が未公表で残した {self.unknown_amount:,} 件）。"
+        )
+
+    def warnings(self) -> list[str]:
+        """気付かなくても目に入るべきこと。**早期 return しない。**"""
+        found: list[str] = []
+        if not self.kept:
+            return ["**権利落ちを1件も引けなかった。**"]
+        if self.unknown_amount:
+            found.append(
+                f"**{self.unknown_amount:,} 件は額が未公表のまま残している。** "
+                "落ちるかどうかが分からないので、**外す側に倒した。**"
+            )
+        return found
+
+
+def ex_dates_known_by(directory: Path) -> AnnouncedExDates:
     """銘柄ごとの ``(公表日, 権利落ち日)``。**先読みを外すのに使う。**
 
     権利落ち日は前もって分かる情報だが、**後から出た訂正を使えば先読みになる。**
-    呼ぶ側は ``公表日 <= その日`` のものだけを見ること。
+    呼ぶ側は ``公表日 <= その日`` のものだけを見ること
+    （:func:`~stock_ai.backtest.gap_fill.known_ex_dates`）。
+
+    **額 0 の公表は権利落ちとして扱わない。** 無配の公表にも `ExDate` は入る
+    ので、額を見ないと**落ちるものが無い日で事象を外す**ことになる。実データで
+    `#16` が急落 371 件をそれで外していた（2026-09-20、ユーザーが指摘）。
+    **`#15` も同じ口を使っている。**
+
+    **額が未公表（`DivRate` が空）の日は残す。** 落ちるかどうかが分からない
+    ので、**外す側に倒す**——外し漏れのほうが、事象の定義に機械的な値下がりを
+    混ぜるので悪い。
+
+    **判定は、その日までに公表された額で行う。** 後から 0 に訂正されたことを
+    使えば先読みになるので、**その時点で正の額が1度でも公表されていれば
+    権利落ちとして扱う。**
 
     Args:
         directory: 原本の置き場所。
 
     Returns:
-        ``銘柄 -> [(公表日, 権利落ち日), ...]``。**公表日の順に並ぶ。**
+        :class:`AnnouncedExDates`。
     """
+    # **(銘柄, 権利落ち日) ごとに、いちばん早い「額が 0 でない」公表日を採る。**
+    # 額 0 の公表しか無ければ、その日は権利落ちとして扱わない。
+    # **「分からない」と「0 と書いてある」を、行単位で混ぜない。**
+    # 額が空の行が1つあっても、**別の行が 0 と言っているなら分かっている**
+    # ——最初の版は「空の行が1つでもあれば未公表」にしていて、**落とすのは
+    # 全部の行が 0 のときだけ**になっていた（2026-09-20、ユーザーが発見）。
+    positive: dict[tuple[str, dt.date], dt.date] = {}
+    earliest: dict[tuple[str, dt.date], dt.date] = {}
+    has_amount: set[tuple[str, dt.date]] = set()
+    for symbol, published, when, rate in _ex_date_rows(directory):
+        key = (symbol, when)
+        current = earliest.get(key)
+        if current is None or published < current:
+            earliest[key] = published
+        if rate is None:
+            continue
+        has_amount.add(key)
+        if rate > 0:
+            current = positive.get(key)
+            if current is None or published < current:
+                positive[key] = published
+
+    # **額が1行も公表されていないときだけ未公表扱い。**
+    unknown = {key: when for key, when in earliest.items() if key not in has_amount}
+    # **額は公表されていて、どれも 0。** 落ちるものが無い。
+    zero = has_amount - set(positive)
+
     found: dict[str, list[tuple[dt.date, dt.date]]] = {}
-    for symbol, published, when in _ex_date_rows(directory):
-        found.setdefault(symbol, []).append((published, when))
+    kept = 0
+    for source in (positive, unknown):
+        for (symbol, when), published in source.items():
+            found.setdefault(symbol, []).append((published, when))
+            kept += 1
+    for rows in found.values():
+        rows.sort()
+
+    return AnnouncedExDates(
+        by_symbol=found,
+        kept=kept,
+        dropped_zero=len(zero),
+        unknown_amount=len(unknown),
+    )
+
+
+@dataclasses.dataclass(frozen=True)
+class ExDividend:
+    """ある権利落ち日に落ちる配当。**普通と特別を分けて持つ。**"""
+
+    rate: float
+    """1株あたり。**円。調整前の終値で割ること。** 無配の公表なら 0。"""
+
+    special: float
+    """うち特別配当。**大きければ「特別配当だった」と言える。**"""
+
+    @property
+    def has_special(self) -> bool:
+        """特別配当が乗っているか。"""
+        return self.special > 0
+
+    @property
+    def is_zero(self) -> bool:
+        """無配。**「読めない」ではなく「落ちるものが無い」。**"""
+        return self.rate <= 0
+
+
+@dataclasses.dataclass(frozen=True)
+class ExDividends:
+    """読んだ配当と、**読み方が正しかったかを言うための数。**"""
+
+    rates: dict[str, dict[dt.date, ExDividend]]
+    rows: int
+    """`ExDate` と `DivRate` の両方が在った行。"""
+
+    ex_dates: int
+    """``(銘柄, 権利落ち日)`` の数。**行数ではない。**"""
+
+    multi_row: int
+    """2行以上が同じ ``(銘柄, 権利落ち日)`` に乗っていた数。"""
+
+    max_rows: int
+    zero_rate: int
+    """額が 0 だった権利落ち。**無配の公表にも `ExDate` は入る。**"""
+
+    def summary(self) -> str:
+        """1行のまとめ。"""
+        if not self.ex_dates:
+            return "配当の額が1件も読めなかった。"
+        return (
+            f"{len(self.rates):,} 銘柄・{self.rows:,} 行から、"
+            f"**{self.ex_dates:,} 件の権利落ち**を作った"
+            f"（同じ日に2行以上あったのは {self.multi_row:,} 件、最大 {self.max_rows} 行）。"
+            f"**額が 0 の公表が {self.zero_rate:,} 件。**"
+        )
+
+    def warnings(self) -> list[str]:
+        """気付かなくても目に入るべきこと。**早期 return しない。**"""
+        found: list[str] = []
+        if not self.ex_dates:
+            return ["**配当の額が1件も読めなかった。**"]
+        if self.multi_row:
+            share = self.multi_row / self.ex_dates
+            found.append(
+                f"**{self.multi_row:,} 件（{share:.1%}）は同じ権利落ち日に2行以上ある。** "
+                "**足していない**——`latest_by_term` と同じく最後の公表を1行だけ採る。"
+                "足すと年間配当が3倍になる（2026-09-20、実際にそうしていた）。"
+            )
+        if self.zero_rate:
+            share = self.zero_rate / self.ex_dates
+            found.append(
+                f"**額が 0 の権利落ちが {self.zero_rate:,} 件（{share:.1%}）。** "
+                "**`ExDate` が在るだけで外すと、落ちるものが無い日で外すことになる。**"
+            )
+        return found
+
+
+def ex_dividend_rates(directory: Path) -> ExDividends:
+    """銘柄・権利落ち日ごとの **1株あたり配当**。**監査専用である。**
+
+    **最後に公表された値を採る**ので、先読みが入る。**売買の判定に使わない**
+    ——外した件数の中身を見るためだけのものである（`ex-date-audit`）。
+    先読みを外して権利落ち日を引くのは :func:`ex_dates_known_by`。
+
+    **足さない。** 同じ権利落ち日に複数行が乗ることがあるが、それは同じ支払の
+    公表・訂正であって、別々の配当ではない。:func:`latest_by_term` と同じ規則
+    （公表日時、同じなら `RefNo` の大きいほう）で**1行だけ**採る。
+    **足すと年間配当が3倍になる**——その注意書きは `latest_by_term` の説明に
+    既に書いてあり、それを読まずに2つ目を書いて踏んだ（2026-09-20）。
+
+    **`DivRate` は1株あたりの円**で、分割の前後で尺度が変わる。**割るのは
+    調整前の終値**であること（調整後で割ると分割ぶんずれる）。
+
+    Args:
+        directory: 原本の置き場所。
+
+    Returns:
+        :class:`ExDividends`。**額の無い行は入らない。額が 0 の行は入る。**
+    """
+    from stock_ai.data.jquants_archive import path_for, read_manifest
+    from stock_ai.data.jquants_read import endpoint_of, read_archived
+
+    seen: dict[str, dict[dt.date, list[Dividend]]] = {}
+    rows = 0
+    for key in sorted(read_manifest(directory)):
+        if endpoint_of(key) != "/fins/dividend":
+            continue
+        try:
+            found = parse_dividends(read_archived(path_for(directory, key)))
+        except Exception as exc:  # noqa: BLE001 - どこで読めないかが記録に値する
+            logger.warning("配当の原本を読めなかった: %s: %s", key, exc)
+            continue
+        for item in found:
+            if item.ex_date is None or item.rate is None:
+                continue
+            rows += 1
+            seen.setdefault(item.symbol, {}).setdefault(item.ex_date, []).append(item)
+
+    rates: dict[str, dict[dt.date, ExDividend]] = {}
+    ex_dates = multi_row = max_rows = zero_rate = 0
+    for symbol, dates in seen.items():
+        for when, items in dates.items():
+            ex_dates += 1
+            max_rows = max(max_rows, len(items))
+            if len(items) > 1:
+                multi_row += 1
+            # **最後の公表を1行だけ。** `latest_by_term` と同じ並べ方である。
+            last = max(items, key=_order)
+            found_rate = ExDividend(rate=last.rate or 0.0, special=last.special_rate or 0.0)
+            if found_rate.is_zero:
+                zero_rate += 1
+            rates.setdefault(symbol, {})[when] = found_rate
+
+    return ExDividends(
+        rates=rates,
+        rows=rows,
+        ex_dates=ex_dates,
+        multi_row=multi_row,
+        max_rows=max_rows,
+        zero_rate=zero_rate,
+    )
+
+
+def ex_dividends_known_by(directory: Path) -> dict[str, list[tuple[dt.date, dt.date, float]]]:
+    """銘柄ごとの ``(公表日, 権利落ち日, 1株あたり配当)``。**先読みを外す。**
+
+    :func:`ex_dates_known_by` に額を足したもの。**価格を配当調整する**のに使う
+    （:func:`~stock_ai.data.schema.dividend_adjusted`）。
+
+    **その権利落ち日について、いちばん早く正の額が公表された時点**を採る。
+    後から 0 へ訂正されたことは使わない——**使えば先読みになる**（事前登録
+    §8）。額が一度も公表されていない権利落ち日は**入らない**（調整のしよう
+    が無い。外すかどうかは :func:`ex_dates_known_by` が決める）。
+
+    Args:
+        directory: 原本の置き場所。
+
+    Returns:
+        ``銘柄 -> [(公表日, 権利落ち日, 額), ...]``。**公表日の順に並ぶ。**
+    """
+    best: dict[tuple[str, dt.date], tuple[dt.date, float]] = {}
+    for symbol, published, when, rate in _ex_date_rows(directory):
+        if rate is None or rate <= 0:
+            continue
+        key = (symbol, when)
+        current = best.get(key)
+        if current is None or published < current[0]:
+            best[key] = (published, rate)
+
+    found: dict[str, list[tuple[dt.date, dt.date, float]]] = {}
+    for (symbol, when), (published, rate) in best.items():
+        found.setdefault(symbol, []).append((published, when, rate))
     for rows in found.values():
         rows.sort()
     return found
 
 
-def _ex_date_rows(directory: Path) -> Iterable[tuple[str, dt.date, dt.date]]:
-    """原本から ``(銘柄, 公表日, 権利落ち日)`` を1行ずつ。**取りには行かない。**"""
+def _ex_date_rows(directory: Path) -> Iterable[tuple[str, dt.date, dt.date, float | None]]:
+    """原本から ``(銘柄, 公表日, 権利落ち日, 額)`` を1行ずつ。**取りには行かない。**
+
+    **額も返す。** 額を落とすと、呼ぶ側は無配の公表と区別できない。
+    """
     from stock_ai.data.jquants_archive import path_for, read_manifest
     from stock_ai.data.jquants_read import endpoint_of, read_archived
 
@@ -355,4 +616,4 @@ def _ex_date_rows(directory: Path) -> Iterable[tuple[str, dt.date, dt.date]]:
             continue
         for item in found:
             if item.ex_date is not None:
-                yield item.symbol, item.published_on, item.ex_date
+                yield item.symbol, item.published_on, item.ex_date, item.rate

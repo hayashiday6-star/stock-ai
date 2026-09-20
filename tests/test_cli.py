@@ -1,5 +1,7 @@
 """Tests for the command-line interface."""
 
+import io
+
 import pytest
 from typer.testing import CliRunner
 
@@ -1713,3 +1715,209 @@ class TestSayingWhenTheCheckCannotFail:
 
         assert "原本に載っている桁" in output, output
         assert "桁" in output
+
+
+# --- §0 の「要る期数」は、1つの標本で数える ------------------------------
+
+
+def _event_gate_source() -> str:
+    """``_event_gate`` の本体だけを読む。"""
+    import inspect
+
+    from stock_ai.cli import _event_gate
+
+    return inspect.getsource(_event_gate)
+
+
+class TestNeededPeriodsAreCountedInOneFrame:
+    """**「年数」と「いまとの差」が、別々の標本を指していないこと。**
+
+    2026-09-20、ユーザーが見つけた。`per_year` を ``len(values) / span_years``
+    （IS の率）で作りながら、「いまとの差」は ``periods``（OOS の日数）と
+    比べていた。**同じ行で「6.9年 要る」と「足りている」が並ぶ。**
+
+    IS の枠で読めば足りておらず、OOS の枠で読めば足りている——**出力が
+    どちらにも読めて、答えが食い違う。**
+
+    `#15` で直したのは「検出できる差を行に入れない」ほうで、**率の出どころ
+    は触っていなかった。** 同じ列の、隣の問題である。
+    """
+
+    def test_the_rate_does_not_come_from_the_estimation_sample(self) -> None:
+        """``values`` の件数から1年あたりの期数を作らない。"""
+        source = _event_gate_source()
+        assert "len(values) /" not in source, (
+            "**推定に使った標本の件数から率を作っている。** 率は "
+            "`power.requirement` が `periods ÷ period_years` から作る。"
+        )
+
+    def test_the_span_is_named_for_the_judgement_window(self) -> None:
+        """引数は ``period_years``。``span_years`` に戻すと落ちる。"""
+        import inspect
+
+        from stock_ai.cli import _event_gate
+
+        names = inspect.signature(_event_gate).parameters
+        assert "period_years" in names
+        assert "span_years" not in names, (
+            "**`span_years` は「どの窓の年数か」を言っていない。** 呼ぶ側が IS の年数を渡していた。"
+        )
+
+    def test_every_caller_passes_the_judgement_span(self) -> None:
+        """``_event_gate`` を呼ぶ側は、全員 ``period_years`` を渡す。"""
+        import inspect
+        import re
+
+        from stock_ai import cli
+
+        source = inspect.getsource(cli)
+        # 定義そのものは数えない。
+        calls = [
+            block
+            for block in re.findall(r"_event_gate\(\n(.*?)\n    \)", source, re.DOTALL)
+            if "values: list[float]" not in block
+        ]
+        assert len(calls) >= 4, f"呼ぶ側が {len(calls)} 箇所しか見つからない。"
+        for block in calls:
+            assert "period_years=" in block, f"`period_years` を渡していない:\n{block}"
+
+
+class TestTheJudgementWindowIsNotShadowed:
+    """**`OOS_FROM` を、モジュールの頭の別物と取り違えていないこと。**
+
+    `cli` は `pead` の ``OOS_FROM``（2024-01-01）をモジュールの頭で import
+    している。`gap_fill` のそれは 2018-01-01 で、**6年半ずれる。**
+
+    関数の中で書かずに使うと**例外は出ず、年数の列が 3倍になる**
+    （2026-09-20、書いた直後に気付いた）。`tests/test_deferred_imports.py`
+    は名前が実在するかを見るので、**この形は捕まらない。**
+    """
+
+    def test_the_two_constants_really_differ(self) -> None:
+        """取り違えると値が変わることを、まずここで示す。"""
+        from stock_ai.backtest import gap_fill, pead
+
+        assert gap_fill.OOS_FROM != pead.OOS_FROM
+
+    @pytest.mark.parametrize("name", ["gap_fill_power", "knife_power"])
+    def test_the_command_imports_its_own_bounds(self, name: str) -> None:
+        """`gap_fill` の窓を使う関数は、その窓を自分で import する。"""
+        import ast
+        import inspect
+        import textwrap
+
+        from stock_ai import cli
+
+        source = textwrap.dedent(inspect.getsource(getattr(cli, name)))
+        assert "OOS_FROM" in source, f"{name} が `OOS_FROM` を使っていない。"
+        # **名前が在るかではなく、どこから束ねたかを見る。** モジュールの頭に
+        # 同名の別物が在るので、「解決する」ことは正しさの証拠にならない。
+        bound = {
+            alias.asname or alias.name
+            for node in ast.walk(ast.parse(source))
+            if isinstance(node, ast.ImportFrom) and node.module == "stock_ai.backtest.gap_fill"
+            for alias in node.names
+        }
+        assert "OOS_FROM" in bound, (
+            f"{name} が `OOS_FROM` を gap_fill から import していない。"
+            "**書かないと `pead` の 2024-01-01 を黙って掴む。**"
+        )
+
+
+# --- 表の札が、幅で切れていないか ----------------------------------------
+
+
+class TestTheGateRowIsMarked:
+    """**どの行が関門かを、行そのものに書く。**
+
+    書かないと、参考の行の「足りる」が**説が通る**という意味に読める
+    ——実際そう読まれた（2026-09-20、ユーザーが発見）。#16 では
+    見込みの下限に **5,726年**、コミットした線に **6.4年** と出て、
+    **6.4年 のほうが読まれた。** §0 が見るのは下限の行だけである。
+    """
+
+    @staticmethod
+    def _rendered(width: int) -> str:
+        from rich.console import Console
+
+        from stock_ai.cli import _needed_table
+
+        rows = [
+            ("見込みの下限 1イベント 0.04%", True, 1_246_614, 5725.8),
+            ("コミットした線 1イベント 1.20%", False, 1_386, 6.4),
+        ]
+        out = Console(width=width, record=True, file=io.StringIO())
+        out.print(_needed_table("§0 を通すのに要るイベント日数", "イベント日", rows, 1886, 8.7))
+        return out.export_text()
+
+    @pytest.mark.parametrize("width", [80, 100, 120])
+    def test_the_gate_row_says_so(self, width: int) -> None:
+        text = self._rendered(width)
+
+        assert text.count("§0 の関門") == 1, "**関門の行が1つに定まっていない。**"
+        assert "参考" in text
+
+    @pytest.mark.parametrize("width", [80, 100, 120])
+    def test_nothing_is_cut_off(self, width: int) -> None:
+        assert "…" not in self._rendered(width)
+
+    def test_the_gate_row_and_the_reference_row_read_differently(self) -> None:
+        """**関門は足りず、参考は足りる**——その2つが同じ札にならないこと。"""
+        text = self._rendered(100)
+
+        assert "足りない" in text
+        assert "足りる" in text
+
+    def test_no_difference_column(self) -> None:
+        """**差の数は出さない。** 「+4」が「あと4件で足りる」に読めた（#15）。
+
+        要る数といま在る数が並んでいるので、引き算は読む側でできる。
+        """
+        text = self._rendered(120)
+
+        assert "+1,244,728" not in text
+        assert "1,246,614" in text
+        assert "1,886" in text
+
+    def test_a_long_label_in_a_plain_column_would_be_cut(self) -> None:
+        """**この検査が落ちる条件を、実際に1つ作る。**
+
+        日本語には空白が無いので、rich は札を**折り返せない1語**として扱う。
+        `overflow="fold"` を外せば `…` が出る——**消えるのは末尾**で、
+        意味はそこに在ることが多い（2026-09-20、ユーザーが2度指摘）。
+        """
+        from rich.console import Console
+        from rich.table import Table
+
+        table = Table()
+        table.add_column("処分")  # fold を指定しない＝壊れていた形
+        # **空白を1つも含まない札。** 実際に切れたのはこれである。
+        table.add_row("配当が下げに効かない位置（外すべきでなかった）")
+        out = Console(width=40, record=True, file=io.StringIO())
+        out.print(table)
+
+        assert "…" in out.export_text()
+
+    def test_a_label_with_spaces_wraps_instead(self) -> None:
+        """**両向きに置く。** 空白があれば折り返すので、`…` は出ない。
+
+        「日本語だから切れる」ではなく、**空白が無いから1語になる**のが
+        原因である。そこを取り違えると、直し方も間違える。
+        """
+        from rich.console import Console
+        from rich.table import Table
+
+        table = Table()
+        table.add_column("処分")
+        table.add_row("配当が 下げに 効かない 位置（外すべきでなかった）")
+        out = Console(width=40, record=True, file=io.StringIO())
+        out.print(table)
+
+        assert "…" not in out.export_text()
+
+    def test_the_available_row_is_there(self) -> None:
+        """**「いま在る」を表の中に置く。** 外に置くと別の標本と突き合わされる。"""
+        text = self._rendered(100)
+
+        assert "いま在る（判定に使える）" in text
+        assert "8.7年" in text

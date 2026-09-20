@@ -49,6 +49,9 @@ import pandas as pd
 from stock_ai.backtest.discontinuity import crossings, session_breaks, spans_break
 from stock_ai.backtest.gap_fill import GAP_DOWN as _GAP_DOWN
 from stock_ai.backtest.gap_fill import gap_positions, liquid_bars
+from stock_ai.backtest.knife import KNIFE_DAYS as _KNIFE_DAYS
+from stock_ai.backtest.knife import KNIFE_DROP as _KNIFE_DROP
+from stock_ai.backtest.knife import knife_positions
 from stock_ai.backtest.lowvol_census import formation_dates
 from stock_ai.backtest.pead import MIN_TURNOVER
 from stock_ai.core.logging import get_logger
@@ -78,9 +81,12 @@ HIGH_WINDOW = 250
 #: 黙ってずれる。** ここは名前を残すためだけである。
 GAP_DOWN = _GAP_DOWN
 
-#: 急落と呼ぶ幅と日数。**5営業日で −20%。** 同上、この下見のために1つ選んだ。
-KNIFE_DROP = 0.20
-KNIFE_DAYS = 5
+#: 急落と呼ぶ幅と日数。**正本は `knife` にある。**
+#:
+#: #16 が同じ規則を使う。**2つ持つと、下見で選んだ設計と判定に使う設計が、
+#: 黙ってずれる。** ここは名前を残すためだけである。
+KNIFE_DROP = _KNIFE_DROP
+KNIFE_DAYS = _KNIFE_DAYS
 
 
 @dataclasses.dataclass(frozen=True)
@@ -262,13 +268,9 @@ def scan(
                     gap_days_oos.add(when)
 
             # --- 急落（KNIFE_DAYS 営業日で KNIFE_DROP 以上）---------------
+            # **規則は `knife` に1つだけ置いてある。**
             if len(closes) > KNIFE_DAYS:
-                before, after = closes[:-KNIFE_DAYS], closes[KNIFE_DAYS:]
-                usable = (before > 0) & (after > 0)
-                fell_hard = np.zeros(len(before), dtype=bool)
-                fell_hard[usable] = after[usable] / before[usable] - 1.0 <= -KNIFE_DROP
-                for offset in np.flatnonzero(fell_hard & liquid[KNIFE_DAYS:]):
-                    position = offset + KNIFE_DAYS
+                for position in knife_positions(closes, liquid, KNIFE_DROP, KNIFE_DAYS):
                     # **急落そのものが不連続でないこと。** 1:2 の併合は
                     # −50% に見える。そして窓の中も見る。
                     if not clean(position - KNIFE_DAYS, position + HOLDING):

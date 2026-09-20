@@ -11,6 +11,7 @@ import math
 
 import pytest
 
+from stock_ai.backtest import power
 from stock_ai.backtest.power import (
     autocovariances,
     estimate_power,
@@ -458,3 +459,91 @@ class TestTheStandardErrorHasOneHome:
 
         with pytest.raises(ValueError, match="periods must be at least 1"):
             standard_error(0.05, 1.0, 0)
+
+
+# --- 「要る期数」と「要る年数」は、同じ標本で数える ----------------------
+
+
+class TestRequirementCountsInOneFrame:
+    """**期数と年数が別々の標本を指さないこと。**
+
+    2026-09-20、ユーザーが見つけた。`_event_gate` が年数を IS の率
+    （992日÷5.0年）で出しながら、「いまとの差」は OOS の 1,861 日と
+    比べていた。**「6.9年 要る」と「足りている」が同じ行に並ぶ。**
+    """
+
+    def test_the_two_ratios_agree(self) -> None:
+        """``periods ÷ have_periods`` と ``years ÷ have_years`` が一致する。"""
+        row = power.requirement(0.012, 0.0989, 1.36, have_periods=1861, have_years=8.67)
+        assert row.periods / row.have_periods == pytest.approx(row.years / row.have_years)
+
+    @pytest.mark.parametrize("have_periods", [100, 992, 1861, 5000])
+    @pytest.mark.parametrize("have_years", [1.0, 5.0, 8.67, 17.0])
+    def test_the_ratios_agree_everywhere(self, have_periods: int, have_years: float) -> None:
+        """どの枠でも成り立つ。**構成上そうなっている。**"""
+        row = power.requirement(0.02, 0.1, 1.2, have_periods, have_years)
+        assert row.periods / have_periods == pytest.approx(row.years / have_years)
+
+    def test_the_rate_is_not_the_estimation_sample(self) -> None:
+        """**手元の率を変えれば年数が動く。** IS の件数では動かない。
+
+        直す前のコードは ``len(values) / span_years`` で率を作っていたので、
+        `periods` を替えても年数の列は動かなかった。
+        """
+        narrow = power.requirement(0.012, 0.0989, 1.36, have_periods=992, have_years=5.0)
+        wide = power.requirement(0.012, 0.0989, 1.36, have_periods=1861, have_years=8.67)
+        assert narrow.periods == wide.periods
+        assert narrow.years != pytest.approx(wide.years)
+
+    def test_enough_matches_the_counts(self) -> None:
+        """``enough`` は期数だけで決まる。年数とずれない。"""
+        row = power.requirement(0.012, 0.0989, 1.36, have_periods=1861, have_years=8.67)
+        assert row.enough is (row.periods <= row.have_periods)
+        assert row.enough is (row.years <= row.have_years + 1e-9)
+        assert row.shortfall == 0
+
+    def test_shortfall_is_positive_when_it_is_short(self) -> None:
+        """足りないときだけ差が出る。"""
+        row = power.requirement(0.004, 0.0989, 1.36, have_periods=1861, have_years=8.67)
+        assert not row.enough
+        assert row.shortfall == row.periods - row.have_periods
+        assert row.years > row.have_years
+
+    def test_mixed_frames_are_refused_when_built_by_hand(self) -> None:
+        """**枠を混ぜた行は、作った時点で落ちる。**"""
+        with pytest.raises(ValueError, match="別々の標本"):
+            power.Requirement(
+                effect=0.012,
+                periods=1375,
+                years=6.9,  # IS の率で出した年数
+                have_periods=1861,  # OOS の日数
+                have_years=8.67,
+            )
+
+    def test_a_consistent_row_is_accepted(self) -> None:
+        """同じ枠で数えた行は通る。**落ちようのない検査にしない。**"""
+        power.Requirement(
+            effect=0.012,
+            periods=1375,
+            years=1375 / (1861 / 8.67),
+            have_periods=1861,
+            have_years=8.67,
+        )
+
+    @pytest.mark.parametrize(("periods", "years"), [(0, 1.0), (10, 0.0), (-1, 1.0), (10, -1.0)])
+    def test_an_empty_frame_is_refused(self, periods: int, years: float) -> None:
+        """手元が 0 なら率が作れない。"""
+        with pytest.raises(ValueError, match="must be positive"):
+            power.Requirement(
+                effect=0.01, periods=1, years=1.0, have_periods=periods, have_years=years
+            )
+
+    def test_requirement_refuses_a_zero_span(self) -> None:
+        """年数 0 で呼ばれたら、0 割りではなく例外にする。"""
+        with pytest.raises(ValueError, match="have_years"):
+            power.requirement(0.01, 0.1, 1.0, have_periods=100, have_years=0.0)
+
+    def test_it_agrees_with_periods_needed(self) -> None:
+        """**期数そのものは `periods_needed` のまま。** 2つ目の式を書かない。"""
+        row = power.requirement(0.012, 0.0989, 1.36, 1861, 8.67, target_t=3.30)
+        assert row.periods == power.periods_needed(0.0989, 1.36, 0.012, 3.30)

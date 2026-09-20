@@ -318,12 +318,65 @@ class TestTheGateIsTheSharedOne:
 
         assert "_event_gate(" in body
 
-    def test_the_revision_command_calls_it_too(self) -> None:
+    def test_every_event_command_calls_it(self) -> None:
+        """**3つ目の写しが `margin_power` に残っていた**（2026-09-20）。
+
+        しかも `_events_needed` という**別の「要る件数」ヘルパー**を持って
+        いて、**同語反復の行をそのまま抱えていた**——`_event_gate` のほうだけ
+        直したので、**片方だけ緩んでいた。**
+        """
         import inspect
 
         from stock_ai import cli
 
-        assert "_event_gate(" in inspect.getsource(cli.revision_power)
+        for command in (cli.revision_power, cli.margin_power, cli.gap_fill_power):
+            assert "_event_gate(" in inspect.getsource(command), command.__name__
+
+    def test_there_is_no_second_needed_table_for_this_pipe(self) -> None:
+        """**「要る期数」の表は1つの関数が組む。** 2つあれば、片方が古くなる。
+
+        `power-gate` にも同じ形の表が在る。**どちらも `_needed_table` を
+        呼ぶ**——2026-09-20 に「どの行が関門か」を書き足したとき、片方だけ
+        直せば、もう片方で同じ誤読が残る。
+        """
+        import pathlib as _pathlib
+
+        body = (
+            _pathlib.Path(__file__).resolve().parent.parent / "src" / "stock_ai" / "cli.py"
+        ).read_text(encoding="utf-8")
+
+        assert "_events_needed" not in body
+        assert body.count("§0 を通すのに要るイベント日数") == 1
+        # **表を組むのは1箇所だけ。** `Table(title=...)` を直書きで増やさない。
+        assert body.count("def _needed_table(") == 1
+        assert body.count("_needed_table(") == 3  # 定義1 + 呼ぶ側2
+
+    def test_no_table_ladders_over_the_detectable_difference(self) -> None:
+        """**どの表も、検出できる差を「検出したい効果」に入れない。**
+
+        入れると、答えが必ず「ちょうど足りる」になる行ができる。
+        """
+        import inspect
+
+        from stock_ai import cli
+
+        for command in (cli._event_gate, cli.power_gate):
+            body = inspect.getsource(command)
+            ladder = body[body.index("for effect") :] if "for effect" in body else ""
+            ladder += body[body.index("for annual") :] if "for annual" in body else ""
+
+            assert "detectable" not in ladder.split("console.print")[0], command.__name__
+
+    def test_the_short_side_is_flipped_by_the_caller(self) -> None:
+        """**符号の反転は呼ぶ側で1箇所だけ。** 表示の札は別に渡す。"""
+        import inspect
+
+        from stock_ai import cli
+
+        body = inspect.getsource(cli.margin_power)
+
+        assert "-value - COST_ROUND_TRIP" in body
+        assert 'side="ショート"' in body
 
     def test_the_floor_is_three_times_the_cost(self) -> None:
         """**#5・#8 と同じ規則。** 同じ管なら線の置き方も揃える。"""
@@ -429,19 +482,28 @@ class TestTheYearsColumnUsesTheSameUnitAsThePeriods:
     """`periods_needed` が返すのは**イベント日**である。**件数で割らない。**
 
     2,113日 ÷ 6,313件/年 = 0.33 で「0年」と出ていた（2026-09-19）。
+
+    **この教室の最初の版は、直した先を取り違えていた**（2026-09-20）。
+    「率は呼ぶ側に作らせない」まではよかったが、**`_event_gate` の中で
+    `len(values) / span_years`（IS の率）を作っていることを、そのまま
+    assert していた。** 名前は「`periods` と同じ単位で数える」と言って
+    いるのに、**中身は逆を固定していた。**
+
+    `periods` は OOS のイベント日なので、率も OOS から作る。
     """
 
-    def test_the_helper_makes_the_rate_itself(self) -> None:
-        """**呼ぶ側に作らせない。** 件数を渡されたら、そこで単位が壊れる。"""
+    def test_the_rate_comes_from_the_judgement_window(self) -> None:
+        """**推定に使った標本の件数から率を作らない。**"""
         import inspect
 
         from stock_ai import cli
 
         body = inspect.getsource(cli._event_gate)
 
-        assert "per_year = len(values) / span_years" in body
+        assert "len(values) /" not in body
+        assert "power.requirement" in body or "requirement," in body
 
-    def test_both_callers_pass_a_span_not_a_rate(self) -> None:
+    def test_both_callers_pass_the_judgement_span(self) -> None:
         import inspect
 
         from stock_ai import cli
@@ -449,8 +511,9 @@ class TestTheYearsColumnUsesTheSameUnitAsThePeriods:
         for command in (cli.gap_fill_power, cli.revision_power):
             body = inspect.getsource(command)
 
-            assert "span_years=" in body, command.__name__
+            assert "period_years=" in body, command.__name__
             assert "per_year=" not in body, command.__name__
+            assert "span_years=" not in body, command.__name__
 
     def test_two_effects_that_display_the_same_are_one_row(self) -> None:
         """**1.20% が2行並んでいた。** 表示して同じなら1行。
@@ -490,7 +553,7 @@ class TestTheNeededTableSaysSomething:
             committed=0.012,
             holding=20,
             reach="ためし",
-            span_years=5.0,
+            period_years=8.67,
         )
         return capsys.readouterr().out
 
@@ -513,7 +576,7 @@ class TestTheNeededTableSaysSomething:
 
         assert "期数の問題ではない" in out
         assert "これは「あと少し」という意味ではない" in out
-        assert "検出したい効果" not in out
+        assert "この大きさが本当なら" not in out
 
     def test_a_small_positive_effect_gets_the_table(self, capsys) -> None:
         """**この検査が落ちる条件を、実際に1つ作る。** 正なら表が出る。"""
@@ -522,7 +585,7 @@ class TestTheNeededTableSaysSomething:
 
         out = self._run(values, capsys)
 
-        assert "検出したい効果" in out
+        assert "この大きさが本当なら" in out
         assert "期数の問題ではない" not in out
 
     def test_the_committed_line_is_always_one_row(self, capsys) -> None:
@@ -532,3 +595,18 @@ class TestTheNeededTableSaysSomething:
         out = self._run(values, capsys)
 
         assert "1.20%" in out
+
+    def test_the_table_carries_what_is_already_there(self, capsys) -> None:
+        """**「いま在る」を表の中に置く。**
+
+        外に置くと、読む側が別の標本の数字（脚注の「手元は IS 5.0年」）と
+        突き合わせる——**それが「6.9年 要る」と「足りている」が並んだ形**
+        である（2026-09-20、ユーザーが発見）。
+        """
+        rng = np.random.default_rng(0)
+        values = [float(value) + 0.002 for value in rng.normal(0.0, 0.05, 400)]
+
+        out = self._run(values, capsys)
+
+        assert "いま在る" in out
+        assert "8.7年" in out, "**判定に使う窓の年数が、表に出ていない。**"
