@@ -39,7 +39,7 @@ from statistics import fmean, median
 
 import numpy as np
 
-from stock_ai.backtest.knife import HOLDING, KNIFE_DAYS, KNIFE_DROP
+from stock_ai.backtest.knife import HOLDING, KNIFE_DAYS, KNIFE_DROP, MIN_TURNOVER
 from stock_ai.core.logging import get_logger
 from stock_ai.data.jquants_dividend import ExDividend
 from stock_ai.data.schema import CLOSE, split_adjusted
@@ -167,146 +167,149 @@ class Alignment:
 
 
 @dataclasses.dataclass(frozen=True)
-class Exclusions:
-    """権利落ちで外した急落の内訳。**足して合う形で持つ。**"""
+class AdjustmentEffect:
+    """**配当を落とすと、急落の数がどう変わるか。**
 
-    excluded: int
-    still_qualifies: int
-    """配当を戻しても −20% を超える。**外すべきでなかった。**"""
+    `#16` は「権利落ちが窓に在れば外す」で機械的な値下がりを避けていたが、
+    それは事前登録 §3 の**代理**であって intent そのものではなかった
+    ——実データで**本物の急落を 189 件巻き込んでいた**（2026-09-20、
+    ユーザーが指摘）。
 
-    rescued: int
-    """戻すと届かない。**外して正しい。**"""
-
-    outside_window: int
-    """権利落ちが**下げに効かない位置**に在った。**外すべきでなかった。**
-
-    除外の窓は急落の ``days + 1`` 営業日だが、**下げに効くのは ``days``
-    日ぶんだけ**である——基準日（``index - days``）に落ちた配当は、
-    ``closes[index] ÷ closes[index - days]`` のどちらにも同じだけ乗って
-    いるので、比を1つも動かさない。**除外の窓が1日広い。**
+    **先に落としてから線を当てる**ようにしたので、ここが効き目を数える。
     """
 
-    revised_to_zero: int
-    """公表時は配当が在り、**後に無配へ訂正された。**
+    before: int
+    """落とさずに数えた急落（銘柄 × 日）。"""
 
-    **外した時点では正しい判断である**——後の訂正を使えば先読みになる
-    （事前登録 §8）。最終データだけを見て「外すべきでなかった」と数えると、
-    **その日に知りようがなかったことで過去の判断を裁く**ことになる。
-    同じ表に2つの情報集合が混ざる（2026-09-20、ユーザーが指摘）。
-    """
+    lost: int
+    """**落としたら事象でなくなった。** 配当が線の向こうに押し出していた。"""
 
-    no_amount: int
-    """額が**一度も公表されていない。** 分からないので外す側に倒した。
-
-    **これも間違いではない。** 落ちるかどうかが分からないとき、外し漏れの
-    ほうが悪い——事象の定義に機械的な値下がりが混ざる。
-    """
-
-    undecided: int
-    """額が読めないので判定できない。**分母に入れない。**"""
-
-    special: int
-    """特別配当が乗っていた件数。"""
-
-    median_yield: float
-    by_month: tuple[tuple[int, int], ...]
+    symbols: int
 
     def __post_init__(self) -> None:
-        """内訳が外した件数に足し合うこと。
-
-        **数と中身を別々に数えると、片方だけ直したときに黙ってずれる**
-        （`ExDateCoverage` と同じ作り）。
+        """落とした後が、落とす前を超えないこと。
 
         Raises:
-            ValueError: 内訳の合計が外した件数に合わない。
+            ValueError: 落とした後のほうが多い。
         """
-        parts = (
-            self.still_qualifies
-            + self.rescued
-            + self.outside_window
-            + self.revised_to_zero
-            + self.no_amount
-            + self.undecided
-        )
-        if parts != self.excluded:
-            raise ValueError(
-                f"内訳 {parts} 件（{self.still_qualifies} + {self.rescued} + "
-                f"{self.outside_window} + {self.revised_to_zero} + "
-                f"{self.no_amount} + {self.undecided}）が、"
-                f"外した {self.excluded} 件に合わない。"
-            )
+        if not 0 <= self.lost <= self.before:
+            raise ValueError(f"落とした後 {self.after} 件が、前 {self.before} 件と合わない。")
 
     @property
-    def decided(self) -> int:
-        """判定できた件数。"""
-        return self.kept_by_mistake + self.rescued + self.revised_to_zero + self.no_amount
+    def after(self) -> int:
+        """落として数えた急落。
 
-    @property
-    def kept_by_mistake(self) -> int:
-        """**外すべきでなかった**件数。
-
-        **その日に分かっていたことで裁く。** 後から無配へ訂正された分と、
-        額が一度も公表されていない分は**入れない**——どちらも、外した時点
-        では正しい判断である。
+        **増えることはない。** 窓の中の権利落ちは分母（基準日）だけを下げる
+        ので、**落とせば下げは必ず浅くなる。** だから調整後の集合は調整前の
+        部分集合である——`measure_adjustment` がそれを確かめている。
         """
-        return self.still_qualifies + self.outside_window
-
-    @property
-    def wrongly_excluded(self) -> float | None:
-        """外すべきでなかった割合。**判定できなかった件を分母に入れない。**"""
-        return self.kept_by_mistake / self.decided if self.decided else None
+        return self.before - self.lost
 
     def summary(self) -> str:
         """1行のまとめ。"""
-        if not self.excluded:
-            return "権利落ちで外した急落は無い。"
-        share = self.wrongly_excluded
-        told = "判定できた件が無い" if share is None else f"**{share:.1%} は外すべきでなかった**"
+        if not self.before:
+            return "急落を1件も拾えなかった。**比べていない。**"
         return (
-            f"外した {self.excluded:,} 件のうち、判定できたのは {self.decided:,} 件。"
-            f"{told}——**その日に分かっていたことで裁いている。** "
-            f"配当利回りの中央値 {self.median_yield:.2%}、"
-            f"特別配当は {self.special:,} 件。"
+            f"{self.symbols:,} 銘柄。配当を落とす前 {self.before:,} 件、"
+            f"落とした後 {self.after:,} 件——**配当が作っていた {self.lost:,} 件"
+            f"（{self.lost / self.before:.1%}）が消えた。**"
         )
 
     def warnings(self) -> list[str]:
         """気付かなくても目に入るべきこと。**早期 return しない。**"""
         found: list[str] = []
-        if not self.excluded:
-            return []
-        if self.undecided:
-            share = self.undecided / self.excluded
+        if not self.before:
+            return ["**急落を1件も拾えなかった。**"]
+        if not self.lost:
             found.append(
-                f"**{self.undecided:,} 件（{share:.1%}）は判定できなかった。** "
-                "配当の額か価格が引けない。**割合の分母に入れていない。**"
-            )
-        if self.revised_to_zero:
-            share = self.revised_to_zero / self.excluded
-            found.append(
-                f"**{self.revised_to_zero:,} 件（{share:.1%}）は、公表時は配当が在り、"
-                "後に無配へ訂正された。** **外した時点では正しい判断である**"
-                "——後の訂正を使えば先読みになる（事前登録 §8）。"
-            )
-        if self.no_amount:
-            found.append(
-                f"**{self.no_amount:,} 件は、額が一度も公表されていない。** "
-                "落ちるかどうかが分からないので、**外す側に倒した。**"
-            )
-        if self.outside_window:
-            found.append(
-                f"**{self.outside_window:,} 件は、配当が下げに効かない位置"
-                f"（基準日そのもの）に在った。** **比を動かせるのは "
-                f"{KNIFE_DAYS} 日ぶんだけ**である——**除外の窓が1日広い。**"
-            )
-        share = self.wrongly_excluded
-        if share is not None and share > 0.5:  # noqa: PLR2004 - 過半なら規則のほうが悪い
-            found.append(
-                f"**判定できた件の {share:.1%} は、配当を戻しても急落である。** "
-                "外しているのは配当が作った下げではなく、**本物の急落**である"
-                f"——配当は −{KNIFE_DROP:.0%} の線の向こうに押し出す役しか"
-                "していない。"
+                "**配当を落としても急落の集合が1件も変わらない。** "
+                "額が当たっていないかもしれない——`ex_dividends_known_by` の"
+                "権利落ち日が価格の日付と揃っているかを見ること。"
             )
         return found
+
+
+def measure_adjustment(  # noqa: PLR0913 - 事前登録が固定した条件をすべて受け取る
+    database: Database,
+    rates: dict[str, list[dt.date | float]] | object,
+    first: dt.date,
+    last: dt.date,
+    drop: float = KNIFE_DROP,
+    days: int = KNIFE_DAYS,
+    min_turnover: float = MIN_TURNOVER,
+    progress: Callable[[int, int], None] | None = None,
+) -> AdjustmentEffect:
+    """配当を落とす前と後で、急落の集合がどう変わるかを数える。
+
+    **効果は1つも計算しない。** 件数だけである。
+
+    Args:
+        database: 価格の保存先。
+        rates: :func:`~stock_ai.data.jquants_dividend.ex_dividends_known_by` の形。
+        first: この日以降の急落だけ。
+        last: この日以前の急落だけ。
+        drop: 急落と呼ぶ幅。
+        days: 急落を測る営業日数。
+        min_turnover: 流動性の下限（円）。
+        progress: ``(済み, 全体)`` で呼ばれる。
+
+    Returns:
+        :class:`AdjustmentEffect`。
+
+    Raises:
+        ValueError: 銘柄が1つも無い。
+    """
+    from stock_ai.backtest.gap_fill import liquid_bars
+    from stock_ai.backtest.knife import knife_positions
+    from stock_ai.data.schema import VOLUME, dividend_adjusted, split_adjusted
+    from stock_ai.database.repository import PriceRepository, list_securities
+
+    with database.session() as session:
+        names = [sym for sym, market in list_securities(session) if market == "JP"]
+    if not names:
+        raise ValueError("銘柄が1つも無い。価格を取り込んでいない。")
+
+    before = lost = read = 0
+    for position, symbol in enumerate(sorted(names), start=1):
+        if progress is not None:
+            progress(position, len(names))
+        with database.session() as session:
+            raw = PriceRepository(session).get_raw_prices(symbol)
+        if raw.empty:
+            continue
+        read += 1
+        plain = split_adjusted(raw)
+        netted = dividend_adjusted(plain, rates.get(symbol))  # type: ignore[union-attr]
+        when_of = [stamp.date() for stamp in plain.index]
+        volumes = plain[VOLUME].to_numpy(dtype=float)
+
+        def _hits(
+            frame: object,
+            *,
+            _when=when_of,
+            _volumes=volumes,
+        ) -> set[dt.date]:
+            closes = frame[CLOSE].to_numpy(dtype=float)  # type: ignore[index]
+            liquid = liquid_bars(closes, _volumes, min_turnover)
+            return {
+                _when[index]
+                for index in knife_positions(closes, liquid, drop, days)
+                if first <= _when[index] <= last
+            }
+
+        was, now = _hits(plain), _hits(netted)
+        # **増えたら、調整の向きが逆である。** 窓の中の権利落ちは分母だけを
+        # 下げるので、落とせば下げは必ず浅くなる。**増えることはありえない。**
+        appeared = now - was
+        if appeared:
+            raise ValueError(
+                f"{symbol}: 配当を落としたら急落が {len(appeared)} 件増えた。"
+                "**調整の向きが逆である。**"
+            )
+        before += len(was)
+        lost += len(was - now)
+
+    return AdjustmentEffect(before=before, lost=lost, symbols=read)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -448,123 +451,6 @@ def measure_alignment(  # noqa: PLR0913 - 期間と刻みを全部受け取る
         symbols=symbols,
         zero_events=len(zero_day),
         zero_on_the_day=median(zero_day) if zero_day else 0.0,
-    )
-
-
-def audit_exclusions(  # noqa: PLR0913, PLR0912, PLR0915 - 処分を1件ずつ数えるので分岐が多い
-    database: Database,
-    excluded: Sequence[tuple[str, dt.date]],
-    rates: Rates,
-    announced: dict[str, list[tuple[dt.date, dt.date]]] | None = None,
-    drop: float = KNIFE_DROP,
-    days: int = KNIFE_DAYS,
-    progress: Callable[[int, int], None] | None = None,
-) -> Exclusions:
-    """外した急落を、**配当を戻して**測り直す。
-
-    戻しても ``drop`` を超えるなら、**その急落は配当が作ったものではない。**
-
-    **外した理由になった日を、外したときと同じ引き方で作り直す**
-    （``announced`` を渡したとき）。最終データの権利落ち日で代用すると、
-    **訂正された日で外した件が「基準日の配当」に化ける。**
-
-    Args:
-        database: 価格の保存先。
-        excluded: 権利落ちで外した ``(銘柄, 日)``。
-        rates: :func:`~stock_ai.data.jquants_dividend.ex_dividend_rates` の形。
-        announced: ``(公表日, 権利落ち日)`` の並び。**外したときの引き方。**
-        drop: 急落と呼ぶ幅。
-        days: 急落を測る営業日数。
-        progress: ``(済み, 全体)`` で呼ばれる。
-
-    Returns:
-        :class:`Exclusions`。
-    """
-    from stock_ai.backtest.gap_fill import known_ex_dates
-
-    still = saved = outside = revised_zero = missing = undecided = special = 0
-    yields: list[float] = []
-    months: dict[int, int] = {}
-
-    by_symbol: dict[str, list[dt.date]] = {}
-    for symbol, when in excluded:
-        by_symbol.setdefault(symbol, []).append(when)
-
-    for position, symbol in enumerate(sorted(by_symbol), start=1):
-        if progress is not None:
-            progress(position, len(by_symbol))
-        when_of, closes, raw_closes = _sessions(database, symbol)
-        index_of = {day: i for i, day in enumerate(when_of)}
-        own = (announced or {}).get(symbol)
-        for when in by_symbol[symbol]:
-            months[when.month] = months.get(when.month, 0) + 1
-            index = index_of.get(when)
-            if index is None or index - days < 0 or closes[index - days] <= 0:
-                undecided += 1
-                continue
-
-            # **外した理由になった日を、外したときと同じ引き方で作り直す。**
-            triggers = known_ex_dates(own, when) if own is not None else set(rates.get(symbol, {}))
-            # **下げに効くのは ``days`` 日ぶんだけ。** 基準日に落ちた配当は
-            # 比のどちらにも同じだけ乗るので、1つも動かさない。
-            here = [
-                when_of[step]
-                for step in range(index - days + 1, index + 1)
-                if when_of[step] in triggers
-            ]
-            if not here:
-                outside += 1
-                continue
-
-            known = rates.get(symbol, {})
-            if any(day not in known for day in here):
-                # **額が一度も公表されていない。** `ex_dividend_rates` は額の
-                # 無い行を入れないので、ここに落ちる。**分からないので外した。**
-                missing += 1
-                continue
-
-            factor = 1.0
-            unreadable = False
-            paid: list[float] = []
-            for day in here:
-                ratio = _yield_on(rates, symbol, day, raw_closes[index_of[day] - 1])
-                if ratio is None:
-                    unreadable = True
-                    break
-                if ratio > 0:
-                    paid.append(ratio)
-                    factor /= 1.0 - ratio
-                if known[day].has_special:
-                    special += 1
-            if unreadable:
-                undecided += 1
-                continue
-            if not paid:
-                # **公表時は配当が在り、後に無配へ訂正された。**
-                # `ex_dates_known_by` は額 0 だけの日を外すので、ここに残るの
-                # はその経路だけである。**外した時点では正しい判断だった。**
-                revised_zero += 1
-                continue
-
-            yields.extend(paid)
-            fell = closes[index] / closes[index - days] - 1.0
-            without = (1.0 + fell) * factor - 1.0
-            if without <= -drop:
-                still += 1
-            else:
-                saved += 1
-
-    return Exclusions(
-        excluded=len(excluded),
-        still_qualifies=still,
-        rescued=saved,
-        outside_window=outside,
-        revised_to_zero=revised_zero,
-        no_amount=missing,
-        undecided=undecided,
-        special=special,
-        median_yield=median(yields) if yields else 0.0,
-        by_month=tuple(sorted(months.items())),
     )
 
 

@@ -6740,13 +6740,16 @@ def knife_power(
     from stock_ai.backtest.multiplicity import HYPOTHESIS_BUDGET, calibrated_t
     from stock_ai.backtest.universe_benchmark import equal_weighted_windows
     from stock_ai.core.logging import quiet_on_console
-    from stock_ai.data.jquants_dividend import ex_dates_known_by
+    from stock_ai.data.jquants_dividend import ex_dates_known_by, ex_dividends_known_by
+    from stock_ai.data.schema import dividend_adjusted
 
     settings = get_settings()
     configure_logging(settings.log_level)
 
     known = ex_dates_known_by(Path(archive))
     announced = known.by_symbol
+    # **価格から配当を落とすための額。** 落とせない日だけ外す（§3）。
+    paid = ex_dividends_known_by(Path(archive))
     if not announced:
         console.print(
             "[red]権利落ちの原本が無い。[/] **外さずには測らない**"
@@ -6780,7 +6783,7 @@ def knife_power(
             progress.update(task, completed=done, total=total)
 
         with quiet_on_console("stock_ai.backtest.knife"):
-            found = build_events(database, announced, progress=step)
+            found = build_events(database, announced, paid, progress=step)
     console.print(found.summary())
     for line in found.warnings():
         console.print(f"[yellow]{line}[/]")
@@ -6793,8 +6796,22 @@ def knife_power(
     for line in subtract.warnings():
         console.print(f"[yellow]{line}[/]")
 
+    # **保有する窓でも配当を落とす。** ショートは配当を払う側なので、
+    # 落とさないと取り高が高く出る——**急落側だけ直すと非対称が残る**
+    # （2026-09-20、ユーザーが指摘）。
+    def _net_of_dividends(symbol: str, frame: object) -> object:
+        return dividend_adjusted(frame, paid.get(symbol))  # type: ignore[arg-type]
+
     with quiet_on_console("stock_ai.backtest.event_window"):
-        sample = event_sample(database, found.events, HOLDING, benchmark, IS_END, subtract)
+        sample = event_sample(
+            database,
+            found.events,
+            HOLDING,
+            benchmark,
+            IS_END,
+            subtract,
+            adjust=_net_of_dividends,
+        )
     _report_event_disposition(sample, title="窓を当てた結果（IS のみ・件数）")
     if len(sample.values) < 2:  # noqa: PLR2004 - 1日では散らばりが測れない
         console.print(f"[red]値動きの取れたイベント日が {len(sample.values)} しかない。[/]")
@@ -6824,77 +6841,35 @@ def knife_power(
     )
 
 
-def _exclusion_table(broken: object, drop: float, days: int) -> Table:
-    """Build the table of what the ex-dividend rule threw out.
-
-    **札は短くする。** 日本語は空白が無いので rich から見れば1語で、列に
-    入らないと**末尾が `…` で消える**——実際に「（**外すべきでなかった**）」
-    が消えた（2026-09-20、ユーザーが2度指摘）。意味はその末尾に在った。
-
-    **説明は警告の行に置く。** そちらは `console.print` が折り返す。
-
-    Args:
-        broken: :class:`~stock_ai.backtest.ex_date_audit.Exclusions`。
-        drop: 急落と呼ぶ幅。
-        days: 急落を測る営業日数。
-
-    Returns:
-        描く前の表。**幅を決めた `Console` で刷れるように返す。**
-    """
-    table = Table(title=f"権利落ちで外した急落（配当を戻して測り直す・{days} 営業日）")
-    table.add_column("処分", overflow="fold")
-    table.add_column("件数", justify="right")
-    table.add_column("判定できた分", justify="right")
-    decided = broken.decided  # type: ignore[attr-defined]
-
-    def share(count: int) -> str:
-        return f"{count / decided:.1%}" if decided else "—"
-
-    rows = (
-        (f"戻しても −{drop:.0%}（外すべきでなかった）", broken.still_qualifies),  # type: ignore[attr-defined]
-        ("下げに効かない位置（外すべきでなかった）", broken.outside_window),  # type: ignore[attr-defined]
-        ("戻すと届かない（外して正しい）", broken.rescued),  # type: ignore[attr-defined]
-        ("後に無配へ訂正（外した時点では正しい）", broken.revised_to_zero),  # type: ignore[attr-defined]
-        ("額が一度も公表されず（外す側に倒した）", broken.no_amount),  # type: ignore[attr-defined]
-    )
-    for label, count in rows:
-        table.add_row(label, f"{count:,}", share(count))
-    table.add_row("判定できない（分母に入れない）", f"{broken.undecided:,}", "—")  # type: ignore[attr-defined]
-    table.add_section()
-    table.add_row("外した合計", f"{broken.excluded:,}", "100.0%")  # type: ignore[attr-defined]
-    return table
-
-
 @app.command(name="ex-date-audit")
 def ex_date_audit(
     archive: str = typer.Option(
         str(DEFAULT_ARCHIVE_DIR), "--dir", help="Where the archived originals live."
     ),
 ) -> None:
-    """Look inside the crashes #16 threw out for a dividend.
+    """Check the dividend data #16 leans on, and what adjusting for it changes.
 
-    **警告が「中身を見ること」と言った相手である。** 言うだけで、見る道具を
-    置いていなかった（2026-09-20、ユーザーが指摘）。
+    **3つ見る。**
 
-    **3つの説明を見分ける。**
+    1. **`ExDate` はずれていないか** — 権利落ち日の前後を並べる。全件
+    2. **配当を落とすと急落の数がどう変わるか** — 順序を直した効き目
+    3. **保有窓の中の権利落ち** — 落とした後は押し上げが消えているはず
 
-    1. **`ExDate` の読み違い** — 権利落ち日に値が下がっていない
-    2. **特別配当** — 利回りが大きい
-    3. **窓が広いだけ** — 配当を戻しても −20% を超える
-
-    **3つ目なら、外すべきでない急落を外している。**
-
-    **効果は1つも出さない。** 判定を先食いしないため、リターンは触らない。
+    **効果は1つも計算しない。** 判定を先食いしないため、リターンは触らない。
     """
     from stock_ai.backtest.ex_date_audit import (
-        audit_exclusions,
         audit_holding_window,
+        measure_adjustment,
         measure_alignment,
     )
     from stock_ai.backtest.gap_fill import IS_FROM, OOS_END
     from stock_ai.backtest.knife import HOLDING, KNIFE_DAYS, KNIFE_DROP, build_events
     from stock_ai.core.logging import quiet_on_console
-    from stock_ai.data.jquants_dividend import ex_dates_known_by, ex_dividend_rates
+    from stock_ai.data.jquants_dividend import (
+        ex_dates_known_by,
+        ex_dividend_rates,
+        ex_dividends_known_by,
+    )
 
     settings = get_settings()
     configure_logging(settings.log_level)
@@ -6909,7 +6884,7 @@ def ex_date_audit(
     console.print(reading.summary())
     for line in reading.warnings():
         console.print(f"[yellow]{line}[/]")
-    console.print("[dim]**額は最後に公表された値**——監査専用で、売買の判定には使わない。[/]")
+    console.print("[dim]**額は最後に公表された値**——ここは監査で、売買の判定には使わない。[/]")
 
     database = Database()
     database.create_all()
@@ -6946,14 +6921,8 @@ def ex_date_audit(
     if lined.zero_events:
         console.print(
             f"[dim]額 0 と読んだ {lined.zero_events:,} 件の権利落ち日は "
-            f"**{lined.zero_on_the_day:+.3%}**。**無配なら段差は出ない**"
-            "——正の額の 0.99倍と同じ裏取りを、0 側にも当てている。[/]"
+            f"**{lined.zero_on_the_day:+.3%}**。**無配なら段差は出ない。**[/]"
         )
-    console.print(
-        f"[dim]配当利回りの中央値は {lined.median_yield:.2%}。"
-        "**相場は引いていない**——隣り合う日どうしを比べるので、"
-        "その日の相場はどのオフセットにも同じだけ乗る。[/]"
-    )
     for line in lined.warnings():
         console.print(f"[yellow]{line}[/]")
     if not lined.aligned:
@@ -6961,41 +6930,43 @@ def ex_date_audit(
         raise typer.Exit(code=1)
     console.print("[green]段差は権利落ち日そのものに在る。[/] `ExDate` の読み違いではない。")
 
-    # --- 2. 外した急落は、外すべきだったか ------------------------------
+    # --- 2. 配当を落とすと、急落の数がどう変わるか ----------------------
+    paid = ex_dividends_known_by(Path(archive))
+    with spinner() as progress:
+        task = progress.add_task("配当を落とす前と後を数えています", total=None)
+        with quiet_on_console("stock_ai.backtest.ex_date_audit"):
+            moved = measure_adjustment(
+                database,
+                paid,
+                IS_FROM,
+                OOS_END,
+                progress=lambda done, total: progress.update(task, completed=done, total=total),
+            )
+    console.print()
+    console.print(moved.summary())
+    console.print(
+        f"[dim]**先に落としてから −{KNIFE_DROP:.0%} を当てる。** 「権利落ちが窓に在れば"
+        "外す」は事前登録 §3 の代理で、**本物の急落を巻き込んでいた**"
+        "（2026-09-20、ユーザーが指摘）。[/]"
+    )
+    for line in moved.warnings():
+        console.print(f"[yellow]{line}[/]")
+
+    # --- 3. 保有窓の中の権利落ち（落とした後に残っていないか） ----------
     known = ex_dates_known_by(Path(archive))
-    announced = known.by_symbol
-    console.print(f"[dim]{known.summary()}[/]")
     with spinner() as progress:
         task = progress.add_task("急落を集め直しています", total=None)
         with quiet_on_console("stock_ai.backtest.knife"):
             found = build_events(
                 database,
-                announced,
+                known.by_symbol,
+                paid,
                 progress=lambda done, total: progress.update(task, completed=done, total=total),
             )
     console.print(found.summary())
-
-    with spinner() as progress:
-        task = progress.add_task("外した急落に配当を戻しています", total=None)
-        with quiet_on_console("stock_ai.backtest.ex_date_audit"):
-            broken = audit_exclusions(
-                database,
-                found.ex_date_events,
-                rates,
-                # **外したときと同じ引き方で理由の日を作り直す。** 最終データで
-                # 代用すると、訂正された日で外した件が「基準日」に化ける。
-                announced=announced,
-                progress=lambda done, total: progress.update(task, completed=done, total=total),
-            )
-    console.print(_exclusion_table(broken, KNIFE_DROP, KNIFE_DAYS))
-    console.print(broken.summary())
-    if broken.by_month:
-        spread = "、".join(f"{month}月 {count:,}" for month, count in broken.by_month)
-        console.print(f"[dim]月ごと: {spread}[/]")
-    for line in broken.warnings():
+    for line in found.warnings():
         console.print(f"[yellow]{line}[/]")
 
-    # --- 3. 保有窓の中の権利落ち（外していないほう） --------------------
     with spinner() as progress:
         task = progress.add_task("保有窓の中の権利落ちを数えています", total=None)
         with quiet_on_console("stock_ai.backtest.ex_date_audit"):
@@ -7008,8 +6979,8 @@ def ex_date_audit(
     console.print()
     console.print(inside.summary())
     console.print(
-        "[dim]**こちらは外していない。** 除外の窓は急落を作った"
-        f"{KNIFE_DAYS} 営業日だけで、保有する {HOLDING} 営業日は見ていない。[/]"
+        f"[dim]**落とした後なので、押し上げは消えているはず。** 急落を作った {KNIFE_DAYS} "
+        f"営業日と保有する {HOLDING} 営業日を、同じに扱っている。[/]"
     )
     for line in inside.warnings():
         console.print(f"[yellow]{line}[/]")

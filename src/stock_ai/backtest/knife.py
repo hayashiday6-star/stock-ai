@@ -38,13 +38,16 @@
 なりえない日**を窓に入れていて、実データで 158 件をそれで外していた
 （2026-09-20）。
 
-**額 0 の公表でも外していた。** 無配の公表にも `ExDate` は入る。実データで
-371 件（判定できた分の 56.1%）をそれで外していた（2026-09-20）。
-`ex_dates_known_by` が**その時点で公表されていた額**を見るようにしたので、
-**落ちるものが無い日では外さない。**
+**そして順序が逆だった**（2026-09-20、ユーザーが指摘）。§3 が言っているのは
+「機械的な値下がりを外す」で、「権利落ちが窓に在れば外す」は**代理**である。
+実データで、**外すために置いた規則が本物の急落を 189 件巻き込んでいた。**
 
-**「配当を戻しても −20%」の 190 件は、外したままにしてある。** 窓に権利落ちが
-触れたら外す、という事前登録 §3 のとおりである。**数字を見た後なので変えない。**
+**先に配当を落としてから −20% を当てる。** そうすれば配当が線の向こうに
+押し出すことが起きないので、**外す規則そのものが要らない。**
+
+**残るのは、額が一度も公表されていない権利落ちだけ**——調整のしようが無い。
+そこは外す。**急落側と保有側の両方を見る**——ショートは配当を払う側なので、
+片側だけ外すと非対称が残る。
 
 ## 急落の定義はここが正本
 
@@ -64,7 +67,7 @@ from stock_ai.backtest.discontinuity import crossings, session_breaks, spans_bre
 from stock_ai.backtest.gap_fill import IS_END, IS_FROM, OOS_END, known_ex_dates, liquid_bars
 from stock_ai.backtest.pead import MIN_TURNOVER
 from stock_ai.core.logging import get_logger
-from stock_ai.data.schema import CLOSE, VOLUME, split_adjusted
+from stock_ai.data.schema import CLOSE, VOLUME, dividend_adjusted, split_adjusted
 from stock_ai.database.engine import Database
 
 logger = get_logger(__name__)
@@ -144,12 +147,10 @@ class KnifeEvents:
             # 押し出せば足りる。** しかも「20% 下げた」で絞る時点で、
             # 押し出された側が選ばれる。
             found.append(
-                f"**権利落ちで {self.excluded_ex_date:,} 件外した。** "
-                "**3つの説明のうち2つは片付いている**（2026-09-20）——"
-                "`ExDate` の読み違いは否定済み（下げは利回りの 0.99倍）、"
-                "額 0 の公表では外さない。**残るのは「特別配当」と「配当が"
-                f"{KNIFE_DROP:.0%} の線の向こうに押し出した」の2つ**で、"
-                "後者なら**外すべきでない急落を外している。** "
+                f"**額を落とせない権利落ちで {self.excluded_ex_date:,} 件外した。** "
+                "**額が公表されていれば、外さずに価格から落としている。** "
+                "ここに残るのは**額が一度も公表されていない権利落ち**だけで、"
+                "調整のしようが無いぶんである。"
                 "`checks\\権利落ちの日は合っているか.bat` が数える。"
             )
         if not self.days_oos:
@@ -196,6 +197,7 @@ def knife_positions(
 def build_events(  # noqa: PLR0913 - 事前登録が固定した条件をすべて受け取る
     database: Database,
     announced: dict[str, list[tuple[dt.date, dt.date]]],
+    rates: dict[str, list[tuple[dt.date, dt.date, float]]] | None = None,
     symbols: list[str] | None = None,
     drop: float = KNIFE_DROP,
     days: int = KNIFE_DAYS,
@@ -207,7 +209,10 @@ def build_events(  # noqa: PLR0913 - 事前登録が固定した条件をすべ�
 
     Args:
         database: 価格の保存先。
-        announced: :func:`~stock_ai.data.jquants_dividend.ex_dates_known_by` の形。
+        announced: :func:`~stock_ai.data.jquants_dividend.ex_dates_known_by` の
+            ``by_symbol``。**額を落とせなかった権利落ちを外すのに使う。**
+        rates: :func:`~stock_ai.data.jquants_dividend.ex_dividends_known_by` の形。
+            **価格から配当を落とすのに使う。** 渡さなければ落とさない。
         symbols: 対象銘柄。省くと JP の全銘柄。
         drop: 急落と呼ぶ幅。
         days: 急落を測る営業日数。
@@ -243,13 +248,22 @@ def build_events(  # noqa: PLR0913 - 事前登録が固定した条件をすべ�
             if raw.empty:
                 continue
             read += 1
-            adjusted = split_adjusted(raw)
+            # **配当を落としてから −20% を当てる。** 順序が逆だと、配当が線の
+            # 向こうに押し出した下げまで事象になる（2026-09-20、ユーザーが
+            # 指摘）。**外す規則は代理であって、§3 の「機械的な値下がりを
+            # 外す」そのものではなかった。**
+            paid = (rates or {}).get(symbol)
+            adjusted = dividend_adjusted(split_adjusted(raw), paid)
             closes = adjusted[CLOSE].to_numpy(dtype=float)
             volumes = adjusted[VOLUME].to_numpy(dtype=float)
             when_of = [stamp.date() for stamp in adjusted.index]
             liquid = liquid_bars(closes, volumes, min_turnover)
             prefix = crossings(session_breaks(adjusted[CLOSE]))
             last = len(closes) - 1
+            # **落とせなかった権利落ちだけ、外す側に残す。** 額が一度も公表
+            # されていない日は調整のしようが無く、**機械的な値下がりが値動きに
+            # 混ざったままになる。**
+            adjusted_days = {when for _published, when, _rate in paid or []}
             own = announced.get(symbol)
 
             # **絞りの前に数える。** 外した件数を、外す対象と同じ単位で出す。
@@ -261,16 +275,18 @@ def build_events(  # noqa: PLR0913 - 事前登録が固定した条件をすべ�
                 if not liquid[index]:
                     thin += 1
                     continue
-                # **急落を作った ``days`` 日に権利落ちが入っていたら外す。**
+                # **落とせた配当は外さない。** 価格から引いてあるので、
+                # **配当が −20% の線の向こうに押し出すことが起きない。**
+                # 外す規則は代理で、本物の急落を 189 件巻き込んでいた
+                # （2026-09-20、ユーザーが指摘）。
                 #
-                # **基準日（``index - days``）は入れない。** そこで落ちた配当は
-                # ``closes[index] ÷ closes[index - days]`` の**どちらにも同じ
-                # だけ乗る**ので、比を1つも動かさない。**外す理由になりえない。**
-                # 窓を ``days + 1`` にしていて、実データで 158 件をそれで
-                # 外していた（2026-09-20、`ex-date-audit` が数えた）。
-                known = known_ex_dates(own, when)
+                # **残るのは落とせなかったぶんだけ。** そして窓は**急落側と
+                # 保有側の両方**を見る——ショートは配当を払う側なので、
+                # 片側だけ外すと非対称が残る。
+                known = known_ex_dates(own, when) - adjusted_days
                 if known and any(
-                    when_of[step] in known for step in range(index - days + 1, index + 1)
+                    when_of[step] in known
+                    for step in range(index - days + 1, min(index + holding, last) + 1)
                 ):
                     ex_dropped += 1
                     excluded.append((symbol, when))

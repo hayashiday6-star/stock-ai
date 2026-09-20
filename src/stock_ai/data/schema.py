@@ -9,6 +9,10 @@ All price providers must return a DataFrame in this shape so downstream layers
 
 from __future__ import annotations
 
+import datetime as dt
+from collections.abc import Sequence
+
+import numpy as np
 import pandas as pd
 
 from stock_ai.core.exceptions import DataError
@@ -110,6 +114,70 @@ def split_adjusted(prices: pd.DataFrame) -> pd.DataFrame:
     close = pd.to_numeric(prices[CLOSE], errors="coerce")
     adjusted = pd.to_numeric(prices[ADJ_CLOSE], errors="coerce")
     factor = (adjusted / close).where(close > 0).fillna(1.0)
+
+    frame = prices.copy()
+    for column in (OPEN, HIGH, LOW, CLOSE):
+        if column in frame.columns:
+            frame[column] = pd.to_numeric(frame[column], errors="coerce") * factor
+    return frame
+
+
+def dividend_adjusted(
+    prices: pd.DataFrame,
+    announced: Sequence[tuple[dt.date, dt.date, float]] | None,
+) -> pd.DataFrame:
+    """Take the dividend drop out of ``open``/``high``/``low``/``close``.
+
+    **配当を落としてから測る。** そうしないと、権利落ちの値下がりが値動きに
+    見える。`#16`（落ちるナイフ）は「5営業日で −20%」で事象を選ぶので、
+    **配当が線の向こうに押し出した分**まで事象になっていた——実データで
+    98 件がそれで、**外すために置いた規則が本物の急落を 189 件巻き込んで
+    いた**（2026-09-20、ユーザーが指摘）。
+
+    **順序の問題である。** 「権利落ちが窓に在れば外す」は代理であって、
+    事前登録 §3 が言う「機械的な値下がりを外す」そのものではない。
+    **先に落としてから線を当てれば、外す規則は要らない。**
+
+    そして**ショートは配当を払う側**なので、保有する窓でも同じことが要る。
+    落とさずに測ると取り高が高く出る。**急落側だけ直すと、非対称が残る。**
+
+    ここは :func:`split_adjusted` の**後**に当てる。倍率は
+    ``1 − 配当 ÷ 権利落ち日の前日終値``で、**その日より前**の足に掛かる。
+
+    Args:
+        prices: :func:`split_adjusted` を通した足。**日付の昇順**であること。
+        announced: ``(公表日, 権利落ち日, 額)`` の並び
+            （:func:`~stock_ai.data.jquants_dividend.ex_dividends_known_by`）。
+            **その足より後に公表されたものは使わない**——使えば先読みになる。
+
+    Returns:
+        新しい frame。入力は変えない。配当が1件も当たらなければそのまま。
+    """
+    if not announced or CLOSE not in prices.columns or prices.empty:
+        return prices
+
+    when_of = [stamp.date() for stamp in prices.index]
+    index_of = {day: position for position, day in enumerate(when_of)}
+    close = pd.to_numeric(prices[CLOSE], errors="coerce").to_numpy(dtype=float)
+
+    # **後ろから畳む。** 権利落ち日より前の足に、その日の倍率を掛けていく。
+    factor = np.ones(len(close), dtype=float)
+    for published, ex_date, rate in announced:
+        position = index_of.get(ex_date)
+        # **その日までに公表されたものだけ。** 公表が権利落ち日より後なら、
+        # 落ちる時点では分かっていない。
+        if position is None or position == 0 or published > ex_date:
+            continue
+        before = close[position - 1]
+        if before <= 0 or rate <= 0:
+            continue
+        ratio = rate / before
+        if ratio <= 0 or ratio >= 1.0:
+            continue
+        factor[:position] *= 1.0 - ratio
+
+    if np.all(factor == 1.0):
+        return prices
 
     frame = prices.copy()
     for column in (OPEN, HIGH, LOW, CLOSE):

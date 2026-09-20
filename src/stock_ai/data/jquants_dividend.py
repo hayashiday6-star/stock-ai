@@ -564,6 +564,40 @@ def ex_dividend_rates(directory: Path) -> ExDividends:
     )
 
 
+def ex_dividends_known_by(directory: Path) -> dict[str, list[tuple[dt.date, dt.date, float]]]:
+    """銘柄ごとの ``(公表日, 権利落ち日, 1株あたり配当)``。**先読みを外す。**
+
+    :func:`ex_dates_known_by` に額を足したもの。**価格を配当調整する**のに使う
+    （:func:`~stock_ai.data.schema.dividend_adjusted`）。
+
+    **その権利落ち日について、いちばん早く正の額が公表された時点**を採る。
+    後から 0 へ訂正されたことは使わない——**使えば先読みになる**（事前登録
+    §8）。額が一度も公表されていない権利落ち日は**入らない**（調整のしよう
+    が無い。外すかどうかは :func:`ex_dates_known_by` が決める）。
+
+    Args:
+        directory: 原本の置き場所。
+
+    Returns:
+        ``銘柄 -> [(公表日, 権利落ち日, 額), ...]``。**公表日の順に並ぶ。**
+    """
+    best: dict[tuple[str, dt.date], tuple[dt.date, float]] = {}
+    for symbol, published, when, rate in _ex_date_rows(directory):
+        if rate is None or rate <= 0:
+            continue
+        key = (symbol, when)
+        current = best.get(key)
+        if current is None or published < current[0]:
+            best[key] = (published, rate)
+
+    found: dict[str, list[tuple[dt.date, dt.date, float]]] = {}
+    for (symbol, when), (published, rate) in best.items():
+        found.setdefault(symbol, []).append((published, when, rate))
+    for rows in found.values():
+        rows.sort()
+    return found
+
+
 def _ex_date_rows(directory: Path) -> Iterable[tuple[str, dt.date, dt.date, float | None]]:
     """原本から ``(銘柄, 公表日, 権利落ち日, 額)`` を1行ずつ。**取りには行かない。**
 

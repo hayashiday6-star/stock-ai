@@ -189,38 +189,58 @@ class TestCollectingTheCrashes:
         assert found.excluded_ex_date == 0
         assert found.events
 
-    def test_the_warning_fires_when_a_dividend_was_excluded(self) -> None:
-        """**#15 とは逆。** ここは 0 でないほうが驚きである。"""
-        where = _at(_IS_CRASH)
-        database, symbols = _database(crashes=(where, _at(_OOS_CRASH)))
-        crash_day = _INDEX[where + KNIFE_DAYS].date()
-        announced = {symbol: [(dt.date(2013, 1, 10), crash_day)] for symbol in symbols}
+    def test_only_an_unadjustable_dividend_excludes(self) -> None:
+        """**額が公表されていれば外さない。** 価格から落とすほうが先である。
 
-        found = build_events(database, announced, symbols=symbols)
-
-        assert any("権利落ちで" in line for line in found.warnings())
-
-    def test_the_warning_offers_all_three_explanations(self) -> None:
-        """**驚く理由を決め打たない。**
-
-        最初の文面は「特別配当か、`ExDate` の読み違いである」と2つに
-        決めていた。**3つ目——窓が6営業日あるので、配当が線の向こうに
-        押し出した——を書き落としていた**（2026-09-20）。3つ目なら、
-        **外すべきでない急落を外している。**
+        「権利落ちが窓に在れば外す」は §3 の**代理**で、実データで本物の
+        急落を 189 件巻き込んでいた（2026-09-20、ユーザーが指摘）。
         """
-        where = _at(_IS_CRASH)
-        database, symbols = _database(crashes=(where, _at(_OOS_CRASH)))
-        crash_day = _INDEX[where + KNIFE_DAYS].date()
-        announced = {symbol: [(dt.date(2013, 1, 10), crash_day)] for symbol in symbols}
+        database, symbols, first = self._one_crash()
+        inside = _INDEX[first - KNIFE_DAYS + 1].date()
+        announced = {symbols[0]: [(dt.date(2013, 1, 10), inside)]}
+        # 額が分かっていれば、落として測る——外さない。
+        rates = {symbols[0]: [(dt.date(2013, 1, 10), inside, 1.0)]}
+
+        with_rate = build_events(database, announced, rates, symbols=symbols)
+        without = build_events(database, announced, symbols=symbols)
+
+        assert with_rate.excluded_ex_date == 0, "**落とせるのに外している。**"
+        assert without.excluded_ex_date > 0, "**落とせないのに外していない。**"
+
+    def test_the_warning_names_the_one_reason_left(self) -> None:
+        """残るのは「額が一度も公表されていない」だけ。"""
+        database, symbols, first = self._one_crash()
+        inside = _INDEX[first - KNIFE_DAYS + 1].date()
+        announced = {symbols[0]: [(dt.date(2013, 1, 10), inside)]}
 
         told = " ".join(build_events(database, announced, symbols=symbols).warnings())
 
-        assert "特別配当" in told
-        assert "押し出した" in told, "**配当が線の向こうに押し出した**場合が抜けている。"
-        # **片付いた説明は「片付いた」と書く。** 並べたままだと、見分けが
-        # 済んでいないように読める（2026-09-20、ユーザーが指摘）。
-        assert "否定済み" in told
-        assert "額 0 の公表では外さない" in told
+        assert "額を落とせない権利落ち" in told
+        assert "額が一度も公表されていない" in told
+
+    def test_a_dividend_in_the_holding_window_excludes_too(self) -> None:
+        """**急落側だけ外すと、非対称が残る。**
+
+        ショートは配当を払う側なので、保有する窓の権利落ちも同じに扱う
+        （2026-09-20、ユーザーが指摘）。
+        """
+        database, symbols, first = self._one_crash()
+        inside = _INDEX[first + 2].date()
+        announced = {symbols[0]: [(dt.date(2013, 1, 10), inside)]}
+
+        found = build_events(database, announced, symbols=symbols)
+
+        assert found.excluded_ex_date > 0, "**保有窓の権利落ちを見ていない。**"
+
+    def test_a_dividend_past_the_holding_window_does_not(self) -> None:
+        """**両向きに置く。** 窓の外まで外したら、何も区別していない。"""
+        database, symbols, first = self._one_crash()
+        outside = _INDEX[first + HOLDING + 3].date()
+        announced = {symbols[0]: [(dt.date(2013, 1, 10), outside)]}
+
+        found = build_events(database, announced, symbols=symbols)
+
+        assert found.excluded_ex_date == 0
 
     def test_a_dividend_on_the_base_day_does_not_exclude(self) -> None:
         """**基準日の配当は、比を1つも動かさない。**
@@ -270,15 +290,14 @@ class TestCollectingTheCrashes:
         件数だけ返していたので、外したものが何だったかを後から調べられ
         なかった（2026-09-20、ユーザーが指摘）。
         """
-        where = _at(_IS_CRASH)
-        database, symbols = _database(crashes=(where, _at(_OOS_CRASH)))
-        crash_day = _INDEX[where + KNIFE_DAYS].date()
-        announced = {symbol: [(dt.date(2013, 1, 10), crash_day)] for symbol in symbols}
+        database, symbols, first = self._one_crash()
+        inside = _INDEX[first - KNIFE_DAYS + 1].date()
+        announced = {symbols[0]: [(dt.date(2013, 1, 10), inside)]}
 
         found = build_events(database, announced, symbols=symbols)
 
+        assert found.excluded_ex_date > 0
         assert len(found.ex_date_events) == found.excluded_ex_date
-        assert all(when == crash_day for _symbol, when in found.ex_date_events)
 
     def test_a_count_that_disagrees_with_the_contents_is_refused(self) -> None:
         """**数と中身がずれたら、作った時点で落ちる。**"""

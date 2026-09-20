@@ -20,9 +20,9 @@ import pandas as pd
 import pytest
 
 from stock_ai.backtest.ex_date_audit import (
-    Exclusions,
-    audit_exclusions,
+    AdjustmentEffect,
     audit_holding_window,
+    measure_adjustment,
     measure_alignment,
 )
 from stock_ai.backtest.knife import KNIFE_DAYS, KNIFE_DROP
@@ -220,211 +220,6 @@ class TestFindingWhereTheStepIs:
             measure_alignment(_database({}), {}, _FIRST, _LAST, span=0)
 
 
-class TestWhetherTheCrashesShouldHaveBeenDropped:
-    """**配当を戻して測り直す。** 戻しても急落なら、外すべきでなかった。"""
-
-    @staticmethod
-    def _one(fall: float, yield_on_day: float, offset: int) -> tuple[Database, dict, list]:
-        """``offset`` 日目に配当を置いた急落を1件だけ作る。"""
-        crash = _at("2015-06-10")
-        drops = {crash - KNIFE_DAYS + 1 + step: 0.0 for step in range(KNIFE_DAYS)}
-        # **下げを均等に割る。** 端に寄せると、戻す位置で答えが変わる。
-        each = 1.0 - (1.0 - fall) ** (1.0 / KNIFE_DAYS)
-        drops = dict.fromkeys(drops, each)
-        ex_index = crash - KNIFE_DAYS + offset
-        drops[ex_index] = 1.0 - (1.0 - drops.get(ex_index, 0.0)) * (1.0 - yield_on_day)
-        closes = _walk(0, drops)
-        when = _INDEX[crash].date()
-        rates = {
-            "1401": {
-                _INDEX[ex_index].date(): ExDividend(
-                    rate=closes[ex_index - 1] * yield_on_day, special=0.0
-                )
-            }
-        }
-        return _database({"1401": closes}), rates, [("1401", when)]
-
-    def test_a_real_crash_is_flagged_as_wrongly_excluded(self) -> None:
-        """配当 2% を戻しても −20% を超えるなら、外すべきでなかった。"""
-        database, rates, excluded = self._one(fall=0.30, yield_on_day=0.02, offset=3)
-
-        found = audit_exclusions(database, excluded, rates)
-
-        assert found.still_qualifies == 1
-        assert found.rescued == 0
-        assert found.wrongly_excluded == 1.0
-
-    def test_a_crash_the_dividend_made_is_flagged_as_correct(self) -> None:
-        """**この検査が落ちる条件を作る。** 大きい配当なら、外して正しい。"""
-        database, rates, excluded = self._one(fall=0.21, yield_on_day=0.12, offset=3)
-
-        found = audit_exclusions(database, excluded, rates)
-
-        assert found.rescued == 1
-        assert found.still_qualifies == 0
-        assert found.wrongly_excluded == 0.0
-
-    def test_a_dividend_on_the_base_day_cannot_have_caused_it(self) -> None:
-        """基準日の配当は比を1つも動かさない。**除外の窓が1日広い。**"""
-        database, rates, excluded = self._one(fall=0.30, yield_on_day=0.02, offset=0)
-
-        found = audit_exclusions(database, excluded, rates)
-
-        assert found.outside_window == 1
-        assert found.still_qualifies == 0
-        assert any("1日広い" in line for line in found.warnings())
-
-    def test_a_special_dividend_is_counted(self) -> None:
-        crash = _at("2015-06-10")
-        ex_index = crash - 2
-        closes = _walk(0, {crash - KNIFE_DAYS + 1 + step: 0.07 for step in range(KNIFE_DAYS)})
-        rates = {
-            "1401": {
-                _INDEX[ex_index].date(): ExDividend(
-                    rate=closes[ex_index - 1] * 0.02, special=closes[ex_index - 1] * 0.015
-                )
-            }
-        }
-        database = _database({"1401": closes})
-
-        found = audit_exclusions(database, [("1401", _INDEX[crash].date())], rates)
-
-        assert found.special == 1
-
-    def test_an_unpriced_dividend_is_undecided(self) -> None:
-        """**判定できなかった件を、分母に入れない。**"""
-        crash = _at("2015-06-10")
-        ex_index = crash - 2
-        closes = _walk(0, {crash - KNIFE_DAYS + 1 + step: 0.07 for step in range(KNIFE_DAYS)})
-        # ありえない利回り（株価の 9 割）は読み違いとして落ちる。
-        rates = {"1401": {_INDEX[ex_index].date(): ExDividend(rate=closes[0] * 9, special=0.0)}}
-
-        found = audit_exclusions(
-            _database({"1401": closes}), [("1401", _INDEX[crash].date())], rates
-        )
-
-        assert found.undecided == 1
-        assert found.decided == 0
-        assert found.wrongly_excluded is None
-
-    def test_a_symbol_with_no_prices_is_undecided(self) -> None:
-        found = audit_exclusions(_database({}), [("9999", dt.date(2015, 6, 10))], {})
-
-        assert found.undecided == 1
-        assert found.excluded == 1
-
-    def test_the_months_are_counted(self) -> None:
-        found = audit_exclusions(
-            _database({}),
-            [
-                ("9999", dt.date(2015, 3, 30)),
-                ("9998", dt.date(2015, 3, 31)),
-                ("9997", dt.date(2015, 9, 29)),
-            ],
-            {},
-        )
-
-        assert dict(found.by_month) == {3: 2, 9: 1}
-
-
-class TestTheZeroDividendCase:
-    """**額 0 は「読めない」ではなく「落ちるものが無い」。**
-
-    無配の公表にも `ExDate` は入る。`ex_dates_known_by` が額を見ていなかった
-    ので、**落ちるものが無い日で急落を外していた**（2026-09-20 に直した）。
-
-    **残るのは「公表時は配当が在り、後に無配へ訂正された」だけ。** これは
-    **外した時点では正しい判断**なので、「外すべきでなかった」に数えない
-    ——最終データだけで裁くと、**その日に知りようがなかったことで過去の
-    判断を裁く**ことになる。
-    """
-
-    @staticmethod
-    def _one(rate: float) -> tuple[Database, dict, list, dict]:
-        crash = _at("2015-06-10")
-        ex_index = crash - 2
-        closes = _walk(0, {crash - KNIFE_DAYS + 1 + step: 0.07 for step in range(KNIFE_DAYS)})
-        when = _INDEX[ex_index].date()
-        rates = {"1401": {when: ExDividend(rate=rate, special=0.0)}}
-        announced = {"1401": [(dt.date(2015, 1, 5), when)]}
-        return _database({"1401": closes}), rates, [("1401", _INDEX[crash].date())], announced
-
-    def test_a_dividend_revised_to_zero_is_its_own_bucket(self) -> None:
-        """公表時は在り、最終データでは 0。**外した時点では正しい。**"""
-        database, rates, excluded, announced = self._one(rate=0.0)
-
-        found = audit_exclusions(database, excluded, rates, announced=announced)
-
-        assert found.revised_to_zero == 1
-        assert found.undecided == 0, "**0 を「判定できない」に落とさない。**"
-        assert found.kept_by_mistake == 0, "**その日に知りようがなかったことで裁いている。**"
-        assert found.decided == 1
-
-    def test_a_real_dividend_is_not_in_that_bucket(self) -> None:
-        """**両向きに置く。** 常にそのバケットに入るなら区別していない。"""
-        database, rates, excluded, announced = self._one(rate=20.0)
-
-        found = audit_exclusions(database, excluded, rates, announced=announced)
-
-        assert found.revised_to_zero == 0
-
-    def test_a_date_with_no_amount_is_its_own_bucket(self) -> None:
-        """**額が一度も公表されていない。** 「基準日」に化けさせない。"""
-        crash = _at("2015-06-10")
-        closes = _walk(0, {crash - KNIFE_DAYS + 1 + step: 0.07 for step in range(KNIFE_DAYS)})
-        # 公表時は crash-2、最終データには入っていない。
-        announced = {"1401": [(dt.date(2015, 1, 5), _INDEX[crash - 2].date())]}
-
-        found = audit_exclusions(
-            _database({"1401": closes}),
-            [("1401", _INDEX[crash].date())],
-            {"1401": {}},
-            announced=announced,
-        )
-
-        assert found.no_amount == 1
-        assert found.outside_window == 0, "**未公表を「基準日の配当」に化けさせない。**"
-        assert found.kept_by_mistake == 0
-
-
-class TestTheBreakdownAddsUp:
-    """**内訳が合わなければ、作った時点で落ちる。** `ExDateCoverage` と同じ作り。"""
-
-    def test_a_breakdown_that_does_not_add_up_is_refused(self) -> None:
-        with pytest.raises(ValueError, match="合わない"):
-            Exclusions(
-                excluded=819,
-                still_qualifies=400,
-                rescued=200,
-                outside_window=0,
-                revised_to_zero=0,
-                no_amount=0,
-                undecided=0,
-                special=0,
-                median_yield=0.02,
-                by_month=(),
-            )
-
-    def test_a_breakdown_that_adds_up_is_accepted(self) -> None:
-        """**落ちようのない検査にしない。** 合う組み合わせは通る。"""
-        found = Exclusions(
-            excluded=819,
-            still_qualifies=400,
-            rescued=200,
-            outside_window=119,
-            revised_to_zero=40,
-            no_amount=10,
-            undecided=50,
-            special=3,
-            median_yield=0.02,
-            by_month=(),
-        )
-
-        assert found.decided == 769
-        assert found.kept_by_mistake == 519
-        assert found.wrongly_excluded == pytest.approx(519 / 769)
-
-
 class TestDividendsInsideTheHoldingWindow:
     """**そちらは外していない。** ショートでは配当は払う側である。"""
 
@@ -495,3 +290,108 @@ def test_the_crash_definition_is_not_copied_here() -> None:
     assert "KNIFE_DAYS = " not in source
     assert ex_date_audit.KNIFE_DROP == KNIFE_DROP
     assert ex_date_audit.KNIFE_DAYS == KNIFE_DAYS
+
+
+class TestAdjustingMovesTheCrashSet:
+    """**先に配当を落としてから線を当てる。**
+
+    「権利落ちが窓に在れば外す」は事前登録 §3 の**代理**であって、
+    「機械的な値下がりを外す」そのものではなかった——実データで**本物の
+    急落を 189 件巻き込んでいた**（2026-09-20、ユーザーが指摘）。
+
+    **順序を直すと、両向きに動く。** 配当が作っていた下げは消え、配当に
+    隠れていた下げは出る。**片方しか動かないなら、直っていない。**
+    """
+
+    @staticmethod
+    def _one(fall: float, yield_on_day: float):
+        """1銘柄。下げを5日に均し、そのうち1日に配当を乗せる。"""
+        crash = _at("2015-06-10")
+        each = 1.0 - (1.0 - fall) ** (1.0 / KNIFE_DAYS)
+        drops = {crash - KNIFE_DAYS + 1 + step: each for step in range(KNIFE_DAYS)}
+        ex_index = crash - 2
+        drops[ex_index] = 1.0 - (1.0 - each) * (1.0 - yield_on_day)
+        closes = _walk(0, drops)
+        rates = {
+            "1401": [
+                (dt.date(2015, 1, 5), _INDEX[ex_index].date(), closes[ex_index - 1] * yield_on_day)
+            ]
+        }
+        return _database({"1401": closes}), rates
+
+    def test_a_fall_the_dividend_made_disappears(self) -> None:
+        """配当が線の向こうに押し出していた分は、落とすと事象でなくなる。"""
+        database, rates = self._one(fall=0.14, yield_on_day=0.10)
+
+        moved = measure_adjustment(database, rates, _FIRST, _LAST)
+
+        assert moved.lost > 0
+        assert moved.after < moved.before
+
+    def test_adjusting_can_only_remove(self) -> None:
+        """**増えることはありえない。**
+
+        窓の中の権利落ちは分母（基準日）だけを下げるので、落とせば下げは
+        必ず浅くなる。**増えたら調整の向きが逆**なので、そこで落とす。
+        """
+        database, rates = self._one(fall=0.30, yield_on_day=0.02)
+
+        moved = measure_adjustment(database, rates, _FIRST, _LAST)
+
+        assert moved.after <= moved.before
+
+    def test_a_backwards_adjustment_is_refused(self, monkeypatch) -> None:
+        """**この検査が落ちる条件を、実際に作る。**
+
+        **権利落ち日より「後」を縮める**調整を差し込む。書き間違いとして
+        ありうる形で、こうすると窓をまたぐ下げが深くなり、急落が増える。
+        """
+        import numpy as np_
+
+        from stock_ai.data import schema
+
+        def _wrong(prices, announced):
+            if not announced:
+                return prices
+            when_of = [stamp.date() for stamp in prices.index]
+            index_of = {day: i for i, day in enumerate(when_of)}
+            factor = np_.ones(len(prices), dtype=float)
+            for _published, ex_date, rate in announced:
+                position = index_of.get(ex_date)
+                if position is None or position == 0:
+                    continue
+                before = float(prices[CLOSE].to_numpy()[position - 1])
+                if before <= 0 or rate <= 0:
+                    continue
+                factor[position:] *= 1.0 - rate / before  # ← 向きが逆
+            frame = prices.copy()
+            frame[CLOSE] = prices[CLOSE].to_numpy(dtype=float) * factor
+            return frame
+
+        monkeypatch.setattr(schema, "dividend_adjusted", _wrong)
+        database, rates = self._one(fall=0.14, yield_on_day=0.10)
+
+        with pytest.raises(ValueError, match="向きが逆"):
+            measure_adjustment(database, rates, _FIRST, _LAST)
+
+    def test_no_dividend_means_no_change(self) -> None:
+        """**落ちようのない検査にしない。** 配当が無ければ集合は動かない。"""
+        database, _rates = self._one(fall=0.30, yield_on_day=0.02)
+
+        moved = measure_adjustment(database, {}, _FIRST, _LAST)
+
+        assert moved.before == moved.after
+        assert moved.lost == 0
+        assert any("1件も変わらない" in line for line in moved.warnings())
+
+    def test_the_breakdown_adds_up(self) -> None:
+        """**足して合わない内訳は、作った時点で落ちる。**"""
+        with pytest.raises(ValueError, match="合わない"):
+            AdjustmentEffect(before=10, lost=12, symbols=1)
+
+    def test_a_consistent_breakdown_is_accepted(self) -> None:
+        """**落ちようのない検査にしない。** 合う組み合わせは通る。"""
+        effect = AdjustmentEffect(before=10, lost=1, symbols=1)
+
+        assert effect.before == 10
+        assert effect.after == 9
