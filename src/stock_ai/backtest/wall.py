@@ -59,6 +59,39 @@
 **梯子と「買い越し」に出典は無い。** 決めの値である。文献から取ったのでは
 ない——**そう書いておく**（`CLAUDE.md`「出典の無い数字を書かない」）。
 
+## 候補12・13・18・19 の畳み方も、測る前に1つに決めた（2026-09-21）
+
+**番号は 12 から続けた。** ユーザーの挙げた10本は 1〜10 と振られていたが、
+**`docs/CANDIDATES.md` の 1〜11 は別の説である。** 番号を詰めたり振り直したり
+すると、**過去の会話と突き合わせられなくなる**（`CLAUDE.md`「順位の 1 は
+空けてある」と同じ理由）。
+
+| | 12 小型株 | 13 低位株 | 19 節目の株価 | 18 掉尾の一振 |
+|---|---|---|---|---|
+| 材料 | `market_cap`（月末） | 終値（月末） | 終値（月末） | 指数の日次 |
+| 並べ方 | 小さい順 | 安い順 | :func:`round_number_position` | — |
+| 事象 | 無し（毎月） | 無し（毎月） | 無し（毎月） | **12月末の :data:`TAIL_SESSIONS` 営業日** |
+| 1観測 | 1ヶ月 | 1ヶ月 | 1ヶ月 | **1年** |
+| 引く相手 | 分位ロングショート | 同左 | 同左 | **無い**（指数を買うだけ） |
+| 管 | `monthly` | `monthly` | `monthly` | **自由度で引く**（#14 と同じ） |
+
+**分位ロングショートで組んでいる。** ユーザーは「ロングのみ・α で組め」と
+言ったが、**それは要るリターンを下げるだけで、要る情報比を下げない**
+（`docs/PASSING.md` §2）。**壁を見るのが目的なので、既に測った4本と同じ形に
+揃えるほうが比べられる。**
+
+**重なりは先に片付けた。**
+
+| 挙がっていた説 | どうしたか |
+|---|---|
+| 大型株を避ける | **12 の裏。落とした**——同じ設計が2行在ると、
+  後で良いほうを選んだのと区別が付かない |
+| 貸借倍率の低い銘柄 | **15 と同じ原本の別読み。落とした** |
+| 12 と 13 | **どちらも測る。** 重なるかどうかは :func:`signal_overlap` が出す |
+
+**節目の畳み方に出典は無い。** :data:`TAIL_SESSIONS` も同じである。決めの値
+であって、文献から取ったのではない。
+
 **線は梯子から1つに決まる**——`power.sample_needed(holding)` を満たす中で
 いちばん厳しいもの（:func:`choose_spike`）。**効果は1つも見ない。**
 選ぶのは観測数だけである。
@@ -79,6 +112,7 @@ import datetime as dt
 import math
 from bisect import bisect_right
 from collections.abc import Callable
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -165,6 +199,16 @@ IV_IS_END = dt.date(2019, 7, 18)
 
 #: 候補6 の OOS の初日。**IS の翌日。**
 IV_OOS_FROM = dt.date(2019, 7, 19)
+
+#: 掉尾の一振（候補18）で買う、12月の最後の営業日数。
+#:
+#: **出典は無い。決めの値である**（`CLAUDE.md`「幅を決め打つときは、その
+#: 数字がどこから来たかを書く」）。格言は「年末に一相場ある」としか言わない。
+#:
+#: **年に1観測しか作れない。** #14（1月効果）と同じ形なので、線も同じく
+#: `multiplicity.student_t_line` で自由度から引く——**`t` の SD から線を
+#: 引いてよいのは観測が多いときだけ**である。
+TAIL_SESSIONS = 5
 
 #: 需給の週で保有する営業日数。**候補B（候補7）で使う。**
 #:
@@ -386,6 +430,12 @@ class Materials:
     """1回の走査で集めた材料。**価格を何度も読まないため。**"""
 
     high52: dict[tuple[str, pd.Period], tuple[dt.date, float]]
+    price_level: dict[tuple[str, pd.Period], tuple[dt.date, float]]
+    """月末の終値そのもの（候補13 低位株）。**小さい順に並べる。**"""
+
+    round_position: dict[tuple[str, pd.Period], tuple[dt.date, float]]
+    """節目からの位置（候補19）。:func:`round_number_position`。"""
+
     gaps_is: list[tuple[str, dt.date]]
     gaps_oos_days: int
     knives_is: list[tuple[str, dt.date]]
@@ -407,6 +457,7 @@ class Materials:
             f"{self.symbols:,} 銘柄を読んだ。"
             f"52週高値への近さ {len(self.high52):,} 銘柄月"
             f"（履歴が足りず外した銘柄 {self.skipped_short:,}）、"
+            f"月末の終値 {len(self.price_level):,} 銘柄月、"
             f"下窓 {len(self.gaps_is):,} 件（IS）、"
             f"急落 {len(self.knives_is):,} 件（IS）。"
             f"**不連続をまたぐので捨てた {self.dropped_broken:,} 件。**"
@@ -436,6 +487,8 @@ def scan(
     from stock_ai.database.repository import PriceRepository, list_securities
 
     high52: dict[tuple[str, pd.Period], tuple[dt.date, float]] = {}
+    price_level: dict[tuple[str, pd.Period], tuple[dt.date, float]] = {}
+    round_position: dict[tuple[str, pd.Period], tuple[dt.date, float]] = {}
     gaps_is: list[tuple[str, dt.date]] = []
     knives_is: list[tuple[str, dt.date]] = []
     gap_days_oos: set[dt.date] = set()
@@ -505,15 +558,30 @@ def scan(
                     elif OOS_FROM <= when <= OOS_END:
                         knife_days_oos.add(when)
 
+            # --- 月末の足（候補13・19・5 が同じものを使う）-----------------
+            #
+            # **52週の足切りより前に採る。** ここを `continue` の後ろに
+            # 置いていたら、**履歴の短い銘柄が3つとも黙って落ちる**
+            # ——`CLAUDE.md`「早期 return が、下に足した検査を黙らせる」。
+            # 52週高値だけが 52週ぶんの履歴を要る。
+            months = index.to_period("M")
+            # **その銘柄の、その月の最後の足。** 暦の月末を探さない——月の
+            # 途中で上場廃止になった銘柄が丸ごと落ちる（`valuation_monthly`）。
+            last_of_month = np.flatnonzero(np.r_[months[1:] != months[:-1], True])
+            for offset in last_of_month:
+                close = float(closes[offset])
+                if not liquid[offset] or not close > 0:
+                    continue
+                price_level[(symbol, months[offset])] = (days[offset], close)
+                where = round_number_position(close)
+                if where is not None:
+                    round_position[(symbol, months[offset])] = (days[offset], where)
+
             # --- 52週高値への近さ（月末だけ）-----------------------------
             if len(closes) < HIGH_WINDOW:
                 short += 1
                 continue
             highs = pd.Series(closes).rolling(HIGH_WINDOW, min_periods=HIGH_WINDOW).max().to_numpy()
-            months = index.to_period("M")
-            # **その銘柄の、その月の最後の足。** 暦の月末を探さない——月の
-            # 途中で上場廃止になった銘柄が丸ごと落ちる（`valuation_monthly`）。
-            last_of_month = np.flatnonzero(np.r_[months[1:] != months[:-1], True])
             for offset in last_of_month:
                 top = highs[offset]
                 if not np.isfinite(top) or top <= 0 or not closes[offset] > 0:
@@ -524,6 +592,8 @@ def scan(
 
     return Materials(
         high52=high52,
+        price_level=price_level,
+        round_position=round_position,
         gaps_is=gaps_is,
         gaps_oos_days=len(gap_days_oos),
         knives_is=knives_is,
@@ -532,6 +602,152 @@ def scan(
         skipped_short=short,
         dropped_broken=dropped,
     )
+
+
+def round_number_position(price: float) -> float | None:
+    """節目からどこに居るか。**0 が節目の直上、1 に近いほど節目の直下。**
+
+    「1,000円の壁」を1つの数にする。**桁を揃えてから見る**——100円の株の
+    節目は 100 で、10,000円の株の節目は 10,000 である。同じ「あと50円」でも
+    意味が違う。
+
+    ``刻み = 10 ** floor(log10(価格))`` として ``(価格 mod 刻み) / 刻み``
+    を返す。**単位は無い**ので、桁の違う銘柄を同じ列に並べられる。
+
+    **畳み方に出典は無い。決めの値である。** 格言は「キリ番は抜けにくい」と
+    しか言わない。**測る前に1つに決めた**——複数試して良いほうを採れば、
+    その時点で #10 と同じところに落ちる。
+
+    Args:
+        price: 終値。
+
+    Returns:
+        ``[0, 1)`` の位置。**0 以下なら ``None``**——対数が取れない。
+
+    Examples:
+        >>> round_number_position(1000.0)
+        0.0
+        >>> round_number_position(1950.0)
+        0.95
+    """
+    if price <= 0 or not math.isfinite(price):
+        return None
+    step = 10.0 ** math.floor(math.log10(price))
+    # **`price / step` が 10 に丸め上がることがある。** 1000 の対数がわずかに
+    # 2.9999… になる盤面で、位置が 1.0 を超える——**範囲の外を返さない。**
+    position = (price - step * math.floor(price / step)) / step
+    return min(max(position, 0.0), 1.0 - 1e-12)
+
+
+def tail_episodes(
+    returns: list[float],
+    dates: list[dt.date],
+    sessions: int = TAIL_SESSIONS,
+    end: dt.date = IS_END,
+) -> tuple[list[int], list[float]]:
+    """「12月の最後の ``sessions`` 営業日」を年ごとに1つ作る（候補18）。
+
+    **年に1観測である。** `halloween_episodes` と同じ形——同じ年の中を2つに
+    割ると、差を取っていないことになる。
+
+    **その年の最後の営業日から数える。** 暦の 12/31 を探さない——大納会は
+    年によって違う。
+
+    Args:
+        returns: 日次リターン。
+        dates: その日付（``returns`` と同じ長さ）。
+        sessions: 年末の何営業日を買うか。
+        end: この日より後を使わない。
+
+    Returns:
+        ``(年, その年の取り高)``。**営業日が足りた年だけ。**
+
+    Raises:
+        ValueError: 長さが違う、``sessions`` が 1 未満。
+    """
+    if len(returns) != len(dates):
+        raise ValueError(f"returns {len(returns)} と dates {len(dates)} の長さが違う。")
+    if sessions < 1:
+        raise ValueError(f"sessions must be at least 1; got {sessions}.")
+
+    by_year: dict[int, list[float]] = {}
+    for value, when in zip(returns, dates, strict=True):
+        if when > end or when.month != 12:  # noqa: PLR2004 - 12月だけ
+            continue
+        by_year.setdefault(when.year, []).append(value)
+
+    years: list[int] = []
+    episodes: list[float] = []
+    for year in sorted(by_year):
+        tail = by_year[year][-sessions:]
+        # **足りない年を、短いまま入れない。** 3日ぶんと5日ぶんを同じ列に
+        # 並べると、散らばりが揃わない（`CLAUDE.md`「同じ推定量を測って
+        # いることにならない」）。
+        if len(tail) < sessions:
+            continue
+        compounded = 1.0
+        for value in tail:
+            compounded *= 1.0 + value
+        years.append(year)
+        episodes.append(compounded - 1.0)
+    return years, episodes
+
+
+def complete_tail_years(start: dt.date, end: dt.date, sessions: int = TAIL_SESSIONS) -> int:
+    """``[start, end]`` に、12月の年末がまるごと入る年の数。
+
+    **数えるのは年であって、日ではない。** `complete_halloween_years` と
+    同じ理由——1観測が1年なので、判定に使える `n` は年の数である。
+
+    **12月が途中で切れる年は数えない。** :func:`tail_episodes` が
+    ``sessions`` に足りない年を捨てるので、**数え方を揃える。**
+
+    Args:
+        start: 判定に使う窓の始まり。
+        end: 終わり。
+        sessions: 年末の何営業日を買うか。**足りるかを暦では判定できない**
+            ので、12月が丸ごと入っているかで数える。
+
+    Returns:
+        年の数。
+    """
+    if end <= start:
+        return 0
+    first = start.year if start <= dt.date(start.year, 12, 1) else start.year + 1
+    last = end.year if end >= dt.date(end.year, 12, 31) else end.year - 1
+    return max(last - first + 1, 0)
+
+
+def signal_overlap(
+    left: dict[tuple[str, pd.Period], tuple[dt.date, float]],
+    right: dict[tuple[str, pd.Period], tuple[dt.date, float]],
+) -> tuple[int, float | None]:
+    """2つの並べ方が、**同じものを並べていないか。**
+
+    **壁の表に実質同じ設計が2行在ると、後で良いほうを選んだのと区別が
+    付かない**（`CLAUDE.md`「2箇所に同じ説があると、どちらが本当か分から
+    なくなる」の設計版）。
+
+    **順位で見る。** 値そのものの相関だと、片方が円でもう片方が比のときに
+    桁で決まってしまう。**並べ方が同じかどうかだけが要る。**
+
+    Args:
+        left: ``(銘柄, 月) -> (日, 値)``。
+        right: 同じ形。
+
+    Returns:
+        ``(重なった銘柄月, 順位相関)``。**3点未満なら相関は ``None``**
+        ——2点は必ず ±1 になるので、何も言っていない。
+    """
+    shared = sorted(set(left) & set(right))
+    if len(shared) < 3:  # noqa: PLR2004 - 2点の相関は必ず ±1
+        return len(shared), None
+    # **`method="spearman"` は scipy を要る。** 依存を増やさずに同じ値を出す
+    # ——順位に直してから Pearson を取れば、それが Spearman の定義である。
+    first = pd.Series([left[key][1] for key in shared]).rank()
+    second = pd.Series([right[key][1] for key in shared]).rank()
+    found = first.corr(second)
+    return len(shared), None if pd.isna(found) else float(found)
 
 
 def halloween_episodes(
@@ -824,3 +1040,157 @@ def choose_spike(  # noqa: PLR0913 - 梯子の当て方をすべて受け取る
         cleared=False,
         tried=tuple(tried),
     )
+
+
+#: 信用買い残（候補15）で、何公表ぶんの変化を見るか。
+#:
+#: **出典は無い。決めの値である。** 4公表 ≒ 1ヶ月で、月次の組み替えと
+#: 刻みを揃えてある。格言は「買い残が減ると上がる」としか言わない。
+MARGIN_LOOKBACK = 4
+
+
+def margin_change(
+    directory: Path,
+    weeks: int = MARGIN_LOOKBACK,
+    lag_days: int = 4,
+) -> tuple[dict[tuple[str, pd.Period], tuple[dt.date, float]], MarginCensus]:
+    """信用買い残の変化を、**銘柄月ごとに1つ**作る（候補15）。
+
+    ## 畳み方は、壁を測る前に1つに決めてある
+
+    | | |
+    |---|---|
+    | 材料 | `/markets/margin-interest` の `LongVol`（買い残・株数） |
+    | 並べ方 | ``いまの買い残 ÷ ``weeks`` 公表前の買い残 − 1``。**減った順** |
+    | 1観測 | 1ヶ月（月末の組み替え） |
+
+    **比で見る。** 株数そのものは銘柄の大きさで桁が変わるので、断面に
+    並べられない。
+
+    ## 公表の遅れを外す
+
+    `Date` は**金曜時点**で、公表はその第2営業日である（`jquants_markets`）。
+    **月末の時点で公表されていない週を使うと、先読みになる。**
+    ``as_of + lag_days`` がその月の末日以下のものだけを採る。
+
+    **`MARGIN_INTEREST_LAG_DAYS` は下限である**（祝日のある週は後ろ倒し）。
+    ここは壁の下見なので下限で足りるが、**事前登録では取引カレンダーと
+    突き合わせること。**
+
+    Args:
+        directory: 原本の置き場所。
+        weeks: 何公表ぶん前と比べるか。
+        lag_days: 週末時点から公表までの日数（下限）。
+
+    Returns:
+        ``((銘柄, 月) -> (日, 変化率), 数えたもの)``。
+
+    Raises:
+        ValueError: ``weeks`` が 1 未満。
+    """
+    if weeks < 1:
+        raise ValueError(f"weeks must be at least 1; got {weeks}.")
+
+    from stock_ai.data.jquants_markets import parse_margin_interest
+
+    history: dict[str, list[tuple[dt.date, float]]] = {}
+    rows = 0
+    for key, payload in _margin_files(directory):
+        try:
+            found = parse_margin_interest(payload)
+        except Exception as exc:  # noqa: BLE001 - どこで読めないかが記録に値する
+            logger.warning("信用残の原本を読めなかった: %s: %s", key, exc)
+            continue
+        for item in found:
+            rows += 1
+            if item.long_volume is None or item.long_volume <= 0:
+                continue
+            history.setdefault(item.symbol, []).append((item.as_of, item.long_volume))
+
+    values: dict[tuple[str, pd.Period], tuple[dt.date, float]] = {}
+    short = nonpositive = 0
+    for symbol, entries in history.items():
+        # **同じ週が2回出たら足さない。** 後から来たほうを1つだけ採る。
+        by_week = dict(sorted(entries))
+        ordered = sorted(by_week.items())
+        if len(ordered) <= weeks:
+            short += 1
+            continue
+        for position in range(weeks, len(ordered)):
+            as_of, now = ordered[position]
+            _before_when, before = ordered[position - weeks]
+            if before <= 0:
+                nonpositive += 1
+                continue
+            # **公表されてから使う。** 月末の時点で知れている週だけ。
+            known = as_of + dt.timedelta(days=lag_days)
+            month = pd.Timestamp(known).to_period("M")
+            # **その月で、いちばん新しい公表を採る。** 上書きでよい——
+            # `ordered` が古い順なので、最後に入ったものが最新になる。
+            values[(symbol, month)] = (known, now / before - 1.0)
+
+    return values, MarginCensus(
+        rows=rows,
+        symbols=len(history),
+        observations=len(values),
+        skipped_short=short,
+        skipped_nonpositive=nonpositive,
+        weeks=weeks,
+    )
+
+
+@dataclasses.dataclass(frozen=True)
+class MarginCensus:
+    """信用残を畳むときに落ちたもの。**合計だけ出すと、その中に紛れる。**"""
+
+    rows: int
+    symbols: int
+    observations: int
+    skipped_short: int
+    """``weeks`` 公表ぶんの履歴が無かった銘柄。"""
+
+    skipped_nonpositive: int
+    """比べる相手の買い残が 0 以下だった銘柄月。"""
+
+    weeks: int
+
+    def summary(self) -> str:
+        """1行のまとめ。"""
+        if not self.rows:
+            return "信用残の原本が1行も読めなかった。**材料が無い。**"
+        return (
+            f"信用残 {self.rows:,} 行、{self.symbols:,} 銘柄。"
+            f"**{self.weeks} 公表ぶんの変化を {self.observations:,} 銘柄月**作れた。"
+        )
+
+    def warnings(self) -> list[str]:
+        """気付かなくても目に入るべきこと。**早期 return しない。**"""
+        found: list[str] = []
+        if not self.rows:
+            return ["**信用残の原本が1行も読めなかった。**"]
+        if self.skipped_short:
+            found.append(
+                f"**{self.skipped_short:,} 銘柄は {self.weeks} 公表ぶんの履歴が無い。** "
+                "変化を作れないので使っていない。"
+            )
+        if self.skipped_nonpositive:
+            found.append(
+                f"**{self.skipped_nonpositive:,} 銘柄月は、比べる相手の買い残が 0 以下だった。**"
+            )
+        if not self.observations:
+            found.append("**1つも作れなかった。** 壁を出せない。")
+        return found
+
+
+def _margin_files(directory: Path):
+    """信用残の原本を ``(鍵, 中身)`` で。**取りには行かない。**"""
+    from stock_ai.data.jquants_archive import path_for, read_manifest
+    from stock_ai.data.jquants_read import endpoint_of, read_archived
+
+    for key in sorted(read_manifest(directory)):
+        if endpoint_of(key) != "/markets/margin-interest":
+            continue
+        try:
+            yield key, read_archived(path_for(directory, key))
+        except Exception as exc:  # noqa: BLE001 - どこで開けないかが記録に値する
+            logger.warning("信用残の原本を開けなかった: %s: %s", key, exc)

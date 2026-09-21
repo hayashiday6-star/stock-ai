@@ -6447,6 +6447,44 @@ def january_power(
         )
 
 
+#: これを超えたら、2つの並べ方は**実質同じ設計**とみなす（順位相関の絶対値）。
+#:
+#: **出典は無い。決めの値である。** 壁の表に実質同じ設計が2行在ると、
+#: **後で良いほうを選んだのと区別が付かない**——`CLAUDE.md`「2箇所に同じ説が
+#: あると、どちらが本当か分からなくなる」の設計版である。
+SAME_DESIGN = 0.8
+
+
+def _market_cap_values() -> dict[tuple[str, object], tuple[object, float]]:
+    """Read the month-end market caps, for the small-cap candidate.
+
+    **時価総額は価格の走査からは出ない。** `/equities/valuation` の
+    `MktCap` を月末に畳んだ生成物（`valuation_monthly`）を読む。
+
+    **無ければ空を返す。** 呼ぶ側が「材料が無い」と出す——**黙って候補を
+    1つ落とさない**（`CLAUDE.md`「無いことは、出力に出ない」）。
+
+    **`MktCap` は百万円単位である。** 分位に並べるだけなので単位は効かない
+    が、**額として使うなら百万倍間違える**（2026-09-15 に踏んだ）。
+    """
+    import pandas as pd
+
+    from stock_ai.data import valuation_monthly
+
+    frame = valuation_monthly.read()
+    if frame.empty or "market_cap" not in frame.columns:
+        return {}
+    found: dict[tuple[str, object], tuple[object, float]] = {}
+    for row in frame.itertuples(index=False):
+        value = getattr(row, "market_cap", None)
+        when = getattr(row, "date", None)
+        if value is None or when is None or not float(value) > 0:
+            continue
+        stamp = pd.Timestamp(when)
+        found[(str(row.symbol), stamp.to_period("M"))] = (stamp.date(), float(value))
+    return found
+
+
 def _wall_ir_cell(wall: object) -> str:
     """Build the required-information-ratio cell, for the table and the document.
 
@@ -7863,13 +7901,19 @@ def wall_survey(
         IS_END,
         KNIFE_DAYS,
         KNIFE_DROP,
+        MARGIN_LOOKBACK,
         OOS_END,
         OOS_FROM,
+        TAIL_SESSIONS,
         Missing,
         Wall,
         complete_halloween_years,
+        complete_tail_years,
         halloween_episodes,
+        margin_change,
         scan,
+        signal_overlap,
+        tail_episodes,
         usable_rebalances,
     )
     from stock_ai.core.logging import quiet_on_console
@@ -7949,42 +7993,122 @@ def wall_survey(
             materials = scan(database, progress=step)
     console.print(materials.summary())
 
-    # --- 5 新値には黙ってつけ（52週高値への近さ）-----------------------------
-    with quiet_on_console("stock_ai.backtest.quantile_series"):
-        panel = build_panel(
-            database,
-            materials.high52,
-            end=IS_END,
-            snapshots=snapshots,
-        )
-    if len(panel.months) >= 3:  # noqa: PLR2004 - 3点無いと散らばりが測れない
+    # --- 5・12・13・19 月次・分位ロングショート -------------------------------
+    #
+    # **1つのループで回す。** 同じ処理を4つ書けば、1つは間違える
+    # （`CLAUDE.md`「同じ式を3つ書けば、1つは間違える」）。**畳み方は
+    # `wall.py` の説明に書いてから測っている。**
+    with database.session() as session:
+        calendar = split_adjusted(PriceRepository(session).get_raw_prices(benchmark)).index
+    oos_months = usable_rebalances(calendar, OOS_FROM, OOS_END)
+
+    # **時価総額は価格の走査からは出ない。** `valuation_monthly` の生成物を
+    # 読む。**無ければ「材料が無い」と出す**——黙って候補を1つ落とさない。
+    caps = _market_cap_values()
+
+    # **信用買い残は原本から。** 公表の遅れを外すのは `margin_change` の
+    # 中に1つだけ置いてある——`Date` は金曜時点で、公表はその第2営業日である。
+    with quiet_on_console("stock_ai.backtest.wall"):
+        margin, margin_census = margin_change(Path(archive))
+    console.print(f"[dim]{margin_census.summary()}[/]")
+    for line in margin_census.warnings():
+        console.print(f"[yellow]15: {line}[/]")
+
+    monthly_designs = (
+        (5, "新値には黙ってつけ（52週高値への近さ）", materials.high52, "近さ"),
+        (12, "小型株効果（時価総額の小さい順）", caps, "時価総額"),
+        (13, "低位株（株価の安い順）", materials.price_level, "終値"),
+        (15, f"信用買い残の減少（{MARGIN_LOOKBACK} 公表ぶんの変化）", margin, "変化"),
+        (19, "節目の株価（キリ番からの位置）", materials.round_position, "位置"),
+    )
+    for candidate, name, values, what in monthly_designs:
+        if not values:
+            console.print(f"[yellow]**{name}: 並べる材料が1つも無い。** 壁を出せない。[/]")
+            continue
+        with quiet_on_console("stock_ai.backtest.quantile_series"):
+            panel = build_panel(database, values, end=IS_END, snapshots=snapshots)
+        if len(panel.months) < 3:  # noqa: PLR2004 - 3点無いと散らばりが測れない
+            console.print(f"[yellow]**{name}: 分位が3ヶ月に満たない。** 壁を出せない。[/]")
+            continue
         spread = [row[-1] - row[0] for row in panel.quantiles]
-        with database.session() as session:
-            calendar = split_adjusted(PriceRepository(session).get_raw_prices(benchmark)).index
-        oos_months = usable_rebalances(calendar, OOS_FROM, OOS_END)
-        sampled["新値には黙ってつけ"] = spread
+        sampled[name] = spread
         with quiet_on_console("stock_ai.backtest.power"):
             estimate = estimate_power(spread, lags=3)
-        sd, inflation = estimate.daily_sd, estimate.inflation
         walls.append(
             Wall(
-                candidate=5,
-                name="新値には黙ってつけ（52週高値への近さ）",
+                candidate=candidate,
+                name=name,
                 pipe="月次・分位ロングショート",
                 unit="月",
                 observations=oos_months,
-                sd=sd,
-                inflation=inflation,
+                sd=estimate.daily_sd,
+                inflation=estimate.inflation,
                 line=line_for("monthly"),
                 source=f"IS {len(panel.months)} ヶ月、5分位・等加重",
                 sample=len(spread),
                 undersampled=estimate.undersampled,
                 period_years=oos_months / 12.0,
-                notes=(f"近さを作れず外した銘柄月 {panel.skipped_no_value:,}",),
+                notes=(f"{what}を作れず外した銘柄月 {panel.skipped_no_value:,}",),
+            )
+        )
+
+    # **12 と 13 が同じものを並べていないか。** 壁の表に実質同じ設計が2行
+    # 在ると、**後で良いほうを選んだのと区別が付かない。**
+    pairs = {
+        5: materials.high52,
+        12: caps,
+        13: materials.price_level,
+        19: materials.round_position,
+    }
+    for left, right in ((12, 13), (13, 19), (12, 19)):
+        shared, correlation = signal_overlap(pairs[left], pairs[right])
+        if correlation is None:
+            continue
+        console.print(
+            f"[dim]{left} と {right} の並べ方の順位相関 {correlation:+.2f}"
+            f"（重なった銘柄月 {shared:,}）[/]"
+        )
+        if abs(correlation) >= SAME_DESIGN:
+            console.print(
+                f"[yellow]**{left} と {right} は実質同じ設計である**"
+                f"（順位相関 {correlation:+.2f}）。**片方だけ残すこと**"
+                "——2行在ると、後で良いほうを選んだのと区別が付かない。[/]"
+            )
+
+    # --- 18 掉尾の一振 -------------------------------------------------------
+    tail_years, tail = tail_episodes(returns, dates, end=IS_END)
+    if len(tail) >= 3:  # noqa: PLR2004 - 3点無いと散らばりが測れない
+        oos_tail = complete_tail_years(OOS_FROM, OOS_END)
+        sampled["掉尾の一振"] = tail
+        with quiet_on_console("stock_ai.backtest.power"):
+            # **n が小さいと Newey-West が不安定。** #14・#3 と同じく 1.0。
+            estimate = estimate_power(tail, lags=0)
+        walls.append(
+            Wall(
+                candidate=18,
+                name=f"掉尾の一振（12月末の {TAIL_SESSIONS} 営業日）",
+                pipe="年1観測の暦",
+                unit="年",
+                observations=oos_tail,
+                sd=estimate.daily_sd,
+                inflation=estimate.inflation,
+                # **自由度で線を引く。** n が小さいと `t` が正規から離れる（#14）。
+                line=student_t_line(max(oos_tail - 1, 1)),
+                source=(
+                    f"{benchmark} の日次、IS {tail_years[0]}〜{tail_years[-1]} の "
+                    f"{len(tail_years)} 年"
+                ),
+                sample=len(tail),
+                # **1年1観測なので、年数は観測数そのものである。**
+                period_years=float(oos_tail),
+                notes=(
+                    f"**{TAIL_SESSIONS} 営業日に出典は無い。** 決めの値である",
+                    "**引く相手が無い**（指数を買うだけ）",
+                ),
             )
         )
     else:
-        console.print("[yellow]**52週高値の分位が3ヶ月に満たない。** 壁を出せない。[/]")
+        console.print("[yellow]**掉尾の一振の観測が3年に満たない。** 壁を出せない。[/]")
 
     # --- 9・10 イベント型 ----------------------------------------------------
     console.print("[dim]引く相手（等加重の宇宙）を作っています...[/]")
@@ -8146,6 +8270,28 @@ def wall_survey(
     # 書いた側が確かめるまで、そこに在る材料は見えないままになる。
     missing = [
         Missing(8, "噂で買って事実で売る", "「噂」の初出時点を客観的に取る口が無い"),
+        Missing(
+            14,
+            "高配当利回り",
+            "**`/equities/valuation` に利回りの列が無い**（原本の11列を数えた）。"
+            "`/fins/dividend` を使うと 2012-12 に縛られて A群 から外れる。"
+            "**`/fins/summary` に在るかは `checks\\原本の列は埋まっているか.bat` が決める**",
+        ),
+        Missing(
+            16,
+            "空売り比率",
+            "**`/markets/short-ratio` は業種別である**——指数の1本ではないので、"
+            "33業種の畳み方を先に決める必要がある。**手元に何年から在るかも"
+            "数えていない**（読み口が1つも無い）",
+        ),
+        Missing(
+            17,
+            "決算発表日を避ける",
+            "**`/fins/earnings-date` は全プランで「直近のみ」で、歴史が無い**"
+            "（公式表、`jquants_plan.NO_HISTORY`）。`fins/summary` の "
+            "`DisclosedDate` は**実現した発表日**なので、それで避けるのは先読み。"
+            "**前年同期からの推定**にするなら、そのずれを先に測ること",
+        ),
     ]
     absent = Table(title="材料が無くて測れなかった候補")
     for column in ("候補", "説", "なぜ測れないか"):

@@ -472,6 +472,12 @@ class TestTheMissingOnesAreOnTheTable:
         assert item.reason
 
     def test_the_command_lists_them(self) -> None:
+        """**測れなかった候補が、1つも出ない形にしない。**
+
+        **件数は焼き付けない。** ここは `== 1` と書いてあった
+        （2026-09-21 まで）。候補を足すたびに落ちる——`CLAUDE.md`
+        「測った件数を、文面に焼き付けない」のテスト版である。
+        """
         import inspect
 
         from stock_ai import cli
@@ -480,7 +486,31 @@ class TestTheMissingOnesAreOnTheTable:
 
         # **書き方に賭けない。** 折り返しで `Missing(7` は分かれる（`--help` の
         # 幅と同じ形）。**数えるほうで見る。**
-        assert body.count("Missing(") == 1
+        assert body.count("Missing(") >= 1
+
+    def test_every_missing_row_says_why(self) -> None:
+        """**理由の無い行を作れないこと。** 「測れない」だけでは一手にならない。"""
+        import ast
+        import inspect
+
+        from stock_ai import cli
+
+        silent: list[int] = []
+        for node in ast.walk(ast.parse(inspect.getsource(cli.wall_survey))):
+            if not isinstance(node, ast.Call) or getattr(node.func, "id", None) != "Missing":
+                continue
+            reason = node.args[2] if len(node.args) > 2 else None  # noqa: PLR2004 - 3つ目
+            text = None
+            if isinstance(reason, ast.Constant):
+                text = reason.value
+            elif isinstance(reason, ast.JoinedStr):
+                text = "".join(
+                    part.value for part in reason.values if isinstance(part, ast.Constant)
+                )
+            if not isinstance(text, str) or not text.strip():
+                silent.append(node.lineno)
+
+        assert not silent, f"**理由の無い `Missing` がある: {silent}**"
 
     def test_the_two_that_turned_out_measurable_are_gone(self) -> None:
         """**「測れない」と書いたことも、出力に出ない。**
@@ -1369,3 +1399,350 @@ class TestTheWallCarriesTheInvariant:
                     baked.append(node.lineno)
 
         assert not baked, f"**率を焼き付けている: {baked}。** `period_years=` を渡すこと。"
+
+
+class TestTheRoundNumberFold:
+    """**節目の畳み方は、測る前に1つに決めた。** 出典は無い。"""
+
+    def test_a_round_number_sits_at_zero(self) -> None:
+        from stock_ai.backtest.wall import round_number_position
+
+        assert round_number_position(1000.0) == pytest.approx(0.0)
+        assert round_number_position(100.0) == pytest.approx(0.0)
+
+    def test_just_below_a_round_number_sits_near_one(self) -> None:
+        """**「1,000円の壁」はここに出る。**"""
+        from stock_ai.backtest.wall import round_number_position
+
+        assert round_number_position(1950.0) == pytest.approx(0.95)
+        assert round_number_position(999.0) == pytest.approx(0.99)
+
+    def test_the_decade_is_taken_from_the_price(self) -> None:
+        """**桁を揃えてから見る。** 同じ「あと50円」でも意味が違う。"""
+        from stock_ai.backtest.wall import round_number_position
+
+        # 150円 は 100 刻みの半分、1,500円 は 1,000 刻みの半分。
+        assert round_number_position(150.0) == pytest.approx(0.5)
+        assert round_number_position(1500.0) == pytest.approx(0.5)
+
+    def test_it_never_leaves_the_unit_interval(self) -> None:
+        """**丸めで範囲の外を返さない。** 対数が 2.9999… になる盤面がある。"""
+        from stock_ai.backtest.wall import round_number_position
+
+        for price in (1.0, 9.999999, 10.0, 999.9999999, 1000.0, 1e6, 1e6 - 1e-9):
+            found = round_number_position(price)
+            assert found is not None
+            assert 0.0 <= found < 1.0, price
+
+    def test_a_price_that_cannot_be_logged_is_refused(self) -> None:
+        from stock_ai.backtest.wall import round_number_position
+
+        assert round_number_position(0.0) is None
+        assert round_number_position(-5.0) is None
+
+
+class TestTheTailOfTheYear:
+    """**候補18。** 年に1観測しか作れない——#14 と同じ形である。"""
+
+    @staticmethod
+    def _december(year: int, days: int, value: float = 0.01):
+        import datetime as dt
+
+        dates = [dt.date(year, 12, day) for day in range(1, days + 1)]
+        return [value] * days, dates
+
+    def test_it_compounds_the_last_sessions(self) -> None:
+        from stock_ai.backtest.wall import tail_episodes
+
+        returns, dates = self._december(2017, 10)
+
+        years, episodes = tail_episodes(returns, dates, sessions=5, end=dt.date(2017, 12, 31))
+
+        assert years == [2017]
+        assert episodes[0] == pytest.approx(1.01**5 - 1)
+
+    def test_it_takes_the_last_sessions_not_the_calendar_end(self) -> None:
+        """**大納会は年によって違う。** 暦の 12/31 を探さない。"""
+        from stock_ai.backtest.wall import tail_episodes
+
+        returns, dates = self._december(2017, 8)
+        returns[-1] = 0.5  # いちばん最後の足
+
+        _years, episodes = tail_episodes(returns, dates, sessions=2, end=dt.date(2017, 12, 31))
+
+        assert episodes[0] == pytest.approx(1.01 * 1.5 - 1)
+
+    def test_a_short_year_is_dropped_not_shortened(self) -> None:
+        """**3日ぶんと5日ぶんを同じ列に並べない。** 散らばりが揃わない。"""
+        from stock_ai.backtest.wall import tail_episodes
+
+        returns, dates = self._december(2017, 3)
+
+        years, episodes = tail_episodes(returns, dates, sessions=5, end=dt.date(2017, 12, 31))
+
+        assert not years
+        assert not episodes
+
+    def test_only_december_counts(self) -> None:
+        from stock_ai.backtest.wall import tail_episodes
+
+        returns, dates = self._december(2017, 6)
+        returns += [9.0]
+        dates += [dt.date(2018, 1, 4)]
+
+        years, _episodes = tail_episodes(returns, dates, sessions=5, end=dt.date(2018, 12, 31))
+
+        assert years == [2017]
+
+    def test_the_end_cuts_it_off(self) -> None:
+        from stock_ai.backtest.wall import tail_episodes
+
+        early, early_dates = self._december(2016, 6)
+        late, late_dates = self._december(2017, 6)
+
+        years, _episodes = tail_episodes(
+            early + late, early_dates + late_dates, sessions=5, end=dt.date(2016, 12, 31)
+        )
+
+        assert years == [2016]
+
+    def test_the_years_are_counted_the_same_way(self) -> None:
+        """**数え方を揃える。** 12月が丸ごと入る年だけ。"""
+        from stock_ai.backtest.wall import complete_tail_years
+
+        assert complete_tail_years(dt.date(2018, 1, 1), dt.date(2026, 8, 31)) == 8  # noqa: PLR2004
+        assert complete_tail_years(dt.date(2018, 1, 1), dt.date(2026, 12, 31)) == 9  # noqa: PLR2004
+        assert complete_tail_years(dt.date(2026, 1, 1), dt.date(2026, 8, 31)) == 0
+
+    def test_it_refuses_mismatched_lengths(self) -> None:
+        from stock_ai.backtest.wall import tail_episodes
+
+        with pytest.raises(ValueError, match="長さが違う"):
+            tail_episodes([0.01], [dt.date(2017, 12, 1), dt.date(2017, 12, 2)])
+
+    def test_it_refuses_zero_sessions(self) -> None:
+        from stock_ai.backtest.wall import tail_episodes
+
+        with pytest.raises(ValueError, match="at least 1"):
+            tail_episodes([], [], sessions=0)
+
+
+class TestTwoDesignsAreNotTheSameDesign:
+    """**壁の表に実質同じ設計が2行在ると、後で良いほうを選んだのと区別が
+    付かない。**
+    """
+
+    @staticmethod
+    def _values(pairs):
+        import pandas as pd
+
+        return {
+            (symbol, pd.Period("2017-01", freq="M")): (dt.date(2017, 1, 31), value)
+            for symbol, value in pairs
+        }
+
+    def test_the_same_ordering_shows_up(self) -> None:
+        from stock_ai.backtest.wall import signal_overlap
+
+        left = self._values([("a", 1.0), ("b", 2.0), ("c", 3.0), ("d", 4.0)])
+        right = self._values([("a", 10.0), ("b", 20.0), ("c", 30.0), ("d", 40.0)])
+
+        shared, correlation = signal_overlap(left, right)
+
+        assert shared == 4  # noqa: PLR2004
+        assert correlation == pytest.approx(1.0)
+
+    def test_it_looks_at_the_order_not_the_scale(self) -> None:
+        """**円と比を並べても、桁で決まらないこと。**"""
+        from stock_ai.backtest.wall import signal_overlap
+
+        left = self._values([("a", 1.0), ("b", 2.0), ("c", 3.0)])
+        right = self._values([("a", 1e9), ("b", 2e9), ("c", 3e9)])
+
+        _shared, correlation = signal_overlap(left, right)
+
+        assert correlation == pytest.approx(1.0)
+
+    def test_a_different_ordering_shows_up(self) -> None:
+        """**両向きに置く。** 常に 1.0 を返す形でも緑にならないように。"""
+        from stock_ai.backtest.wall import signal_overlap
+
+        left = self._values([("a", 1.0), ("b", 2.0), ("c", 3.0), ("d", 4.0)])
+        right = self._values([("a", 4.0), ("b", 3.0), ("c", 2.0), ("d", 1.0)])
+
+        _shared, correlation = signal_overlap(left, right)
+
+        assert correlation == pytest.approx(-1.0)
+
+    def test_two_points_say_nothing(self) -> None:
+        """**2点の相関は必ず ±1 である。** 何も言っていない。"""
+        from stock_ai.backtest.wall import signal_overlap
+
+        left = self._values([("a", 1.0), ("b", 2.0)])
+        right = self._values([("a", 5.0), ("b", 9.0)])
+
+        shared, correlation = signal_overlap(left, right)
+
+        assert shared == 2  # noqa: PLR2004
+        assert correlation is None
+
+    def test_only_the_shared_keys_are_compared(self) -> None:
+        from stock_ai.backtest.wall import signal_overlap
+
+        left = self._values([("a", 1.0), ("b", 2.0), ("c", 3.0), ("z", 9.0)])
+        right = self._values([("a", 1.0), ("b", 2.0), ("c", 3.0)])
+
+        shared, _correlation = signal_overlap(left, right)
+
+        assert shared == 3  # noqa: PLR2004
+
+
+class TestTheMarginFold:
+    """**候補15。** 信用買い残の変化を、銘柄月ごとに1つ作る。
+
+    押さえるのは3つ。
+
+    1. **比で見る。** 株数そのものは銘柄の大きさで桁が変わる
+    2. **公表の遅れを外す。** `Date` は金曜時点で、公表はその第2営業日
+    3. **落ちたものを数える。** 合計だけ出すと、その中に紛れる
+    """
+
+    @staticmethod
+    def _archive(tmp_path, rows: list[dict[str, str]]):
+        import csv as csv_module
+        import gzip
+        import io
+
+        from stock_ai.data.jquants_archive import MANIFEST, MANIFEST_COLUMNS
+
+        out = io.StringIO()
+        writer = csv_module.DictWriter(out, fieldnames=list(rows[0]), lineterminator="\n")
+        writer.writeheader()
+        writer.writerows(rows)
+        key = "markets/margin-interest/margin_sample.csv.gz"
+        target = tmp_path / key
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(gzip.compress(out.getvalue().encode("utf-8")))
+        (tmp_path / MANIFEST).write_text(
+            ",".join(MANIFEST_COLUMNS) + "\n" + f"/{key},1,1,x,,2026-09-21\n",
+            encoding="utf-8",
+        )
+        return tmp_path
+
+    @staticmethod
+    def _row(date: str, code: str, long_volume: float) -> dict[str, str]:
+        """**実物から作った形である**（`jquants_margin_interest_sample.csv`）。"""
+        return {
+            "Date": date,
+            "Code": code,
+            "ShrtVol": "61800.0",
+            "LongVol": str(long_volume),
+            "ShrtNegVol": "31400.0",
+            "LongNegVol": "57500.0",
+            "ShrtStdVol": "30400.0",
+            "LongStdVol": "171800.0",
+            "IssType": "2",
+        }
+
+    def _weeks(self, code: str, volumes: list[float]) -> list[dict[str, str]]:
+        """**日付は暦で足す。** 文字列で足すと 2022-01-35 が出る（実際に出した）。"""
+        first = dt.date(2022, 1, 7)
+        return [
+            self._row((first + dt.timedelta(weeks=step)).isoformat(), code, volume)
+            for step, volume in enumerate(volumes)
+        ]
+
+    def test_the_change_is_a_ratio(self, tmp_path) -> None:
+        from stock_ai.backtest.wall import margin_change
+
+        rows = self._weeks("86970", [100.0, 100.0, 100.0, 100.0, 120.0])
+
+        values, _census = margin_change(self._archive(tmp_path, rows), weeks=4)
+
+        assert len(values) == 1
+        (_when, change) = next(iter(values.values()))
+        assert change == pytest.approx(0.2)
+
+    def test_it_waits_for_the_publication(self, tmp_path) -> None:
+        """**金曜時点の値を、その日に使わない。** 公表は第2営業日である。"""
+        from stock_ai.backtest.wall import margin_change
+
+        rows = self._weeks("86970", [100.0, 100.0, 100.0, 100.0, 120.0])
+
+        values, _census = margin_change(self._archive(tmp_path, rows), weeks=4, lag_days=4)
+        ((_symbol, month), (when, _change)) = next(iter(values.items()))
+
+        # 最後の週末は 2022-02-04、公表は 2022-02-08。
+        assert when == dt.date(2022, 2, 8)
+        assert str(month) == "2022-02"
+
+    def test_a_longer_lag_can_push_it_into_the_next_month(self, tmp_path) -> None:
+        """**両向きに置く。** 遅れを無視する形でも緑にならないように。"""
+        from stock_ai.backtest.wall import margin_change
+
+        rows = self._weeks("86970", [100.0, 100.0, 100.0, 100.0, 120.0])
+
+        early, _ = margin_change(self._archive(tmp_path, rows), weeks=4, lag_days=0)
+        late, _ = margin_change(self._archive(tmp_path, rows), weeks=4, lag_days=30)
+
+        assert str(next(iter(early))[1]) == "2022-02"
+        assert str(next(iter(late))[1]) == "2022-03"
+
+    def test_the_newest_publication_of_the_month_wins(self, tmp_path) -> None:
+        """**月に2回公表されたら、新しいほうを採る。**"""
+        from stock_ai.backtest.wall import margin_change
+
+        rows = self._weeks("86970", [100.0, 100.0, 100.0, 100.0, 120.0, 150.0])
+
+        values, _census = margin_change(self._archive(tmp_path, rows), weeks=4)
+        changes = {str(month): change for (_s, month), (_w, change) in values.items()}
+
+        # 2022-02 には2つ入る（02-08 と 02-15）。**新しいほう。**
+        assert changes["2022-02"] == pytest.approx(0.5)
+
+    def test_a_short_history_is_counted_apart(self, tmp_path) -> None:
+        """**合計だけ出すと、その中に紛れる。**"""
+        from stock_ai.backtest.wall import margin_change
+
+        rows = self._weeks("86970", [100.0, 110.0])
+
+        values, census = margin_change(self._archive(tmp_path, rows), weeks=4)
+
+        assert not values
+        assert census.skipped_short == 1
+        assert any("履歴が無い" in line for line in census.warnings())
+
+    def test_a_nonpositive_balance_is_not_divided_by(self, tmp_path) -> None:
+        from stock_ai.backtest.wall import margin_change
+
+        rows = self._weeks("86970", [100.0, 100.0, 100.0, 100.0, 120.0])
+        rows[0]["LongVol"] = "0.0"
+
+        values, census = margin_change(self._archive(tmp_path, rows), weeks=4)
+
+        # **0 の週は履歴から落ちる**ので、4公表ぶん遡れなくなる。
+        assert not values
+        assert census.skipped_short == 1
+
+    def test_an_empty_archive_says_so(self, tmp_path) -> None:
+        from stock_ai.backtest.wall import margin_change
+        from stock_ai.data.jquants_archive import MANIFEST, MANIFEST_COLUMNS
+
+        (tmp_path / MANIFEST).write_text(",".join(MANIFEST_COLUMNS) + "\n", encoding="utf-8")
+
+        values, census = margin_change(tmp_path)
+
+        assert not values
+        assert any("1行も読めなかった" in line for line in census.warnings())
+
+    def test_it_refuses_zero_weeks(self, tmp_path) -> None:
+        from stock_ai.backtest.wall import margin_change
+
+        with pytest.raises(ValueError, match="at least 1"):
+            margin_change(tmp_path, weeks=0)
+
+    def test_the_lookback_has_no_source(self) -> None:
+        """**決めた値がそのまま出ていること。** 書き写さない。"""
+        from stock_ai.backtest.wall import MARGIN_LOOKBACK
+
+        assert MARGIN_LOOKBACK == 4  # noqa: PLR2004 - 決めた値そのもの
