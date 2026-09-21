@@ -2006,3 +2006,179 @@ class TestTheDenominatorIsUnadjusted:
             assert "raw_price_level" in argument, (
                 f"**調整後の終値で割っている: {argument}。** 分割比のぶん利回りが跳ねる。"
             )
+
+
+class TestTheShortRatioFold:
+    """**候補16。** 業種別の原本から、市場ぜんぶの空売り比率を作る。
+
+    実データは **5列・148,444行・2008〜2026年**で、全列 100% 埋まっている
+    （2026-09-21）。33業種 × 約 4,500 日である。
+    """
+
+    @staticmethod
+    def _archive(tmp_path, rows: list[dict[str, str]]):
+        import csv as csv_module
+        import gzip
+        import io
+
+        from stock_ai.data.jquants_archive import MANIFEST, MANIFEST_COLUMNS
+
+        out = io.StringIO()
+        writer = csv_module.DictWriter(out, fieldnames=list(rows[0]), lineterminator="\n")
+        writer.writeheader()
+        writer.writerows(rows)
+        key = "markets/short-ratio/short_ratio_sample.csv.gz"
+        target = tmp_path / key
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(gzip.compress(out.getvalue().encode("utf-8")))
+        (tmp_path / MANIFEST).write_text(
+            ",".join(MANIFEST_COLUMNS) + "\n" + f"/{key},1,1,x,,2026-09-21\n",
+            encoding="utf-8",
+        )
+        return tmp_path
+
+    @staticmethod
+    def _row(date: str, sector: str, plain: float, restricted: float, free: float):
+        """**実データの列名そのままである**（`checks` が数えた5列）。"""
+        return {
+            "Date": date,
+            "S33": sector,
+            "SellExShortVa": str(plain),
+            "ShrtWithResVa": str(restricted),
+            "ShrtNoResVa": str(free),
+        }
+
+    def test_the_ratio_is_short_over_all_selling(self, tmp_path) -> None:
+        from stock_ai.backtest.wall import short_ratios
+
+        rows = [self._row("2017-01-04", "0050", 600.0, 300.0, 100.0)]
+
+        found = short_ratios(self._archive(tmp_path, rows))
+
+        assert found.levels[dt.date(2017, 1, 4)] == pytest.approx(0.4)
+
+    def test_the_sectors_are_added_before_dividing(self, tmp_path) -> None:
+        """**業種ごとの比率を平均しない。** 小さい業種が同じ重みになる。"""
+        from stock_ai.backtest.wall import short_ratios
+
+        rows = [
+            # 大きい業種は 10% しか空売りが無い。
+            self._row("2017-01-04", "0050", 900.0, 100.0, 0.0),
+            # 小さい業種は 100% が空売り。**平均すれば 55%、足せば 19%。**
+            self._row("2017-01-04", "3050", 0.0, 100.0, 0.0),
+        ]
+
+        found = short_ratios(self._archive(tmp_path, rows))
+
+        assert found.levels[dt.date(2017, 1, 4)] == pytest.approx(200 / 1100)
+        assert found.levels[dt.date(2017, 1, 4)] != pytest.approx(0.55)
+
+    def test_the_sectors_are_counted(self, tmp_path) -> None:
+        """**在った業種を全部数える。** 無いことは出力に出ない。"""
+        from stock_ai.backtest.wall import short_ratios
+
+        rows = [
+            self._row("2017-01-04", "0050", 900.0, 100.0, 0.0),
+            self._row("2017-01-04", "3050", 0.0, 100.0, 0.0),
+        ]
+
+        found = short_ratios(self._archive(tmp_path, rows))
+
+        assert set(found.sectors) == {"0050", "3050"}
+        assert found.rows == 2  # noqa: PLR2004
+
+    def test_a_day_without_selling_is_counted_apart(self, tmp_path) -> None:
+        from stock_ai.backtest.wall import short_ratios
+
+        rows = [self._row("2017-01-04", "0050", 0.0, 0.0, 0.0)]
+
+        found = short_ratios(self._archive(tmp_path, rows))
+
+        assert not found.levels
+        assert found.no_total == 1
+        assert any("売り総額が 0 以下" in line for line in found.warnings())
+
+    def test_an_empty_archive_says_so(self, tmp_path) -> None:
+        from stock_ai.backtest.wall import short_ratios
+        from stock_ai.data.jquants_archive import MANIFEST, MANIFEST_COLUMNS
+
+        (tmp_path / MANIFEST).write_text(",".join(MANIFEST_COLUMNS) + "\n", encoding="utf-8")
+
+        found = short_ratios(tmp_path)
+
+        assert not found.levels
+        assert any("1行も読めなかった" in line for line in found.warnings())
+
+    def test_it_counts_by_year(self, tmp_path) -> None:
+        from stock_ai.backtest.wall import short_ratios
+
+        rows = [
+            self._row("2008-05-01", "0050", 600.0, 300.0, 100.0),
+            self._row("2017-01-04", "0050", 600.0, 300.0, 100.0),
+        ]
+
+        found = short_ratios(self._archive(tmp_path, rows))
+
+        assert found.by_year() == [(2008, 1), (2017, 1)]
+
+
+class TestTheWindowsDoNotOverlap:
+    """**膨張は、要る情報比を下げられる3つのうちの1つである。**
+
+    毎日入って20日持つと `√20` 倍になる。**間引けば 1.0 に近づく。**
+    """
+
+    @staticmethod
+    def _days(count: int) -> list[dt.date]:
+        start = dt.date(2017, 1, 2)
+        return [start + dt.timedelta(days=step) for step in range(count)]
+
+    def test_it_keeps_one_in_every_holding(self) -> None:
+        from stock_ai.backtest.wall import spaced_entries
+
+        found = spaced_entries(self._days(100), holding=20)
+
+        assert len(found) == 5  # noqa: PLR2004
+        assert (found[1] - found[0]).days == 20  # noqa: PLR2004
+
+    def test_the_order_does_not_matter(self) -> None:
+        """**順不同で渡しても同じ答え。** 呼ぶ側の都合に依存しない。"""
+        from stock_ai.backtest.wall import spaced_entries
+
+        days = self._days(50)
+
+        assert spaced_entries(days, 10) == spaced_entries(list(reversed(days)), 10)
+
+    def test_holding_one_keeps_everything(self) -> None:
+        """**両向きに置く。** 常に間引く形でも緑にならないように。"""
+        from stock_ai.backtest.wall import spaced_entries
+
+        days = self._days(30)
+
+        assert spaced_entries(days, holding=1) == sorted(days)
+
+    def test_it_refuses_zero(self) -> None:
+        from stock_ai.backtest.wall import spaced_entries
+
+        with pytest.raises(ValueError, match="at least 1"):
+            spaced_entries([], holding=0)
+
+    def test_spacing_actually_lowers_the_inflation(self) -> None:
+        """**主張を測定に変える。** 「重ならないから 1.0 に近い」を確かめる。
+
+        独立な日次から窓を作り、**毎日入る場合と間引く場合**で膨張を測る。
+        """
+        import random
+
+        from stock_ai.backtest.power import estimate_power
+
+        rng = random.Random(20260921)
+        daily = [rng.gauss(0.0, 0.01) for _ in range(4000)]
+        window = 20
+        windows = [sum(daily[at : at + window]) for at in range(len(daily) - window)]
+
+        every_day = estimate_power(windows, lags=window).inflation
+        spaced = estimate_power(windows[::window], lags=1).inflation
+
+        assert every_day > 2.0, "**毎日入れば重なる。** そうでないなら盤面が悪い"  # noqa: PLR2004
+        assert spaced < 1.3, "**間引けば重ならない。**"  # noqa: PLR2004

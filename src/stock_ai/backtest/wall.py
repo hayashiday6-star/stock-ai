@@ -111,7 +111,7 @@ import dataclasses
 import datetime as dt
 import math
 from bisect import bisect_right
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from pathlib import Path
 
 import numpy as np
@@ -1482,3 +1482,171 @@ def _summary_files(directory: Path):
             yield key, read_archived(path_for(directory, key))
         except Exception as exc:  # noqa: BLE001 - どこで開けないかが記録に値する
             logger.warning("財務情報の原本を開けなかった: %s: %s", key, exc)
+
+
+#: 空売り比率の高低を測る、振り返りの営業日数（候補16）。
+#:
+#: **出典は無い。決めの値である**（約3ヶ月）。
+#:
+#: **これは壁に効かない。** 向きの決め方が変わっても ±1 倍は SD を変えない
+#: ので、**ここで決めても答えを先に見たことにならない**——候補11 と同じ
+#: 理屈である。
+SHORT_RATIO_WINDOW = 60
+
+#: 候補16 の保有営業日数。**候補6 と同じ**——同じ説の族だからである。
+#:
+#: **重ならないように、この間隔で入る。** 膨張は、要る情報比を下げられる
+#: 3つのうちの1つである（`docs/PASSING.md` §2）。**毎日入ると √20 倍に
+#: なり、壁がそのぶん上がる。**
+SHORT_RATIO_HOLDING = 20
+
+
+@dataclasses.dataclass(frozen=True)
+class ShortRatios:
+    """日ごとの空売り比率と、**読めなかったぶんの数。**"""
+
+    levels: dict[dt.date, float]
+    """``日 -> 空売り金額 ÷ 売り総額``。**33業種を金額で合計してから割る。**"""
+
+    rows: int
+    sectors: dict[str, int]
+    """``業種 -> 行数``。**在った業種を全部数える**——無いことは出力に出ない。"""
+
+    no_total: int
+    """売り総額が 0 以下で、割れなかった日。"""
+
+    def by_year(self) -> list[tuple[int, int]]:
+        """``(年, 比率を作れた日数)``。**年の順。**"""
+        found: dict[int, int] = {}
+        for when in self.levels:
+            found[when.year] = found.get(when.year, 0) + 1
+        return sorted(found.items())
+
+    def summary(self) -> str:
+        """1行のまとめ。"""
+        if not self.rows:
+            return "空売り比率の原本が1行も読めなかった。**材料が無い。**"
+        span = ""
+        if self.levels:
+            span = f"（{min(self.levels)} 〜 {max(self.levels)}）"
+        return (
+            f"空売り比率 {self.rows:,} 行、業種 {len(self.sectors)} 種類。"
+            f"**比率を作れた日が {len(self.levels):,}**{span}。"
+        )
+
+    def warnings(self) -> list[str]:
+        """気付かなくても目に入るべきこと。**早期 return しない。**"""
+        found: list[str] = []
+        if not self.rows:
+            return ["**空売り比率の原本が1行も読めなかった。**"]
+        if self.no_total:
+            found.append(
+                f"**{self.no_total:,} 日は売り総額が 0 以下だった。** 割れないので使っていない。"
+            )
+        if not self.levels:
+            found.append("**1日も作れなかった。** 壁を出せない。")
+        return found
+
+
+def short_ratios(directory: Path) -> ShortRatios:
+    """業種別の原本から、**市場ぜんぶの空売り比率**を日ごとに作る（候補16）。
+
+    ## 畳み方は、壁を測る前に1つに決めてある
+
+    ``(価格規制あり + 規制なし) ÷ (空売り以外の売り + 規制あり + 規制なし)``
+    を、**33業種を金額で合計してから**割る。
+
+    **業種ごとの比率を平均しない。** 小さい業種と大きい業種が同じ重みになる
+    ——**「市場ぜんぶの空売り比率」ではなくなる。**
+
+    ## 業種を絞らない
+
+    **原本は業種別だが、この説は市場ぜんぶの悲観を見る。** 業種を選べば、
+    **選び方が設計になる**——そこは決めていないので、全部足す。
+
+    Args:
+        directory: 原本の置き場所。
+
+    Returns:
+        :class:`ShortRatios`。
+    """
+    from stock_ai.data.jquants_bulk import records_from_csv
+    from stock_ai.data.jquants_margin import parse_date, parse_number
+
+    # **日ごとに足してから割る。** 業種ごとに割って平均すると、重みが崩れる。
+    shorted: dict[dt.date, float] = {}
+    total: dict[dt.date, float] = {}
+    sectors: dict[str, int] = {}
+    rows = 0
+
+    for key, payload in _short_ratio_files(directory):
+        try:
+            found = records_from_csv(payload)
+        except Exception as exc:  # noqa: BLE001 - どこで読めないかが記録に値する
+            logger.warning("空売り比率の原本を読めなかった: %s: %s", key, exc)
+            continue
+        for row in found:
+            rows += 1
+            sectors[(row.get("S33") or "").strip()] = (
+                sectors.get((row.get("S33") or "").strip(), 0) + 1
+            )
+            when = parse_date(row.get("Date"))
+            if when is None:
+                continue
+            plain = parse_number(row.get("SellExShortVa")) or 0.0
+            restricted = parse_number(row.get("ShrtWithResVa")) or 0.0
+            free = parse_number(row.get("ShrtNoResVa")) or 0.0
+            shorted[when] = shorted.get(when, 0.0) + restricted + free
+            total[when] = total.get(when, 0.0) + plain + restricted + free
+
+    levels: dict[dt.date, float] = {}
+    no_total = 0
+    for when in sorted(total):
+        if total[when] <= 0:
+            no_total += 1
+            continue
+        levels[when] = shorted[when] / total[when]
+
+    return ShortRatios(levels=levels, rows=rows, sectors=sectors, no_total=no_total)
+
+
+def spaced_entries(
+    days: Iterable[dt.date],
+    holding: int = SHORT_RATIO_HOLDING,
+) -> list[dt.date]:
+    """``holding`` 営業日ごとに1つだけ採って、**窓が重ならないようにする。**
+
+    **毎日入ると膨張が `√holding` 倍になる。** 膨張は、要る情報比を下げら
+    れる3つのうちの1つである（`docs/PASSING.md` §2）——**重ならない設計に
+    寄せるのは、設計の型として先に決めてある。**
+
+    **観測数は `holding` 分の1になるが、要る情報比は動かない。**
+    n も SD も情報比には効かない。
+
+    Args:
+        days: 候補の日（順不同でよい）。
+        holding: 保有営業日数。
+
+    Returns:
+        重ならないように間引いた日。**古い順。**
+
+    Raises:
+        ValueError: ``holding`` が 1 未満。
+    """
+    if holding < 1:
+        raise ValueError(f"holding must be at least 1; got {holding}.")
+    return sorted(days)[::holding]
+
+
+def _short_ratio_files(directory: Path):
+    """空売り比率の原本を ``(鍵, 中身)`` で。**取りには行かない。**"""
+    from stock_ai.data.jquants_archive import path_for, read_manifest
+    from stock_ai.data.jquants_read import endpoint_of, read_archived
+
+    for key in sorted(read_manifest(directory)):
+        if endpoint_of(key) != "/markets/short-ratio":
+            continue
+        try:
+            yield key, read_archived(path_for(directory, key))
+        except Exception as exc:  # noqa: BLE001 - どこで開けないかが記録に値する
+            logger.warning("空売り比率の原本を開けなかった: %s: %s", key, exc)

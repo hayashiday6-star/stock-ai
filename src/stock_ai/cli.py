@@ -7709,10 +7709,13 @@ def _index_walls(
         IV_OOS_FROM,
         OOS_END,
         OOS_FROM,
+        SHORT_RATIO_HOLDING,
         Wall,
         choose_spike,
         flow_entries,
         forward_windows,
+        short_ratios,
+        spaced_entries,
     )
     from stock_ai.core.logging import quiet_on_console
     from stock_ai.data.jquants_investor import SECTION, weekly_flows
@@ -7822,6 +7825,63 @@ def _index_walls(
                 ),
             )
         )
+
+    # --- C 空売り比率（候補16）----------------------------------------------
+    #
+    # **候補11 と同じ形である**——絞らず、向きだけで ±1 に切り替える。
+    # **壁は符号に依存しない**ので、向きの決め方を決めても答えを先に見た
+    # ことにならない。
+    #
+    # **重ならないように間引いて入る。** 毎日入ると膨張が √20 になり、
+    # 壁がそのぶん上がる——膨張は要る情報比を下げられる3つのうちの1つである。
+    with quiet_on_console("stock_ai.backtest.wall"):
+        ratios = short_ratios(archive)
+    console.print(f"[dim]候補C: {ratios.summary()}[/]")
+    for line in ratios.warnings():
+        console.print(f"[yellow]候補C: {line}[/]")
+
+    if ratios.levels:
+        name = f"空売り比率の高低（{SHORT_RATIO_HOLDING} 営業日ごと、全33業種の合計）"
+        entries = spaced_entries(ratios.levels, SHORT_RATIO_HOLDING)
+        _used, values = forward_windows(returns, dates, entries, SHORT_RATIO_HOLDING, end=IS_END)
+        observations = oos_entries(entries, SHORT_RATIO_HOLDING)
+        if len(values) < 2 or not observations:  # noqa: PLR2004 - 1件では散らばりが測れない
+            console.print(
+                f"[yellow]**{name}: IS の窓が {len(values)}、OOS の観測が "
+                f"{observations}。** 壁を出せない。[/]"
+            )
+        else:
+            sampled[name] = values
+            with quiet_on_console("stock_ai.backtest.power"):
+                # **窓が重ならないので、隣どうしの相関だけ見る。**
+                estimate = estimate_power(values, lags=1)
+            walls.append(
+                Wall(
+                    candidate=16,
+                    name=name,
+                    pipe="指数を買うだけ（引く相手が無い）",
+                    unit="窓",
+                    observations=observations,
+                    sd=estimate.daily_sd,
+                    inflation=estimate.inflation,
+                    line=line_for("calendar"),
+                    source=(
+                        f"{benchmark} の日次、IS {len(values):,} 窓"
+                        f"（比率を作れた日 {len(ratios.levels):,}、"
+                        f"採った日 {len(entries):,}）"
+                    ),
+                    sample=len(values),
+                    undersampled=estimate.undersampled,
+                    period_years=_judgement_years(OOS_FROM, OOS_END),
+                    notes=(
+                        "**絞っていない。** 常に市場に居て、向きだけ切り替える"
+                        "——**壁は符号に依存しない**（±1 は SD を変えない）",
+                        f"**{SHORT_RATIO_HOLDING} 営業日ごとに入るので、窓が重ならない。** "
+                        "毎日入ると膨張が √20 になり、壁がそのぶん上がる",
+                        "**管は `calendar`。** 校正したのは日次の月替わりである",
+                    ),
+                )
+            )
 
     # --- B 需給（候補7 と候補11）--------------------------------------------
     #
@@ -8330,13 +8390,6 @@ def wall_survey(
     # 書いた側が確かめるまで、そこに在る材料は見えないままになる。
     missing = [
         Missing(8, "噂で買って事実で売る", "「噂」の初出時点を客観的に取る口が無い"),
-        Missing(
-            16,
-            "空売り比率",
-            "**`/markets/short-ratio` は業種別である**——指数の1本ではないので、"
-            "33業種の畳み方を先に決める必要がある。**手元に何年から在るかも"
-            "数えていない**（読み口が1つも無い）",
-        ),
         Missing(
             17,
             "決算発表日を避ける",
