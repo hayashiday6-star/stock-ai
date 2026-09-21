@@ -968,7 +968,8 @@ class TestTheInflationTheWallUsedIsTheOneItShows:
 
         body = cli._wall_document([_wall(inflation=0.82, candidate=6)], [], "ためし")
 
-        assert "0.82x → 1.00x" in body
+        # **どの規則が効いたかも欄に出る**（2026-09-21 に足した）。
+        assert "0.82x → 床 1.00x" in body
 
     def test_the_document_shows_one_when_it_did_not(self) -> None:
         from stock_ai import cli
@@ -1119,3 +1120,125 @@ class TestTheFlowDesignsBothReachTheTable:
         early = [node for node in own_returns(function.body) if node is not function.body[-1]]
 
         assert not early, "**早期 return が在る。** 下の設計が黙って落ちる。"
+
+
+class TestTheCeilingReplacesAnUnreliableEstimate:
+    """**推定できないときは、推定値の代わりに上限を置く**（2026-09-21）。
+
+    当てにならない推定を掛けるより、**安全側の値を置いて「これは上限で
+    ある」と書く**ほうが正直である。
+    """
+
+    def test_a_short_sample_switches_to_the_ceiling(self) -> None:
+        from stock_ai.backtest.power import overlap_ceiling
+
+        wall = _wall(inflation=1.62, undersampled=True, window=20, sample=147)
+
+        assert wall.capped
+        assert wall.effective_inflation == pytest.approx(overlap_ceiling(20))
+
+    def test_a_long_enough_sample_keeps_the_estimate(self) -> None:
+        """**両向きに置く。** 常に上限に倒しても緑にならないように。"""
+        wall = _wall(inflation=1.82, undersampled=False, window=20, sample=1_220)
+
+        assert not wall.capped
+        assert wall.effective_inflation == pytest.approx(1.82)
+
+    def test_the_ceiling_never_lowers_the_wall(self) -> None:
+        """**上限は「これ以上は無い」と言うためのもの。** 低く見せない。"""
+        wall = _wall(inflation=6.0, undersampled=True, window=20, sample=10)
+
+        assert wall.effective_inflation == pytest.approx(6.0)
+        assert not wall.capped
+
+    def test_a_design_that_cannot_overlap_gets_no_ceiling(self) -> None:
+        """**重ならない設計には当てない。**"""
+        wall = _wall(inflation=1.04, undersampled=True, window=0, sample=5)
+
+        assert not wall.capped
+        assert wall.effective_inflation == pytest.approx(1.04)
+
+    def test_the_wall_uses_the_effective_value(self) -> None:
+        """**表に出す膨張と、壁を作った膨張が同じであること。**"""
+        from stock_ai.backtest.power import detectable_difference
+
+        wall = _wall(
+            inflation=1.62, undersampled=True, window=20, sample=147, observations=379, sd=0.0423
+        )
+
+        assert wall.detectable == pytest.approx(
+            detectable_difference(0.0423, wall.effective_inflation, 379, wall.line)
+        )
+
+
+class TestTheInflationColumnSaysWhichRuleBit:
+    """**欄そのものに出す。** 注記だと、表だけ見た人には落ちる。"""
+
+    @staticmethod
+    def _cell(**changed) -> str:
+        from stock_ai import cli
+
+        return cli._inflation_cell(_wall(**changed))
+
+    def test_the_ceiling_is_named_in_the_column(self) -> None:
+        assert "上限" in self._cell(inflation=1.62, undersampled=True, window=20)
+
+    def test_the_floor_is_named_in_the_column(self) -> None:
+        assert "床" in self._cell(inflation=0.82)
+
+    def test_a_plain_row_says_only_the_measured_value(self) -> None:
+        """**常に出る印は、何も区別しない。**"""
+        cell = self._cell(inflation=1.82)
+
+        assert cell == "1.82x"
+        assert "→" not in cell
+
+    def test_the_table_and_the_document_use_the_same_renderer(self) -> None:
+        """**2つ持つと、片方だけ直したときに行が自分と食い違う。**"""
+        import ast
+        import inspect
+
+        from stock_ai import cli
+
+        body = inspect.getsource(cli.wall_survey) + inspect.getsource(cli._wall_document)
+        calls = [
+            node.func.id
+            for node in ast.walk(ast.parse(body))
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+        ]
+
+        assert calls.count("_inflation_cell") == 2  # noqa: PLR2004 - 表と文書
+
+
+class TestEveryEventWallCarriesItsWindow:
+    """**上限を出すには窓が要る。** 渡し忘れると、黙って当たらない。
+
+    経路ごとにテストを足す方式は、**次の1本を書き忘れた瞬間に同じことが
+    起きる**（`test_deferred_imports` と同じ理由）。**AST で機械的に見る。**
+    """
+
+    def test_an_event_wall_passes_the_window(self) -> None:
+        import ast
+        import inspect
+
+        from stock_ai import cli
+
+        missing: list[int] = []
+        for source in (cli.wall_survey, cli._index_walls):
+            tree = ast.parse(inspect.getsource(source))
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.Call) or getattr(node.func, "id", None) != "Wall":
+                    continue
+                named = {word.arg for word in node.keywords}
+                unit = next(
+                    (
+                        word.value
+                        for word in node.keywords
+                        if word.arg == "unit" and isinstance(word.value, ast.Constant)
+                    ),
+                    None,
+                )
+                if unit is not None and unit.value == "イベント日" and "window" not in named:
+                    missing.append(node.lineno)
+
+        assert not missing, f"**イベント型なのに window= を渡していない: {missing}**"

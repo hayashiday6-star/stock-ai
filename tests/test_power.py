@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import math
 
+import numpy as np
 import pytest
 
 from stock_ai.backtest import power
@@ -687,3 +688,71 @@ def test_no_lags_reports_no_ratio_rather_than_dividing() -> None:
     from stock_ai.backtest.power import estimate_power
 
     assert math.isinf(estimate_power([0.01, -0.02, 0.03], lags=0).per_lag)
+
+
+# --- 重なりの膨張の上限 ------------------------------------------------------
+#
+# **推定できないときは、推定値の代わりに上限を置く**（2026-09-21、ユーザーの
+# 案）。当てにならない推定を掛けるより正直である。
+
+
+def _overlap_inflation(window: int, spacing: int, days: int = 200_000, seed: int = 11) -> float:
+    """独立な日次から重なる窓を作り、**平均の SD の膨張を実測する。**
+
+    **理屈の値を書き写さない。** ここで作って突き合わせる。
+    """
+    rng = np.random.default_rng(seed)
+    daily = rng.normal(0.0, 1.0, days)
+    cumulative = np.concatenate([[0.0], np.cumsum(daily)])
+    starts = np.arange(0, days - window, spacing)
+    values = cumulative[starts + window] - cumulative[starts]
+    chunks = 200
+    per = len(values) // chunks
+    means = np.array([values[index * per : (index + 1) * per].mean() for index in range(chunks)])
+    return float(means.std(ddof=1) / (values.std(ddof=1) / np.sqrt(per)))
+
+
+def test_the_ceiling_is_the_square_root_of_the_window() -> None:
+    """**毎日入るときの膨張が ``√W`` であること。** 測って確かめる。"""
+    from stock_ai.backtest.power import overlap_ceiling
+
+    assert overlap_ceiling(20) == pytest.approx(_overlap_inflation(20, 1), rel=0.05)
+    assert overlap_ceiling(10) == pytest.approx(_overlap_inflation(10, 1), rel=0.10)
+
+
+def test_no_entry_pattern_exceeds_the_ceiling() -> None:
+    """**上限であること。** 間隔を空けるほど膨張は下がる。"""
+    from stock_ai.backtest.power import overlap_ceiling
+
+    for spacing in (1, 5, 10):
+        assert _overlap_inflation(20, spacing) <= overlap_ceiling(20) * 1.05
+
+
+def test_the_spacing_formula_is_not_a_ceiling() -> None:
+    """**`√(W/s)` を採らなかった理由。** 実測がそれを超える。
+
+    W=20・s=5 で実測 2.22 に対し `√(W/s)` は 2.00 だった（2026-09-21）。
+    **超えるものを「上限」と呼ばない。**
+    """
+    assert _overlap_inflation(20, 5) > np.sqrt(20 / 5)
+
+
+def test_newey_west_runs_low_in_the_same_setting() -> None:
+    """**推定量そのものが、真の値より低く出る。** 緩む向きである。"""
+    from stock_ai.backtest.power import estimate_power
+
+    rng = np.random.default_rng(5)
+    daily = rng.normal(0.0, 1.0, 60_000)
+    cumulative = np.concatenate([[0.0], np.cumsum(daily)])
+    starts = np.arange(0, 60_000 - 20)
+    series = list(cumulative[starts + 20] - cumulative[starts])
+
+    assert estimate_power(series, lags=20).inflation < _overlap_inflation(20, 1)
+
+
+def test_a_window_that_cannot_overlap_has_no_ceiling() -> None:
+    """**重ならない設計には当てない。** 常に点く旗は何も区別しない。"""
+    from stock_ai.backtest.power import overlap_ceiling
+
+    assert overlap_ceiling(1) == pytest.approx(1.0)
+    assert overlap_ceiling(0) == pytest.approx(1.0)

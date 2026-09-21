@@ -6480,13 +6480,9 @@ def _wall_document(walls: list[object], missing: list[object], span: str) -> str
         size = (
             f"年 {annual:.1%}" if annual is not None else f"1{wall.unit} {wall.detectable:.2%}"  # type: ignore[attr-defined]
         )
-        # **壁を作った値を出す。** 床が効いたなら、測った値も併せて出す
-        # ——行が自分と食い違わないように。
-        blown = (
-            f"{wall.inflation:.2f}x → {wall.effective_inflation:.2f}x"  # type: ignore[attr-defined]
-            if wall.floored  # type: ignore[attr-defined]
-            else f"{wall.inflation:.2f}x"  # type: ignore[attr-defined]
-        )
+        # **表と同じところから作る。** 2つ持つと、片方だけ直したときに
+        # 行が自分と食い違う。
+        blown = _inflation_cell(wall)
         lines.append(
             f"| {wall.candidate} | {wall.name} | {wall.pipe} | "  # type: ignore[attr-defined]
             f"{wall.observations:,} | {wall.sd:.2%}／{wall.unit} | "  # type: ignore[attr-defined]
@@ -7445,6 +7441,29 @@ def _print_dividend_revisions(archive: Path) -> None:
     )
 
 
+def _inflation_cell(wall: object) -> str:
+    """Render the inflation column so the row cannot contradict itself.
+
+    **欄そのものに出す。** 注記に書くと、**表だけ見た人には落ちる**
+    （2026-09-21、ユーザーの指摘）。`CLAUDE.md`「表は読む側が気付く必要が
+    ある」。
+
+    | 何が効いたか | 出し方 |
+    |---|---|
+    | 何も | `1.82x` |
+    | 床（1.0 を割った） | `0.82x → 床 1.00x` |
+    | 上限（標本が足りない） | `1.62x → 上限 4.47x` |
+
+    **2箇所に書かない。** 表と `docs/WALL.md` が同じここを呼ぶ。
+    """
+    measured = f"{wall.inflation:.2f}x"  # type: ignore[attr-defined]
+    if wall.capped:  # type: ignore[attr-defined]
+        return f"{measured} → 上限 {wall.effective_inflation:.2f}x"  # type: ignore[attr-defined]
+    if wall.floored:  # type: ignore[attr-defined]
+        return f"{measured} → 床 {wall.effective_inflation:.2f}x"  # type: ignore[attr-defined]
+    return measured
+
+
 def _index_walls(
     archive: Path,
     returns: list[float],
@@ -7584,6 +7603,7 @@ def _index_walls(
                 ),
                 sample=len(values),
                 undersampled=estimate.undersampled,
+                window=HOLDING,
                 notes=(
                     f"**IS/OOS はこの候補だけ別である**（IS {IV_IS_FROM}〜{IV_IS_END}、"
                     f"OOS {IV_OOS_FROM}〜{OOS_END}）。`IV` が 2016-07 からしか無い",
@@ -7874,6 +7894,7 @@ def wall_survey(
                 source=(f"IS {sample.drawn:,} 件が {len(sample.values):,} 日、窓 {HOLDING} 営業日"),
                 sample=len(sample.values),
                 undersampled=estimate.undersampled,
+                window=HOLDING,
                 notes=(
                     f"価格が1本も無くて捨てた {sample.no_prices:,}、"
                     f"その日に足が無くて捨てた {sample.not_trading:,}",
@@ -7907,10 +7928,22 @@ def wall_survey(
         if wall.undersampled:
             console.print(
                 f"[yellow]**{wall.name}: SD を測った標本（{wall.sample}）が、"
-                "重なりのラグに対して足りない。** **膨張の推定は当てにならない**"
-                f"（{wall.inflation:.2f}x。1.0 を割っていれば床で 1.0 に戻して"
-                "あるが、当てにならないことは変わらない）。[/]"
+                "重なりのラグに対して足りない。** **推定値ではなく上限を使った**"
+                f"（{wall.inflation:.2f}x → 上限 {wall.effective_inflation:.2f}x）。"
+                "**壁が上がって他の説を超えても、推定値には戻さない**"
+                "——結果を見てから規則を選ぶことになる。[/]"
             )
+
+    # **同じ規則を、全部の行に当てたことを出す。** 1つの候補にだけ当てると、
+    # 「1列だけ守る警告」と同じ形になる（`CLAUDE.md`、2026-09-21 にユーザーが
+    # 指摘）。**当たらなかったなら、当たらなかったと出れば足りる。**
+    capped = [wall for wall in walls if wall.capped]
+    console.print(
+        f"[dim]標本の足りなさは **{len(walls)} 行すべてに当てた**"
+        f"（線は `power.SAMPLE_PER_LAG`）。上限に切り替えたのは {len(capped)} 行"
+        + ("。" if not capped else "——" + "、".join(wall.name for wall in capped) + "。")
+        + "[/]"
+    )
 
     # **SD が数日でできていないか。** 1% を落として半分以下になるなら、それは
     # 「毎日どれくらい散らばるか」ではなく「まれに何が起きるか」を測っている
@@ -7940,11 +7973,7 @@ def wall_survey(
             wall.name,
             f"{wall.observations:,}",
             f"{wall.sd:.2%}／{wall.unit}",
-            # **壁を作った値を出す。** 床が効いたなら、測った値も併せて出す
-            # ——行が自分と食い違わないように。
-            f"{wall.inflation:.2f}x → {wall.effective_inflation:.2f}x"
-            if wall.floored
-            else f"{wall.inflation:.2f}x",
+            _inflation_cell(wall),
             f"{wall.line:.2f}",
             f"[bold]{size}[/]",
         )

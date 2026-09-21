@@ -221,6 +221,12 @@ class Wall:
     1年半しかない。**そこに当たる。**
     """
 
+    window: int = 0
+    """保有営業日数。**上限（`power.overlap_ceiling`）を出すのに要る。**
+
+    0 なら上限を当てない（重ならない設計）。
+    """
+
     undersampled: bool = False
     """**膨張のラグが、SD を測った標本より長かったか。**
 
@@ -236,21 +242,53 @@ class Wall:
     notes: tuple[str, ...] = ()
 
     @property
+    def ceiling(self) -> float:
+        """標本が足りないときに置く**上限**（`power.overlap_ceiling`）。"""
+        from stock_ai.backtest.power import overlap_ceiling
+
+        return overlap_ceiling(self.window)
+
+    @property
     def effective_inflation(self) -> float:
-        """**実際に壁を作るのに使った膨張。** 床（1.0）を当てた後の値。
+        """**実際に壁を作るのに使った膨張。**
+
+        1. 床（1.0）を当てる——**割り引く向きには効かせない**
+        2. **標本が足りなければ、上限に切り替える**（2026-09-21）
 
         **表に出す膨張と、壁を作った膨張が違うと、行が自分と食い違う**
         ——`CLAUDE.md`「表の見出しが約束していることと、行が答えていることを
         突き合わせる」。**測った値は :attr:`inflation` に残す。**
+
+        ## 上限に切り替えたあと、推定値には戻さない
+
+        **壁が上がって他の説を超えても、戻さない**（2026-09-21 に決めた。
+        ユーザーの指摘）。**結果を見てから規則を選ぶことになる**——#7 が
+        「五分五分と気付いたうえで回して負けた」形と同じで、**止める場所を
+        作ったのに使わないことになる。**
+
+        **どちらに転んでも上限を使う。** それを測る前に書いた。
+
+        **下げる向きには使わない。** 推定値が上限より大きいなら、そちらを
+        採る——上限は「これ以上は無い」と言うためのもので、**低く見せる
+        ためのものではない。**
         """
         from stock_ai.backtest.power import INFLATION_FLOOR
 
-        return max(self.inflation, INFLATION_FLOOR)
+        found = max(self.inflation, INFLATION_FLOOR)
+        if self.undersampled:
+            # **大きいほうを採る。** 上限で壁を下げない。
+            found = max(found, self.ceiling)
+        return found
 
     @property
     def floored(self) -> bool:
-        """床が効いたか。**効いたなら、表にそう出す。**"""
+        """床か上限が効いたか。**効いたなら、表にそう出す。**"""
         return self.inflation < self.effective_inflation
+
+    @property
+    def capped(self) -> bool:
+        """**上限に切り替えたか。** 床とは別に言う——理由が違う。"""
+        return self.undersampled and self.effective_inflation == self.ceiling > self.inflation
 
     @property
     def detectable(self) -> float:
@@ -259,10 +297,20 @@ class Wall:
         `線 × SD × 膨張 ÷ √n` である。**膨張を落とした版を1度書いた**
         （2026-09-19）——`passing.Shape` は掛けていたのに、ここだけ落ちて
         いた。**同じ式を3つ書けば、1つは間違える。**
+
+        **掛けるのは :attr:`effective_inflation` である。** 測った値を
+        そのまま掛けていたので、**上限に切り替えても壁に届いていなかった**
+        （2026-09-21。テストが落ちて分かった）。床は `standard_error` の中で
+        効いていたので気付かず、**上限を足したときに初めて出た。**
+
+        **欄には「→ 上限 4.47x」と出るのに、壁は 1.62 で作られる**——
+        この欄が防ぐはずだった食い違いそのものである。
         """
         from stock_ai.backtest.power import detectable_difference
 
-        return detectable_difference(self.sd, self.inflation, self.observations, self.line)
+        return detectable_difference(
+            self.sd, self.effective_inflation, self.observations, self.line
+        )
 
     @property
     def annual(self) -> float | None:
