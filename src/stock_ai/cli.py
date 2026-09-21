@@ -6548,6 +6548,100 @@ def _wall_document(walls: list[object], missing: list[object], span: str) -> str
     return "\n".join(lines)
 
 
+#: 次の10本を組むのに、材料が在るか確かめたいエンドポイント。
+#:
+#: **「無い」と書いたことも、出力に出ない**（`CLAUDE.md`、2026-09-21）。
+#: 候補6と7を「測れない」と書いていたのが両方とも誤りだったので、
+#: **確かめる口のほうを置く。**
+NEXT_MATERIALS: tuple[tuple[str, str], ...] = (
+    ("/fins/summary", "高配当利回り（候補3）。**`/equities/valuation` に利回りの列は無い**"),
+    ("/markets/short-ratio", "空売り比率。**業種別である**——指数の1本ではない"),
+    ("/markets/margin-interest", "信用買い残（候補5）"),
+    ("/equities/valuation", "小型・低位・節目。**時価総額はここ**"),
+)
+
+
+@app.command(name="column-census")
+def column_census_command(
+    endpoint: str = typer.Option(
+        "", "--endpoint", help="One endpoint, or empty for the ones the next candidates need."
+    ),
+    directory: str = typer.Option(
+        str(DEFAULT_ARCHIVE_DIR), "--dir", help="Where the archived originals live."
+    ),
+    show_empty: bool = typer.Option(
+        False, "--show-empty", help="Also list the columns that are never filled."
+    ),
+) -> None:
+    """Count the original's own columns - what is there, and from when.
+
+    **読み口が捨てている列は、読み口からは見えない。** #5 で `FS` の中の鍵を
+    いくら並べても答えにならなかったのと同じ形なので、**読み口を通さずに
+    原本の列を数える。**
+
+    そして**列が在ることと、値が埋まっていることは別である。** 候補6 の
+    `IV` は 2008-05 の原本に列が在るのに全行で空だった。**「在る」で先に
+    進むと、IS が 359 日しかない設計になる。**
+
+    **エンドポイントを1つずつ足さない。** 経路ごとに検査を書く方式は、
+    次の1本を書き忘れた瞬間に同じことが起きる——ここは名前を受け取る。
+
+    **取りには行かない。** 原本を読むだけである。
+    """
+    from stock_ai.core.logging import quiet_on_console
+    from stock_ai.data.jquants_columns import column_census
+
+    settings = get_settings()
+    configure_logging(settings.log_level)
+
+    wanted: tuple[tuple[str, str], ...]
+    wanted = ((endpoint, ""),) if endpoint else NEXT_MATERIALS
+    for name, why in wanted:
+        console.print(f"[bold]{name}[/]" + (f" — {why}" if why else ""))
+        with quiet_on_console("stock_ai.data.jquants_columns"):
+            census = column_census(Path(directory), name)
+        console.print(f"[dim]{census.summary()}[/]")
+        for line in census.warnings():
+            console.print(f"[yellow]{line}[/]")
+        if not census.rows:
+            console.print()
+            continue
+
+        table = Table(title=f"{name} の列（{census.rows:,} 行）")
+        for column in ("列", "埋まっていた", "割合", "在る年"):
+            table.add_column(column, overflow="fold", justify="left" if column == "列" else "right")
+        for item in census.columns:
+            if not item.filled and not show_empty:
+                continue
+            span = "—"
+            if item.first_year is not None:
+                span = (
+                    f"{item.first_year}"
+                    if item.first_year == item.last_year
+                    else f"{item.first_year}〜{item.last_year}"
+                )
+            table.add_row(item.name, f"{item.filled:,}", f"{item.share(census.rows):.0%}", span)
+        console.print(table)
+        if census.dated_by:
+            console.print(f"[dim]年は `{census.dated_by}` で数えた。[/]")
+        if census.empty_columns and not show_empty:
+            console.print(
+                f"[dim]1行も埋まっていない {len(census.empty_columns)} 列は伏せた"
+                "（`--show-empty` で出る）: " + "、".join(census.empty_columns) + "[/]"
+            )
+        # **標本は、桁と書式を目で見るため。** 表の数だけでは、単位の取り違え
+        # （`MktCap` の百万円）は見つからない。
+        for row in census.sample:
+            console.print("[dim]  " + "、".join(f"{k}={v}" for k, v in row.items() if v) + "[/]")
+        console.print()
+
+    console.print(
+        "[dim]**列が在ることと、値が埋まっていることは別である。** "
+        "在る年を見てから設計を決めること——候補6 は `IV` が 2016-07 からで、"
+        "**IS/OOS をこの候補だけ動かすことになった。**[/]"
+    )
+
+
 @app.command(name="material-coverage")
 def material_coverage(
     directory: str = typer.Option(
