@@ -418,11 +418,84 @@ class Wall:
 
 @dataclasses.dataclass(frozen=True)
 class Missing:
-    """**材料が無くて測れない候補。** 出力に出す——無いことは出力に出ない。"""
+    """**材料が無くて測れない候補。** 出力に出す——無いことは出力に出ない。
+
+    ## 理由の文面は、黙って古くなる
+
+    **2度やった**（2026-09-21、ユーザーが2度とも指摘）。
+
+    | 候補 | 文面 | 実際 |
+    |---|---|---|
+    | 14 高配当 | 「在るかは `checks` が決める」 | **決めていた。2008年から在る** |
+    | 16 空売り | 「何年から在るかも数えていない」 | **数えていた。欠損ゼロ** |
+
+    **列の棚卸しが答えを出しているのに、壁の表の側が古い文面のまま残る。**
+    `ex-date-audit` の見出しが 819 件のまま2世代古かったのと同じ形で、
+    こちらは**数字ではなく、確かめたかどうかが古い。**
+
+    **注意書きでは止まらない。** :attr:`endpoint` を書けば、`wall-survey`
+    が**目録に原本が在るかを確かめて、在れば鳴る**——`read_manifest` は
+    ファイルを開かないので、数える費用も掛からない。
+    """
 
     candidate: int
     name: str
     reason: str
+    endpoint: str = ""
+    """**その理由が指している原本。** 書けば、在るかどうかを機械が見る。
+
+    **空なら見ない。** 「口が無い」（#8 の噂、#17 の発表予定日）のように、
+    **原本の有無では決まらない理由もある。**
+    """
+
+
+def archived_files(directory: Path, endpoint: str) -> int:
+    """目録に、そのエンドポイントの原本が何本あるか。**開かない。**
+
+    **`Missing` の文面が古くなっていないかを見るためである。** 中身を
+    読まないので、`wall-survey` の頭で全部の候補に当てても費用が無い。
+
+    Args:
+        directory: 原本の置き場所。
+        endpoint: 数えるエンドポイント。
+
+    Returns:
+        ファイル数。**目録が無ければ 0。**
+    """
+    from stock_ai.data.jquants_archive import read_manifest
+    from stock_ai.data.jquants_read import endpoint_of
+
+    return sum(1 for key in read_manifest(directory) if endpoint_of(key) == endpoint)
+
+
+def stale_reasons(directory: Path, missing: Iterable[Missing]) -> list[str]:
+    """**「材料が無い」と書いてあるのに、原本が在る候補**を言う。
+
+    **「無いことは出力に出ない」の裏返しである。** 在るのに「無い」と
+    書いてあることも、誰かが確かめるまで出力に出ない。
+
+    Args:
+        directory: 原本の置き場所。
+        missing: 測れないと書いてある候補。
+
+    Returns:
+        鳴らすべき行。**1つも無ければ空。**
+    """
+    found: list[str] = []
+    for item in missing:
+        if not item.endpoint:
+            continue
+        files = archived_files(directory, item.endpoint)
+        if files:
+            found.append(
+                f"**{item.candidate} は「材料が無い」に載っているが、"
+                f"`{item.endpoint}` の原本が {files:,} ファイル在る。** "
+                "**中身を数えてから書き直すこと**——`checks\\原本の列は"
+                "埋まっているか.bat`。"
+                "\n  **1本ずつが「その日の断面」でも、積み重なれば歴史になる。**"
+                "「API が直近しか返さない」ことと、「手元に歴史が無い」ことは別である。"
+            )
+    return found
 
 
 @dataclasses.dataclass
@@ -1266,6 +1339,50 @@ DIVIDEND_STALE_DAYS = 365
 IMPLAUSIBLE_YIELD = 0.20
 
 
+#: 実績の年間配当。**利回りには使わない。** 予想と混ぜないため。
+#:
+#: **監査でだけ並べる。** 予想が実績と桁違いなら、**訂正前の誤記**である
+#: ——2131 の `DivRate` が `5600.0 → 56.0` と訂正されていたのと同じ形を、
+#: 配当予想でも見る（2026-09-20）。
+DIVIDEND_ACTUAL_COLUMN = "DivAnn"
+
+#: 監査で持って返る、ありえない利回りの上限。**貼られる前提で作る。**
+MAX_IMPLAUSIBLE_KEPT = 400
+
+
+@dataclasses.dataclass(frozen=True)
+class ImplausibleYield:
+    """利回りが :data:`IMPLAUSIBLE_YIELD` を超えた1件。**中身を持って返る。**
+
+    **件数だけ返すと、どちらの読み違いか追えない。** 「中身を見ること」と
+    書いて見る道具が無い、を3度やった（`CLAUDE.md`）。
+
+    **`DivAnn`（実績）も並べる。** 予想が実績と桁違いなら**訂正前の誤記**、
+    どちらも大きいなら**株価か単位**である——**1回で分けられる。**
+    """
+
+    symbol: str
+    month: str
+    disclosed_on: dt.date
+    forecast: float
+    """:data:`DIVIDEND_COLUMN`（会社予想の年間配当）。"""
+
+    actual: float | None
+    """:data:`DIVIDEND_ACTUAL_COLUMN`。**同じ開示に無ければ ``None``。**"""
+
+    close: float
+    """**調整前**の月末終値。分母である。"""
+
+    yielded: float
+
+    @property
+    def ratio(self) -> float | None:
+        """予想 ÷ 実績。**訂正前の誤記なら、ここが 10 や 100 になる。**"""
+        if self.actual is None or self.actual <= 0:
+            return None
+        return self.forecast / self.actual
+
+
 @dataclasses.dataclass(frozen=True)
 class YieldCensus:
     """配当利回りを畳むときに落ちたもの。**合計だけ出すと、その中に紛れる。**"""
@@ -1309,6 +1426,20 @@ class YieldCensus:
     implausible: int
     """利回りが :data:`IMPLAUSIBLE_YIELD` を超えた銘柄月。**外していない。**"""
 
+    worst: tuple[ImplausibleYield, ...] = ()
+    """そのうちの中身（利回りの大きい順）。**件数だけ返さない。**
+
+    **`__post_init__` が件数と数を突き合わせる**ので、**札だけ古くなる形が
+    消える**（`KnifeEvents` と同じ作り）。
+    """
+
+    def __post_init__(self) -> None:
+        """**持って返った数が、数えた数を超えていないこと。**"""
+        if len(self.worst) > self.implausible:
+            raise ValueError(
+                f"持って返った {len(self.worst)} 件が、数えた {self.implausible} 件を超えている。"
+            )
+
     def summary(self) -> str:
         """1行のまとめ。"""
         if not self.rows:
@@ -1351,10 +1482,16 @@ class YieldCensus:
                 "年度のものなので、越えて持ち歩くと**終わった年度の予想**になる。"
             )
         if self.implausible:
+            share = self.implausible / self.observations if self.observations else 0.0
             found.append(
-                f"**{self.implausible:,} 銘柄月は利回りが {IMPLAUSIBLE_YIELD:.0%} を超えた。** "
-                "**外していない**——無配への訂正前か、単位の取り違えか、株価の異常である。"
-                "**どれかは、中身を見るまで決めない。**"
+                f"**{self.implausible:,} 銘柄月は利回りが {IMPLAUSIBLE_YIELD:.0%} を超えた**"
+                f"（{share:.2%}）。**外していない**——無配への訂正前か、単位の取り違えか、"
+                "株価の異常である。**どれかは、中身を見るまで決めない。**"
+                "\n  **件数の小ささは理由にならない**——外れ値は SD に効くので、"
+                "**この壁はそのぶん暫定である。**"
+                "\n  `checks\\高すぎる利回りを見る.bat` が中身を出す。"
+                f"**予想 ÷ 実績が 10 や 100 なら訂正前の誤記**、"
+                "どちらも大きいなら株価か単位である。"
             )
         # **突き合わせが空振りしたことは、列の検査では捕まらない。**
         # 列は全部読めていて、`no_symbol` も 0 のまま観測が出ない。
@@ -1435,7 +1572,7 @@ def dividend_yields(
 
     # **銘柄ごとに (開示日, 額) を集めてから畳む。** 行を見ながら分類すると、
     # **あとから来た行が前の行の情報を上書きする**（`CLAUDE.md`）。
-    disclosed: dict[str, list[tuple[dt.date, float]]] = {}
+    disclosed: dict[str, list[tuple[dt.date, float, float | None]]] = {}
     rows = no_symbol = no_date = no_amount = 0
 
     for key, payload in _summary_files(directory):
@@ -1463,6 +1600,8 @@ def dividend_yields(
                 None,
             )
             amount = parse_number(row.get(column))
+            # **実績は利回りに使わない。** 監査で並べるだけである。
+            actual = parse_number(row.get(DIVIDEND_ACTUAL_COLUMN))
             # **列ごとに独立に数える。** 直列に並べると、手前が全部を弾いた
             # とき後ろの数字が 0 のまま「異常なし」の顔をする（`CLAUDE.md`）。
             if symbol is None:
@@ -1473,7 +1612,7 @@ def dividend_yields(
                 no_amount += 1
             if symbol is None or when is None or amount is None or amount < 0:
                 continue
-            disclosed.setdefault(symbol, []).append((when, amount))
+            disclosed.setdefault(symbol, []).append((when, amount, actual))
 
     # **銘柄で引けるように畳んでから回す。** `prices` を銘柄ごとに全部
     # なめると、**4千銘柄 × 40万銘柄月**になって終わらない。
@@ -1483,15 +1622,16 @@ def dividend_yields(
 
     values: dict[tuple[str, pd.Period], tuple[dt.date, float]] = {}
     no_price = implausible = stale = 0
+    worst: list[ImplausibleYield] = []
     for symbol, entries in disclosed.items():
-        entries.sort()
-        days = [day for day, _amount in entries]
+        entries.sort(key=lambda item: item[0])
+        days = [day for day, _amount, _actual in entries]
         for month, rebalance, close in by_symbol.get(symbol, ()):
             # **その組み替え日までに開示されたうち、いちばん新しいもの。**
             position = bisect_right(days, rebalance)
             if position == 0:
                 continue
-            when, amount = entries[position - 1]
+            when, amount, actual = entries[position - 1]
             # **引き継ぎに期限を置く。** 無いと、開示をやめた銘柄が
             # いつまでも同じ配当を持ち歩く。
             if (rebalance - when).days > stale_days:
@@ -1503,6 +1643,19 @@ def dividend_yields(
             found = amount / close
             if found > IMPLAUSIBLE_YIELD:
                 implausible += 1
+                # **中身を持って返る。** 件数だけでは、どちらの読み違いか
+                # 追えない——「見る道具を置いたのに見えない」を3度やった。
+                worst.append(
+                    ImplausibleYield(
+                        symbol=symbol,
+                        month=str(month),
+                        disclosed_on=when,
+                        forecast=amount,
+                        actual=actual,
+                        close=close,
+                        yielded=found,
+                    )
+                )
             # **観測した日は開示日である。** 組み替え日に置き換えると、
             # `value_on` の関門が何も弾かなくなる。
             values[(symbol, month)] = (when, found)
@@ -1520,6 +1673,10 @@ def dividend_yields(
         matched_symbols=len(set(disclosed) & set(by_symbol)),
         stale=stale,
         stale_days=stale_days,
+        # **利回りの大きい順に、上限まで。** 貼られる前提で作る。
+        worst=tuple(
+            sorted(worst, key=lambda item: item.yielded, reverse=True)[:MAX_IMPLAUSIBLE_KEPT]
+        ),
     )
 
 

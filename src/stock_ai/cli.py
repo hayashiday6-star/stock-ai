@@ -6613,6 +6613,94 @@ NEXT_MATERIALS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
 MAX_COLUMNS_SHOWN = 24
 
 
+@app.command(name="yield-audit")
+def yield_audit(
+    directory: str = typer.Option(
+        str(DEFAULT_ARCHIVE_DIR), "--dir", help="Where the archived originals live."
+    ),
+    limit: int = typer.Option(20, "--limit", help="Rows to print, largest yield first."),
+) -> None:
+    """Look at the dividend yields that came out impossibly high - nothing is fetched.
+
+    **実データで 647 銘柄月（0.26%）が 20% を超えた**（2026-09-21）。
+    **外していないので、その 647 件が SD に入ったまま壁が出ている**
+    ——外れ値は SD に効くので、**件数の小ささは理由にならない。**
+
+    **3つのどれかである。**
+
+    | 見え方 | どれか |
+    |---|---|
+    | **予想 ÷ 実績 が 10 や 100** | **訂正前の誤記**（2131 の `5600 → 56` と同じ形） |
+    | どちらも大きい | **株価か単位**である |
+    | 実績が空 | **無配への訂正前**か、予想しか出していない |
+
+    **「中身を見ること」と書いて見る道具が無い、を3度やった。** ここは
+    **銘柄・月・開示日・予想・実績・終値・利回り・比**を出す。
+
+    **原因を推測で決めない。** 比が 100 に揃っていても「訂正はいつも 100倍」
+    にはならない——**割合で見る。**
+
+    **取りには行かない。** 原本を読むだけである。
+    """
+    from stock_ai.backtest.wall import IMPLAUSIBLE_YIELD, dividend_yields, scan
+    from stock_ai.core.logging import quiet_on_console
+
+    settings = get_settings()
+    configure_logging(settings.log_level)
+
+    database = Database()
+    database.create_all()
+    console.print("[dim]価格を走査しています（1銘柄1行は出しません）...[/]")
+    with quiet_on_console("stock_ai.backtest.wall"):
+        materials = scan(database)
+        _values, census = dividend_yields(Path(directory), materials.raw_price_level)
+
+    console.print(f"[dim]{census.summary()}[/]")
+    for line in census.warnings():
+        console.print(f"[yellow]{line}[/]")
+    if not census.worst:
+        console.print("[green]**20% を超えた銘柄月は1つも無い。**[/]")
+        return
+
+    table = Table(title=f"利回りが {IMPLAUSIBLE_YIELD:.0%} を超えた銘柄月（大きい順）")
+    for column in ("銘柄", "月", "開示日", "予想", "実績", "終値", "利回り", "予想÷実績"):
+        table.add_column(column, overflow="fold", justify="right" if column != "月" else "left")
+    for item in census.worst[:limit]:
+        ratio = item.ratio
+        table.add_row(
+            item.symbol,
+            item.month,
+            f"{item.disclosed_on}",
+            f"{item.forecast:,.2f}",
+            "—" if item.actual is None else f"{item.actual:,.2f}",
+            f"{item.close:,.1f}",
+            f"{item.yielded:.1%}",
+            "—" if ratio is None else f"{ratio:,.1f}",
+        )
+    console.print(table)
+    if len(census.worst) > limit:
+        console.print(
+            f"[dim]あと {len(census.worst) - limit:,} 件は出していない（`--limit` で増える）。[/]"
+        )
+
+    # **割合で見る。** 「比が 100 の行が在る」では、何も決まらない。
+    rounds = [
+        item.ratio
+        for item in census.worst
+        if item.ratio is not None and item.ratio >= 5.0  # noqa: PLR2004
+    ]
+    without = [item for item in census.worst if item.actual is None]
+    console.print(
+        f"[dim]持って返った {len(census.worst):,} 件のうち、"
+        f"**予想が実績の5倍以上 {len(rounds):,} 件**、"
+        f"**実績が空 {len(without):,} 件**。[/]"
+    )
+    console.print(
+        "[dim]**どれか1つに決めない。** 比が 100 に揃っていても「訂正はいつも "
+        "100倍」にはならない——**割合で見る。**[/]"
+    )
+
+
 @app.command(name="column-census")
 def column_census_command(
     endpoint: str = typer.Option(
@@ -8024,6 +8112,7 @@ def wall_survey(
         margin_change,
         scan,
         signal_overlap,
+        stale_reasons,
         tail_episodes,
         usable_rebalances,
     )
@@ -8393,12 +8482,21 @@ def wall_survey(
         Missing(
             17,
             "決算発表日を避ける",
-            "**`/fins/earnings-date` は全プランで「直近のみ」で、歴史が無い**"
+            "**`/fins/earnings-date` は全プランで「直近のみ」**"
             "（公式表、`jquants_plan.NO_HISTORY`）。`fins/summary` の "
             "`DisclosedDate` は**実現した発表日**なので、それで避けるのは先読み。"
-            "**前年同期からの推定**にするなら、そのずれを先に測ること",
+            "**ただし原本を毎日保存していれば、その積み重ねが**"
+            "**「その日に何が予定されていたか」になる**——下の警告が数える",
+            endpoint="/fins/earnings-date",
         ),
     ]
+    # **「材料が無い」と書いてあるのに、原本が在る候補を言う。**
+    # **2度やった**（14 と 16。どちらもユーザーが指摘）——列の棚卸しが
+    # 答えを出しているのに、こちらの文面が古いまま残る。
+    # **`read_manifest` は開かないので、費用が無い。**
+    for line in stale_reasons(Path(archive), missing):
+        console.print(f"[yellow]{line}[/]")
+
     absent = Table(title="材料が無くて測れなかった候補")
     for column in ("候補", "説", "なぜ測れないか"):
         absent.add_column(column, overflow="fold")

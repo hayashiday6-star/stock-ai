@@ -2265,3 +2265,210 @@ class TestTheWindowsDoNotOverlap:
 
         assert every_day > 2.0, "**毎日入れば重なる。** そうでないなら盤面が悪い"  # noqa: PLR2004
         assert spaced < 1.3, "**間引けば重ならない。**"  # noqa: PLR2004
+
+
+class TestAStaleReasonIsCaught:
+    """**「材料が無い」と書いてあるのに、原本が在る。**
+
+    **2度やった**（14 と 16。どちらもユーザーが指摘）。列の棚卸しが答えを
+    出しているのに、壁の表の側が古い文面のまま残る——`ex-date-audit` の
+    見出しが 819 件のまま2世代古かったのと同じ形で、こちらは**数字ではなく、
+    確かめたかどうかが古い。**
+    """
+
+    @staticmethod
+    def _archive(tmp_path, keys: list[str]):
+        from stock_ai.data.jquants_archive import MANIFEST, MANIFEST_COLUMNS
+
+        body = ",".join(MANIFEST_COLUMNS) + "\n"
+        for key in keys:
+            body += f"/{key},1,1,x,,2026-09-21\n"
+        (tmp_path / MANIFEST).write_text(body, encoding="utf-8")
+        return tmp_path
+
+    def test_it_counts_without_opening_the_files(self, tmp_path) -> None:
+        """**目録だけ見る。** 開かないので、全部の候補に当てても費用が無い。"""
+        from stock_ai.backtest.wall import archived_files
+
+        where = self._archive(
+            tmp_path,
+            [
+                "markets/short-ratio/a.csv.gz",
+                "markets/short-ratio/b.csv.gz",
+                "fins/summary/c.csv.gz",
+            ],
+        )
+
+        assert archived_files(where, "/markets/short-ratio") == 2  # noqa: PLR2004
+        assert archived_files(where, "/fins/summary") == 1
+
+    def test_a_reason_naming_a_present_endpoint_is_flagged(self, tmp_path) -> None:
+        from stock_ai.backtest.wall import Missing, stale_reasons
+
+        where = self._archive(tmp_path, ["markets/short-ratio/a.csv.gz"])
+        missing = [Missing(16, "空売り比率", "数えていない", endpoint="/markets/short-ratio")]
+
+        found = stale_reasons(where, missing)
+
+        assert found
+        assert "16" in found[0]
+        assert "原本が" in found[0]
+
+    def test_an_absent_endpoint_is_not_flagged(self, tmp_path) -> None:
+        """**両向きに置く。** 常に点く旗は、何も区別しない。"""
+        from stock_ai.backtest.wall import Missing, stale_reasons
+
+        where = self._archive(tmp_path, ["fins/summary/c.csv.gz"])
+        missing = [Missing(16, "空売り比率", "数えていない", endpoint="/markets/short-ratio")]
+
+        assert not stale_reasons(where, missing)
+
+    def test_a_reason_without_an_endpoint_is_never_flagged(self, tmp_path) -> None:
+        """**原本の有無では決まらない理由もある**（#8 の「噂」）。"""
+        from stock_ai.backtest.wall import Missing, stale_reasons
+
+        where = self._archive(tmp_path, ["fins/summary/c.csv.gz"])
+        missing = [Missing(8, "噂で買って事実で売る", "初出時点を取る口が無い")]
+
+        assert not stale_reasons(where, missing)
+
+    def test_the_survey_runs_the_check(self) -> None:
+        """**呼ぶ側を AST で見る。** 置いただけで呼んでいない形を止める。"""
+        import ast
+        import inspect
+
+        from stock_ai import cli
+
+        called = [
+            node.func.id
+            for node in ast.walk(ast.parse(inspect.getsource(cli.wall_survey)))
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+        ]
+
+        assert "stale_reasons" in called
+
+
+class TestTheImplausibleYieldsComeBack:
+    """**件数だけ返すと、どちらの読み違いか追えない。**
+
+    「中身を見ること」と書いて見る道具が無い、を3度やった（`CLAUDE.md`）。
+    """
+
+    @staticmethod
+    def _archive(tmp_path, rows):
+        import csv as csv_module
+        import gzip
+        import io
+
+        from stock_ai.data.jquants_archive import MANIFEST, MANIFEST_COLUMNS
+
+        out = io.StringIO()
+        writer = csv_module.DictWriter(out, fieldnames=list(rows[0]), lineterminator="\n")
+        writer.writeheader()
+        writer.writerows(rows)
+        key = "fins/summary/historical/2017/fins_summary_201701.csv.gz"
+        target = tmp_path / key
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(gzip.compress(out.getvalue().encode("utf-8")))
+        (tmp_path / MANIFEST).write_text(
+            ",".join(MANIFEST_COLUMNS) + "\n" + f"/{key},1,1,x,,2026-09-21\n",
+            encoding="utf-8",
+        )
+        return tmp_path
+
+    @staticmethod
+    def _row(forecast: str, actual: str = ""):
+        from stock_ai.backtest.wall import DIVIDEND_ACTUAL_COLUMN, DIVIDEND_COLUMN
+
+        return {
+            "DiscDate": "2017-01-10",
+            "Code": "13060",
+            DIVIDEND_COLUMN: forecast,
+            DIVIDEND_ACTUAL_COLUMN: actual,
+        }
+
+    @staticmethod
+    def _prices():
+        import pandas as pd
+
+        return {("1306", pd.Period("2017-02", freq="M")): (dt.date(2017, 2, 28), 1000.0)}
+
+    def test_the_row_carries_both_the_forecast_and_the_actual(self, tmp_path) -> None:
+        """**予想 ÷ 実績 が 10 や 100 なら、訂正前の誤記である。**"""
+        from stock_ai.backtest.wall import dividend_yields
+
+        rows = [self._row(forecast="5600", actual="56")]
+
+        _values, census = dividend_yields(self._archive(tmp_path, rows), self._prices())
+
+        assert len(census.worst) == 1
+        item = census.worst[0]
+        assert item.forecast == pytest.approx(5600.0)
+        assert item.actual == pytest.approx(56.0)
+        assert item.ratio == pytest.approx(100.0)
+        assert item.symbol == "1306"
+        assert item.close == pytest.approx(1000.0)
+
+    def test_a_missing_actual_says_so(self, tmp_path) -> None:
+        """**実績が空なら、無配への訂正前か、予想しか出していない。**"""
+        from stock_ai.backtest.wall import dividend_yields
+
+        rows = [self._row(forecast="5600")]
+
+        _values, census = dividend_yields(self._archive(tmp_path, rows), self._prices())
+
+        assert census.worst[0].actual is None
+        assert census.worst[0].ratio is None
+
+    def test_a_plausible_row_is_not_carried(self, tmp_path) -> None:
+        """**両向きに置く。** 全部持って返る形でも緑にならないように。"""
+        from stock_ai.backtest.wall import dividend_yields
+
+        rows = [self._row(forecast="30", actual="30")]
+
+        _values, census = dividend_yields(self._archive(tmp_path, rows), self._prices())
+
+        assert not census.worst
+
+    def test_the_count_and_the_contents_cannot_disagree(self) -> None:
+        """**札だけ古くなる形を消す**（`KnifeEvents` と同じ作り）。"""
+        from stock_ai.backtest.wall import ImplausibleYield, YieldCensus
+
+        one = ImplausibleYield(
+            symbol="1306",
+            month="2017-02",
+            disclosed_on=dt.date(2017, 1, 10),
+            forecast=5600.0,
+            actual=56.0,
+            close=1000.0,
+            yielded=5.6,
+        )
+        with pytest.raises(ValueError, match="超えている"):
+            YieldCensus(
+                rows=1,
+                symbols=1,
+                observations=1,
+                no_symbol=0,
+                no_date=0,
+                no_amount=0,
+                no_price=0,
+                implausible=0,
+                stale=0,
+                stale_days=365,
+                priced_symbols=1,
+                matched_symbols=1,
+                worst=(one,),
+            )
+
+    def test_the_warning_gives_the_share_and_the_next_move(self, tmp_path) -> None:
+        """**件数の小ささは理由にならない**——外れ値は SD に効く。"""
+        from stock_ai.backtest.wall import dividend_yields
+
+        rows = [self._row(forecast="5600", actual="56")]
+
+        _values, census = dividend_yields(self._archive(tmp_path, rows), self._prices())
+        printed = "\n".join(census.warnings())
+
+        assert "件数の小ささは理由にならない" in printed
+        assert "暫定" in printed
+        assert "高すぎる利回りを見る.bat" in printed
