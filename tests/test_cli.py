@@ -1924,6 +1924,85 @@ class TestTheGateRowIsMarked:
         assert "8.7年" in text
 
 
+class TestTheDisagreeingDaysReachTheScreen:
+    """**「限月の選び方を疑うこと」と書くなら、疑う材料を刷る。**
+
+    実データで 5 日鳴ったとき、**どの日なのかが出力から追えなかった**
+    （2026-09-21）。件数しか返していなかったためで、`CLAUDE.md`
+    「『見ること』と書いただけで、見る道具を置いていないか」そのもの。
+    """
+
+    @classmethod
+    def _archive(cls, tmp_path):
+        import csv
+        import gzip
+        import pathlib as _p
+
+        from stock_ai.data.jquants_archive import MANIFEST, MANIFEST_COLUMNS
+
+        sample = _p.Path("tests/fixtures/jquants_options_225_sample.csv")
+        text = sample.read_text(encoding="utf-8-sig")
+        names = text.splitlines()[0].split(",")
+        out = io.StringIO()
+        writer = csv.DictWriter(out, fieldnames=names, lineterminator="\n")
+        writer.writeheader()
+        for row in csv.DictReader(io.StringIO(text)):
+            writer.writerow(row)
+        key = "derivatives/bars/daily/options/225/options_225_sample.csv.gz"
+        target = tmp_path / key
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(gzip.compress(out.getvalue().encode("utf-8")))
+        (tmp_path / MANIFEST).write_text(
+            ",".join(MANIFEST_COLUMNS) + "\n" + f"/{key},1,1,x,,2026-09-21\n",
+            encoding="utf-8",
+        )
+        return tmp_path
+
+    @classmethod
+    def _printed(cls, tmp_path, min_tenor: int, width: int = 120) -> str:
+        from rich.console import Console
+
+        from stock_ai import cli
+        from stock_ai.data import jquants_options
+
+        archive = cls._archive(tmp_path)
+        console = Console(file=io.StringIO(), width=width, no_color=True)
+        real = jquants_options.daily_atm_iv
+        with (
+            mock.patch.object(cli, "console", console),
+            mock.patch.object(
+                jquants_options,
+                "daily_atm_iv",
+                lambda directory, **kw: real(directory, min_tenor=min_tenor),
+            ),
+        ):
+            cli.material_coverage(directory=str(archive))
+        return console.file.getvalue()  # type: ignore[attr-defined]
+
+    def test_the_days_are_printed_when_they_disagree(self, tmp_path) -> None:
+        """**日付・採った限月・残存が出ること。** そこが疑うところである。"""
+        printed = self._printed(tmp_path, min_tenor=0)
+
+        assert "食い違った日" in printed
+        assert "2026-01-05" in printed
+        assert "2026-01-09" in printed, "**採った限月が出ていない。**"
+        assert "4日" in printed, "**残存日数が出ていない。**"
+
+    def test_nothing_is_printed_when_they_agree(self, tmp_path) -> None:
+        """**常に出る表は、何も区別しない。**"""
+        printed = self._printed(tmp_path, min_tenor=7)
+
+        assert "食い違った日" not in printed
+
+    @pytest.mark.parametrize("width", [80, 100, 120])
+    def test_no_column_name_is_broken_across_lines(self, tmp_path, width: int) -> None:
+        """**幅を決めて刷る。** 日本語の札は rich から見れば1語である。"""
+        lines = self._printed(tmp_path, min_tenor=0, width=width).splitlines()
+
+        for name in ("こちら", "原本", "採ったSQ", "残存", "行使"):
+            assert any(name in line for line in lines), f"**{name} が割れている。**"
+
+
 class TestTheUnpublishedAmountsAreSplitOnScreen:
     """**「額が一度も公表されていない」は嘘だった**（2026-09-21）。
 

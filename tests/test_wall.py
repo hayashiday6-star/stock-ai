@@ -15,6 +15,8 @@
 from __future__ import annotations
 
 import datetime as dt
+import inspect
+import textwrap
 
 import numpy as np
 import pandas as pd
@@ -869,3 +871,61 @@ class TestTheIndexOnlyFoldsAreFixedInAdvance:
 
         assert "候補A・B の畳み方は、壁を測る前に1つに決めてある" in source
         assert "出典は無い" in source
+
+
+class TestTheThinSideIsNamed:
+    """**IS が薄いことと、OOS が薄いことは別である。**
+
+    `wall-survey` のコメントは「**IS が薄ければ**壁の高さそのものが当てに
+    ならない」と書いていたのに、**検査は OOS の `observations` を見て
+    いた**（2026-09-21 に気付いた）。**コメントが主張していることと、
+    コードが守っていることが別だった。**
+
+    候補6（予想変動率）は `IV` が 2016-07-19 からしか無いので、IS が
+    1年半しかない。**そこに当たる。**
+    """
+
+    @staticmethod
+    def _printed(walls) -> str:
+        import io as _io
+        from unittest import mock
+
+        from rich.console import Console
+
+        from stock_ai import cli
+
+        console = Console(file=_io.StringIO(), width=120, no_color=True)
+        source = inspect.getsource(cli.wall_survey)
+        start = source.index("for wall in walls:\n        if wall.observations")
+        end = source.index("\n\n", start)
+        with mock.patch.object(cli, "console", console):
+            exec(  # noqa: S102 - 本物の枝をそのまま動かす。写すと2つ目になる
+                textwrap.dedent(source[start:end]),
+                {"walls": walls, "console": console, "THIN_OBSERVATIONS": cli.THIN_OBSERVATIONS},
+            )
+        return console.file.getvalue()
+
+    def test_a_thin_is_is_named_even_when_the_oos_is_thick(self) -> None:
+        """**片方だけ見る形だと、ここが黙る。**"""
+        printed = self._printed([_wall(observations=2_000, sample=6)])
+
+        assert "IS の観測が 6" in printed
+        assert "判定に使える観測が" not in printed
+
+    def test_a_thin_oos_is_named_even_when_the_is_is_thick(self) -> None:
+        """**両向きに置く。** 逆に倒しても鳴ること。"""
+        printed = self._printed([_wall(observations=4, sample=2_000)])
+
+        assert "判定に使える観測が 4" in printed
+        assert "IS の観測が" not in printed
+
+    def test_neither_is_named_when_both_are_thick(self) -> None:
+        """**常に点く旗は、何も区別しない。**"""
+        assert self._printed([_wall(observations=2_000, sample=2_000)]) == ""
+
+    def test_the_two_reasons_are_said_apart(self) -> None:
+        """**SD が薄いのか n が薄いのかで、言うことが違う。**"""
+        printed = self._printed([_wall(observations=4, sample=6)])
+
+        assert "壁の高さ（n）" in printed
+        assert "壁の高さ（SD）" in printed

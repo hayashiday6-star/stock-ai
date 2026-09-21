@@ -6579,6 +6579,36 @@ def material_coverage(
             f"食い違ったのは {len(iv.disagreed):,} 日。**一致は当たり前ではない**"
             "——限月の選び方を1日ずらすだけで崩れる。[/]"
         )
+    if iv.disagreed:
+        # **「限月の選び方を疑うこと」と書くなら、疑う材料を出す。**
+        # 件数しか返していなかったので、どの日なのかを追えなかった
+        # （2026-09-21。`CLAUDE.md`「『見ること』と書いただけで、見る道具を
+        # 置いていないか」）。**差の大きい順**に出す。
+        worst = sorted(iv.disagreed, key=lambda item: -abs(item.gap))
+        table = Table(title="`BaseVol` と食い違った日（差の大きい順）")
+        # **札に空白を入れない。** rich は空白で折り返すので、幅 80 で
+        # 「採った SQ」が2行に割れた（テストが落ちて気付いた）。
+        # **列も1つ減らした**——9 列は 80 桁に入らない。
+        for column in ("日", "こちら", "原本", "差", "採ったSQ", "残存", "行使", "行"):
+            table.add_column(column, overflow="fold", justify="left" if column == "日" else "right")
+        for item in worst[:MAX_DISAGREEMENTS]:
+            table.add_row(
+                f"{item.when}",
+                f"{item.atm:.4f}",
+                f"{item.base:.4f}",
+                f"{item.gap:+.4f}",
+                f"{item.expiry}",
+                f"{item.tenor}日",
+                f"{item.strike:,.0f}",
+                f"{item.rows}",
+            )
+        console.print(table)
+        if len(worst) > MAX_DISAGREEMENTS:
+            console.print(f"[dim]ほか {len(worst) - MAX_DISAGREEMENTS:,} 日。[/]")
+        console.print(
+            "[dim]**行が 1 なら、コールかプットの片側しか無かった日である。** "
+            "残存が短い日ばかりなら限月の選び方、散らばっているなら別の原因。[/]"
+        )
 
     # --- 候補7 投資部門別 ---------------------------------------------------
     console.print()
@@ -7507,6 +7537,7 @@ def _index_walls(
                         f"{benchmark} の日次、IS {len(values):,} 窓"
                         f"（跳ねた日 {len(spikes):,}、窓 {HOLDING} 営業日）"
                     ),
+                    sample=len(values),
                     notes=(
                         "**管は `calendar`。** 校正したのは日次の月替わりで、"
                         "同じ形ではあるが同じ設計ではない",
@@ -7553,6 +7584,7 @@ def _index_walls(
                 f"{benchmark} の日次、IS {len(values):,} 窓"
                 f"（買い越した週 {len(entries):,}、窓 {FLOW_HOLDING} 営業日）"
             ),
+            sample=len(values),
             # **年に直せる。** 週に1回、窓は重ならない。
             per_year=52.0,
             notes=(
@@ -7654,6 +7686,7 @@ def wall_survey(
                 # **自由度で線を引く。** n が小さいと `t` が正規から離れる（#14）。
                 line=student_t_line(max(oos_years - 1, 1)),
                 source=f"{benchmark} の日次、IS {years[0]}〜{years[-1]} の {len(years)} 年",
+                sample=len(episodes),
                 per_year=1.0,
             )
         )
@@ -7713,6 +7746,7 @@ def wall_survey(
                 inflation=inflation,
                 line=line_for("monthly"),
                 source=f"IS {len(panel.months)} ヶ月、5分位・等加重",
+                sample=len(spread),
                 per_year=12.0,
                 notes=(f"近さを作れず外した銘柄月 {panel.skipped_no_value:,}",),
             )
@@ -7764,6 +7798,7 @@ def wall_survey(
                 inflation=inflation,
                 line=line_for("event"),
                 source=(f"IS {sample.drawn:,} 件が {len(sample.values):,} 日、窓 {HOLDING} 営業日"),
+                sample=len(sample.values),
                 notes=(
                     f"価格が1本も無くて捨てた {sample.no_prices:,}、"
                     f"その日に足が無くて捨てた {sample.not_trading:,}",
@@ -7777,13 +7812,22 @@ def wall_survey(
 
     walls.sort(key=lambda wall: (wall.annual is None, wall.annual or wall.detectable))
 
-    # **SD は IS で測り、n は OOS で数えている。** IS が薄ければ、壁の高さ
-    # そのものが当てにならない——**表に出るのは1つの数なので、薄さは見えない。**
+    # **SD は IS で測り、n は OOS で数えている。** どちらが薄くても壁は
+    # 当てにならないが、**理由が違うので別に言う。**
+    #
+    # **ここは前、両方 `observations`（OOS）を見ていた**——コメントには
+    # 「IS が薄ければ」と書いてあったのに（2026-09-21 に気付いた）。
+    # **コメントが主張していることと、コードが守っていることが別だった。**
     for wall in walls:
         if wall.observations < THIN_OBSERVATIONS:
             console.print(
                 f"[yellow]**{wall.name}: 判定に使える観測が {wall.observations} しか無い。** "
-                "壁の高さも、その推定も当てにならない。[/]"
+                "**壁の高さ（n）が、その数で決まっている。**[/]"
+            )
+        if wall.sample and wall.sample < THIN_OBSERVATIONS:
+            console.print(
+                f"[yellow]**{wall.name}: SD を測った IS の観測が {wall.sample} しか無い。** "
+                "**壁の高さ（SD）の推定が当てにならない**——OOS の数とは別の話である。[/]"
             )
 
     # **SD が数日でできていないか。** 1% を落として半分以下になるなら、それは
@@ -9236,6 +9280,9 @@ JANUARY_FLOOR = 0.004
 #: 10 は暦から出した値ではなく、**「片手で数えられる」を超えるところ**に
 #: 置いただけである——そう書いておく。
 THIN_OBSERVATIONS = 10
+
+#: 食い違った日を何日まで刷るか。**全部は刷らない。**
+MAX_DISAGREEMENTS = 10
 
 #: SD が裾でできていると言う比。**1% を落として、これだけ縮んだら警告。**
 #:

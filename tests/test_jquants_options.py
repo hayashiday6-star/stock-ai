@@ -147,6 +147,36 @@ class TestItAgreesWithTheOriginalsOwnLevel:
         assert found.disagreed, "**畳み方を壊しても鳴らない。**"
         assert any("食い違う" in line for line in found.warnings())
 
+    def test_the_disagreement_carries_what_to_suspect(self, tmp_path) -> None:
+        """**「限月の選び方を疑うこと」と書くなら、疑う材料を返す。**
+
+        件数しか返していなかったので、**どの日なのかを追えなかった**
+        （2026-09-21。実データで 5 日鳴ったときに気付いた）。
+        """
+        names, rows = _rows()
+
+        found = daily_atm_iv(_archive(tmp_path, _body(rows, names)), min_tenor=0)
+        item = found.disagreed[0]
+
+        # **採った限月と残存日数。** そこが疑うところである。
+        assert item.expiry == dt.date(2026, 1, 9)
+        assert item.tenor == 4  # noqa: PLR2004 - 2026-01-05 から 2026-01-09
+        assert item.when == dt.date(2026, 1, 5)
+        assert item.strike > 0
+        assert item.under > 0
+        assert item.rows >= 1
+        assert item.gap == pytest.approx(item.atm - item.base)
+
+    def test_the_chosen_expiry_is_the_one_the_fold_names(self, tmp_path) -> None:
+        """**両向きに置く。** 既定なら残存の長いほうを採っていること。"""
+        names, rows = _rows()
+
+        loose = daily_atm_iv(_archive(tmp_path, _body(rows, names)), min_tenor=0)
+        assert loose.disagreed[0].expiry == dt.date(2026, 1, 9)
+
+        strict = daily_atm_iv(_archive(tmp_path, _body(rows, names)))
+        assert not strict.disagreed, "**既定では食い違わない。**"
+
 
 class TestTheColumnsAreNotThereInTheOldOriginals:
     """**無いことは、出力に出ない。** 年ごとに数える。"""

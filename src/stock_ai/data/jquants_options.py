@@ -74,6 +74,40 @@ AGREEMENT_BAND = 0.5
 
 
 @dataclasses.dataclass(frozen=True)
+class Disagreement:
+    """こちらの ATM と原本の `BaseVol` が食い違った日。**中身を持って返る。**
+
+    **件数だけ返すと、次の一手が打てない。** 警告に「限月の選び方を疑う
+    こと」と書いておきながら、**疑う材料を1つも返していなかった**
+    （2026-09-21。`CLAUDE.md`「『見ること』と書いただけで、見る道具を
+    置いていないか」——直前にその節を書いた本人がやった）。
+    """
+
+    when: dt.date
+    atm: float
+    """こちらが作った値。"""
+
+    base: float
+    """原本の `BaseVol`。"""
+
+    expiry: dt.date
+    """採った限月の SQ 日。**疑うならここである。**"""
+
+    tenor: int
+    """``when`` から ``expiry`` までの暦日。"""
+
+    strike: float
+    under: float
+    rows: int
+    """その行使価格に在った行の数。**1ならコールかプットの片側だけ。**"""
+
+    @property
+    def gap(self) -> float:
+        """食い違いの大きさ（ポイント）。"""
+        return self.atm - self.base
+
+
+@dataclasses.dataclass(frozen=True)
 class ImpliedVolatility:
     """日ごとの ATM 予想変動率と、**読めなかったぶんの数。**"""
 
@@ -92,8 +126,8 @@ class ImpliedVolatility:
     no_tenor: int
     """限月が :data:`MIN_TENOR_DAYS` 日以上残っていなかった日。"""
 
-    disagreed: tuple[tuple[dt.date, float, float], ...] = ()
-    """``(日, こちらの ATM, 原本の BaseVol)``。**食い違った日だけ。**"""
+    disagreed: tuple[Disagreement, ...] = ()
+    """食い違った日だけ。**中身を持っている**——`checks` がそれを刷る。"""
 
     checked: int = 0
     """`BaseVol` と突き合わせられた日。**分母である。**"""
@@ -148,12 +182,11 @@ class ImpliedVolatility:
             )
         if self.disagreed:
             share = len(self.disagreed) / self.checked if self.checked else 0.0
-            when, mine, theirs = self.disagreed[0]
             found.append(
                 f"**{len(self.disagreed):,} 日（{share:.1%}）で、こちらの ATM と原本の "
-                f"`BaseVol` が {AGREEMENT_BAND} ポイント以上食い違う**"
-                f"（例: {when} は {mine:.4f} 対 {theirs:.4f}）。"
-                "**畳み方が原本の想定とずれている。** 限月の選び方を疑うこと。"
+                f"`BaseVol` が {AGREEMENT_BAND} ポイント以上食い違う。** "
+                "**畳み方が原本の想定とずれている可能性がある**"
+                "——下の表に、採った限月と残存日数が出る。"
             )
         if not self.levels:
             found.append("**ATM の水準を1日も作れなかった。** 候補Aの材料にならない。")
@@ -207,15 +240,16 @@ def daily_atm_iv(directory: Path, min_tenor: int = MIN_TENOR_DAYS) -> ImpliedVol
 
     levels: dict[dt.date, float] = {}
     per_year: dict[int, tuple[int, int]] = {}
-    disagreed: list[tuple[dt.date, float, float]] = []
+    disagreed: list[Disagreement] = []
     no_tenor = checked = 0
     for when in sorted(seen):
         days, made = per_year.get(when.year, (0, 0))
-        level = _atm_on(when, seen[when], min_tenor)
-        if level is None:
+        picked = _atm_on(when, seen[when], min_tenor)
+        if picked is None:
             if seen[when]:
                 no_tenor += 1
         else:
+            level, expiry, strike, under, count = picked
             levels[when] = level
             made += 1
             # **別の切り口で同じ数字を出す。** 一致は当たり前ではない
@@ -224,7 +258,19 @@ def daily_atm_iv(directory: Path, min_tenor: int = MIN_TENOR_DAYS) -> ImpliedVol
             if theirs is not None:
                 checked += 1
                 if abs(level - theirs) >= AGREEMENT_BAND:
-                    disagreed.append((when, level, theirs))
+                    # **中身を持って返る。** 件数だけだと、疑う材料が無い。
+                    disagreed.append(
+                        Disagreement(
+                            when=when,
+                            atm=level,
+                            base=theirs,
+                            expiry=expiry,
+                            tenor=(expiry - when).days,
+                            strike=strike,
+                            under=under,
+                            rows=count,
+                        )
+                    )
         per_year[when.year] = (days + 1, made)
 
     return ImpliedVolatility(
@@ -243,7 +289,7 @@ def _atm_on(
     when: dt.date,
     rows: list[tuple[dt.date, float, float, float]],
     min_tenor: int,
-) -> float | None:
+) -> tuple[float, dt.date, float, float, int] | None:
     """その日の ATM の IV。**畳み方はここが正本である。**
 
     Args:
@@ -252,7 +298,9 @@ def _atm_on(
         min_tenor: SQ 日までこれだけ残っている限月から採る。
 
     Returns:
-        ATM の IV。作れなければ ``None``。
+        ``(ATM の IV, 採った SQ 日, 行使価格, 原資産, 使った行数)``。
+        **どれを採ったかも返す**——食い違ったときに疑う材料がそこである。
+        作れなければ ``None``。
     """
     usable = [row for row in rows if (row[0] - when).days >= min_tenor]
     if not usable:
@@ -265,7 +313,9 @@ def _atm_on(
     strike = min((row[1] for row in same), key=lambda value: (abs(value - under), value))
     # 4. コールとプットの平均（片側しか無ければその側）
     picked = [iv for _sq, value, _under, iv in same if value == strike]
-    return sum(picked) / len(picked) if picked else None
+    if not picked:
+        return None
+    return sum(picked) / len(picked), nearest, strike, under, len(picked)
 
 
 def _option_files(directory: Path) -> Iterable[tuple[str, bytes]]:
