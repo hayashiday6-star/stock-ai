@@ -7609,7 +7609,10 @@ def _index_walls(
                     f"OOS {IV_OOS_FROM}〜{OOS_END}）。`IV` が 2016-07 からしか無い",
                     "**管は `calendar`。** 校正したのは日次の月替わりで、"
                     "同じ形ではあるが同じ設計ではない",
-                    f"予想変動率を作れた日 {len(iv.levels):,}（IS で入れた窓 {len(used):,}）",
+                    f"**予想変動率を作れた日は {len(iv.levels):,}。** そのうち跳ねた日が "
+                    f"{len(choice.events):,}、IS の窓が {len(values):,}"
+                    f"（入れた窓 {len(used):,}）、"
+                    f"**判定に使える OOS が {observations:,}**（n はこれ）",
                 ),
             )
         )
@@ -7684,7 +7687,16 @@ def _index_walls(
                 undersampled=estimate.undersampled,
                 # **年に直せる。** 週に1回、窓は重ならない。
                 per_year=52.0,
-                notes=(note, "**管は `calendar`。** 校正したのは日次の月替わりである"),
+                # **n の出どころを注記に出す。** 「974 週」と「n 450」が並ぶ
+                # だけだと、**どこで減ったのかが出力から読み取れない**——
+                # `CLAUDE.md`「同じ列に、2つの単位を並べない」の隣の形である。
+                notes=(
+                    note,
+                    f"**`{SECTION}` の公表は {len(flows.weeks):,} 週。** "
+                    f"そのうち採ったのが {len(entries):,}、IS の窓が {len(values):,}、"
+                    f"**判定に使える OOS が {observations:,}**（n はこれ）",
+                    "**管は `calendar`。** 校正したのは日次の月替わりである",
+                ),
             )
         )
     return walls
