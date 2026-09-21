@@ -312,3 +312,78 @@ class TestTheCalendarPipeHasItsOwnLine:
         from stock_ai.backtest.multiplicity import line_for
 
         assert line_for("calendar") > 0
+
+
+class TestTheDocumentCarriesTheInvariant:
+    """**設計によらない1つの数を、文書に出す。**
+
+    表は設計ごとの「要るリターン」を並べているが、**単位も桁も違うので
+    行どうしを比べられない。** 比べられるのは `線 × 膨張 ÷ √年数` である。
+    """
+
+    def test_every_annualisable_shape_has_one(self) -> None:
+        from stock_ai.backtest.power import required_information_ratio
+
+        for shape in SHAPES:
+            found = shape.required_ir()
+            if shape.per_year <= 0:
+                assert found is None, f"{shape.name}: 重なる窓に情報比を出している"
+                continue
+            assert found is not None
+            assert found == pytest.approx(
+                required_information_ratio(
+                    shape.line(), shape.inflation, shape.periods / shape.per_year
+                )
+            )
+
+    def test_the_years_come_from_the_periods(self) -> None:
+        """**別々に持たない。** 持つと、同じ行の2つの列が別の標本を指す。"""
+        for shape in SHAPES:
+            if shape.per_year <= 0:
+                assert shape.period_years is None
+                continue
+            assert shape.period_years == pytest.approx(shape.periods / shape.per_year)
+
+    def test_the_low_spread_shape_does_not_have_the_lowest_bar(self) -> None:
+        """**散らばりの小さい設計は、要る腕前を下げない。**
+
+        #7 の形は SD がいちばん小さく、**要るリターンもいちばん小さい。**
+        それでも**要る情報比はいちばん小さくない。**
+        """
+        annualisable = [shape for shape in SHAPES if shape.per_year > 0]
+        lowest_sd = min(annualisable, key=lambda shape: shape.sd)
+        lowest_ir = min(annualisable, key=lambda shape: shape.required_ir() or 0.0)
+
+        assert lowest_sd is not lowest_ir, (
+            "**散らばりがいちばん小さい設計が、要る腕前もいちばん低くなっている。**"
+            "そうなら、この文書が主張していることが成り立っていない。"
+        )
+
+    def test_the_document_prints_them(self) -> None:
+        body = _DOC.read_text(encoding="utf-8")
+
+        assert "要る情報比" in body
+        assert "線 × 膨張 ÷ √(判定に使える年数)" in body
+        for shape in SHAPES:
+            found = shape.required_ir()
+            if found is None:
+                continue
+            assert f"{found:.2f}" in body, f"{shape.name}: 要る情報比が文書に無い"
+
+    def test_the_document_says_the_years_cannot_be_grown(self) -> None:
+        """**「動かせない」ことも、出力に出ない。**
+
+        2009-01 〜 2017-12 は8本の説で下見済みなので、そこを OOS に入れ替え
+        ると**覗いた後の「本番」**になる。
+        """
+        from stock_ai.backtest.passing import LOOKED_FROM
+
+        body = _DOC.read_text(encoding="utf-8")
+
+        assert LOOKED_FROM in body
+        assert "下見済み" in body
+
+    def test_the_event_shapes_say_why_they_have_none(self) -> None:
+        body = _DOC.read_text(encoding="utf-8")
+
+        assert "—（年率に直さない）" in body

@@ -236,8 +236,27 @@ class Wall:
     **推定そのものが当てにならないことは別に言う。**
     """
 
-    per_year: float | None = None
-    """1年あたりの観測数。年率に直せない設計では ``None``。"""
+    period_years: float | None = None
+    """**判定に使える年数。** 年率に直せない設計では ``None``。
+
+    ## 1年あたりの観測数を、別に持たない
+
+    **`per_year` を焼き付けていた**（2026-09-21 に発覚）。候補7 と候補11 の
+    両方に ``52.0`` と書いてあったが、**候補7 は買い越し週にしか入らない**
+    ので、8.67年で 213 観測——**年 24.6 回である。**
+
+    | | 記録した値 | 正しい値 |
+    |---|---|---|
+    | 候補7 の年率 | 年 32.0% | **年 15.1%** |
+
+    **同じ行の2つの列が、別々の標本を指していた**——`CLAUDE.md` に5度
+    書いてある形の6度目である。`observations` は絞った後の数なのに、
+    `per_year` は絞る前の刻みを言っていた。
+
+    **年数のほうを持って、率はそこから作る。** `power.Requirement` が
+    ``periods ÷ period_years`` から率を作り、**2つの比が一致することを
+    見る**のと同じ形で、**ここでは混ぜた行がそもそも作れない。**
+    """
 
     notes: tuple[str, ...] = ()
 
@@ -313,13 +332,44 @@ class Wall:
         )
 
     @property
+    def per_year(self) -> float | None:
+        """1年あたりの観測数。**:attr:`period_years` から作る。**
+
+        **焼き付けない。** 絞る設計では、絞る前の刻み（週次なら 52）と
+        実際の観測数が食い違う。
+        """
+        if self.period_years is None or self.period_years <= 0:
+            return None
+        return self.observations / self.period_years
+
+    @property
     def annual(self) -> float | None:
         """年あたりに直した壁。**直せない設計では ``None``。**
 
         **決めずに掛けない。** 資金をどれだけ張るかを決めないと、イベント型は
         年率に直せない（`docs/PASSING.md` と同じ扱い）。
         """
-        return None if self.per_year is None else self.detectable * self.per_year
+        rate = self.per_year
+        return None if rate is None else self.detectable * rate
+
+    @property
+    def required_ir(self) -> float | None:
+        """合格に要る**年率の情報比**。**式は `power` に1つだけ置いてある。**
+
+        **設計によらない1つの数である**（`線 × 膨張 ÷ √年数`）。壁そのものは
+        単位も桁も設計ごとに違うので、**行どうしを並べても比べられない。**
+
+        **候補7 と候補11 がその実例だった。** 年 32.0% 対 24.5% と出ていたが、
+        **要る情報比では 1.12 対 1.09 でほとんど差が無い**——違いは効果では
+        なく、**市場に居る時間の割合**だった。
+
+        **重なる窓には出さない**（:attr:`annual` と同じ理由）。
+        """
+        if self.period_years is None or self.period_years <= 0:
+            return None
+        from stock_ai.backtest.power import required_information_ratio
+
+        return required_information_ratio(self.line, self.effective_inflation, self.period_years)
 
 
 @dataclasses.dataclass(frozen=True)

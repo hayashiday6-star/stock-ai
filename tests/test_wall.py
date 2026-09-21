@@ -53,7 +53,7 @@ def _wall(**changed) -> Wall:
         "inflation": 1.0,
         "line": 3.39,
         "source": "ためし",
-        "per_year": 12.0,
+        "period_years": 104 / 12,
     }
     return Wall(**{**base, **changed})
 
@@ -157,13 +157,13 @@ class TestTheWallIsComputedNotTranscribed:
         assert _wall(line=4.33).detectable > _wall(line=3.02).detectable
 
     def test_a_monthly_design_annualises(self) -> None:
-        wall = _wall(per_year=12.0)
+        wall = _wall(period_years=104 / 12)
 
         assert wall.annual == pytest.approx(wall.detectable * 12)
 
     def test_an_event_design_does_not(self) -> None:
         """**資金をどれだけ張るかを決めないと年率に直せない**（`docs/PASSING.md`）。"""
-        assert _wall(per_year=None).annual is None
+        assert _wall(period_years=None).annual is None
 
 
 class TestWinterAndSummer:
@@ -1242,3 +1242,130 @@ class TestEveryEventWallCarriesItsWindow:
                     missing.append(node.lineno)
 
         assert not missing, f"**イベント型なのに window= を渡していない: {missing}**"
+
+
+class TestTheRateComesFromTheYears:
+    """**率を焼き付けない。** 焼き付けると、絞る設計で観測と食い違う。
+
+    `cli.py` が候補7 と候補11 の両方に ``per_year=52.0`` と書いていた
+    （2026-09-21 に発覚）。**候補11 はそれで合っていた**——8.67年で 450 観測
+    は年 51.9 回である。**候補7 は買い越し週にしか入らない**ので 213 観測、
+    **年 24.6 回**だった。
+
+    | | 記録した値 | 正しい値 |
+    |---|---|---|
+    | 候補7 の年率 | 年 32.0% | **年 15.1%** |
+
+    **同じ行の2つの列が、別々の標本を指していた**——`CLAUDE.md` に5度書いて
+    ある形である。`observations` は絞った後、`per_year` は絞る前。
+    """
+
+    def test_the_rate_is_built_from_the_observations(self) -> None:
+        wall = _wall(observations=450, period_years=8.67)
+
+        assert wall.per_year == pytest.approx(450 / 8.67)
+
+    def test_a_filtered_design_has_a_lower_rate_than_the_raw_cadence(self) -> None:
+        """**これが焼き付けで消えていた違いである。**"""
+        every_week = _wall(observations=450, period_years=8.67)
+        only_some = _wall(observations=213, period_years=8.67)
+
+        assert only_some.per_year < every_week.per_year / 2
+        assert only_some.annual is not None
+        assert every_week.annual is not None
+
+    def test_the_wall_carries_no_rate_of_its_own(self) -> None:
+        """**混ぜた行が作れないこと。** 率は欄ではなく、導かれる値である。"""
+        import dataclasses
+
+        names = {field.name for field in dataclasses.fields(Wall)}
+
+        assert "per_year" not in names, "**率を欄にすると、年数と食い違う行が作れる。**"
+        assert "period_years" in names
+
+    def test_a_design_without_years_annualises_to_nothing(self) -> None:
+        assert _wall(period_years=None).per_year is None
+        assert _wall(period_years=None).annual is None
+
+
+class TestTheWallCarriesTheInvariant:
+    """**検出できる差は、行どうしで比べられない。** 要る情報比は比べられる。"""
+
+    def test_it_matches_the_one_formula(self) -> None:
+        from stock_ai.backtest.power import required_information_ratio
+
+        wall = _wall(observations=213, period_years=8.67, inflation=1.04)
+
+        assert wall.required_ir == pytest.approx(
+            required_information_ratio(wall.line, wall.effective_inflation, 8.67)
+        )
+
+    def test_filtering_does_not_move_it(self) -> None:
+        """**絞っても上がらない。** 年率の欄はそう見せていた。
+
+        候補7（年 32.0%）と候補11（年 24.5%）は、**要る情報比ではほとんど
+        差が無い**——違いは効果ではなく、**市場に居る時間の割合**である。
+        """
+        common = {"period_years": 8.67, "line": 3.17}
+        only_some = _wall(observations=213, sd=0.0272, inflation=1.04, **common)
+        every_week = _wall(observations=450, sd=0.0311, inflation=1.01, **common)
+
+        assert only_some.annual is not None
+        assert every_week.annual is not None
+        # **年率では 2割ちがう。**
+        assert abs(only_some.annual - every_week.annual) > 0.05  # noqa: PLR2004
+        # **要る情報比では、ほとんど差が無い。**
+        assert only_some.required_ir is not None
+        assert every_week.required_ir is not None
+        assert abs(only_some.required_ir - every_week.required_ir) < 0.05  # noqa: PLR2004
+
+    def test_it_uses_the_inflation_that_built_the_wall(self) -> None:
+        """**上限に切り替えた行では、上限のほうを使う。**
+
+        `Wall.detectable` が測った値を掛けていて、**上限が壁に届いて
+        いなかった**のと同じ形である（2026-09-21）。
+        """
+        wall = _wall(inflation=1.62, undersampled=True, window=20, period_years=8.67)
+
+        assert wall.required_ir is not None
+        assert wall.required_ir == pytest.approx(wall.line * wall.ceiling / 8.67**0.5)
+
+    def test_an_event_design_does_not_get_one(self) -> None:
+        """**重なる窓は、取引できる系列ではない。** `annual` と同じ扱い。"""
+        assert _wall(period_years=None).required_ir is None
+
+    def test_the_table_and_the_document_use_the_same_renderer(self) -> None:
+        """**2つ持つと、片方だけ直したときに行が自分と食い違う。**"""
+        import ast
+        import inspect
+
+        from stock_ai import cli
+
+        body = inspect.getsource(cli.wall_survey) + inspect.getsource(cli._wall_document)
+        calls = [
+            node.func.id
+            for node in ast.walk(ast.parse(body))
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+        ]
+
+        assert calls.count("_wall_ir_cell") == 2  # noqa: PLR2004 - 表と文書
+
+    def test_no_wall_is_built_with_a_baked_rate(self) -> None:
+        """**経路ごとにテストを足す方式は、次の1本で同じことが起きる。**
+
+        `test_deferred_imports` と同じ理由で、**AST で機械的に見る。**
+        """
+        import ast
+        import inspect
+
+        from stock_ai import cli
+
+        baked: list[int] = []
+        for source in (cli.wall_survey, cli._index_walls):
+            for node in ast.walk(ast.parse(inspect.getsource(source))):
+                if not isinstance(node, ast.Call) or getattr(node.func, "id", None) != "Wall":
+                    continue
+                if any(word.arg == "per_year" for word in node.keywords):
+                    baked.append(node.lineno)
+
+        assert not baked, f"**率を焼き付けている: {baked}。** `period_years=` を渡すこと。"

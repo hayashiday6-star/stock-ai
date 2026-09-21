@@ -122,6 +122,23 @@ INFLATION_FLOOR = 1.0
 SAMPLE_PER_LAG = 10
 
 
+def floored_inflation(inflation: float) -> float:
+    """床を当てた膨張。**規則はここ1箇所だけ。**
+
+    **`standard_error` と `required_information_ratio` の両方が要る。**
+    片方に書き足したら `test_the_floor_is_written_in_one_place` が落ちた
+    ——**そのために置いてあるテストである**（`calibrated_t` と
+    `standard_error` で1度、同じことをやっている）。
+
+    Args:
+        inflation: 測った膨張。
+
+    Returns:
+        :data:`INFLATION_FLOOR` を下回らない値。
+    """
+    return max(inflation, INFLATION_FLOOR)
+
+
 def overlap_ceiling(window: int) -> float:
     """重なりの膨張の**上限**。``√window``。
 
@@ -211,7 +228,78 @@ def standard_error(sd: float, inflation: float, periods: int) -> float:
         raise ValueError(f"inflation must be positive; got {inflation}.")
     if periods < 1:
         raise ValueError(f"periods must be at least 1; got {periods}.")
-    return sd * max(inflation, INFLATION_FLOOR) / math.sqrt(periods)
+    return sd * floored_inflation(inflation) / math.sqrt(periods)
+
+
+def required_information_ratio(line: float, inflation: float, years: float) -> float:
+    """合格に要る、**年率の情報比**。`線 × 膨張 ÷ √年数`。**式はここ1箇所だけ。**
+
+    ## 何が不変なのか
+
+    検出できる差は `線 × SD × 膨張 ÷ √n` で、設計ごとに単位も桁も違う。
+    **効果を散らばりで割ると、n も SD も消える。**
+
+    1観測の平均を ``μ``、1観測の SD を ``σ``、1年あたりの観測を ``r``、
+    判定に使える年数を ``T`` とすると ``n = rT`` で、
+
+    - 年あたりの効果 ``= μr``
+    - 年あたりの散らばり ``= σ√r``（観測が重ならなければ、分散は足し算）
+    - 情報比 ``= μ√r / σ``
+
+    合格の条件 ``μ ≥ 線 × σ × 膨張 ÷ √n`` を情報比に直すと ``r`` が約分されて
+
+    ``情報比 ≥ 線 × 膨張 ÷ √T``
+
+    **観測の刻みを細かくしても下がらない。** n が増えても、1観測あたりの
+    効果が同じだけ小さくなる。**絞って n を減らしても上がらない。**
+
+    ## 膨張を落とさない
+
+    **`線 ÷ √年数` と書きたくなるが、それは緩む向きの取り違えである。**
+    #9 の形（膨張 1.15）なら 1.32 が **1.15 に見える。**
+    `CLAUDE.md`「同じ式を3つ書けば、1つは間違える」——**短いものほど、
+    違いに気付けない。**
+
+    ## SD を下げても、ここは動かない
+
+    **これがこの量のいちばんの使いどころである。** #7 の形（低ボラ・
+    ロングのみ・α）は SD が 1.84%／月で、断面ロングショートの3分の1しか
+    ない。**要るリターンは 年 25.3% → 8.0% に下がるが、要る情報比は
+    1.35 → 1.25 で、下がらない**（膨張のぶん、むしろ #11 の形より高い）。
+
+    **散らばりの小さい設計は、要るリターンを下げるだけで、要る腕前を
+    下げない。** 下げられるのは **膨張・線・年数の3つだけ**である。
+
+    ## 重なる窓には当てない
+
+    上の導出は「観測が重ならない」ことを使っている。**イベント型のように
+    窓が重なる設計では、1観測は取引できる系列ではない**ので、年率に直すには
+    資金の張り方を決める必要がある——`passing.Shape.per_year` が 0 で、
+    `wall.Wall.per_year` が ``None`` なのと**同じ理由**である。
+
+    **呼ぶ側が、年数を出せないなら呼ばない。** ここでは年数を必須の引数に
+    してある。既定を作ると、また黙って混ざる。
+
+    Args:
+        line: 封印に使う `t`（管ごとに違う。`multiplicity.line_for`）。
+        inflation: 重なりによる標準誤差の膨張。**1.0 を下回る値を渡しても
+            1.0 として扱う**（:data:`INFLATION_FLOOR`）。
+        years: **判定に使える**年数。IS の年数ではない。
+
+    Returns:
+        合格に要る、年率の情報比。
+
+    Raises:
+        ValueError: ``line`` が 0 以下、``inflation`` が 0 以下、
+            ``years`` が 0 以下。
+    """
+    if line <= 0:
+        raise ValueError(f"line must be positive; got {line}.")
+    if inflation <= 0:
+        raise ValueError(f"inflation must be positive; got {inflation}.")
+    if years <= 0:
+        raise ValueError(f"years must be positive; got {years}.")
+    return line * floored_inflation(inflation) / math.sqrt(years)
 
 
 def detectable_difference(

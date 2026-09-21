@@ -22,6 +22,18 @@ from __future__ import annotations
 
 import dataclasses
 
+#: 下見に使った期間の始まり。**出典は事前登録である。**
+#:
+#: `PREREG_MOMENTUM_JP.md` と `PREREG_ANTIVALUE_JP.md` の両方に
+#: 「IS（推定に使う） 2009-01 〜 2017-12」と書いてある。**会話にしか無い
+#: 値を書かない**（`CLAUDE.md`「出典の無い数字を書かない」）。
+#:
+#: **これが在るのは、年数を増やせないことを出力に出すためである。**
+#: 2009-01 〜 2017-12 は 8本の説で下見済みなので、そこを OOS に入れ替えると
+#: **覗いた後の「本番」**になる（`docs/PASSING.md` 条件②）。
+#: **無いことは出力に出ない**のと同じで、**動かせないことも出力に出ない。**
+LOOKED_FROM = "2009-01"
+
 
 @dataclasses.dataclass(frozen=True)
 class Shape:
@@ -84,6 +96,34 @@ class Shape:
         if self.per_year <= 0:
             return None
         return self.required(target) * self.per_year
+
+    @property
+    def period_years(self) -> float | None:
+        """**判定に使える年数。** 年率に直せない設計では ``None``。
+
+        **`periods ÷ per_year` から作る。** 別々に持つと、片方だけ直した
+        ときに**同じ行の2つの列が別々の標本を指す**——`CLAUDE.md` に
+        5度書いてある形である。
+        """
+        return None if self.per_year <= 0 else self.periods / self.per_year
+
+    def required_ir(self) -> float | None:
+        """合格に要る**年率の情報比**。**式は `power` に1つだけ置いてある。**
+
+        **設計によらない1つの数である**（`線 × 膨張 ÷ √年数`）。要る
+        リターンは設計ごとに単位も桁も違うが、**散らばりで割ると n も SD も
+        消える。**
+
+        **重なる窓には出さない。** イベント型は :attr:`per_year` が 0 で、
+        1観測が取引できる系列ではない——`required_annual` と同じ理由で
+        ``None`` を返す。**決めずに割ると、根拠の無い情報比が文書に載る。**
+        """
+        from stock_ai.backtest.power import required_information_ratio
+
+        years = self.period_years
+        if years is None:
+            return None
+        return required_information_ratio(self.line(), self.inflation, years)
 
 
 #: 測った設計。**すべて事前登録に記録がある。**

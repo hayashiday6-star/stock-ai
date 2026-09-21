@@ -6447,6 +6447,19 @@ def january_power(
         )
 
 
+def _wall_ir_cell(wall: object) -> str:
+    """Build the required-information-ratio cell, for the table and the document.
+
+    **`_inflation_cell` と同じ作りである。** 2つ持つと、片方だけ直した
+    ときに行が自分と食い違う。
+    """
+    found = wall.required_ir  # type: ignore[attr-defined]
+    if found is None:
+        return "—"
+    years = wall.period_years  # type: ignore[attr-defined]
+    return f"{found:.2f}（{years:.1f}年）"
+
+
 def _wall_document(walls: list[object], missing: list[object], span: str) -> str:
     """Build the body of `docs/WALL.md` - a generated file, never edited by hand.
 
@@ -6472,8 +6485,9 @@ def _wall_document(walls: list[object], missing: list[object], span: str) -> str
         "",
         "## 壁の高さ",
         "",
-        "| 候補 | 設計 | 管 | n | 1観測あたりのSD | 重なりの膨張 | 線 | **検出できる差** |",
-        "|---|---|---|---|---|---|---|---|",
+        "| 候補 | 設計 | 管 | n | 1観測あたりのSD | 重なりの膨張 | 線 | "
+        "**検出できる差** | 要る情報比 |",
+        "|---|---|---|---|---|---|---|---|---|",
     ]
     for wall in walls:
         annual = wall.annual  # type: ignore[attr-defined]
@@ -6487,12 +6501,23 @@ def _wall_document(walls: list[object], missing: list[object], span: str) -> str
             f"| {wall.candidate} | {wall.name} | {wall.pipe} | "  # type: ignore[attr-defined]
             f"{wall.observations:,} | {wall.sd:.2%}／{wall.unit} | "  # type: ignore[attr-defined]
             f"{blown} | "
-            f"`t ≥ {wall.line:.2f}` | **{size}** |"  # type: ignore[attr-defined]
+            f"`t ≥ {wall.line:.2f}` | **{size}** | {_wall_ir_cell(wall)} |"  # type: ignore[attr-defined]
         )
     lines += [
         "",
         "**イベント型は年率に直していない。** 資金をどれだけ張るかを決めないと"
-        "直せない（`docs/PASSING.md` と同じ扱い）。",
+        "直せない（`docs/PASSING.md` と同じ扱い）。**要る情報比も同じ理由で"
+        "出していない**——重なる窓は、取引できる系列ではない。",
+        "",
+        "### 検出できる差を、行どうしで比べない",
+        "",
+        "**単位も、市場に居る時間の割合も違う。** 候補7 と候補11 がその実例で、"
+        "年 32.0% 対 24.5% と出ていたが、**要る情報比では 1.12 対 1.09 で"
+        "ほとんど差が無い**——違いは効果ではなく、**絞って市場に居ない時間が"
+        "あること**だった。",
+        "",
+        "**要る情報比は `線 × 膨張 ÷ √年数` で、設計によらない。** n も SD も"
+        "効かない（`docs/PASSING.md` §2）。**そこを比べる。**",
         "",
         "## 材料が無くて測れなかった候補",
         "",
@@ -7685,8 +7710,14 @@ def _index_walls(
                 ),
                 sample=len(values),
                 undersampled=estimate.undersampled,
-                # **年に直せる。** 週に1回、窓は重ならない。
-                per_year=52.0,
+                # **年に直せる。** 窓は重ならない（週に1回・保有1週）。
+                #
+                # **率を焼き付けない。** ここに `52.0` と書いてあった
+                # （2026-09-21 まで）。候補11 はそれで合っていたが、
+                # **候補7 は買い越し週にしか入らない**ので年 24.6 回で、
+                # **年率が 2.1倍に出ていた**（年 32.0% → 15.1%）。
+                # `Wall.per_year` が `observations ÷ period_years` から作る。
+                period_years=_judgement_years(OOS_FROM, OOS_END),
                 # **n の出どころを注記に出す。** 「974 週」と「n 450」が並ぶ
                 # だけだと、**どこで減ったのかが出力から読み取れない**——
                 # `CLAUDE.md`「同じ列に、2つの単位を並べない」の隣の形である。
@@ -7792,7 +7823,8 @@ def wall_survey(
                 line=student_t_line(max(oos_years - 1, 1)),
                 source=f"{benchmark} の日次、IS {years[0]}〜{years[-1]} の {len(years)} 年",
                 sample=len(episodes),
-                per_year=1.0,
+                # **1年1観測なので、年数は観測数そのものである。**
+                period_years=float(oos_years),
             )
         )
     else:
@@ -7853,7 +7885,7 @@ def wall_survey(
                 source=f"IS {len(panel.months)} ヶ月、5分位・等加重",
                 sample=len(spread),
                 undersampled=estimate.undersampled,
-                per_year=12.0,
+                period_years=oos_months / 12.0,
                 notes=(f"近さを作れず外した銘柄月 {panel.skipped_no_value:,}",),
             )
         )
@@ -7975,7 +8007,16 @@ def wall_survey(
             )
 
     table = Table(title="壁の下見（**効果は出していない**）")
-    for column in ("候補", "設計", "n", "1観測あたりのSD", "重なりの膨張", "線", "検出できる差"):
+    for column in (
+        "候補",
+        "設計",
+        "n",
+        "1観測あたりのSD",
+        "重なりの膨張",
+        "線",
+        "検出できる差",
+        "要る情報比",
+    ):
         table.add_column(column, overflow="fold")
     for wall in walls:
         annual = wall.annual
@@ -7988,8 +8029,17 @@ def wall_survey(
             _inflation_cell(wall),
             f"{wall.line:.2f}",
             f"[bold]{size}[/]",
+            _wall_ir_cell(wall),
         )
     console.print(table)
+    # **検出できる差を、行どうしで比べない。** 単位も、市場に居る時間の割合も
+    # 違う——候補7 と候補11 は年率で 32.0% 対 24.5% と出ていたのに、
+    # **要る情報比では 1.12 対 1.09 でほとんど差が無かった**（2026-09-21）。
+    console.print(
+        "[dim]**検出できる差は、行どうしで比べられない**（単位も、市場に居る時間の"
+        "割合も違う）。**設計によらないのは「要る情報比」のほうである**"
+        "——`線 × 膨張 ÷ √年数`。n も SD も効かない（`docs/PASSING.md` §2）。[/]"
+    )
     for wall in walls:
         for note in wall.notes:
             console.print(f"[dim]{wall.candidate}: {note}[/]")
@@ -9940,7 +9990,7 @@ def passing(
     lines = _passing_lines(target, SHAPES, CONDITIONS, HYPOTHESIS_BUDGET, MEASURED_INFLATION)
 
     table = Table(title="合格に要るリターン（**いまの線から計算した値**）")
-    for column in ("設計", "1期あたりのSD", "合格に要る大きさ", "どこに書いてあるか"):
+    for column in ("設計", "1期あたりのSD", "合格に要る大きさ", "要る情報比", "どこに書いてあるか"):
         table.add_column(column, overflow="fold")
     for shape in SHAPES:
         # **線は管ごとに違う。** 1つの線を全部に当てると、イベント型の行に
@@ -9948,7 +9998,13 @@ def passing(
         own = shape.line()
         annual = shape.required_annual(own)
         need = f"年 {annual:.1%}" if annual else f"1{shape.unit} {shape.required(own):.2%}"
-        table.add_row(shape.name, f"{shape.sd:.2%}／{shape.unit}", f"[bold]{need}[/]", shape.source)
+        table.add_row(
+            shape.name,
+            f"{shape.sd:.2%}／{shape.unit}",
+            f"[bold]{need}[/]",
+            _ir_cell(shape),
+            shape.source,
+        )
     console.print(table)
     console.print(
         f"[dim]月次の線は `t ≥ {target:.2f}`（予算 {HYPOTHESIS_BUDGET} 本の "
@@ -9973,6 +10029,24 @@ def passing(
         target_path.parent.mkdir(parents=True, exist_ok=True)
         target_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
         console.print(f"[green]{target_path} を書き直した。[/] **この文書は生成物である。**")
+
+
+def _ir_cell(shape: object) -> str:
+    """Build the required-information-ratio cell, for the table and the document.
+
+    **表と `docs/PASSING.md` の両方がここを呼ぶ。** 2つ持つと、片方だけ
+    直したときに食い違う——`_inflation_cell` と同じ理由である
+    （`CLAUDE.md`「判定の当てはめが2箇所にあると、片方が緩む」）。
+
+    **重なる窓には出さない。** イベント型は1観測が取引できる系列では
+    ないので、年率に直すには資金の張り方を決める必要がある。**決めずに
+    割ると、根拠の無い情報比が出る。**
+    """
+    found = shape.required_ir()  # type: ignore[attr-defined]
+    if found is None:
+        return "—（年率に直さない）"
+    years = shape.period_years  # type: ignore[attr-defined]
+    return f"{found:.2f}（{years:.1f}年）"
 
 
 def _passing_lines(
@@ -10005,8 +10079,8 @@ def _passing_lines(
         f"陰性対照で測った膨張 {inflation:.2f} を掛けた）。**管ごとに違う**"
         "——下の表はそれぞれの管の線で計算してある。",
         "",
-        "| 設計 | 1期あたりのSD | **合格に要る大きさ** | 線 | どこに書いてあるか |",
-        "|---|---|---|---|---|",
+        "| 設計 | 1期あたりのSD | **合格に要る大きさ** | 要る情報比 | 線 | どこに書いてあるか |",
+        "|---|---|---|---|---|---|",
     ]
     for shape in shapes:  # type: ignore[attr-defined]
         own = shape.line()
@@ -10014,7 +10088,7 @@ def _passing_lines(
         need = f"年 {annual:.1%}" if annual else f"1{shape.unit} {shape.required(own):.2%}"
         lines.append(
             f"| {shape.name} | {shape.sd:.2%}／{shape.unit} | **{need}** "
-            f"| `t ≥ {own:.2f}` | {shape.source} |"
+            f"| {_ir_cell(shape)} | `t ≥ {own:.2f}` | {shape.source} |"
         )
     lines += [
         "",
@@ -10029,7 +10103,74 @@ def _passing_lines(
         "**イベント型は年率に直していない。** 資金をどれだけ張るかを決める必要が"
         "あり、事前登録にその指定が無い。**決めずに掛けると、根拠の無い年率が出る。**",
         "",
-        "## 2. 合格の条件",
+        "## 2. 設計によらない、1つの数",
+        "",
+        "上の表は設計ごとに単位も桁も違う。**効果を散らばりで割ると、1つの数になる。**",
+        "",
+        "```",
+        "要る年率の情報比 = 線 × 膨張 ÷ √(判定に使える年数)",
+        "```",
+        "",
+        "**観測の刻みを細かくしても下がらない。** n が増えても1観測あたりの効果が"
+        "同じだけ小さくなるので、比は動かない。**絞って n を減らしても上がらない。**",
+        "",
+        "### 散らばりの小さい設計は、要る腕前を下げない",
+        "",
+        "**これがこの数のいちばんの使いどころである。**",
+        "",
+        "| | 要るリターン | 年あたりのSD | **要る情報比** |",
+        "|---|---|---|---|",
+    ]
+    for shape in shapes:  # type: ignore[attr-defined]
+        found = shape.required_ir()
+        if found is None:
+            continue
+        own = shape.line()
+        annual = shape.required_annual(own)
+        annual_sd = shape.sd * math.sqrt(shape.per_year)
+        lines.append(f"| {shape.name} | 年 {annual:.1%} | {annual_sd:.1%} | **{found:.2f}** |")
+    lines += [
+        "",
+        "**低ボラ・ロングのみ・α は、断面ロングショートの3分の1の散らばりで組める。**"
+        "要るリターンはそのぶん下がるが、**要る情報比は下がらない**——膨張のぶん、"
+        "むしろ高い。",
+        "",
+        "**下げられるのは、膨張・線・年数の3つだけである。** SD も n も効かない。",
+        "",
+        "### 年数は、いまのところ動かせない",
+        "",
+        "**判定に使える年数を増やせば、全部の設計の壁が下がる。** **だが増やす手が無い。**",
+        "",
+        "| 判定に使える年数 | 要る情報比（月次の線・膨張 1.00） |",
+        "|---|---|",
+    ]
+    # **書き写さない。** 線が動けばここも動く（`docs/PASSING.md` が生成物で
+    # ある理由そのもの）。**年数のほうは、下の表から採っている。**
+    # **`OOS_FROM` を、モジュールの頭の `pead` のそれと取り違えない**
+    # （`CLAUDE.md`「モジュールの頭に、同じ名前の別物が居ないか」。あちらは
+    # 2024-01-01 で、6年半ずれる）。**ここで束ね直す。**
+    from stock_ai.backtest.gap_fill import IS_END as LOOK_END
+    from stock_ai.backtest.gap_fill import OOS_FROM as JUDGE_FROM
+    from stock_ai.backtest.passing import LOOKED_FROM
+    from stock_ai.backtest.power import required_information_ratio
+
+    now_years = shapes[0].period_years  # type: ignore[index]
+    for years in (now_years, 13.7, 20.0):
+        label = f"{years:.1f}年" + ("（いま）" if years == now_years else "")
+        lines.append(f"| {label} | **{required_information_ratio(target, 1.0, years):.2f}** |")
+    lines += [
+        "",
+        "| 期間 | 状態 |",
+        "|---|---|",
+        f"| {LOOKED_FROM} より前 | **一度も見ていない** |",
+        f"| {LOOKED_FROM} 〜 {LOOK_END:%Y-%m} | **8本の説で下見済み** |",
+        f"| {JUDGE_FROM:%Y-%m} 〜 | OOS |",
+        "",
+        "**2013〜2017 を OOS に入れ替えることはできない。** 8本ぶん覗いた後の"
+        "「本番」になる——下の条件②に真正面から反する。**増やせるのは、時間が"
+        "経つことだけである。**",
+        "",
+        "## 3. 合格の条件",
         "",
         "> **先に紙に書いたとおりに売買して、手数料を引いた後で、指数を"
         f"年 {shapes[0].required_annual(shapes[0].line()):.1%} 以上"  # type: ignore[index]

@@ -588,8 +588,10 @@ def test_the_floor_is_written_in_one_place() -> None:
 
     source = inspect.getsource(power)
 
-    # `standard_error` の中に1回だけ。`judge` は通すだけである。
+    # `floored_inflation` の中に1回だけ。`standard_error` も
+    # `required_information_ratio` も `judge` も、そこを通すだけである。
     assert source.count("max(inflation, INFLATION_FLOOR)") == 1
+    assert source.count("floored_inflation(inflation)") >= 2  # noqa: PLR2004 - 呼ぶ側が2つ
     assert "math.sqrt(long_run_variance(gammas) / count)" not in source
 
 
@@ -756,3 +758,124 @@ def test_a_window_that_cannot_overlap_has_no_ceiling() -> None:
 
     assert overlap_ceiling(1) == pytest.approx(1.0)
     assert overlap_ceiling(0) == pytest.approx(1.0)
+
+
+class TestTheRequiredInformationRatio:
+    """**設計によらない1つの数。** `線 × 膨張 ÷ √年数`。
+
+    壁の式 `線 × SD × 膨張 ÷ √n` は設計ごとに単位も桁も違う。**効果を
+    散らばりで割ると、n も SD も消える。**
+    """
+
+    def test_it_is_the_line_over_the_root_years(self) -> None:
+        from stock_ai.backtest.power import required_information_ratio
+
+        assert required_information_ratio(3.39, 1.0, 8.67) == pytest.approx(3.39 / 8.67**0.5)
+
+    def test_the_inflation_multiplies_it(self) -> None:
+        """**落とすと緩む向きである。** #9 の形なら 1.32 が 1.15 に見える。"""
+        from stock_ai.backtest.power import required_information_ratio
+
+        plain = required_information_ratio(3.39, 1.0, 8.67)
+        blown = required_information_ratio(3.39, 1.15, 8.67)
+
+        assert blown == pytest.approx(plain * 1.15)
+        assert blown > plain
+
+    def test_the_floor_applies_here_too(self) -> None:
+        """**補正は足りない分を足すもので、割り引くものではない。**
+
+        `standard_error` に床が無くて壁が 18% 低く出た形が、**3箇所目で
+        起きないように。**
+        """
+        from stock_ai.backtest.power import required_information_ratio
+
+        assert required_information_ratio(3.39, 0.82, 8.67) == pytest.approx(
+            required_information_ratio(3.39, 1.0, 8.67)
+        )
+
+    def test_more_years_lower_it(self) -> None:
+        from stock_ai.backtest.power import required_information_ratio
+
+        assert required_information_ratio(3.39, 1.0, 20.0) < required_information_ratio(
+            3.39, 1.0, 8.67
+        )
+
+    @pytest.mark.parametrize(
+        ("line", "inflation", "years"),
+        [(0.0, 1.0, 8.0), (-1.0, 1.0, 8.0), (3.39, 0.0, 8.0), (3.39, 1.0, 0.0), (3.39, 1.0, -1.0)],
+    )
+    def test_it_refuses_impossible_arguments(self, line, inflation, years) -> None:
+        from stock_ai.backtest.power import required_information_ratio
+
+        with pytest.raises(ValueError):
+            required_information_ratio(line, inflation, years)
+
+    def test_the_years_have_no_default(self) -> None:
+        """**既定を作ると、また黙って混ざる。** 呼ぶ側が年数を出す。"""
+        import inspect
+
+        from stock_ai.backtest.power import required_information_ratio
+
+        signature = inspect.signature(required_information_ratio)
+
+        assert signature.parameters["years"].default is inspect.Parameter.empty
+
+
+class TestTheInvariantIsActuallyInvariant:
+    """**主張していることを、実際に確かめる。**
+
+    コメントが「n も SD も効かない」と書いてあるだけでは、**読む側が主張の
+    ほうを信じる**（`CLAUDE.md`「コメントが主張していることと、コードが
+    守っていることを突き合わせる」）。
+    """
+
+    @staticmethod
+    def _ratio(sd: float, per_year: float, years: float, line: float) -> float:
+        """要る情報比を、**長い道で**出す。`年あたりの効果 ÷ 年あたりのSD`。"""
+        from stock_ai.backtest.power import detectable_difference
+
+        periods = round(per_year * years)
+        per_period = detectable_difference(sd, 1.0, periods, target_t=line)
+        annual_effect = per_period * per_year
+        annual_sd = sd * math.sqrt(per_year)
+        return annual_effect / annual_sd
+
+    def test_the_long_way_agrees_with_the_formula(self) -> None:
+        from stock_ai.backtest.power import required_information_ratio
+
+        assert self._ratio(0.05, 12, 8.0, 3.39) == pytest.approx(
+            required_information_ratio(3.39, 1.0, 8.0), rel=1e-9
+        )
+
+    def test_a_finer_grid_does_not_lower_it(self) -> None:
+        """**観測の刻みを細かくしても下がらない。**
+
+        月次を週次にすると n は 4.3倍になるが、1観測あたりの SD は
+        `√4.3` 分の1になる。**比は動かない。**
+        """
+        monthly = self._ratio(0.05, 12, 8.0, 3.39)
+        weekly = self._ratio(0.05 / math.sqrt(52 / 12), 52, 8.0, 3.39)
+
+        assert weekly == pytest.approx(monthly, rel=1e-6)
+
+    def test_the_spread_does_not_move_it(self) -> None:
+        """**散らばりの小さい設計は、要る腕前を下げない。**
+
+        #7 の形（低ボラ・ロングのみ・α）は断面ロングショートの3分の1の
+        散らばりで組める。**要るリターンはそのぶん下がるが、要る情報比は
+        動かない。**
+        """
+        wide = self._ratio(0.0542, 12, 8.0, 3.39)
+        narrow = self._ratio(0.0184, 12, 8.0, 3.39)
+
+        assert narrow == pytest.approx(wide, rel=1e-9)
+
+    def test_but_the_required_return_does_move(self) -> None:
+        """**両向きに置く。** 何も動かない式に倒しても緑にならないように。"""
+        from stock_ai.backtest.power import detectable_difference
+
+        wide = detectable_difference(0.0542, 1.0, 96, target_t=3.39) * 12
+        narrow = detectable_difference(0.0184, 1.0, 96, target_t=3.39) * 12
+
+        assert narrow < wide / 2
