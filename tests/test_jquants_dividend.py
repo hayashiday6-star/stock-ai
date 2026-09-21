@@ -501,8 +501,8 @@ class TestAZeroDividendIsNotAnExDate:
         assert found.dropped_zero == 0
         assert found.kept == 1
 
-    def test_an_unknown_amount_is_kept_and_named(self, tmp_path) -> None:
-        """**額が未公表なら外す側に倒す。** ただし黙って混ぜない。"""
+    def test_a_blank_amount_is_kept_and_named(self, tmp_path) -> None:
+        """**権利落ち日までに行は在るのに額が空。** 外す側に倒すが、黙って混ぜない。"""
         from stock_ai.data.jquants_dividend import ex_dates_known_by
 
         body = self._rows(
@@ -513,7 +513,71 @@ class TestAZeroDividendIsNotAnExDate:
 
         assert found.kept == 1
         assert found.unknown_amount == 1
-        assert any("未公表" in line for line in found.warnings())
+        assert found.blank_by_ex_date == 1
+        assert found.announced_late == 0
+        assert any("`DivRate` が空" in line for line in found.warnings())
+        assert found.unknown_keys == (("1301", dt.date(2015, 3, 30), "額が空"),)
+
+    def test_an_amount_published_after_the_ex_date_is_named_apart(self, tmp_path) -> None:
+        """**「その日までに引けなかった」と「一度も公表されていない」は別である。**
+
+        ここでは額は公表されている——**権利落ちの3か月後**に。前は2つを1つに
+        数えていて、出力の札が「**額が一度も公表されていない**」と言っていた
+        （2026-09-21）。**数えているものと、札が違った。**
+        """
+        from stock_ai.data.jquants_dividend import ex_dates_known_by
+
+        body = TestHowManyExDatesTheArchiveCanSupply._rows(
+            {
+                "Code": "13010",
+                "PubDate": "2015-06-30",
+                "ExDate": "2015-03-30",
+                "RefNo": "1",
+                "DivRate": "10",
+            },
+        )
+
+        found = ex_dates_known_by(self._archive(tmp_path, body))
+
+        assert found.kept == 1
+        assert found.blank_by_ex_date == 0
+        assert found.announced_late == 1
+        # **札が「一度も公表されていない」と言わないこと。** 公表はされている。
+        lines = found.warnings()
+        assert any("1行も公表されて" in line for line in lines)
+        assert any("一度も公表されていないという意味ではない" in line for line in lines)
+        assert found.unknown_keys == (("1301", dt.date(2015, 3, 30), "公表が権利落ちより後"),)
+
+    def test_the_two_shapes_are_counted_apart(self, tmp_path) -> None:
+        """**合計だけ出すと、その中に紛れる。** 2つ並べたときに割れること。"""
+        from stock_ai.data.jquants_dividend import ex_dates_known_by
+
+        body = TestHowManyExDatesTheArchiveCanSupply._rows(
+            {
+                "Code": "13010",
+                "PubDate": "2015-02-01",
+                "ExDate": "2015-03-30",
+                "RefNo": "1",
+                "DivRate": "",
+            },
+            {
+                "Code": "13020",
+                "PubDate": "2015-06-30",
+                "ExDate": "2015-03-30",
+                "RefNo": "2",
+                "DivRate": "10",
+            },
+        )
+
+        found = ex_dates_known_by(self._archive(tmp_path, body))
+
+        assert found.blank_by_ex_date == 1
+        assert found.announced_late == 1
+        assert found.unknown_amount == 2
+        assert {why for _symbol, _when, why in found.unknown_keys} == {
+            "額が空",
+            "公表が権利落ちより後",
+        }
 
     def test_a_zero_before_the_ex_date_wins(self, tmp_path) -> None:
         """**権利落ち日より前に 0 へ訂正されていれば、その時点で無配である。**
@@ -977,3 +1041,121 @@ class TestWhichExDatesAreLeftToExclude:
         # **0 の鍵は、どちらにも入らない。** 落とすものも、外す理由も無い。
         assert not (zeros & listed)
         assert not (zeros & paid)
+
+
+class TestCountingTheColumnsTheReaderThrowsAway:
+    """**捨てている列は、読み口からは見えない。** 数える口を別に置く。
+
+    額が引けない権利落ちが 887 → 9,861 件に増えたとき、**「予想の行が在るのに
+    拾えていないのでは」を確かめる材料が無かった**（2026-09-21）。
+    `FRCode` は `parse_dividends` が採っていない列である。
+
+    **全体と並べる。** 絞った先の分布だけでは何も言えない——**同じ列が全体でも
+    空なら、それはその集合の特徴ではない。**
+    """
+
+    @staticmethod
+    def _archive(tmp_path, rows: tuple[dict[str, str], ...]):
+        import csv
+        import gzip
+        import io as _io
+
+        from stock_ai.data.jquants_archive import MANIFEST, MANIFEST_COLUMNS
+
+        names = SAMPLE.read_text(encoding="utf-8-sig").splitlines()[0].split(",")
+        out = _io.StringIO()
+        writer = csv.DictWriter(out, fieldnames=names, lineterminator="\n")
+        writer.writeheader()
+        for row in rows:
+            writer.writerow({**dict.fromkeys(names, ""), **row})
+        key = "fins/dividend/dividend_2015.csv.gz"
+        target = tmp_path / key
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(gzip.compress(out.getvalue().encode("utf-8")))
+        (tmp_path / MANIFEST).write_text(
+            ",".join(MANIFEST_COLUMNS) + "\n" + f"/{key},1,1,x,,2026-09-21\n",
+            encoding="utf-8",
+        )
+        return tmp_path
+
+    def test_it_counts_a_column_the_reader_never_parses(self, tmp_path) -> None:
+        """`FRCode` は `parse_dividends` が採らない。**それでも数えられること。**"""
+        import datetime as dt
+
+        from stock_ai.data.jquants_dividend import row_census
+
+        directory = self._archive(
+            tmp_path,
+            (
+                {"Code": "13010", "PubDate": "2015-02-01", "ExDate": "2015-03-30", "FRCode": "1"},
+                {"Code": "13020", "PubDate": "2015-02-01", "ExDate": "2015-03-30", "FRCode": "2"},
+            ),
+        )
+
+        found = row_census(directory, [("1301", dt.date(2015, 3, 30))])
+
+        assert found.rows == 1
+        assert found.overall_rows == 2
+        assert found.codes["FRCode"] == {"1": 1}
+        assert found.overall_codes["FRCode"] == {"1": 1, "2": 1}
+
+    def test_a_column_that_is_empty_everywhere_does_not_stand_out(self, tmp_path) -> None:
+        """**両向きに置く。** 全体でも空なら、その集合の特徴ではない。"""
+        import datetime as dt
+
+        from stock_ai.data.jquants_dividend import row_census
+
+        directory = self._archive(
+            tmp_path,
+            (
+                {"Code": "13010", "PubDate": "2015-02-01", "ExDate": "2015-03-30"},
+                {"Code": "13020", "PubDate": "2015-02-01", "ExDate": "2015-03-30"},
+            ),
+        )
+
+        found = row_census(directory, [("1301", dt.date(2015, 3, 30))])
+
+        assert not [name for name, _here, _all in found.standout() if name == "DeemDiv"]
+
+    def test_a_column_filled_only_in_the_picked_set_stands_out(self, tmp_path) -> None:
+        """**差が信号である。** 23 列を毎回刷ると、読む側が差に気付けない。"""
+        import datetime as dt
+
+        from stock_ai.data.jquants_dividend import row_census
+
+        directory = self._archive(
+            tmp_path,
+            (
+                {
+                    "Code": "13010",
+                    "PubDate": "2015-02-01",
+                    "ExDate": "2015-03-30",
+                    "DeemDiv": "12.3",
+                },
+                {"Code": "13020", "PubDate": "2015-02-01", "ExDate": "2015-03-30"},
+                {"Code": "13030", "PubDate": "2015-02-01", "ExDate": "2015-03-30"},
+            ),
+        )
+
+        found = row_census(directory, [("1301", dt.date(2015, 3, 30))])
+
+        standout = {name: (here, all_) for name, here, all_ in found.standout()}
+        assert "DeemDiv" in standout, "**絞った先だけ埋まっている列が出ていない。**"
+        here, everywhere = standout["DeemDiv"]
+        assert here == 1.0
+        assert everywhere < 0.5  # noqa: PLR2004 - 3行のうち1行
+
+    def test_it_is_empty_when_nothing_is_wanted(self, tmp_path) -> None:
+        """**何も絞らなければ、絞った先は 0 行。** 全体は数える。"""
+        from stock_ai.data.jquants_dividend import row_census
+
+        directory = self._archive(
+            tmp_path,
+            ({"Code": "13010", "PubDate": "2015-02-01", "ExDate": "2015-03-30"},),
+        )
+
+        found = row_census(directory, [])
+
+        assert found.rows == 0
+        assert found.overall_rows == 1
+        assert found.standout() == []

@@ -1924,6 +1924,156 @@ class TestTheGateRowIsMarked:
         assert "8.7年" in text
 
 
+class TestTheUnpublishedAmountsAreSplitOnScreen:
+    """**「額が一度も公表されていない」は嘘だった**（2026-09-21）。
+
+    9,861 件のうち、どれが「権利落ち日までに行は在るが額が空」で、どれが
+    「権利落ち日までに1行も公表されていない」のかが**出ていなかった。**
+    合計しか出ないと、**片方が増えてもその中に紛れる。**
+
+    そして**読み口が捨てている列を数える。** 「予想の行が在るのに拾えて
+    いないのでは」は `FRCode` を読まないと答えられない。
+    """
+
+    #: **2つの形を1つずつ。** 片方だけの盤面だと、割れていなくても緑になる。
+    _ROWS = (
+        # 権利落ち日までに公表されているが、額が空
+        ("13010", "2015-02-02", "", "2015-03-30", "1"),
+        # 権利落ち日より後にしか公表されていない（額は在る）
+        ("13020", "2015-06-30", "12.5", "2015-03-30", "2"),
+    )
+
+    @classmethod
+    def _archive(cls, tmp_path):
+        import csv
+        import gzip
+        import pathlib as _p
+
+        from stock_ai.data.jquants_archive import MANIFEST, MANIFEST_COLUMNS
+
+        sample = _p.Path("tests/fixtures/jquants_dividend_sample.csv")
+        names = sample.read_text(encoding="utf-8-sig").splitlines()[0].split(",")
+        out = io.StringIO()
+        writer = csv.DictWriter(out, fieldnames=names, lineterminator="\n")
+        writer.writeheader()
+        for index, (code, published, rate, ex_date, forecast) in enumerate(cls._ROWS):
+            writer.writerow(
+                {
+                    **dict.fromkeys(names, ""),
+                    "Code": code,
+                    "PubDate": published,
+                    "PubTime": "15:30",
+                    "RefNo": f"{published.replace('-', '')}1B0012{index}",
+                    "ExDate": ex_date,
+                    "DivRate": rate,
+                    "FRCode": forecast,
+                }
+            )
+        key = "fins/dividend/dividend_2015.csv.gz"
+        target = tmp_path / key
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(gzip.compress(out.getvalue().encode("utf-8")))
+        (tmp_path / MANIFEST).write_text(
+            ",".join(MANIFEST_COLUMNS) + "\n" + f"/{key},1,1,x,,2026-09-21\n",
+            encoding="utf-8",
+        )
+        return tmp_path
+
+    @classmethod
+    def _printed(cls, tmp_path, width: int = 100) -> str:
+        from rich.console import Console
+
+        from stock_ai import cli
+        from stock_ai.data.jquants_dividend import ex_dates_known_by
+
+        archive = cls._archive(tmp_path)
+        known = ex_dates_known_by(archive)
+        console = Console(file=io.StringIO(), width=width, no_color=True)
+        with mock.patch.object(cli, "console", console):
+            cli._print_unpublished_amounts(archive, known)
+        return console.file.getvalue()  # type: ignore[attr-defined]
+
+    def test_both_shapes_are_counted_apart(self, tmp_path) -> None:
+        """**合計だけ出すと、その中に紛れる。**"""
+        printed = self._printed(tmp_path)
+
+        assert "`DivRate` が空" in printed
+        assert "1行も公表されていない" in printed
+
+    def test_it_denies_the_old_label(self, tmp_path) -> None:
+        """**札が、数えているものと違うことを言っていた。**
+
+        下の段は後から公表されている。**「一度も公表されていない」ではない。**
+        """
+        assert "ではない" in self._printed(tmp_path)
+
+    def test_the_dropped_columns_are_counted(self, tmp_path) -> None:
+        """**捨てている列は、読み口からは見えない。** `FRCode` を数えること。"""
+        printed = self._printed(tmp_path)
+
+        assert "FRCode" in printed
+
+    def test_the_raw_rows_come_back_for_each_reason(self, tmp_path) -> None:
+        """**上限は理由ごとに置く。** 全体で1つにすると多いほうが押し出す。"""
+        printed = self._printed(tmp_path)
+
+        assert "原本そのもの（額が空）" in printed
+        assert "原本そのもの（公表が権利落ちより後）" in printed
+
+    @pytest.mark.parametrize("width", [80, 100, 120])
+    def test_no_column_name_is_broken_across_lines(self, tmp_path, width: int) -> None:
+        """**幅を決めて刷る。** 日本語の札は rich から見れば1語である。"""
+        lines = self._printed(tmp_path, width).splitlines()
+
+        for name in ("Code", "PubDate", "DivRate", "ExDate"):
+            assert any(name in line for line in lines), f"**{name} が割れている。**"
+
+    def test_the_audit_command_actually_calls_it(self) -> None:
+        """**見る道具を置いたのに、呼んでいない**を止める。
+
+        `_print_raw_dividend_rows` は `symbol=` を足したのに `build_events`
+        側で渡しておらず、**標本の銘柄が10行とも空**だった（2026-09-20）。
+        **置いたことと、経路に載ったことは別である。**
+        """
+        import ast
+        import inspect
+
+        from stock_ai import cli
+
+        tree = ast.parse(inspect.getsource(cli.ex_date_audit))
+        called = {
+            node.func.id
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+        }
+
+        assert "_print_unpublished_amounts" in called
+
+    def test_nothing_is_printed_beyond_the_table_when_all_amounts_are_known(self, tmp_path) -> None:
+        """**両向きに置く。** 常に中身が出る形は、何も区別しない。"""
+        from rich.console import Console
+
+        from stock_ai import cli
+        from stock_ai.data.jquants_dividend import AnnouncedExDates
+
+        console = Console(file=io.StringIO(), width=100, no_color=True)
+        with mock.patch.object(cli, "console", console):
+            cli._print_unpublished_amounts(
+                self._archive(tmp_path),
+                AnnouncedExDates(
+                    by_symbol={},
+                    kept=1,
+                    dropped_zero=0,
+                    blank_by_ex_date=0,
+                    announced_late=0,
+                ),
+            )
+        printed = console.file.getvalue()  # type: ignore[attr-defined]
+
+        assert "原本そのもの" not in printed
+        assert "FRCode" not in printed
+
+
 class TestTheRawDividendRowsReachTheScreen:
     """**「原本を見る」は、読める形で画面に出て初めて道具になる。**
 

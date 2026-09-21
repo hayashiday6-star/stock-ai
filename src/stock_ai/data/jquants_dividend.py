@@ -77,6 +77,17 @@ class Dividend:
     status_code: str
     """`StatCode`。**意味は分からないので符号のまま持つ。**"""
 
+    forecast_code: str = ""
+    """`FRCode`。**意味は分からないので符号のまま持つ。**
+
+    **読み口が捨てていた列である。** 額が引けない権利落ちが 887 → 9,861 件に
+    増えたとき、「予想の行が在るのに拾えていないのではないか」を確かめる
+    材料が無かった（2026-09-21）。**捨てている列は、読み口からは見えない。**
+    """
+
+    interim_code: str = ""
+    """`IFCode`。**意味は分からないので符号のまま持つ。**"""
+
 
 def parse_dividends(payload: bytes) -> list[Dividend]:
     """配当の CSV を読む。**公表日か銘柄コードの無い行は落とす。**"""
@@ -100,6 +111,8 @@ def parse_dividends(payload: bytes) -> list[Dividend]:
                 record_date=parse_date(row.get("RecDate")),
                 pay_date=parse_date(row.get("PayDate")),
                 status_code=(row.get("StatCode") or "").strip(),
+                forecast_code=(row.get("FRCode") or "").strip(),
+                interim_code=(row.get("IFCode") or "").strip(),
             )
         )
     return items
@@ -333,15 +346,35 @@ class AnnouncedExDates:
     dropped_zero: int
     """**額 0 で落とした ``(銘柄, 日)``。** 無配の公表にも `ExDate` は入る。"""
 
-    unknown_amount: int
-    """額が未公表。**残す側に倒している**（外し漏れより外し過ぎを採る）。"""
+    blank_by_ex_date: int
+    """**権利落ち日までに行は在るが、`DivRate` が空。** 額だけが分からない。"""
+
+    announced_late: int
+    """**権利落ち日までに1行も公表されていない。** 額も権利落ち日も後から出た。
+
+    **「額が一度も公表されていない」ではない。** 後で公表されている——
+    その日の時点で使えなかっただけである。前はこの2つを1つに数えていて、
+    **出力の札が「一度も公表されていない」と嘘をついていた**（2026-09-21）。
+    """
+
+    unknown_keys: tuple[tuple[str, dt.date, str], ...] = ()
+    """落とせなかった ``(銘柄, 権利落ち日, 理由)``。**中身を見る道具である。**
+
+    **件数だけ返すと、次の一手が打てない**（`CLAUDE.md`「『見ること』と
+    書いただけで、見る道具を置いていないか」）。
+    """
+
+    @property
+    def unknown_amount(self) -> int:
+        """権利落ち日時点で額が引けなかった ``(銘柄, 日)``。**2つの和。**"""
+        return self.blank_by_ex_date + self.announced_late
 
     def summary(self) -> str:
         """1行のまとめ。"""
         return (
             f"権利落ちとして扱うのは {self.kept:,} 件"
             f"（**額 0 で落とした {self.dropped_zero:,} 件**、"
-            f"額が未公表で残した {self.unknown_amount:,} 件）。"
+            f"権利落ち日までに額が引けず残した {self.unknown_amount:,} 件）。"
         )
 
     def warnings(self) -> list[str]:
@@ -349,10 +382,19 @@ class AnnouncedExDates:
         found: list[str] = []
         if not self.kept:
             return ["**権利落ちを1件も引けなかった。**"]
-        if self.unknown_amount:
+        # **2つに割って出す。** 合計だけ出すと、片方が大きくてもその中に
+        # 紛れる（`CLAUDE.md`「合計だけ出すと、その中に紛れる」）。
+        if self.blank_by_ex_date:
             found.append(
-                f"**{self.unknown_amount:,} 件は額が未公表のまま残している。** "
-                "落ちるかどうかが分からないので、**外す側に倒した。**"
+                f"**{self.blank_by_ex_date:,} 件は、権利落ち日までに行は在るが "
+                "`DivRate` が空である。** 落ちるかどうかが分からないので、"
+                "**外す側に倒した。**"
+            )
+        if self.announced_late:
+            found.append(
+                f"**{self.announced_late:,} 件は、権利落ち日までに1行も公表されて"
+                "いない。** **額が一度も公表されていないという意味ではない**"
+                "——後から出ている。その日の時点で使えなかっただけである。"
             )
         return found
 
@@ -369,9 +411,19 @@ def ex_dates_known_by(directory: Path) -> AnnouncedExDates:
     `#16` が急落 371 件をそれで外していた（2026-09-20、ユーザーが指摘）。
     **`#15` も同じ口を使っている。**
 
-    **額が未公表（`DivRate` が空）の日は残す。** 落ちるかどうかが分からない
+    **権利落ち日までに額が引けない日は残す。** 落ちるかどうかが分からない
     ので、**外す側に倒す**——外し漏れのほうが、事象の定義に機械的な値下がりを
     混ぜるので悪い。
+
+    **その「引けない」は2つある**（2026-09-21 に割った）。
+
+    | 形 | 権利落ち日までに | 額 |
+    |---|---|---|
+    | ``blank_by_ex_date`` | 行は在る | `DivRate` が空 |
+    | ``announced_late`` | 1行も無い | **後から出ている** |
+
+    **「額が一度も公表されていない」は、どちらの説明にもなっていない。**
+    前は1つに数えていて、出力の札がそう言っていた。
 
     **判定は、権利落ち日までに公表された中でいちばん新しい額で行う**
     （:func:`known_at_ex_date`）。**「公表順で後」と「権利落ち日より後」は
@@ -405,14 +457,25 @@ def ex_dates_known_by(directory: Path) -> AnnouncedExDates:
     # 判定の当てはめが2箇所にあると、片方が置き去りになる。
     at_ex_date = known_at_ex_date(directory)
 
-    # **「その日までに額が1度も公表されていない」を拾う。** `known_at_ex_date`
+    # **「権利落ち日までに額が引けなかった」を拾う。** `known_at_ex_date`
     # は公表日で切っているので、そこに無い鍵がそれである。
+    #
+    # **そして2つに割る。** 前は1つに数えていて、出力の札が「額が一度も
+    # 公表されていない」と言っていた——**どちらも誤りである**（2026-09-21）。
+    #
+    # | 形 | 権利落ち日までに | 額 |
+    # |---|---|---|
+    # | `blank_by_ex_date` | 行は在る | `DivRate` が空 |
+    # | `announced_late` | 1行も無い | 後から出ている |
     earliest: dict[tuple[str, dt.date], dt.date] = {}
+    seen_by_ex_date: set[tuple[str, dt.date]] = set()
     for symbol, published, when, _rate in _ex_date_rows(directory):
         key = (symbol, when)
         current = earliest.get(key)
         if current is None or published < current:
             earliest[key] = published
+        if published <= when:
+            seen_by_ex_date.add(key)
 
     positive: dict[tuple[str, dt.date], dt.date] = {}
     zero = 0
@@ -422,6 +485,7 @@ def ex_dates_known_by(directory: Path) -> AnnouncedExDates:
         else:
             zero += 1
     unknown = {key: when for key, when in earliest.items() if key not in at_ex_date}
+    blank = {key for key in unknown if key in seen_by_ex_date}
 
     found: dict[str, list[tuple[dt.date, dt.date]]] = {}
     kept = 0
@@ -436,7 +500,14 @@ def ex_dates_known_by(directory: Path) -> AnnouncedExDates:
         by_symbol=found,
         kept=kept,
         dropped_zero=zero,
-        unknown_amount=len(unknown),
+        blank_by_ex_date=len(blank),
+        announced_late=len(unknown) - len(blank),
+        unknown_keys=tuple(
+            sorted(
+                (symbol, when, "額が空" if (symbol, when) in blank else "公表が権利落ちより後")
+                for symbol, when in unknown
+            )
+        ),
     )
 
 
@@ -585,8 +656,9 @@ def ex_dividends_known_by(directory: Path) -> dict[str, list[tuple[dt.date, dt.d
 
     **その権利落ち日について、いちばん早く正の額が公表された時点**を採る。
     後から 0 へ訂正されたことは使わない——**使えば先読みになる**（事前登録
-    §8）。額が一度も公表されていない権利落ち日は**入らない**（調整のしよう
-    が無い。外すかどうかは :func:`ex_dates_known_by` が決める）。
+    §8）。**権利落ち日までに額が引けない権利落ち日は入らない**（調整のしよう
+    が無い。外すかどうかは :func:`ex_dates_known_by` が決める）——「一度も
+    公表されていない」ではなく、**その日までに引けなかった**である。
 
     Args:
         directory: 原本の置き場所。
@@ -748,6 +820,134 @@ def raw_rows(
                 found.append((symbol, ex_date, key, dict(row)))
     found.sort(key=lambda item: (item[1], item[0], item[2]))
     return found
+
+
+#: 符号の列。**意味は分からないので、値のまま数える。**
+CODE_COLUMNS: tuple[str, ...] = ("FRCode", "IFCode", "StatCode", "CommSpecCode")
+
+
+@dataclasses.dataclass(frozen=True)
+class RowCensus:
+    """ある ``(銘柄, 権利落ち日)`` の集合に当たる原本の行を、**列ごとに数える。**
+
+    **全体も一緒に持つ。** 絞った先の分布だけを見ても何も言えない
+    ——`CLAUDE.md`「件数ではなく割合を見る」。**同じ列が全体でも空なら、
+    それはその集合の特徴ではない。**
+
+    **読み口が捨てている列も数える。** `parse_dividends` が採らない
+    ``DistAmt`` / ``RetEarn`` / ``DeemDiv`` / ``DeemCapGains`` /
+    ``NetAssetDecRatio`` に答えが在れば、**読み口からは永久に見えない。**
+    """
+
+    rows: int
+    """絞った先の行数。"""
+
+    overall_rows: int
+    """原本ぜんぶの行数。**分母である。**"""
+
+    filled: dict[str, int]
+    """絞った先で、その列が空でなかった行。"""
+
+    overall_filled: dict[str, int]
+    """原本ぜんぶで、その列が空でなかった行。"""
+
+    codes: dict[str, dict[str, int]]
+    """絞った先の ``列 -> 値 -> 件数``。**値のまま数える。**"""
+
+    overall_codes: dict[str, dict[str, int]]
+    """原本ぜんぶの ``列 -> 値 -> 件数``。"""
+
+    def standout(self, gap: float = 0.10) -> list[tuple[str, float, float]]:
+        """埋まり方が**全体と食い違う**列だけ。
+
+        **全部並べない。** 23 列を毎回刷ると、読む側が差に気付けない
+        ——`CLAUDE.md`「出力を小さく保つ」。**差が信号である。**
+
+        Args:
+            gap: この幅より大きく違う列を返す。
+
+        Returns:
+            ``(列名, 絞った先の割合, 全体の割合)``。**差の大きい順。**
+        """
+        if not self.rows or not self.overall_rows:
+            return []
+        found: list[tuple[str, float, float]] = []
+        for name in self.filled:
+            here = self.filled[name] / self.rows
+            everywhere = self.overall_filled.get(name, 0) / self.overall_rows
+            if abs(here - everywhere) > gap:
+                found.append((name, here, everywhere))
+        found.sort(key=lambda item: abs(item[1] - item[2]), reverse=True)
+        return found
+
+
+def row_census(
+    directory: Path,
+    wanted: Iterable[tuple[str, dt.date]],
+    columns: Iterable[str] = CODE_COLUMNS,
+) -> RowCensus:
+    """絞った ``(銘柄, 権利落ち日)`` の原本の行を、**全体と並べて数える。**
+
+    **`raw_rows` は中身を返し、こちらは数を返す。** 9,861 件の内訳を追うのに
+    標本 3 行では足りない——**桁を確かめるには全部数えるしかない**
+    （2026-09-21）。
+
+    Args:
+        directory: 原本の置き場所。
+        wanted: 数えたい ``(銘柄, 権利落ち日)``。
+        columns: 値のまま数える符号の列。
+
+    Returns:
+        :class:`RowCensus`。
+    """
+    keys = {(symbol, when) for symbol, when in wanted}
+    names = list(columns)
+
+    rows = overall_rows = 0
+    filled: dict[str, int] = {}
+    overall_filled: dict[str, int] = {}
+    codes: dict[str, dict[str, int]] = {name: {} for name in names}
+    overall_codes: dict[str, dict[str, int]] = {name: {} for name in names}
+
+    for key, payload in _dividend_files(directory):
+        try:
+            found = records_from_csv(payload)
+        except Exception as exc:  # noqa: BLE001 - どこで読めないかが記録に値する
+            logger.warning("配当の原本を読めなかった: %s: %s", key, exc)
+            continue
+        for row in found:
+            overall_rows += 1
+            symbol = four_digit_code((row.get("Code") or "").strip())
+            ex_date = parse_date(row.get("ExDate"))
+            picked = symbol is not None and ex_date is not None and (symbol, ex_date) in keys
+            if picked:
+                rows += 1
+            for name, value in row.items():
+                text = (value or "").strip()
+                if not text:
+                    continue
+                overall_filled[name] = overall_filled.get(name, 0) + 1
+                if picked:
+                    filled[name] = filled.get(name, 0) + 1
+            for name in names:
+                text = (row.get(name) or "").strip() or "（空）"
+                overall_codes[name][text] = overall_codes[name].get(text, 0) + 1
+                if picked:
+                    codes[name][text] = codes[name].get(text, 0) + 1
+
+    # **絞った先で1度も埋まらなかった列も、0 で入れておく。** 入れないと
+    # `standout` がその列を見ない——**無いことは出力に出ない。**
+    for name in overall_filled:
+        filled.setdefault(name, 0)
+
+    return RowCensus(
+        rows=rows,
+        overall_rows=overall_rows,
+        filled=filled,
+        overall_filled=overall_filled,
+        codes=codes,
+        overall_codes=overall_codes,
+    )
 
 
 def _ex_date_items(directory: Path) -> Iterable[Dividend]:

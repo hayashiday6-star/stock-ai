@@ -6992,6 +6992,7 @@ def ex_date_audit(
     _print_dividend_breakdown(found.dividends, "急落を集めるときに落とした配当")
     _print_raw_dividend_rows(Path(archive), found.dividends)
     _print_dividend_revisions(Path(archive))
+    _print_unpublished_amounts(Path(archive), known)
 
     with spinner() as progress:
         task = progress.add_task("保有窓の中の権利落ちを数えています", total=None)
@@ -7130,6 +7131,118 @@ def _print_raw_dividend_rows(archive: Path, counted: object, limit: int = 3) -> 
         "`IFTerm` / `DivRate` / `CommDivRate` / `SpecDivRate` / `ExDate` / "
         "`RecDate` / `PayDate` / `StatCode` だけである。** 額は `DivRate`。[/]"
     )
+
+
+def _print_unpublished_amounts(archive: Path, known: object, limit: int = 3) -> None:
+    """Report the ex-dates whose amount could not be read by the ex-date itself.
+
+    **2つに割って出す。** 887 → 9,861 件に増えたとき、合計しか出ていな
+    かったので**どちらが増えたのか分からなかった**（2026-09-21）。
+
+    | 形 | 権利落ち日までに | 額 |
+    |---|---|---|
+    | 額が空 | 行は在る | `DivRate` が空 |
+    | 公表が権利落ちより後 | 1行も無い | **後から出ている** |
+
+    **そして読み口が捨てている列を数える。** 「予想の行が在るのに拾えて
+    いないのではないか」は、`FRCode` を読まないと答えられない——
+    **捨てている列は、読み口からは見えない**（`CLAUDE.md`、#5 と同じ形）。
+
+    **全体と並べる。** 絞った先で `DivRate` が空なのは当たり前なので、
+    **全体と食い違う列だけ**を出す（`CLAUDE.md`「件数ではなく割合を見る」）。
+
+    Args:
+        archive: 原本の置き場所。
+        known: :class:`~stock_ai.data.jquants_dividend.AnnouncedExDates`。
+        limit: 理由ごとに原本を引く鍵の数。**理由ごとに置く**——全体で1つに
+            すると、件数の多い理由が少ない理由を押し出す。
+    """
+    from stock_ai.data.jquants_dividend import raw_rows, row_census
+
+    keys: list[tuple[str, dt.date, str]] = list(known.unknown_keys)  # type: ignore[attr-defined]
+    table = Table(title="権利落ち日までに額が引けなかった権利落ち")
+    table.add_column("どうだったか", overflow="fold")
+    table.add_column("件数", justify="right")
+    table.add_row("権利落ち日までに行は在るが `DivRate` が空", f"{known.blank_by_ex_date:,}")  # type: ignore[attr-defined]
+    table.add_row("権利落ち日までに1行も公表されていない", f"{known.announced_late:,}")  # type: ignore[attr-defined]
+    console.print(table)
+    console.print(
+        "[dim]**「額が一度も公表されていない」ではない。** 下の段は後から"
+        "公表されている——その日の時点で使えなかっただけである。[/]"
+    )
+    if not keys:
+        return
+
+    # **原本の列を数える。** 読み口が採らない列に答えが在るかは、ここでしか
+    # 見えない。**全体と食い違う列だけ**を出す。
+    census = row_census(archive, [(symbol, when) for symbol, when, _why in keys])
+    standout = census.standout()
+    if standout:
+        spread = Table(title="原本の列の埋まり方（全体と食い違うものだけ）")
+        spread.add_column("列", overflow="fold")
+        spread.add_column("この集合", justify="right")
+        spread.add_column("原本ぜんぶ", justify="right")
+        for name, here, everywhere in standout[:10]:
+            spread.add_row(name, f"{here:.1%}", f"{everywhere:.1%}")
+        console.print(spread)
+    else:
+        console.print(
+            "[dim]原本の列の埋まり方は、原本ぜんぶと 10 ポイント以上違わない。"
+            "**この集合に特有の列は無い。**[/]"
+        )
+
+    # **`FRCode` の出方を、全体と並べる。** 予想の行が在るのに拾えていない
+    # なら、ここが偏る。**偏らないことも答えである。**
+    here = census.codes.get("FRCode", {})
+    everywhere = census.overall_codes.get("FRCode", {})
+    if here or everywhere:
+        codes = Table(title="`FRCode` の出方（意味は分からないので値のまま）")
+        codes.add_column("値", overflow="fold")
+        codes.add_column("この集合", justify="right")
+        codes.add_column("原本ぜんぶ", justify="right")
+        for value in sorted(set(here) | set(everywhere), key=lambda v: -everywhere.get(v, 0))[:6]:
+            mine = here.get(value, 0) / census.rows if census.rows else 0.0
+            all_of = everywhere.get(value, 0) / census.overall_rows if census.overall_rows else 0.0
+            codes.add_row(value, f"{here.get(value, 0):,}（{mine:.1%}）", f"{all_of:.1%}")
+        console.print(codes)
+
+    # **理由ごとに標本を出す。** 上限を全体で1つにすると、件数の多い理由が
+    # 少ない理由を押し出す（2026-09-20、実際にそうなった）。
+    #
+    # **原本は1度だけ歩く。** 理由ごとに `raw_rows` を呼ぶと、原本を理由の
+    # 数だけ読み直すことになる。
+    wanted: dict[str, list[tuple[str, dt.date]]] = {}
+    for symbol, when, reason in keys:
+        picked = wanted.setdefault(reason, [])
+        if len(picked) < limit:
+            picked.append((symbol, when))
+    everything = raw_rows(archive, [key for picked in wanted.values() for key in picked])
+    for why in ("額が空", "公表が権利落ちより後"):
+        picked = wanted.get(why, [])
+        if not picked:
+            continue
+        chosen = set(picked)
+        found = [row for row in everything if (row[0], row[1]) in chosen]
+        if not found:
+            console.print(f"[yellow]**「{why}」の原本が引き当てられない。**[/]")
+            continue
+        names: list[str] = []
+        for _symbol, _when, _key, row in found:
+            for name in row:
+                if name not in names:
+                    names.append(name)
+        filled = [
+            name for name in names if any((row.get(name) or "").strip() for *_h, row in found)
+        ]
+        empty = [name for name in names if name not in filled]
+        sample = Table(title=f"原本そのもの（{why}）")
+        for name in filled:
+            sample.add_column(name, overflow="fold", no_wrap=False)
+        for *_head, row in found:
+            sample.add_row(*[(row.get(name) or "").strip() or "—" for name in filled])
+        console.print(sample)
+        if empty:
+            console.print(f"[dim]全行で空だった列: {' / '.join(empty)}[/]")
 
 
 def _print_dividend_revisions(archive: Path) -> None:

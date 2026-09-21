@@ -212,7 +212,12 @@ class TestCollectingTheCrashes:
         assert without.excluded_ex_date > 0, "**落とせないのに外していない。**"
 
     def test_the_warning_names_the_one_reason_left(self) -> None:
-        """残るのは「額が一度も公表されていない」だけ。"""
+        """残るのは「**権利落ち日までに額が引けなかった**」だけ。
+
+        **「額が一度も公表されていない」ではない**（2026-09-21 に直した）。
+        後から公表されているものが含まれる——**札が、数えているものと違う
+        ことを言っていた。**
+        """
         database, symbols, first = self._one_crash()
         inside = _INDEX[first - KNIFE_DAYS + 1].date()
         announced = {symbols[0]: [(dt.date(2013, 1, 10), inside)]}
@@ -220,7 +225,8 @@ class TestCollectingTheCrashes:
         told = " ".join(build_events(database, announced, symbols=symbols).warnings())
 
         assert "額を落とせない権利落ち" in told
-        assert "額が一度も公表されていない" in told
+        assert "権利落ち日までに額が引けなかった権利落ち" in told
+        assert "「一度も公表されていない」ではない" in told
 
     def test_a_dividend_in_the_holding_window_excludes_too(self) -> None:
         """**急落側だけ外すと、非対称が残る。**
