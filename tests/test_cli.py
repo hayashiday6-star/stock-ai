@@ -2039,13 +2039,25 @@ class TestTheUnpublishedAmountsAreSplitOnScreen:
             writer.writerow(
                 {
                     **dict.fromkeys(names, ""),
+                    # **実データで埋まる列を、全部埋める。** 前の盤面は 7 列
+                    # しか埋めておらず、**16 列が幅 80 で潰れる形が入って
+                    # いなかった**（2026-09-21、ユーザーが2度目の指摘）。
                     "Code": code,
                     "PubDate": published,
                     "PubTime": "15:30",
                     "RefNo": f"{published.replace('-', '')}1B0012{index}",
+                    "StatCode": "1",
+                    "BoardDate": published,
+                    "IFCode": "1",
+                    "FRCode": forecast,
+                    "IFTerm": "2015-03",
                     "ExDate": ex_date,
                     "DivRate": rate,
-                    "FRCode": forecast,
+                    "RecDate": ex_date,
+                    "ActRecDate": ex_date,
+                    "PayDate": "2015-06-25",
+                    "CARefNo": f"{published.replace('-', '')}9",
+                    "CommSpecCode": "1",
                 }
             )
         key = "fins/dividend/dividend_2015.csv.gz"
@@ -2101,11 +2113,44 @@ class TestTheUnpublishedAmountsAreSplitOnScreen:
 
     @pytest.mark.parametrize("width", [80, 100, 120])
     def test_no_column_name_is_broken_across_lines(self, tmp_path, width: int) -> None:
-        """**幅を決めて刷る。** 日本語の札は rich から見れば1語である。"""
+        """**幅を決めて刷る。** 16 列が入る幅は存在しない——表をやめた。
+
+        **盤面に、実データで埋まる 16 列を入れてある。** 前は 7 列しか
+        埋めていなかったので、**潰れる形が入っていなかった**
+        （2026-09-21、ユーザーが2度目の指摘）。
+        """
         lines = self._printed(tmp_path, width).splitlines()
 
-        for name in ("Code", "PubDate", "DivRate", "ExDate"):
+        for name in (
+            "Code",
+            "PubDate",
+            "PubTime",
+            "RefNo",
+            "StatCode",
+            "BoardDate",
+            "IFCode",
+            "FRCode",
+            "IFTerm",
+            "DivRate",
+            "RecDate",
+            "ExDate",
+            "ActRecDate",
+            "PayDate",
+            "CARefNo",
+            "CommSpecCode",
+        ):
             assert any(name in line for line in lines), f"**{name} が割れている。**"
+
+    @pytest.mark.parametrize("width", [80, 100, 120])
+    def test_it_stays_short_enough_to_paste(self, tmp_path, width: int) -> None:
+        """**行数で見る。** 潰れたときに増えるのは行数である。
+
+        実データで **293 行・29.8KB** になった（2026-09-21）。2レコードの
+        盤面なら、表と脚注を入れても 45 行あれば足りる。
+        """
+        printed = self._printed(tmp_path, width)
+
+        assert len(printed.splitlines()) <= 45, f"**幅 {width} で潰れている。**"
 
     def test_the_audit_command_actually_calls_it(self) -> None:
         """**見る道具を置いたのに、呼んでいない**を止める。

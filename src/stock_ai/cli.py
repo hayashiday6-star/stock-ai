@@ -6480,10 +6480,17 @@ def _wall_document(walls: list[object], missing: list[object], span: str) -> str
         size = (
             f"年 {annual:.1%}" if annual is not None else f"1{wall.unit} {wall.detectable:.2%}"  # type: ignore[attr-defined]
         )
+        # **壁を作った値を出す。** 床が効いたなら、測った値も併せて出す
+        # ——行が自分と食い違わないように。
+        blown = (
+            f"{wall.inflation:.2f}x → {wall.effective_inflation:.2f}x"  # type: ignore[attr-defined]
+            if wall.floored  # type: ignore[attr-defined]
+            else f"{wall.inflation:.2f}x"  # type: ignore[attr-defined]
+        )
         lines.append(
             f"| {wall.candidate} | {wall.name} | {wall.pipe} | "  # type: ignore[attr-defined]
             f"{wall.observations:,} | {wall.sd:.2%}／{wall.unit} | "  # type: ignore[attr-defined]
-            f"{wall.inflation:.2f}x | "  # type: ignore[attr-defined]
+            f"{blown} | "
             f"`t ≥ {wall.line:.2f}` | **{size}** |"  # type: ignore[attr-defined]
         )
     lines += [
@@ -6971,10 +6978,12 @@ def knife_power(
     # 間違えていることが出力からは見えなかった（2026-09-20）。
     for line in netting.warnings():
         console.print(f"[yellow]{line}[/]")
-    console.print(
-        f"[dim]保有窓の配当: 当てた {netting.applied:,} 件、"
-        f"当てなかった {netting.skipped:,} 件。[/]"
-    )
+    # **理由ごとに割る。** 急落側には既に表が在るのに、**保有窓側だけ合計の
+    # ままだった**（2026-09-21、ユーザーが指摘）。`CLAUDE.md`「合計だけ出すと、
+    # その中に紛れる」——#5 で会計年度末が全件読めていなかったのが表の1行に
+    # しか出なかったのと同じ形である。
+    _print_dividend_breakdown(netting, "保有窓で落とした配当")
+    _print_raw_dividend_rows(Path(archive), netting)
     if len(sample.values) < 2:  # noqa: PLR2004 - 1日では散らばりが測れない
         console.print(f"[red]値動きの取れたイベント日が {len(sample.values)} しかない。[/]")
         raise typer.Exit(code=1)
@@ -7207,6 +7216,48 @@ def _print_dividend_breakdown(counted: object, title: str) -> None:
     console.print(sample)
 
 
+def _print_original_rows(title: str, found: list) -> None:
+    """Print archive rows as wrapped name=value lines, not a table.
+
+    **表では入らない。** 実データは 16 列が埋まっていて、幅 80 では1列 4 桁に
+    なる。**列名が1文字ずつ縦に割れ、15 行の中身が 293 行になった**
+    （2026-09-21、ユーザーが2度目の指摘）。
+
+    **1度目は「消えた」のを「直った」と読んでいた。** `5656385` でこの表が
+    出なくなったのは幅を直したからではなく、**出す対象が 0 件になったから**
+    である。対象が戻ったら、同じ潰れ方が戻った。
+
+    **列を減らす方向では足りない。** 全行で空の7列を落としても 16 列残る。
+    **表をやめて、折り返せる形にする**——`name=value` は空白で切れるので、
+    rich がどの幅でも語の途中で割らない。
+
+    **描画を1つにする。** 前は `_print_raw_dividend_rows` と
+    `_print_unpublished_amounts` が同じ表を別々に組んでいた。
+
+    Args:
+        title: 見出し。**件数を入れない**（`COUNTS_IN_PROSE`）。
+        found: :func:`~stock_ai.data.jquants_dividend.raw_rows` が返す並び。
+    """
+    if not found:
+        return
+    names: list[str] = []
+    for _symbol, _when, _key, row in found:
+        for name in row:
+            if name not in names:
+                names.append(name)
+    filled = [name for name in names if any((row.get(name) or "").strip() for *_h, row in found)]
+    empty = [name for name in names if name not in filled]
+
+    console.print(f"[bold]{title}[/]")
+    for position, (symbol, when, key, row) in enumerate(found, start=1):
+        console.print(f"[dim]  [{position}] {symbol} {when}  {key}[/]")
+        pairs = "  ".join(f"{name}={(row.get(name) or '').strip() or '-'}" for name in filled)
+        console.print(f"      {pairs}")
+    if empty:
+        # **空の列も名前は出す。** そこに答えが無かったことも答えである。
+        console.print(f"[dim]  全行で空だった列: {' / '.join(empty)}[/]")
+
+
 def _print_raw_dividend_rows(archive: Path, counted: object, limit: int = 3) -> None:
     """Print the raw archive rows behind the "amount exceeds the close" flag.
 
@@ -7247,23 +7298,7 @@ def _print_raw_dividend_rows(archive: Path, counted: object, limit: int = 3) -> 
         )
         return
 
-    names: list[str] = []
-    for _symbol, _when, _key, row in found:
-        for name in row:
-            if name not in names:
-                names.append(name)
-    filled = [name for name in names if any((row.get(name) or "").strip() for *_h, row in found)]
-    empty = [name for name in names if name not in filled]
-
-    table = Table(title="原本そのもの（額が前日終値以上の権利落ち）")
-    for name in filled:
-        table.add_column(name, overflow="fold", no_wrap=False)
-    for *_head, row in found:
-        table.add_row(*[(row.get(name) or "").strip() or "—" for name in filled])
-    console.print(table)
-    if empty:
-        # **空の列も名前は出す。** そこに答えが無かったことが分かるのも答え。
-        console.print(f"[dim]全行で空だった列: {' / '.join(empty)}[/]")
+    _print_original_rows("原本そのもの（額が前日終値以上の権利落ち）", found)
     console.print(
         f"[dim]{len(wanted)} 件ぶんを引いて {len(found)} 行。"
         "**読み口が採っているのは `Code` / `PubDate` / `PubTime` / `RefNo` / "
@@ -7365,23 +7400,9 @@ def _print_unpublished_amounts(archive: Path, known: object, limit: int = 3) -> 
         if not found:
             console.print(f"[yellow]**「{why}」の原本が引き当てられない。**[/]")
             continue
-        names: list[str] = []
-        for _symbol, _when, _key, row in found:
-            for name in row:
-                if name not in names:
-                    names.append(name)
-        filled = [
-            name for name in names if any((row.get(name) or "").strip() for *_h, row in found)
-        ]
-        empty = [name for name in names if name not in filled]
-        sample = Table(title=f"原本そのもの（{why}）")
-        for name in filled:
-            sample.add_column(name, overflow="fold", no_wrap=False)
-        for *_head, row in found:
-            sample.add_row(*[(row.get(name) or "").strip() or "—" for name in filled])
-        console.print(sample)
-        if empty:
-            console.print(f"[dim]全行で空だった列: {' / '.join(empty)}[/]")
+        # **描画は1つだけ。** 前は同じ表を2箇所で組んでいて、**片方だけ
+        # 直す**形になっていた（実際は両方潰れていた）。
+        _print_original_rows(f"原本そのもの（{why}）", found)
 
 
 def _print_dividend_revisions(archive: Path) -> None:
@@ -7538,6 +7559,7 @@ def _index_walls(
                         f"（跳ねた日 {len(spikes):,}、窓 {HOLDING} 営業日）"
                     ),
                     sample=len(values),
+                    undersampled=estimate.undersampled,
                     notes=(
                         "**管は `calendar`。** 校正したのは日次の月替わりで、"
                         "同じ形ではあるが同じ設計ではない",
@@ -7585,6 +7607,7 @@ def _index_walls(
                 f"（買い越した週 {len(entries):,}、窓 {FLOW_HOLDING} 営業日）"
             ),
             sample=len(values),
+            undersampled=estimate.undersampled,
             # **年に直せる。** 週に1回、窓は重ならない。
             per_year=52.0,
             notes=(
@@ -7747,6 +7770,7 @@ def wall_survey(
                 line=line_for("monthly"),
                 source=f"IS {len(panel.months)} ヶ月、5分位・等加重",
                 sample=len(spread),
+                undersampled=estimate.undersampled,
                 per_year=12.0,
                 notes=(f"近さを作れず外した銘柄月 {panel.skipped_no_value:,}",),
             )
@@ -7799,6 +7823,7 @@ def wall_survey(
                 line=line_for("event"),
                 source=(f"IS {sample.drawn:,} 件が {len(sample.values):,} 日、窓 {HOLDING} 営業日"),
                 sample=len(sample.values),
+                undersampled=estimate.undersampled,
                 notes=(
                     f"価格が1本も無くて捨てた {sample.no_prices:,}、"
                     f"その日に足が無くて捨てた {sample.not_trading:,}",
@@ -7829,6 +7854,14 @@ def wall_survey(
                 f"[yellow]**{wall.name}: SD を測った IS の観測が {wall.sample} しか無い。** "
                 "**壁の高さ（SD）の推定が当てにならない**——OOS の数とは別の話である。[/]"
             )
+        if wall.undersampled:
+            console.print(
+                f"[yellow]**{wall.name}: 重なりのラグが、SD を測った標本"
+                f"（{wall.sample}）より長い。** いちばん長いラグが1組の積から"
+                "できている。**膨張の推定は当てにならない**"
+                f"（{wall.inflation:.2f}x。1.0 を割っていれば床で 1.0 に戻して"
+                "あるが、当てにならないことは変わらない）。[/]"
+            )
 
     # **SD が数日でできていないか。** 1% を落として半分以下になるなら、それは
     # 「毎日どれくらい散らばるか」ではなく「まれに何が起きるか」を測っている
@@ -7858,7 +7891,11 @@ def wall_survey(
             wall.name,
             f"{wall.observations:,}",
             f"{wall.sd:.2%}／{wall.unit}",
-            f"{wall.inflation:.2f}x",
+            # **壁を作った値を出す。** 床が効いたなら、測った値も併せて出す
+            # ——行が自分と食い違わないように。
+            f"{wall.inflation:.2f}x → {wall.effective_inflation:.2f}x"
+            if wall.floored
+            else f"{wall.inflation:.2f}x",
             f"{wall.line:.2f}",
             f"[bold]{size}[/]",
         )

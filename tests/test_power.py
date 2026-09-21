@@ -547,3 +547,79 @@ class TestRequirementCountsInOneFrame:
         """**期数そのものは `periods_needed` のまま。** 2つ目の式を書かない。"""
         row = power.requirement(0.012, 0.0989, 1.36, 1861, 8.67, target_t=3.30)
         assert row.periods == power.periods_needed(0.0989, 1.36, 0.012, 3.30)
+
+
+# --- 膨張の床 ---------------------------------------------------------------
+#
+# **`calibrated_t` には最初から在った規則が、標準誤差の側に無かった**
+# （2026-09-21）。実データで候補6が 0.82x を出し、**壁が 18% 低く出た。**
+# 補正は足りない分を足すためのもので、割り引くためのものではない。
+
+
+def test_an_inflation_below_one_does_not_shrink_the_standard_error() -> None:
+    """**1.0 を下回らせない。** 割り引く向きには効かせない。"""
+    from stock_ai.backtest.power import standard_error
+
+    assert standard_error(0.05, 0.82, 100) == pytest.approx(standard_error(0.05, 1.0, 100))
+
+
+def test_an_inflation_above_one_still_widens_it() -> None:
+    """**両向きに置く。** 床がすべてを潰す形でも緑にならないように。"""
+    from stock_ai.backtest.power import standard_error
+
+    assert standard_error(0.05, 2.0, 100) == pytest.approx(2.0 * standard_error(0.05, 1.0, 100))
+
+
+def test_the_detectable_difference_uses_the_same_floor() -> None:
+    """**式は1つだけ。** 検出できる差も同じ床を通る。"""
+    from stock_ai.backtest.power import detectable_difference
+
+    assert detectable_difference(0.05, 0.5, 100, 3.0) == pytest.approx(
+        detectable_difference(0.05, 1.0, 100, 3.0)
+    )
+
+
+def test_the_floor_is_written_in_one_place() -> None:
+    """**同じ規則を2箇所に書かない。** それで片方が落ちた。"""
+    import inspect
+
+    from stock_ai.backtest import power
+
+    source = inspect.getsource(power)
+
+    # `standard_error` の中に1回だけ。`judge` は通すだけである。
+    assert source.count("max(inflation, INFLATION_FLOOR)") == 1
+    assert "math.sqrt(long_run_variance(gammas) / count)" not in source
+
+
+# --- ラグが標本より長い ------------------------------------------------------
+#
+# `autocovariances` は `min(lags, n-1)` に**黙って**切り詰める。12 個の観測に
+# 20 ラグを頼んでも例外は出ず、**いちばん長いラグが1組の積**からできた値が
+# 返る。**それが 1.0 を割った。**
+
+
+def test_more_lags_than_observations_is_flagged() -> None:
+    """**黙って切り詰めない。** 当てにならないことを言う。"""
+    from stock_ai.backtest.power import estimate_power
+
+    estimate = estimate_power([0.01, -0.02, 0.03, -0.01, 0.02] * 2, lags=20)
+
+    assert estimate.undersampled
+    assert estimate.requested_lags == 20  # noqa: PLR2004 - 頼んだ数を覚えていること
+
+
+def test_enough_observations_is_not_flagged() -> None:
+    """**両向きに置く。** 常に点く旗は、何も区別しない。"""
+    from stock_ai.backtest.power import estimate_power
+
+    estimate = estimate_power([0.01, -0.005, 0.02, -0.01] * 50, lags=5)
+
+    assert not estimate.undersampled
+
+
+def test_no_lags_is_never_undersampled() -> None:
+    """重なりを見ない設計（#3・#14）で旗が立たないこと。"""
+    from stock_ai.backtest.power import estimate_power
+
+    assert not estimate_power([0.01, -0.02, 0.03], lags=0).undersampled

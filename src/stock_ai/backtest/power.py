@@ -84,6 +84,32 @@ def long_run_variance(gammas: Sequence[float]) -> float:
     return max(omega, 0.0)
 
 
+#: 膨張の下限。**1.0 を下回らせない。**
+#:
+#: **`calibrated_t` には最初から在った規則である**——「補正は足りない分を
+#: 足すためのもので、割り引くためのものではない」。**標準誤差の側に無かった**
+#: （2026-09-21 に発覚）。
+#:
+#: 実データで、候補6（予想変動率の跳ね）が **0.82x** を出した。IS の観測が
+#: 12 なのに `lags=20` で Newey-West を当てていて、**いちばん長いラグが
+#: 1組の積からできている。** その推定が 1.0 を割り、**壁が 18% 低く出た**
+#: ——また緩む向きである。
+#:
+#: **「記録した数字は動かない」と書いた。それは確かめずに書いた**
+#: （2026-09-21。`tests/test_passing.py` が落ちて分かった）。`SHAPES` の
+#: イベント型だけを見て、月次と暦を見ていなかった。
+#:
+#: | 形 | 膨張 | 要るリターン |
+#: |---|---|---|
+#: | #13（月替わり・暦） | 0.97x | 年 11.3% → **11.7%** |
+#: | #11（複合・ロングショート） | 0.95x | 年 16.9% → **17.8%** |
+#:
+#: **どちらも厳しくなる向きで、どちらも「上限すら届かない」で閉じている**
+#: ので、判定は1つも動かない。**床が過去の不合格を合格に変えることは、
+#: 定義上ありえない。**
+INFLATION_FLOOR = 1.0
+
+
 def standard_error(sd: float, inflation: float, periods: int) -> float:
     """``periods`` 期ぶんの平均の標準誤差。**式はここ1箇所だけ。**
 
@@ -92,9 +118,14 @@ def standard_error(sd: float, inflation: float, periods: int) -> float:
     （2026-09-19）。20日保有・毎日エントリーなら膨張は理屈の上で4倍前後に
     なるので、**落とすと壁が数倍低く出る**——緩む向きである。
 
+    **そして 1.0 を下回らせない**（:data:`INFLATION_FLOOR`）。`calibrated_t`
+    には最初から在った規則が、こちらには無かった（2026-09-21）。**同じ規則を
+    2箇所に置いて、片方だけ落としていた形である。**
+
     Args:
         sd: 1期あたりの標準偏差。
         inflation: 重なりで標準誤差が何倍になるか。**重ならないなら 1.0。**
+            **1.0 を下回る値を渡しても 1.0 として扱う。**
         periods: 期数。
 
     Returns:
@@ -109,7 +140,7 @@ def standard_error(sd: float, inflation: float, periods: int) -> float:
         raise ValueError(f"inflation must be positive; got {inflation}.")
     if periods < 1:
         raise ValueError(f"periods must be at least 1; got {periods}.")
-    return sd * inflation / math.sqrt(periods)
+    return sd * max(inflation, INFLATION_FLOOR) / math.sqrt(periods)
 
 
 def detectable_difference(
@@ -146,11 +177,31 @@ class PowerEstimate:
     observations: int
     """推定に使った日数。"""
     lags: int
-    """Newey-West のラグ。"""
+    """Newey-West のラグ。**実際に使った数**（標本が短ければ切り詰められる）。"""
     variance: float
     """γ0。1日ぶんの分散。"""
     omega: float
     """重なりを織り込んだ長期分散。"""
+
+    requested_lags: int = -1
+    """呼ぶ側が頼んだラグ。``-1`` なら :attr:`lags` と同じとみなす。
+
+    **切り詰められたことを、出力に出すために持つ。** ``autocovariances`` は
+    ``min(lags, n-1)`` に黙って切り詰めるので、**12 個の観測に 20 ラグを
+    頼んでも例外は出ない**——いちばん長いラグが**1組の積**からできた値が
+    返るだけである（2026-09-21、候補6 が 0.82x を出して発覚）。
+    """
+
+    @property
+    def undersampled(self) -> bool:
+        """**ラグが標本より長いか。** 長ければ、膨張の推定は当てにならない。
+
+        γ_k は ``n − k`` 組の積からできている。``k`` が ``n`` に近づくと
+        1組か2組になり、**Ω がただの雑音になる。** 1.0 を割ることさえある
+        ——実データで **0.82x** が出た。
+        """
+        asked = self.lags if self.requested_lags < 0 else self.requested_lags
+        return asked > 0 and self.observations <= asked
 
     @property
     def daily_sd(self) -> float:
@@ -244,13 +295,20 @@ def judge(values: Sequence[float], lags: int = DEFAULT_LAGS) -> Judgement:
 
     重なりの扱いは :func:`estimate_power` と同一である。検出力の見積もりと
     判定で別の分散を使うと、「必要な差」と「出た差」が比較できなくなる。
+
+    **同じ式を2つ書いていた。** ここは ``sqrt(Ω/n)`` を直に書いていて、
+    :func:`standard_error` を通らないので、**膨張の床（1.0）が掛からな
+    かった**（2026-09-21）。`tests/test_power.py` の
+    `test_the_judgement_uses_the_same_variance_as_the_power_estimate` が
+    落ちて分かった——**そのために置いてあるテストである。**
     """
-    gammas = autocovariances(values, lags)
     count = len(values)
+    # **見積もりと同じ入れ物を通す。** 式を2つ持たない。
+    estimate = estimate_power(values, lags)
     return Judgement(
         days=count,
         mean=sum(values) / count,
-        standard_error=math.sqrt(long_run_variance(gammas) / count),
+        standard_error=estimate.standard_error(count),
     )
 
 
@@ -262,7 +320,16 @@ def estimate_power(values: Sequence[float], lags: int = DEFAULT_LAGS) -> PowerEs
         lags=len(gammas) - 1,
         variance=gammas[0],
         omega=long_run_variance(gammas),
+        requested_lags=lags,
     )
+    if estimate.undersampled:
+        logger.warning(
+            "**ラグ %d が標本 %d より長い。** 膨張 %.2f は当てにならない"
+            "——いちばん長いラグが1組の積からできている。",
+            lags,
+            estimate.observations,
+            estimate.inflation,
+        )
     logger.info(
         "検出力の見積もり: %d 日、日次SD %.4f、重なりによる膨張 %.2f 倍",
         estimate.observations,

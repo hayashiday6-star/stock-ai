@@ -929,3 +929,47 @@ class TestTheThinSideIsNamed:
 
         assert "壁の高さ（n）" in printed
         assert "壁の高さ（SD）" in printed
+
+
+class TestTheInflationTheWallUsedIsTheOneItShows:
+    """**表に出す膨張と、壁を作った膨張が違うと、行が自分と食い違う。**
+
+    候補6が **0.82x** を出した（2026-09-21）。床（`INFLATION_FLOOR`）で
+    壁は 1.00x で作られるのに、**表には 0.82x と出ていた。**
+    """
+
+    def test_a_below_one_inflation_is_floored_for_the_wall(self) -> None:
+        from stock_ai.backtest.power import detectable_difference
+
+        wall = _wall(observations=76, sd=0.0528, inflation=0.82, line=3.17)
+
+        assert wall.effective_inflation == pytest.approx(1.0)
+        assert wall.floored
+        assert wall.detectable == pytest.approx(detectable_difference(0.0528, 1.0, 76, 3.17))
+
+    def test_a_normal_inflation_is_left_alone(self) -> None:
+        """**両向きに置く。** 床がすべてを潰す形でも緑にならないように。"""
+        wall = _wall(observations=2_110, sd=0.1028, inflation=1.82)
+
+        assert wall.effective_inflation == pytest.approx(1.82)
+        assert not wall.floored
+
+    def test_the_measured_value_is_still_there(self) -> None:
+        """**測った値は消さない。** 床を当てたことと、測ったことは別である。"""
+        assert _wall(inflation=0.82).inflation == pytest.approx(0.82)
+
+    def test_the_document_shows_both_when_the_floor_bit(self) -> None:
+        """**行が自分と食い違わないこと。**"""
+        from stock_ai import cli
+
+        body = cli._wall_document([_wall(inflation=0.82, candidate=6)], [], "ためし")
+
+        assert "0.82x → 1.00x" in body
+
+    def test_the_document_shows_one_when_it_did_not(self) -> None:
+        from stock_ai import cli
+
+        body = cli._wall_document([_wall(inflation=1.82, candidate=9)], [], "ためし")
+
+        assert "1.82x" in body
+        assert "→" not in body.split("1.82x")[1].split("|")[0]

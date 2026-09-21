@@ -181,10 +181,36 @@ class Wall:
     1年半しかない。**そこに当たる。**
     """
 
+    undersampled: bool = False
+    """**膨張のラグが、SD を測った標本より長かったか。**
+
+    長ければ、いちばん長いラグが**1組の積**からできている。`Ω` がただの
+    雑音になり、**1.0 を割ることさえある**——実データで候補6が **0.82x** を
+    出した（2026-09-21）。`power.INFLATION_FLOOR` が壁を下げる向きは止めるが、
+    **推定そのものが当てにならないことは別に言う。**
+    """
+
     per_year: float | None = None
     """1年あたりの観測数。年率に直せない設計では ``None``。"""
 
     notes: tuple[str, ...] = ()
+
+    @property
+    def effective_inflation(self) -> float:
+        """**実際に壁を作るのに使った膨張。** 床（1.0）を当てた後の値。
+
+        **表に出す膨張と、壁を作った膨張が違うと、行が自分と食い違う**
+        ——`CLAUDE.md`「表の見出しが約束していることと、行が答えていることを
+        突き合わせる」。**測った値は :attr:`inflation` に残す。**
+        """
+        from stock_ai.backtest.power import INFLATION_FLOOR
+
+        return max(self.inflation, INFLATION_FLOOR)
+
+    @property
+    def floored(self) -> bool:
+        """床が効いたか。**効いたなら、表にそう出す。**"""
+        return self.inflation < self.effective_inflation
 
     @property
     def detectable(self) -> float:

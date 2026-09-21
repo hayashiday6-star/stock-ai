@@ -474,3 +474,39 @@ class TestTheCommandRunsOnARealDatabase:
 
         with pytest.raises(typer.Exit):
             cli.knife_power(archive=str(tmp_path), benchmark="1306")
+
+
+class TestTheHoldingWindowDividendsAreBrokenDown:
+    """**合計だけ出すと、その中に紛れる。**
+
+    急落側には理由ごとの表が在るのに、**保有窓側だけ「当てた 11,991 件、
+    当てなかった 923 件」の合計のままだった**（2026-09-21、ユーザーが指摘）。
+    **7.1% が当たっていないのに、理由ごとの数が出ていない。**
+    """
+
+    def test_the_command_prints_the_breakdown(self) -> None:
+        """**置いたことと、経路に載ったことは別である。**"""
+        import ast
+        import inspect
+
+        from stock_ai import cli
+
+        tree = ast.parse(inspect.getsource(cli.knife_power))
+        called = [
+            node.func.id
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+        ]
+
+        assert "_print_dividend_breakdown" in called
+        assert "_print_raw_dividend_rows" in called
+
+    def test_the_total_only_line_is_gone(self) -> None:
+        """**直したら、古い形が戻らないようにする。**"""
+        import inspect
+
+        from stock_ai import cli
+
+        body = inspect.getsource(cli.knife_power)
+
+        assert "当てなかった {netting.skipped" not in body
