@@ -465,7 +465,7 @@ class TestTheMissingOnesAreOnTheTable:
     """**無いことは、出力に出ない。** だから測れなかったほうも表にする。"""
 
     def test_a_missing_row_carries_its_reason(self) -> None:
-        item = Missing(6, "悲観の中に生まれ", "心理指標を持っていない")
+        item = Missing(8, "噂で買って事実で売る", "初出時点を取る口が無い")
 
         assert item.reason
 
@@ -478,7 +478,24 @@ class TestTheMissingOnesAreOnTheTable:
 
         # **書き方に賭けない。** 折り返しで `Missing(7` は分かれる（`--help` の
         # 幅と同じ形）。**数えるほうで見る。**
-        assert body.count("Missing(") == 3
+        assert body.count("Missing(") == 1
+
+    def test_the_two_that_turned_out_measurable_are_gone(self) -> None:
+        """**「測れない」と書いたことも、出力に出ない。**
+
+        候補6（心理指標）と候補7（需給）は「材料が無い」と書いてあったが、
+        **どちらも原本に在った**（2026-09-21）。オプションの予想変動率と
+        投資部門別である。**書いた側が確かめるまで、在る材料は見えない
+        ままになる。**
+        """
+        import inspect
+
+        from stock_ai import cli
+
+        body = inspect.getsource(cli.wall_survey)
+
+        assert "心理指標" not in body, "**まだ「材料が無い」と書いている。**"
+        assert "設計が決まっていない" not in body
 
 
 #: 1本通すときの暦。**Sell in May の枝に届く長さが要る。**
@@ -494,6 +511,100 @@ class TestTheCommandRunsOnARealDatabase:
     **枝ごとに届くこと。** Sell in May・52週高値・イベント型2種が、どれも
     表に出るところまで行くかを見る。
     """
+
+    @staticmethod
+    def _archive(where):
+        """**候補A・B の原本を、この暦に合わせて置く。**
+
+        fixture の実物は 2026-01 と 2008-01 で、**この盤面（2010〜2018）に
+        1日も掛からない。** 掛からないまま「壁を出せない」で終わったのを
+        疎通の確認と読まない（`CLAUDE.md`「到達しない疎通確認を『疎通した』
+        と読まない」）。**列名は実物から採る。**
+        """
+        import csv
+        import gzip
+        import io as _io
+        import pathlib as _pathlib
+
+        from stock_ai.data.jquants_archive import MANIFEST, MANIFEST_COLUMNS
+
+        root = _pathlib.Path(where) / "archive"
+        rng = np.random.default_rng(7)
+
+        # --- オプション（1日2行。跳ねる日を作る）--------------------------
+        names = (
+            _pathlib.Path("tests/fixtures/jquants_options_225_sample.csv")
+            .read_text(encoding="utf-8-sig")
+            .splitlines()[0]
+            .split(",")
+        )
+        out = _io.StringIO()
+        writer = csv.DictWriter(out, fieldnames=names, lineterminator="\n")
+        writer.writeheader()
+        level = 20.0
+        for position, stamp in enumerate(_LONG):
+            # **10日に1度、跳ねさせる。** 事象が0件だと枝に届かない。
+            level = (
+                level * 1.30 if position % 10 == 0 else level * float(np.exp(rng.normal(0.0, 0.01)))
+            )
+            sq = (stamp + pd.Timedelta(days=30)).date()
+            for side in ("1", "2"):
+                writer.writerow(
+                    {
+                        **dict.fromkeys(names, ""),
+                        "Date": stamp.date().isoformat(),
+                        "Code": f"1310100{side}8",
+                        "PCDiv": side,
+                        "Strike": "20000.0",
+                        "UnderPx": "20000.0",
+                        "SQD": sq.isoformat(),
+                        "IV": f"{level:.4f}",
+                        "BaseVol": f"{level:.4f}",
+                    }
+                )
+        key = "derivatives/bars/daily/options/225/options_225_test.csv.gz"
+        target = root / key
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(gzip.compress(out.getvalue().encode("utf-8")))
+
+        # --- 投資部門別（週に1行）------------------------------------------
+        flow_names = (
+            _pathlib.Path("tests/fixtures/jquants_investor_types_sample.csv")
+            .read_text(encoding="utf-8-sig")
+            .splitlines()[0]
+            .split(",")
+        )
+        out = _io.StringIO()
+        writer = csv.DictWriter(out, fieldnames=flow_names, lineterminator="\n")
+        writer.writeheader()
+        for stamp in pd.date_range(_LONG[0], _LONG[-1], freq="W-FRI"):
+            end = stamp.date()
+            writer.writerow(
+                {
+                    **dict.fromkeys(flow_names, ""),
+                    # **公表は週の終わりより後。** そこで入る。
+                    "PubDate": (stamp + pd.Timedelta(days=5)).date().isoformat(),
+                    "StDate": (stamp - pd.Timedelta(days=4)).date().isoformat(),
+                    "EnDate": end.isoformat(),
+                    "Section": "TokyoNagoya",
+                    "TotTot": "1000000.0",
+                    "FrgnBal": f"{rng.normal(0.0, 10_000.0):.1f}",
+                    "IndBal": f"{rng.normal(0.0, 10_000.0):.1f}",
+                }
+            )
+        flow_key = "equities/investor-types/investor_types_test.csv.gz"
+        target = root / flow_key
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(gzip.compress(out.getvalue().encode("utf-8")))
+
+        (root / MANIFEST).write_text(
+            ",".join(MANIFEST_COLUMNS)
+            + "\n"
+            + f"/{key},1,1,x,,2026-09-21\n"
+            + f"/{flow_key},1,1,x,,2026-09-21\n",
+            encoding="utf-8",
+        )
+        return root
 
     @staticmethod
     def _populate(where) -> list[str]:
@@ -540,17 +651,24 @@ class TestTheCommandRunsOnARealDatabase:
             into=str(target),
             benchmark="1306",
             rosters=str(_pathlib.Path(tmp_path) / "rosters"),
+            archive=str(self._archive(tmp_path)),
         )
 
         body = target.read_text(encoding="utf-8")
         assert "生成物である" in body
-        # **4つの設計すべてが表に出ること。** 1つでも手前で終わっていたら、
+        # **6つの設計すべてが表に出ること。** 1つでも手前で終わっていたら、
         # その枝は通っていない。
-        for candidate in ("Sell in May", "52週高値", "窓は埋まる", "落ちるナイフ"):
+        for candidate in (
+            "Sell in May",
+            "52週高値",
+            "窓は埋まる",
+            "落ちるナイフ",
+            "恐怖指数の跳ね上がり",
+            "需給はすべての材料に優先する",
+        ):
             assert candidate in body, body
         # **測れなかった候補も出る。** 無いことは、出力に出ない。
-        for candidate in ("悲観の中に生まれ", "需給", "噂"):
-            assert candidate in body
+        assert "噂" in body
 
     def test_the_document_carries_no_effect(self, tmp_path, monkeypatch) -> None:
         """**平均が1つも載らないこと。** 載ったら、それは答えを見たことになる。"""
@@ -568,6 +686,7 @@ class TestTheCommandRunsOnARealDatabase:
             into=str(target),
             benchmark="1306",
             rosters=str(_pathlib.Path(tmp_path) / "rosters"),
+            archive=str(self._archive(tmp_path)),
         )
 
         body = target.read_text(encoding="utf-8")
@@ -592,6 +711,7 @@ class TestTheCommandRunsOnARealDatabase:
                 into=None,
                 benchmark="1306",
                 rosters=str(_pathlib.Path(tmp_path) / "missing"),
+                archive=str(_pathlib.Path(tmp_path) / "archive"),
             )
 
 
@@ -637,3 +757,115 @@ class TestTheTailSensitivityIsShown:
             estimate_power(quiet, lags=0).daily_sd
             / trimmed_variance(quiet, fraction=0.01)[0] ** 0.5
         ) < TAIL_DRIVEN
+
+
+class TestTheIndexOnlyFoldsAreFixedInAdvance:
+    """**候補A・B の畳み方は、壁を測る前に1つに決めてある。**
+
+    複数試して良いほうを採ると、その時点で #10 と同じところに落ちる。
+    ここが確かめるのは「決めたとおりに畳んでいるか」だけで、
+    **どちらが良い設計かは見ない。**
+    """
+
+    def test_a_spike_is_measured_against_the_previous_observation(self) -> None:
+        """**暦の前日ではなく、原本に在る前の日と比べる。**"""
+        from stock_ai.backtest.wall import volatility_spikes
+
+        levels = {
+            dt.date(2015, 3, 2): 20.0,
+            # 休みを挟んでも「前の観測」である
+            dt.date(2015, 3, 6): 25.0,
+            dt.date(2015, 3, 9): 26.0,
+        }
+
+        assert volatility_spikes(levels, rise=0.20) == [dt.date(2015, 3, 6)]
+
+    def test_exactly_the_threshold_counts(self) -> None:
+        """**割り算をしない。** `#16` はちょうど −20% を取りこぼしていた。"""
+        from stock_ai.backtest.wall import volatility_spikes
+
+        levels = {dt.date(2015, 3, 2): 20.0, dt.date(2015, 3, 3): 24.0}
+
+        assert volatility_spikes(levels, rise=0.20) == [dt.date(2015, 3, 3)]
+
+    def test_a_smaller_rise_is_not_a_spike(self) -> None:
+        """**この検査が落ちる条件を、実際に1つ作る。**"""
+        from stock_ai.backtest.wall import volatility_spikes
+
+        levels = {dt.date(2015, 3, 2): 20.0, dt.date(2015, 3, 3): 23.0}
+
+        assert volatility_spikes(levels, rise=0.20) == []
+
+    def test_the_window_starts_the_next_trading_day(self) -> None:
+        """**イベント日そのものには入らない。** 翌営業日の始まりからである。"""
+        from stock_ai.backtest.wall import forward_windows
+
+        dates = [dt.date(2015, 3, day) for day in (2, 3, 4, 5, 6)]
+        returns = [0.01, 0.02, 0.04, 0.08, 0.16]
+
+        used, values = forward_windows(returns, dates, [dt.date(2015, 3, 3)], 2)
+
+        assert used == [dt.date(2015, 3, 4)]
+        assert values == pytest.approx([0.04 + 0.08])
+
+    def test_a_window_that_runs_off_the_end_is_dropped(self) -> None:
+        """**窓が最後まで在るものだけ。** 途中で切れた窓を混ぜない。"""
+        from stock_ai.backtest.wall import forward_windows
+
+        dates = [dt.date(2015, 3, day) for day in (2, 3, 4)]
+        returns = [0.01, 0.02, 0.04]
+
+        _used, values = forward_windows(returns, dates, [dt.date(2015, 3, 3)], 5)
+
+        assert values == []
+
+    def test_the_same_day_is_not_entered_twice(self) -> None:
+        """**独立な観測を、件数で数えない。** 同じ日に2回入らない。"""
+        from stock_ai.backtest.wall import forward_windows
+
+        dates = [dt.date(2015, 3, day) for day in (2, 3, 4, 5)]
+        returns = [0.01, 0.02, 0.04, 0.08]
+        # 2つのイベントが同じ翌営業日を指す（3/2 の翌 = 3/3、3/3 の翌 = 3/4）
+        used, _values = forward_windows(returns, dates, [dt.date(2015, 3, 1)] * 3, 1)
+
+        assert used == [dt.date(2015, 3, 2)]
+
+    def test_mismatched_lengths_are_refused(self) -> None:
+        from stock_ai.backtest.wall import forward_windows
+
+        with pytest.raises(ValueError, match="長さが違う"):
+            forward_windows([0.1, 0.2], [dt.date(2015, 3, 2)], [], 1)
+
+    def test_the_flow_enters_on_the_publication_not_the_week(self) -> None:
+        """**週末で入ると先読みになる。** 公表は10日ほど後である。"""
+        from stock_ai.backtest.wall import flow_entries
+
+        weeks = [(dt.date(2015, 3, 12), 0.01), (dt.date(2015, 3, 19), -0.01)]
+
+        assert flow_entries(weeks) == [dt.date(2015, 3, 12)]
+
+    def test_the_other_side_can_be_counted_too(self) -> None:
+        """**両向きに置く。** 片側しか数えない形でも緑にならないように。"""
+        from stock_ai.backtest.wall import flow_entries
+
+        weeks = [(dt.date(2015, 3, 12), 0.01), (dt.date(2015, 3, 19), -0.01)]
+
+        assert flow_entries(weeks, positive=False) == [dt.date(2015, 3, 19)]
+
+    def test_the_thresholds_are_the_ones_that_were_committed(self) -> None:
+        """**定数を書き写さない。** 決めた値がそのまま出ていること。"""
+        from stock_ai.backtest.wall import FLOW_HOLDING, IV_SPIKE
+
+        assert IV_SPIKE == pytest.approx(0.20)  # noqa: SIM300 - 決めた値が左
+        assert FLOW_HOLDING == 5  # noqa: PLR2004 - 週に1回なので1週
+
+    def test_the_fold_is_written_down_before_it_is_measured(self) -> None:
+        """**書いてから測る。** 半年後に「何を選んだか」が読めること。"""
+        import inspect
+
+        from stock_ai.backtest import wall
+
+        source = inspect.getsource(wall)
+
+        assert "候補A・B の畳み方は、壁を測る前に1つに決めてある" in source
+        assert "出典は無い" in source

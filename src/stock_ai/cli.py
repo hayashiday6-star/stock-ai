@@ -6,6 +6,7 @@ are added as the phases progress.
 
 from __future__ import annotations
 
+import bisect
 import contextlib
 import datetime as dt
 import hashlib
@@ -6519,6 +6520,114 @@ def _wall_document(walls: list[object], missing: list[object], span: str) -> str
     return "\n".join(lines)
 
 
+@app.command(name="material-coverage")
+def material_coverage(
+    directory: str = typer.Option(
+        str(DEFAULT_ARCHIVE_DIR), "--dir", help="Where the archived originals live."
+    ),
+) -> None:
+    """Count the materials for candidates 6 and 7 - nothing is fetched.
+
+    **候補6と7を「測れない」と書いていたのを直すために在る**（2026-09-21）。
+    心理指標も需給も、**原本には在った。**
+
+    | 候補 | 材料 | 1観測 |
+    |---|---|---|
+    | 6 悲観の中に生まれ | オプションの予想変動率 | 1日 |
+    | 7 需給はすべての材料に優先する | 投資部門別の売買差引 | 1週 |
+
+    **`IV` は古い原本に入っていない。** 2008-05 では `IV` / `BaseVol` /
+    `UnderPx` など9列が全行で空で、2026-01 では全部埋まっている。
+    **どこから埋まるのかは、数えないと分からない**——`CLAUDE.md`「無いことは、
+    出力に出ない」。
+
+    **取りには行かない。** 原本を読むだけである。
+    """
+    from stock_ai.data.jquants_investor import SECTION, weekly_flows
+    from stock_ai.data.jquants_options import MIN_TENOR_DAYS, daily_atm_iv
+
+    settings = get_settings()
+    configure_logging(settings.log_level)
+
+    # --- 候補6 オプションの予想変動率 ---------------------------------------
+    console.print("[bold]候補6（悲観の中に生まれ）— オプションの予想変動率[/]")
+    console.print(
+        f"[dim]**畳み方は先に1つ決めてある。** 残存 {MIN_TENOR_DAYS} 日以上で"
+        "いちばん近い限月の、原資産にいちばん近い行使価格。コールとプットの"
+        "平均。**原本の `BaseVol` と突き合わせる。**[/]"
+    )
+    iv = daily_atm_iv(Path(directory))
+    console.print(iv.summary())
+    for line in iv.warnings():
+        console.print(f"[yellow]{line}[/]")
+
+    if iv.by_year():
+        table = Table(title="予想変動率が在る年（原本に在った日 / 水準を作れた日）")
+        for column in ("年", "原本に在った日", "水準を作れた日", "割合"):
+            table.add_column(column, justify="right" if column != "年" else "left")
+        for year, days, made in iv.by_year():
+            share = f"{made / days:.0%}" if days else "—"
+            table.add_row(f"{year}", f"{days:,}", f"{made:,}", share)
+        console.print(table)
+        console.print(
+            "[dim]**在るべき日を先に決めて引き算する。** 走らなかった回が出力に"
+            "出ないのと同じで、**入っていない列も出力に出ない。**[/]"
+        )
+    if iv.checked:
+        console.print(
+            f"[dim]原本の `BaseVol` と突き合わせた {iv.checked:,} 日のうち、"
+            f"食い違ったのは {len(iv.disagreed):,} 日。**一致は当たり前ではない**"
+            "——限月の選び方を1日ずらすだけで崩れる。[/]"
+        )
+
+    # --- 候補7 投資部門別 ---------------------------------------------------
+    console.print()
+    console.print("[bold]候補7（需給はすべての材料に優先する）— 投資部門別[/]")
+    console.print(
+        f"[dim]**畳み方は先に1つ決めてある。** 区分は `{SECTION}`、1観測は1週、"
+        "指標は `FrgnBal / TotTot`。**額そのものは使わない**"
+        "——20年で市場の大きさが変わる。[/]"
+    )
+    flows = weekly_flows(Path(directory))
+    console.print(flows.summary())
+    for line in flows.warnings():
+        console.print(f"[yellow]{line}[/]")
+
+    if flows.sections:
+        table = Table(title="原本に在った区分（名前は途中で変わる）")
+        for column in ("区分", "行"):
+            table.add_column(column, overflow="fold", justify="right" if column == "行" else "left")
+        for name, count in sorted(flows.sections.items(), key=lambda item: -item[1]):
+            table.add_row(name or "（空）", f"{count:,}")
+        console.print(table)
+    if flows.by_year():
+        table = Table(title="投資部門別が在る年")
+        table.add_column("年")
+        table.add_column("週", justify="right")
+        for year, count in flows.by_year():
+            table.add_row(f"{year}", f"{count:,}")
+        console.print(table)
+
+    # --- まとめ -------------------------------------------------------------
+    console.print()
+    if not iv.levels and not flows.weeks:
+        console.print(
+            "[red]どちらの材料も作れなかった。[/] "
+            "**候補6と7は、本当に測れない。** `3-データ取得.bat` で原本を"
+            "保存してから、もう一度。"
+        )
+        raise typer.Exit(code=1)
+    if not iv.levels:
+        console.print("[yellow]**候補6の材料が作れない。** 候補7だけ壁を測れる。[/]")
+    if not flows.weeks:
+        console.print("[yellow]**候補7の材料が作れない。** 候補6だけ壁を測れる。[/]")
+    console.print(
+        "[green]材料は在る。[/] **壁はまだ1本も測っていない。** "
+        "`research\\壁の下見.bat` が測る——**そこまでは、通りうるかどうかは"
+        "設計の形からの推論であって、数字ではない。**"
+    )
+
+
 @app.command(name="ex-date-coverage")
 def ex_date_coverage_command(
     directory: str = typer.Option(
@@ -7285,12 +7394,186 @@ def _print_dividend_revisions(archive: Path) -> None:
     )
 
 
+def _index_walls(
+    archive: Path,
+    returns: list[float],
+    dates: list[dt.date],
+    benchmark: str,
+    sampled: dict[str, list[float]],
+) -> list[object]:
+    """Measure the walls for the two index-only candidates - no effects.
+
+    **候補6と7は「測れない」と書いてあった。** どちらも原本に材料が在った
+    （2026-09-21）。ここで壁だけ出す——**事前登録は書かない。**
+
+    **畳み方は `backtest/wall.py` の説明に1つだけ書いてある。** ここで
+    選ばない——複数試して良いほうを採ると、その時点で #10 と同じところに
+    落ちる。
+
+    **平均は1つも計算しない。** 返すのは `Wall` で、平均の欄が無い。
+
+    Args:
+        archive: 原本の置き場所。
+        returns: ベンチマークの日次リターン。
+        dates: その日付。
+        benchmark: 出典に書く銘柄。
+        sampled: 裾の感度を見るために系列を預ける先。**平均は取らない。**
+
+    Returns:
+        作れた `Wall` の並び。材料が無ければ空。
+    """
+    from stock_ai.backtest.multiplicity import line_for
+    from stock_ai.backtest.power import estimate_power
+    from stock_ai.backtest.wall import (
+        FLOW_HOLDING,
+        HOLDING,
+        IS_END,
+        IV_SPIKE,
+        OOS_END,
+        OOS_FROM,
+        Wall,
+        flow_entries,
+        forward_windows,
+        volatility_spikes,
+    )
+    from stock_ai.core.logging import quiet_on_console
+    from stock_ai.data.jquants_investor import SECTION, weekly_flows
+    from stock_ai.data.jquants_options import daily_atm_iv
+
+    walls: list[object] = []
+    trading = sorted(dates)
+
+    def after_entry(when: dt.date) -> dt.date | None:
+        """Return the next trading day, or None.
+
+        **その日の翌営業日である。** 暦の翌日ではない。
+        """
+        step = bisect.bisect_right(trading, when)
+        return trading[step] if step < len(trading) else None
+
+    def oos_entries(events: list[dt.date], holding: int) -> int:
+        """Count the distinct OOS entry days, not the events.
+
+        **件数ではなく、入った日で数える。** `#5` は 1,827 件が 831 日で、
+        **件数で割ると n を 2.2倍に水増しする**（`CLAUDE.md`「独立な観測を、
+        件数で数えない」）。
+        """
+        found: set[dt.date] = set()
+        limit = len(trading) - holding
+        where = {when: index for index, when in enumerate(trading)}
+        for event in events:
+            entry = after_entry(event)
+            if entry is None or not (OOS_FROM <= entry <= OOS_END):
+                continue
+            if where[entry] > limit:
+                continue
+            found.add(entry)
+        return len(found)
+
+    # --- A 恐怖指数の跳ね上がり（候補6）-------------------------------------
+    with quiet_on_console("stock_ai.data.jquants_options"):
+        iv = daily_atm_iv(archive)
+    console.print(f"[dim]候補A: {iv.summary()}[/]")
+    for line in iv.warnings():
+        console.print(f"[yellow]候補A: {line}[/]")
+    spikes = volatility_spikes(iv.levels)
+    name = f"恐怖指数の跳ね上がり（ATM の予想変動率 前日比 +{IV_SPIKE:.0%}）"
+    if len(spikes) < 2:  # noqa: PLR2004 - 1件では散らばりが測れない
+        console.print(f"[yellow]**{name} の事象が {len(spikes)} 件しか無い。** 壁を出せない。[/]")
+    else:
+        used, values = forward_windows(returns, dates, spikes, HOLDING, end=IS_END)
+        observations = oos_entries(spikes, HOLDING)
+        if len(values) < 2 or not observations:  # noqa: PLR2004 - 同上
+            console.print(
+                f"[yellow]**{name}: IS の窓が {len(values)}、OOS の観測が "
+                f"{observations}。** 壁を出せない——**予想変動率が古い原本に"
+                "入っていないためかもしれない。**[/]"
+            )
+        else:
+            sampled[name] = values
+            with quiet_on_console("stock_ai.backtest.power"):
+                estimate = estimate_power(values, lags=HOLDING)
+            walls.append(
+                Wall(
+                    candidate=6,
+                    name=name,
+                    pipe="指数を買うだけ（引く相手が無い）",
+                    unit="イベント日",
+                    observations=observations,
+                    sd=estimate.daily_sd,
+                    inflation=estimate.inflation,
+                    line=line_for("calendar"),
+                    source=(
+                        f"{benchmark} の日次、IS {len(values):,} 窓"
+                        f"（跳ねた日 {len(spikes):,}、窓 {HOLDING} 営業日）"
+                    ),
+                    notes=(
+                        "**管は `calendar`。** 校正したのは日次の月替わりで、"
+                        "同じ形ではあるが同じ設計ではない",
+                        f"予想変動率を作れた日 {len(iv.levels):,}（IS で入れた窓 {len(used):,}）",
+                    ),
+                )
+            )
+
+    # --- B 需給はすべての材料に優先する（候補7）-----------------------------
+    with quiet_on_console("stock_ai.data.jquants_investor"):
+        flows = weekly_flows(archive)
+    console.print(f"[dim]候補B: {flows.summary()}[/]")
+    for line in flows.warnings():
+        console.print(f"[yellow]候補B: {line}[/]")
+    published = [(week.published_on, week.foreign_share) for week in flows.weeks]
+    entries = flow_entries(published)
+    name = f"需給はすべての材料に優先する（外国人の買い越した週、{SECTION}）"
+    if len(entries) < 2:  # noqa: PLR2004 - 1件では散らばりが測れない
+        console.print(f"[yellow]**{name} の週が {len(entries)} しか無い。** 壁を出せない。[/]")
+        return walls
+    _used, values = forward_windows(returns, dates, entries, FLOW_HOLDING, end=IS_END)
+    observations = oos_entries(entries, FLOW_HOLDING)
+    if len(values) < 2 or not observations:  # noqa: PLR2004 - 同上
+        console.print(
+            f"[yellow]**{name}: IS の窓が {len(values)}、OOS の観測が "
+            f"{observations}。** 壁を出せない。[/]"
+        )
+        return walls
+    sampled[name] = values
+    with quiet_on_console("stock_ai.backtest.power"):
+        # **週次で保有1週なので、窓は重ならない。** 隣どうしの相関だけ見る。
+        estimate = estimate_power(values, lags=1)
+    walls.append(
+        Wall(
+            candidate=7,
+            name=name,
+            pipe="指数を買うだけ（引く相手が無い）",
+            unit="公表",
+            observations=observations,
+            sd=estimate.daily_sd,
+            inflation=estimate.inflation,
+            line=line_for("calendar"),
+            source=(
+                f"{benchmark} の日次、IS {len(values):,} 窓"
+                f"（買い越した週 {len(entries):,}、窓 {FLOW_HOLDING} 営業日）"
+            ),
+            # **年に直せる。** 週に1回、窓は重ならない。
+            per_year=52.0,
+            notes=(
+                "**公表日の翌営業日に入る。** 週末で入ると先読みになる"
+                "——公表は週の終わりの 10 日ほど後である",
+                "**管は `calendar`。** 校正したのは日次の月替わりである",
+            ),
+        )
+    )
+    return walls
+
+
 @app.command(name="wall-survey")
 def wall_survey(
     into: str | None = typer.Option(None, "--write", help="Regenerate docs/WALL.md."),
     benchmark: str = typer.Option(BENCHMARK, "--benchmark", help="Calendar and index."),
     rosters: str = typer.Option(
         str(DEFAULT_SNAPSHOT_DIR), "--rosters", help="Where the dated rosters live."
+    ),
+    archive: str = typer.Option(
+        str(DEFAULT_ARCHIVE_DIR), "--dir", help="Where the archived originals live."
     ),
 ) -> None:
     """Measure how big an effect each unregistered candidate would need - no effects.
@@ -7376,6 +7659,12 @@ def wall_survey(
         )
     else:
         console.print("[yellow]**Sell in May の観測が3年に満たない。** 壁を出せない。[/]")
+
+    # --- A・B 指数を買うだけの2本（材料は原本から）---------------------------
+    #
+    # **畳み方は `wall` の説明に1つだけ書いてある。** ここで選ばない。
+    for wall in _index_walls(Path(archive), returns, dates, benchmark, sampled):
+        walls.append(wall)
 
     # --- 価格を1度だけなめる -------------------------------------------------
     console.print("[dim]価格を走査しています（1銘柄1行は出しません）...[/]")
@@ -7534,13 +7823,13 @@ def wall_survey(
         for note in wall.notes:
             console.print(f"[dim]{wall.candidate}: {note}[/]")
 
+    # **6 と 7 をここから外した**（2026-09-21）。どちらも「測れない」と
+    # 書いてあったが、**材料は原本に在った**——オプションの予想変動率と、
+    # 投資部門別である。上で壁を測っている。
+    #
+    # **無いことは出力に出ないが、「無い」と書いたことも出力に出ない。**
+    # 書いた側が確かめるまで、そこに在る材料は見えないままになる。
     missing = [
-        Missing(6, "悲観の中に生まれ", "心理指標（調査・資金フロー・報道）を1つも持っていない"),
-        Missing(
-            7,
-            "需給はすべての材料に優先する",
-            "信用残と空売り比率は在るが、**設計が決まっていない。** 何を1観測とするかから",
-        ),
         Missing(8, "噂で買って事実で売る", "「噂」の初出時点を客観的に取る口が無い"),
     ]
     absent = Table(title="材料が無くて測れなかった候補")

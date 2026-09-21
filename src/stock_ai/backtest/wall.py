@@ -34,6 +34,33 @@
 **イベント型の窓は 20営業日に固定した**（#5 と同じ）。**壁を同じ物差しで
 並べるため**であって、事前登録がそれを選ぶという意味ではない。窓を変えれば
 壁も動くので、**そのときは測り直す。**
+
+## 候補A・B の畳み方は、壁を測る前に1つに決めてある
+
+**複数試して良いほうを採ると、その時点で #10 と同じところに落ちる。**
+だから**ここに書いてから測る。**
+
+| | 候補A（候補6 の一部） | 候補B（候補7） |
+|---|---|---|
+| 材料 | オプションの ATM 予想変動率 | 投資部門別（`TokyoNagoya`） |
+| 事象 | 前日比 **+20%**（:data:`IV_SPIKE`） | その週が**買い越し** |
+| 入る日 | その**翌営業日** | **公表日の翌営業日** |
+| 保有 | :data:`HOLDING` 営業日 | :data:`FLOW_HOLDING` 営業日 |
+| 1観測 | 1イベント日 | 1公表 |
+| 引く相手 | **無い**（指数を買うだけ） | 同左 |
+| 管 | `calendar` | `calendar` |
+
+**管は `calendar` である。** 校正したのは日次の月替わりだが（`multiplicity`）、
+**指数の日次リターンを規則で選んで束ねる**という形は同じである。**別の形で
+校正した値を当てていることは、そう書いておく**——`docs/PASSING.md` が月次の
+線を全部の形に当てていた件と同じ型を避けるため。
+
+**+20% と「買い越し」に出典は無い。** 決めの値である。文献から取ったのでは
+ない——**そう書いておく**（`CLAUDE.md`「出典の無い数字を書かない」）。
+
+**引く相手が無いので、壁は「指数そのものの散らばり」で決まる。** イベント型
+（等加重の宇宙を引く）とは別の量である。**並べても、どちらが良い設計かは
+分からない。**
 """
 
 from __future__ import annotations
@@ -41,6 +68,7 @@ from __future__ import annotations
 import dataclasses
 import datetime as dt
 import math
+from bisect import bisect_right
 from collections.abc import Callable
 
 import numpy as np
@@ -87,6 +115,23 @@ GAP_DOWN = _GAP_DOWN
 #: 黙ってずれる。** ここは名前を残すためだけである。
 KNIFE_DROP = _KNIFE_DROP
 KNIFE_DAYS = _KNIFE_DAYS
+
+#: 予想変動率が跳ねたと呼ぶ幅。**前日比。候補A（候補6）で使う。**
+#:
+#: **壁を測る前に1つに決めた。** 複数試して良いほうを採ると、その時点で
+#: #10 と同じところに落ちる（`CLAUDE.md`「#10 が封印できなくなったのは
+#: 効果を見て設計を選べる形だったから」）。
+#:
+#: **出典は無い。** 「1日で2割上がったら跳ねたと呼ぶ」という、決めの値で
+#: ある。文献から取ったのではない——**そう書いておく。**
+IV_SPIKE = 0.20
+
+#: 需給の週で保有する営業日数。**候補B（候補7）で使う。**
+#:
+#: **1週である。** 需給は週に1回しか更新されないので、20営業日にすると
+#: 1つの窓に4回ぶんの合図が入る。**イベント型の 20営業日には揃えない**
+#: ——揃えると、同じ合図を4回数えることになる。
+FLOW_HOLDING = 5
 
 
 @dataclasses.dataclass(frozen=True)
@@ -397,3 +442,113 @@ def usable_rebalances(calendar: pd.DatetimeIndex, start: dt.date, end: dt.date) 
         # **1回も作れないのは例外ではない。** 期間が短ければ当たり前に起きる。
         return 0
     return grid.months
+
+
+def volatility_spikes(
+    levels: dict[dt.date, float],
+    rise: float = IV_SPIKE,
+) -> list[dt.date]:
+    """予想変動率が**前日比 ``rise`` 以上**上がった日。
+
+    **前の営業日と比べる。** 暦の前日ではない——原本に在る日だけを並べて、
+    その1つ前と比べる。休みを挟んでも「前の観測」である。
+
+    **割り算をしない。** ``後 >= 前 × (1 + rise)`` で当てる。`#16` が
+    ちょうど −20% を取りこぼしていたのと同じ形を作らないため
+    （`backtest/fall.py`）。
+
+    Args:
+        levels: ``日 -> 水準``。
+        rise: 跳ねたと呼ぶ幅。
+
+    Returns:
+        跳ねた日。**日の順。**
+    """
+    days = sorted(levels)
+    found: list[dt.date] = []
+    for before, after in zip(days[:-1], days[1:], strict=True):
+        low, high = levels[before], levels[after]
+        if low > 0 and high >= low * (1.0 + rise):
+            found.append(after)
+    return found
+
+
+def forward_windows(
+    returns: list[float],
+    dates: list[dt.date],
+    entries: list[dt.date],
+    holding: int,
+    end: dt.date = IS_END,
+) -> tuple[list[dt.date], list[float]]:
+    """イベントの**翌営業日から** ``holding`` 営業日ぶんの指数リターン。
+
+    **平均は取らない。** 系列をそのまま返す——`Wall` に平均の欄が無いのと
+    同じ理由である。
+
+    **同じ日に2回入らない。** イベント日が重なっても1つにまとめる
+    ——`CLAUDE.md`「独立な観測を、件数で数えない」。
+
+    Args:
+        returns: 日次リターン。``dates`` と同じ長さ。
+        dates: その日付。
+        entries: イベント日。**その翌営業日から入る。**
+        holding: 保有営業日数。
+        end: この日より後に**入る**窓は作らない。
+
+    Returns:
+        ``(入った日, 窓のリターン)``。**窓が最後まで在るものだけ。**
+
+    Raises:
+        ValueError: ``returns`` と ``dates`` の長さが違う。
+    """
+    if len(returns) != len(dates):
+        raise ValueError(f"returns {len(returns)} と dates {len(dates)} の長さが違う。")
+
+    position = {when: index for index, when in enumerate(dates)}
+    ordered = sorted(dates)
+    used: list[dt.date] = []
+    values: list[float] = []
+    seen: set[int] = set()
+    for event in sorted(set(entries)):
+        # **翌営業日を探す。** 暦の翌日ではない。
+        step = bisect_right(ordered, event)
+        if step >= len(ordered):
+            continue
+        start = position[ordered[step]]
+        if start in seen:
+            continue
+        if dates[start] > end or start + holding > len(returns):
+            continue
+        window = returns[start : start + holding]
+        if any(not math.isfinite(value) for value in window):
+            continue
+        seen.add(start)
+        used.append(dates[start])
+        values.append(float(sum(window)))
+    return used, values
+
+
+def flow_entries(
+    weeks: list[tuple[dt.date, float]],
+    positive: bool = True,
+) -> list[dt.date]:
+    """需給の合図が立った**公表日**。
+
+    **公表日で入る。** 週が終わってから公表まで 10 日ほどある（2008-01-04
+    の週が 2008-01-16 公表）ので、**週末で入ると先読みになる。**
+
+    Args:
+        weeks: ``(公表日, その週の買い越し比率)``。
+        positive: ``True`` なら買い越した週を採る。
+
+    Returns:
+        公表日。**日の順。**
+
+    Notes:
+        **向きは壁に効かない。** 検出できる差は散らばりと観測数だけで決まる
+        ので、どちら側を採っても壁の高さは同じ形で出る。ここで ``positive``
+        を既定にしているのは、**数える対象を1つに決めるため**である。
+    """
+    return sorted(
+        published for published, share in weeks if (share > 0) is positive and math.isfinite(share)
+    )
