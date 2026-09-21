@@ -1746,3 +1746,263 @@ class TestTheMarginFold:
         from stock_ai.backtest.wall import MARGIN_LOOKBACK
 
         assert MARGIN_LOOKBACK == 4  # noqa: PLR2004 - 決めた値そのもの
+
+
+class TestTheDividendYieldFold:
+    """**候補14。** 会社予想の配当利回りを、銘柄月ごとに1つ作る。
+
+    押さえるのは4つ。
+
+    1. **分母は調整前の終値。** 1株配当はその時点の株数で書かれている
+    2. **先読みを外す。** 組み替え日までに開示されたものだけ
+    3. **列名を間違えたら、黙って 0 件を返さない**
+    4. **ありえない利回りは数えて出す。** 落としも直しもしない
+    """
+
+    @staticmethod
+    def _archive(tmp_path, rows: list[dict[str, str]]):
+        import csv as csv_module
+        import gzip
+        import io
+
+        from stock_ai.data.jquants_archive import MANIFEST, MANIFEST_COLUMNS
+
+        out = io.StringIO()
+        writer = csv_module.DictWriter(out, fieldnames=list(rows[0]), lineterminator="\n")
+        writer.writeheader()
+        writer.writerows(rows)
+        key = "fins/summary/historical/2017/fins_summary_201701.csv.gz"
+        target = tmp_path / key
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(gzip.compress(out.getvalue().encode("utf-8")))
+        (tmp_path / MANIFEST).write_text(
+            ",".join(MANIFEST_COLUMNS) + "\n" + f"/{key},1,1,x,,2026-09-21\n",
+            encoding="utf-8",
+        )
+        return tmp_path
+
+    @staticmethod
+    def _row(disclosed: str, code: str = "13060", amount: str = "30") -> dict[str, str]:
+        from stock_ai.backtest.wall import DIVIDEND_COLUMN
+
+        return {"DiscDate": disclosed, "Code": code, DIVIDEND_COLUMN: amount}
+
+    @staticmethod
+    def _prices(*months, symbol: str = "1306"):
+        """**価格の側の綴りで書く。**
+
+        `four_digit_code` が ``13060`` を ``1306`` に直すので、**財務の側は
+        4桁になる。** ここを5桁で書いていて、**列は全部読めているのに観測が
+        1つも出なかった**（2026-09-21、自分のテストが落ちて分かった）。
+        `YieldCensus.matched_symbols` がそれを言う。
+        """
+        import pandas as pd
+
+        return {(symbol, pd.Period(month, freq="M")): (day, close) for month, day, close in months}
+
+    def test_the_yield_is_the_amount_over_the_price(self, tmp_path) -> None:
+        from stock_ai.backtest.wall import dividend_yields
+
+        rows = [self._row("2017-01-10", amount="30")]
+        prices = self._prices(("2017-02", dt.date(2017, 2, 28), 1000.0))
+
+        values, census = dividend_yields(self._archive(tmp_path, rows), prices)
+
+        assert census.observations == 1
+        (_when, found) = next(iter(values.values()))
+        assert found == pytest.approx(0.03)
+
+    def test_it_uses_the_newest_disclosure_up_to_the_rebalance(self, tmp_path) -> None:
+        from stock_ai.backtest.wall import dividend_yields
+
+        rows = [self._row("2017-01-10", amount="30"), self._row("2017-02-10", amount="40")]
+        prices = self._prices(("2017-02", dt.date(2017, 2, 28), 1000.0))
+
+        values, _census = dividend_yields(self._archive(tmp_path, rows), prices)
+
+        assert next(iter(values.values()))[1] == pytest.approx(0.04)
+
+    def test_a_later_disclosure_is_not_used(self, tmp_path) -> None:
+        """**先読みを外す。** 組み替え日より後の開示は使わない。"""
+        from stock_ai.backtest.wall import dividend_yields
+
+        rows = [self._row("2017-01-10", amount="30"), self._row("2017-03-10", amount="99")]
+        prices = self._prices(("2017-02", dt.date(2017, 2, 28), 1000.0))
+
+        values, _census = dividend_yields(self._archive(tmp_path, rows), prices)
+
+        assert next(iter(values.values()))[1] == pytest.approx(0.03)
+
+    def test_nothing_disclosed_yet_makes_no_observation(self, tmp_path) -> None:
+        from stock_ai.backtest.wall import dividend_yields
+
+        rows = [self._row("2017-03-10")]
+        prices = self._prices(("2017-02", dt.date(2017, 2, 28), 1000.0))
+
+        values, census = dividend_yields(self._archive(tmp_path, rows), prices)
+
+        assert not values
+        assert census.observations == 0
+
+    def test_the_observed_date_is_the_disclosure_not_the_rebalance(self, tmp_path) -> None:
+        """**`value_on` の関門が、何も弾かなくなる形にしない。**"""
+        from stock_ai.backtest.wall import dividend_yields
+
+        rows = [self._row("2017-01-10")]
+        prices = self._prices(("2017-02", dt.date(2017, 2, 28), 1000.0))
+
+        values, _census = dividend_yields(self._archive(tmp_path, rows), prices)
+
+        assert next(iter(values.values()))[0] == dt.date(2017, 1, 10)
+
+    def test_a_wrong_code_column_is_said_out_loud(self, tmp_path) -> None:
+        """**黙って 0 件を返さない。** 列名を間違えたら、そう出る。"""
+        from stock_ai.backtest.wall import DIVIDEND_COLUMN, dividend_yields
+
+        rows = [{"DiscDate": "2017-01-10", "Ticker": "13060", DIVIDEND_COLUMN: "30"}]
+        prices = self._prices(("2017-02", dt.date(2017, 2, 28), 1000.0))
+
+        values, census = dividend_yields(self._archive(tmp_path, rows), prices)
+
+        assert not values
+        assert census.no_symbol == census.rows
+        assert any("銘柄コードが読めなかった" in line for line in census.warnings())
+
+    def test_a_wrong_date_column_is_said_out_loud(self, tmp_path) -> None:
+        from stock_ai.backtest.wall import DIVIDEND_COLUMN, dividend_yields
+
+        rows = [{"WhenSaid": "2017-01-10", "Code": "13060", DIVIDEND_COLUMN: "30"}]
+        prices = self._prices(("2017-02", dt.date(2017, 2, 28), 1000.0))
+
+        _values, census = dividend_yields(self._archive(tmp_path, rows), prices)
+
+        assert census.no_date == census.rows
+        assert any("開示日が読めなかった" in line for line in census.warnings())
+
+    def test_the_columns_are_counted_independently(self, tmp_path) -> None:
+        """**直列に並べると、手前が全部を弾いたとき後ろが 0 のまま。**"""
+        from stock_ai.backtest.wall import DIVIDEND_COLUMN, dividend_yields
+
+        rows = [{"Ticker": "13060", "WhenSaid": "2017-01-10", DIVIDEND_COLUMN: ""}]
+        prices = self._prices(("2017-02", dt.date(2017, 2, 28), 1000.0))
+
+        _values, census = dividend_yields(self._archive(tmp_path, rows), prices)
+
+        assert census.no_symbol == 1
+        assert census.no_date == 1
+        assert census.no_amount == 1
+
+    def test_an_implausible_yield_is_counted_not_dropped(self, tmp_path) -> None:
+        """**外していない。** どれが原因かは、中身を見るまで決めない。"""
+        from stock_ai.backtest.wall import IMPLAUSIBLE_YIELD, dividend_yields
+
+        rows = [self._row("2017-01-10", amount="900")]
+        prices = self._prices(("2017-02", dt.date(2017, 2, 28), 1000.0))
+
+        values, census = dividend_yields(self._archive(tmp_path, rows), prices)
+
+        assert census.implausible == 1
+        assert len(values) == 1, "**数えるだけで、落とさないこと。**"
+        assert next(iter(values.values()))[1] > IMPLAUSIBLE_YIELD
+        assert any("外していない" in line for line in census.warnings())
+
+    def test_a_plausible_yield_is_not_flagged(self, tmp_path) -> None:
+        """**両向きに置く。** 常に点く旗は、何も区別しない。"""
+        from stock_ai.backtest.wall import dividend_yields
+
+        rows = [self._row("2017-01-10", amount="30")]
+        prices = self._prices(("2017-02", dt.date(2017, 2, 28), 1000.0))
+
+        _values, census = dividend_yields(self._archive(tmp_path, rows), prices)
+
+        assert census.implausible == 0
+
+    def test_the_forecast_column_is_the_one_chosen(self) -> None:
+        """**測る前に決めた値が、そのまま出ていること。**"""
+        from stock_ai.backtest.wall import DIVIDEND_COLUMN
+
+        assert DIVIDEND_COLUMN == "FDivAnn"
+
+    def test_the_two_sides_must_use_the_same_spelling(self, tmp_path) -> None:
+        """**列は全部読めているのに、観測が1つも出ない形。**
+
+        `no_symbol` は 0 のままなので、**列の検査では捕まらない。**
+        """
+        from stock_ai.backtest.wall import dividend_yields
+
+        rows = [self._row("2017-01-10")]
+        prices = self._prices(("2017-02", dt.date(2017, 2, 28), 1000.0), symbol="13060")
+
+        values, census = dividend_yields(self._archive(tmp_path, rows), prices)
+
+        assert not values
+        assert census.no_symbol == 0, "**列は読めている。** そちらでは捕まらない"
+        assert census.matched_symbols == 0
+        assert any("噛み合わなかった" in line for line in census.warnings())
+
+    def test_matching_spellings_do_not_warn(self, tmp_path) -> None:
+        """**両向きに置く。** 常に点く旗は、何も区別しない。"""
+        from stock_ai.backtest.wall import dividend_yields
+
+        rows = [self._row("2017-01-10")]
+        prices = self._prices(("2017-02", dt.date(2017, 2, 28), 1000.0))
+
+        _values, census = dividend_yields(self._archive(tmp_path, rows), prices)
+
+        assert census.matched_symbols == 1
+        assert not any("噛み合わなかった" in line for line in census.warnings())
+
+    def test_an_empty_archive_says_so(self, tmp_path) -> None:
+        from stock_ai.backtest.wall import dividend_yields
+        from stock_ai.data.jquants_archive import MANIFEST, MANIFEST_COLUMNS
+
+        (tmp_path / MANIFEST).write_text(",".join(MANIFEST_COLUMNS) + "\n", encoding="utf-8")
+
+        values, census = dividend_yields(tmp_path, {})
+
+        assert not values
+        assert any("1行も読めなかった" in line for line in census.warnings())
+
+
+class TestTheDenominatorIsUnadjusted:
+    """**1株配当は、その時点の株数で書かれている。**
+
+    分割調整後の終値で割ると、**分割比のぶん利回りが跳ねる**——実データで
+    1:10 の分割を挟むと **1.0% が 10.0% になった**（2026-09-20）。
+    """
+
+    def test_the_scan_keeps_both(self) -> None:
+        """**別の欄で持つ。** 同じ間違いを2度しないため。"""
+        import dataclasses
+
+        from stock_ai.backtest.wall import Materials
+
+        names = {field.name for field in dataclasses.fields(Materials)}
+
+        assert "price_level" in names
+        assert "raw_price_level" in names
+
+    def test_the_survey_divides_by_the_unadjusted_one(self) -> None:
+        """**呼ぶ側を AST で見る。** 経路ごとにテストを足す方式は、次の1本で
+        同じことが起きる（`test_deferred_imports` と同じ理由）。
+        """
+        import ast
+        import inspect
+
+        from stock_ai import cli
+
+        passed: list[str] = []
+        for node in ast.walk(ast.parse(inspect.getsource(cli.wall_survey))):
+            if (
+                not isinstance(node, ast.Call)
+                or getattr(node.func, "id", None) != "dividend_yields"
+            ):
+                continue
+            second = node.args[1] if len(node.args) > 1 else None
+            passed.append(ast.unparse(second) if second is not None else "")
+
+        assert passed, "**`dividend_yields` を呼んでいない。**"
+        for argument in passed:
+            assert "raw_price_level" in argument, (
+                f"**調整後の終値で割っている: {argument}。** 分割比のぶん利回りが跳ねる。"
+            )

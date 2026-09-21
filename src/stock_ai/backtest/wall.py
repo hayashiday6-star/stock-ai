@@ -436,6 +436,18 @@ class Materials:
     round_position: dict[tuple[str, pd.Period], tuple[dt.date, float]]
     """節目からの位置（候補19）。:func:`round_number_position`。"""
 
+    raw_price_level: dict[tuple[str, pd.Period], tuple[dt.date, float]]
+    """月末の**分割調整前**の終値（候補14 の分母）。
+
+    **配当利回りの分母は、調整前でなければならない。** 開示された1株配当は
+    **その時点の株数**で書かれているので、分割調整後の終値で割ると
+    **分割比のぶん利回りが跳ねる**——実データで 1:10 の分割を挟むと
+    **1.0% が 10.0% になった**（2026-09-20、`_dividend_ratio` の `base`）。
+
+    **同じ間違いを2度しないために、別の欄で持つ。** `price_level`（調整後）
+    は順位づけに使うもので、**割り算の分母ではない。**
+    """
+
     gaps_is: list[tuple[str, dt.date]]
     gaps_oos_days: int
     knives_is: list[tuple[str, dt.date]]
@@ -458,6 +470,7 @@ class Materials:
             f"52週高値への近さ {len(self.high52):,} 銘柄月"
             f"（履歴が足りず外した銘柄 {self.skipped_short:,}）、"
             f"月末の終値 {len(self.price_level):,} 銘柄月、"
+            f"うち調整前も取れた {len(self.raw_price_level):,}、"
             f"下窓 {len(self.gaps_is):,} 件（IS）、"
             f"急落 {len(self.knives_is):,} 件（IS）。"
             f"**不連続をまたぐので捨てた {self.dropped_broken:,} 件。**"
@@ -489,6 +502,7 @@ def scan(
     high52: dict[tuple[str, pd.Period], tuple[dt.date, float]] = {}
     price_level: dict[tuple[str, pd.Period], tuple[dt.date, float]] = {}
     round_position: dict[tuple[str, pd.Period], tuple[dt.date, float]] = {}
+    raw_price_level: dict[tuple[str, pd.Period], tuple[dt.date, float]] = {}
     gaps_is: list[tuple[str, dt.date]] = []
     knives_is: list[tuple[str, dt.date]] = []
     gap_days_oos: set[dt.date] = set()
@@ -511,6 +525,9 @@ def scan(
             read += 1
             adjusted = split_adjusted(raw)
             closes = adjusted[CLOSE].to_numpy(dtype=float)
+            # **調整前の終値も持つ。** 配当利回りの分母はこちらである
+            # ——1株配当はその時点の株数で書かれている。
+            unadjusted = raw[CLOSE].to_numpy(dtype=float)
             opens = adjusted[OPEN].to_numpy(dtype=float)
             volumes = adjusted[VOLUME].to_numpy(dtype=float)
             index = adjusted.index
@@ -576,6 +593,9 @@ def scan(
                 where = round_number_position(close)
                 if where is not None:
                     round_position[(symbol, months[offset])] = (days[offset], where)
+                bare = float(unadjusted[offset])
+                if bare > 0:
+                    raw_price_level[(symbol, months[offset])] = (days[offset], bare)
 
             # --- 52週高値への近さ（月末だけ）-----------------------------
             if len(closes) < HIGH_WINDOW:
@@ -594,6 +614,7 @@ def scan(
         high52=high52,
         price_level=price_level,
         round_position=round_position,
+        raw_price_level=raw_price_level,
         gaps_is=gaps_is,
         gaps_oos_days=len(gap_days_oos),
         knives_is=knives_is,
@@ -1194,3 +1215,270 @@ def _margin_files(directory: Path):
             yield key, read_archived(path_for(directory, key))
         except Exception as exc:  # noqa: BLE001 - どこで開けないかが記録に値する
             logger.warning("信用残の原本を開けなかった: %s: %s", key, exc)
+
+
+#: 配当利回りに使う列。**会社予想の年間配当。**
+#:
+#: **測る前に1つに決めた**（2026-09-21）。実データの列ごとの埋まり方から
+#: 選んでいる——`checks\原本の列は埋まっているか.bat` が数えた。
+#:
+#: | 列 | 埋まっていた | 意味 |
+#: |---|---|---|
+#: | `FDivFY` | 57% | 会社予想の期末配当 |
+#: | **`FDivAnn`** | **56%** | **会社予想の年間配当** |
+#: | `Div2Q` | 53% | 実績の中間配当 |
+#: | `DivFY` | 20% | 実績の期末配当 |
+#: | `DivAnn` | 19% | 実績の年間配当 |
+#: | `FDivTotalAnn` | **0%** | **1行も埋まっていない** |
+#:
+#: **実績（`DivAnn`、19%）ではなく予想を採る。** 実績の年間は期末の開示に
+#: しか出ないので、断面が4分の1に痩せる。**そして投資家が見るのは予想の
+#: ほうである。**
+#:
+#: **予想と実績を混ぜない**（`jquants_valuation` の `Fwd` と同じ規則）。
+#: 混ぜると、**発表前から予想を知っていたこと**になりうる。
+DIVIDEND_COLUMN = "FDivAnn"
+
+#: 銘柄コードの列。**上から順に、最初に在ったものを使う。**
+DIVIDEND_CODE_COLUMNS: tuple[str, ...] = ("Code", "LocalCode")
+
+#: 開示日の列。**「いつ知れたか」である。** 先読みを外すのに要る。
+DIVIDEND_DATE_COLUMNS: tuple[str, ...] = ("DiscDate", "DisclosedDate")
+
+#: 利回りがこれを超えたら、**数えて出す。落としも直しもしない。**
+#:
+#: **出典は無い。決めの値である。** 日本株で年 20% の利回りは、無配への
+#: 訂正前か、単位の取り違えか、株価の異常である。
+#:
+#: **範囲から係数を逆算しない**——`MktCap` を百万倍間違えたときに書いた
+#: 「範囲の中心から逆算すると根拠の無い数字になる」そのものである。
+#: **どの単位なのかを決めるのは、その数字を見た人である。**
+IMPLAUSIBLE_YIELD = 0.20
+
+
+@dataclasses.dataclass(frozen=True)
+class YieldCensus:
+    """配当利回りを畳むときに落ちたもの。**合計だけ出すと、その中に紛れる。**"""
+
+    rows: int
+    symbols: int
+    observations: int
+    no_symbol: int
+    """銘柄コードが読めなかった行。**列名を間違えていれば、ここが全部になる。**"""
+
+    no_date: int
+    """開示日が読めなかった行。**同上。**"""
+
+    no_amount: int
+    """:data:`DIVIDEND_COLUMN` が空だった行。"""
+
+    no_price: int
+    """その月の**調整前**の終値が無かった銘柄月。"""
+
+    priced_symbols: int
+    """価格の側に在った銘柄。**突き合わせの相手である。**"""
+
+    matched_symbols: int
+    """**両側に在った銘柄。** 0 なら、綴りが噛み合っていない。
+
+    `four_digit_code` は ``13060`` を ``1306`` に直す。**片側だけ通すと、
+    列は全部読めているのに観測が 1つも出ない**——`no_symbol` は 0 のままな
+    ので、**列の検査では捕まらない。**
+    """
+
+    implausible: int
+    """利回りが :data:`IMPLAUSIBLE_YIELD` を超えた銘柄月。**外していない。**"""
+
+    def summary(self) -> str:
+        """1行のまとめ。"""
+        if not self.rows:
+            return "財務情報の原本が1行も読めなかった。**材料が無い。**"
+        return (
+            f"財務情報 {self.rows:,} 行、{self.symbols:,} 銘柄。"
+            f"**`{DIVIDEND_COLUMN}` から利回りを {self.observations:,} 銘柄月**作れた。"
+        )
+
+    def warnings(self) -> list[str]:
+        """気付かなくても目に入るべきこと。**早期 return しない。**"""
+        found: list[str] = []
+        if not self.rows:
+            return ["**財務情報の原本が1行も読めなかった。**"]
+        # **列名を間違えたら、ここが全部になる。** 黙って 0 件を返さない。
+        if self.no_symbol == self.rows:
+            found.append(
+                f"**全 {self.rows:,} 行で銘柄コードが読めなかった。** 探したのは "
+                + "、".join(DIVIDEND_CODE_COLUMNS)
+                + "。**列名が違う。**"
+            )
+        if self.no_date == self.rows:
+            found.append(
+                f"**全 {self.rows:,} 行で開示日が読めなかった。** 探したのは "
+                + "、".join(DIVIDEND_DATE_COLUMNS)
+                + "。**列名が違う。**"
+            )
+        if self.no_amount == self.rows:
+            found.append(f"**全 {self.rows:,} 行で `{DIVIDEND_COLUMN}` が空だった。**")
+        if self.no_price:
+            found.append(
+                f"**{self.no_price:,} 銘柄月は、その月の調整前の終値が無かった。** "
+                "**調整後では割らない**——1株配当はその時点の株数で書かれているので、"
+                "分割比のぶん利回りが跳ねる。"
+            )
+        if self.implausible:
+            found.append(
+                f"**{self.implausible:,} 銘柄月は利回りが {IMPLAUSIBLE_YIELD:.0%} を超えた。** "
+                "**外していない**——無配への訂正前か、単位の取り違えか、株価の異常である。"
+                "**どれかは、中身を見るまで決めない。**"
+            )
+        # **突き合わせが空振りしたことは、列の検査では捕まらない。**
+        # 列は全部読めていて、`no_symbol` も 0 のまま観測が出ない。
+        if self.symbols and self.priced_symbols and not self.matched_symbols:
+            found.append(
+                f"**財務の {self.symbols:,} 銘柄と、価格の {self.priced_symbols:,} 銘柄が"
+                "1つも噛み合わなかった。** **銘柄コードの綴りが違う**"
+                "——`four_digit_code` を片側にしか通していないと、こうなる。"
+            )
+        if not self.observations:
+            found.append("**1つも作れなかった。** 壁を出せない。")
+        return found
+
+
+def dividend_yields(
+    directory: Path,
+    prices: dict[tuple[str, pd.Period], tuple[dt.date, float]],
+    column: str = DIVIDEND_COLUMN,
+) -> tuple[dict[tuple[str, pd.Period], tuple[dt.date, float]], YieldCensus]:
+    """会社予想の配当利回りを、**銘柄月ごとに1つ**作る（候補14）。
+
+    ## 畳み方は、壁を測る前に1つに決めてある
+
+    | | |
+    |---|---|
+    | 材料 | `/fins/summary` の :data:`DIVIDEND_COLUMN` ÷ **調整前**の月末終値 |
+    | 並べ方 | 利回りの順 |
+    | 1観測 | 1ヶ月 |
+
+    ## 分母は調整前である
+
+    **1株配当は、その時点の株数で書かれている。** 分割調整後の終値で割ると
+    **分割比のぶん利回りが跳ねる**——実データで 1:10 の分割を挟むと
+    **1.0% が 10.0% になった**（2026-09-20）。`prices` には
+    :attr:`Materials.raw_price_level` を渡すこと。
+
+    **残る限界を書いておく。** 開示から組み替えまでに分割が起きると、
+    分子（開示時点の株数）と分母（いまの株数）がずれる。四半期ごとに
+    出し直されるので**ずれは3ヶ月以内**だが、**消えてはいない。**
+
+    ## 先読みを外す
+
+    ``開示日 <= 組み替え日`` の中で**いちばん新しいもの**を採る。
+    `quantile_series.value_on` が最後にもう一度その関門を通すが、
+    **ここでも月に畳む時点で切っている。**
+
+    Args:
+        directory: 原本の置き場所。
+        prices: ``(銘柄, 月) -> (日, 調整前の終値)``。
+        column: 使う配当の列。
+
+    Returns:
+        ``((銘柄, 月) -> (日, 利回り), 数えたもの)``。
+    """
+    from stock_ai.data.jquants_bulk import records_from_csv
+    from stock_ai.data.jquants_margin import parse_date, parse_number
+    from stock_ai.data.universe import four_digit_code
+
+    # **銘柄ごとに (開示日, 額) を集めてから畳む。** 行を見ながら分類すると、
+    # **あとから来た行が前の行の情報を上書きする**（`CLAUDE.md`）。
+    disclosed: dict[str, list[tuple[dt.date, float]]] = {}
+    rows = no_symbol = no_date = no_amount = 0
+
+    for key, payload in _summary_files(directory):
+        try:
+            found = records_from_csv(payload)
+        except Exception as exc:  # noqa: BLE001 - どこで読めないかが記録に値する
+            logger.warning("財務情報の原本を読めなかった: %s: %s", key, exc)
+            continue
+        for row in found:
+            rows += 1
+            symbol = next(
+                (
+                    code
+                    for name in DIVIDEND_CODE_COLUMNS
+                    if (code := four_digit_code((row.get(name) or "").strip()))
+                ),
+                None,
+            )
+            when = next(
+                (
+                    parsed
+                    for name in DIVIDEND_DATE_COLUMNS
+                    if (parsed := parse_date(row.get(name))) is not None
+                ),
+                None,
+            )
+            amount = parse_number(row.get(column))
+            # **列ごとに独立に数える。** 直列に並べると、手前が全部を弾いた
+            # とき後ろの数字が 0 のまま「異常なし」の顔をする（`CLAUDE.md`）。
+            if symbol is None:
+                no_symbol += 1
+            if when is None:
+                no_date += 1
+            if amount is None:
+                no_amount += 1
+            if symbol is None or when is None or amount is None or amount < 0:
+                continue
+            disclosed.setdefault(symbol, []).append((when, amount))
+
+    # **銘柄で引けるように畳んでから回す。** `prices` を銘柄ごとに全部
+    # なめると、**4千銘柄 × 40万銘柄月**になって終わらない。
+    by_symbol: dict[str, list[tuple[pd.Period, dt.date, float]]] = {}
+    for (symbol, month), (rebalance, close) in prices.items():
+        by_symbol.setdefault(symbol, []).append((month, rebalance, close))
+
+    values: dict[tuple[str, pd.Period], tuple[dt.date, float]] = {}
+    no_price = implausible = 0
+    for symbol, entries in disclosed.items():
+        entries.sort()
+        days = [day for day, _amount in entries]
+        for month, rebalance, close in by_symbol.get(symbol, ()):
+            # **その組み替え日までに開示されたうち、いちばん新しいもの。**
+            position = bisect_right(days, rebalance)
+            if position == 0:
+                continue
+            when, amount = entries[position - 1]
+            if close <= 0:
+                no_price += 1
+                continue
+            found = amount / close
+            if found > IMPLAUSIBLE_YIELD:
+                implausible += 1
+            # **観測した日は開示日である。** 組み替え日に置き換えると、
+            # `value_on` の関門が何も弾かなくなる。
+            values[(symbol, month)] = (when, found)
+
+    return values, YieldCensus(
+        rows=rows,
+        symbols=len(disclosed),
+        observations=len(values),
+        no_symbol=no_symbol,
+        no_date=no_date,
+        no_amount=no_amount,
+        no_price=no_price,
+        implausible=implausible,
+        priced_symbols=len(by_symbol),
+        matched_symbols=len(set(disclosed) & set(by_symbol)),
+    )
+
+
+def _summary_files(directory: Path):
+    """財務情報の原本を ``(鍵, 中身)`` で。**取りには行かない。**"""
+    from stock_ai.data.jquants_archive import path_for, read_manifest
+    from stock_ai.data.jquants_read import endpoint_of, read_archived
+
+    for key in sorted(read_manifest(directory)):
+        if endpoint_of(key) != "/fins/summary":
+            continue
+        try:
+            yield key, read_archived(path_for(directory, key))
+        except Exception as exc:  # noqa: BLE001 - どこで開けないかが記録に値する
+            logger.warning("財務情報の原本を開けなかった: %s: %s", key, exc)

@@ -7945,6 +7945,7 @@ def wall_survey(
     from stock_ai.backtest.quantile_series import build_panel
     from stock_ai.backtest.universe_benchmark import equal_weighted_windows
     from stock_ai.backtest.wall import (
+        DIVIDEND_COLUMN,
         GAP_DOWN,
         HOLDING,
         IS_END,
@@ -7958,6 +7959,7 @@ def wall_survey(
         Wall,
         complete_halloween_years,
         complete_tail_years,
+        dividend_yields,
         halloween_episodes,
         margin_change,
         scan,
@@ -8063,10 +8065,19 @@ def wall_survey(
     for line in margin_census.warnings():
         console.print(f"[yellow]15: {line}[/]")
 
+    # **配当利回りの分母は調整前の終値である。** 調整後で割ると、分割比の
+    # ぶん利回りが跳ねる——1:10 で 1.0% が 10.0% になった（2026-09-20）。
+    with quiet_on_console("stock_ai.backtest.wall"):
+        yields, yield_census = dividend_yields(Path(archive), materials.raw_price_level)
+    console.print(f"[dim]{yield_census.summary()}[/]")
+    for line in yield_census.warnings():
+        console.print(f"[yellow]14: {line}[/]")
+
     monthly_designs = (
         (5, "新値には黙ってつけ（52週高値への近さ）", materials.high52, "近さ"),
         (12, "小型株効果（時価総額の小さい順）", caps, "時価総額"),
         (13, "低位株（株価の安い順）", materials.price_level, "終値"),
+        (14, f"高配当利回り（`{DIVIDEND_COLUMN}` ÷ 調整前の終値）", yields, "利回り"),
         (15, f"信用買い残の減少（{MARGIN_LOOKBACK} 公表ぶんの変化）", margin, "変化"),
         (19, "節目の株価（キリ番からの位置）", materials.round_position, "位置"),
     )
@@ -8319,13 +8330,6 @@ def wall_survey(
     # 書いた側が確かめるまで、そこに在る材料は見えないままになる。
     missing = [
         Missing(8, "噂で買って事実で売る", "「噂」の初出時点を客観的に取る口が無い"),
-        Missing(
-            14,
-            "高配当利回り",
-            "**`/equities/valuation` に利回りの列が無い**（原本の11列を数えた）。"
-            "`/fins/dividend` を使うと 2012-12 に縛られて A群 から外れる。"
-            "**`/fins/summary` に在るかは `checks\\原本の列は埋まっているか.bat` が決める**",
-        ),
         Missing(
             16,
             "空売り比率",
