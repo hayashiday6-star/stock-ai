@@ -373,9 +373,14 @@ def ex_dates_known_by(directory: Path) -> AnnouncedExDates:
     ので、**外す側に倒す**——外し漏れのほうが、事象の定義に機械的な値下がりを
     混ぜるので悪い。
 
-    **判定は、その日までに公表された額で行う。** 後から 0 に訂正されたことを
-    使えば先読みになるので、**その時点で正の額が1度でも公表されていれば
-    権利落ちとして扱う。**
+    **判定は、権利落ち日までに公表された中でいちばん新しい額で行う**
+    （:func:`known_at_ex_date`）。**「公表順で後」と「権利落ち日より後」は
+    別である**——前は「その時点で正の額が1度でも公表されていれば権利落ち」と
+    していて、**権利落ち日より前に 0 へ訂正された日が外す側に残っていた。**
+    額は公表されていて 0 なのに、**落ちるものが無い日で急落を外していた**
+    （2026-09-20 に再現）。
+
+    **`#15` も同じ口を使うので、そちらでも同じ誤りが効いていた。**
 
     Args:
         directory: 原本の置き場所。
@@ -383,32 +388,40 @@ def ex_dates_known_by(directory: Path) -> AnnouncedExDates:
     Returns:
         :class:`AnnouncedExDates`。
     """
-    # **(銘柄, 権利落ち日) ごとに、いちばん早い「額が 0 でない」公表日を採る。**
-    # 額 0 の公表しか無ければ、その日は権利落ちとして扱わない。
-    # **「分からない」と「0 と書いてある」を、行単位で混ぜない。**
-    # 額が空の行が1つあっても、**別の行が 0 と言っているなら分かっている**
-    # ——最初の版は「空の行が1つでもあれば未公表」にしていて、**落とすのは
-    # 全部の行が 0 のときだけ**になっていた（2026-09-20、ユーザーが発見）。
-    positive: dict[tuple[str, dt.date], dt.date] = {}
+    # **権利落ち日時点の額で、3つに分ける。**
+    #
+    # | 権利落ち日時点の額 | どうするか |
+    # |---|---|
+    # | 正 | 調整で落とせる。**外さない**（`ex_dividends_known_by` が渡す） |
+    # | **0** | **落ちるものが無い。外さない** |
+    # | 公表なし | 調整のしようが無い。**外す** |
+    #
+    # **前は「いつでもいいから正の額が1度でもあれば権利落ち」だった。**
+    # `published <= ex_date` も、後の訂正も見ていなかったので、**権利落ち日
+    # より前に 0 へ訂正された日が外す側に残っていた**——額は公表されていて
+    # 0 なのに、落ちるものが無い日で急落を外していた（2026-09-20 に再現）。
+    #
+    # **`ex_dividends_known_by` と同じ `known_at_ex_date` を通す。**
+    # 判定の当てはめが2箇所にあると、片方が置き去りになる。
+    at_ex_date = known_at_ex_date(directory)
+
+    # **「その日までに額が1度も公表されていない」を拾う。** `known_at_ex_date`
+    # は公表日で切っているので、そこに無い鍵がそれである。
     earliest: dict[tuple[str, dt.date], dt.date] = {}
-    has_amount: set[tuple[str, dt.date]] = set()
-    for symbol, published, when, rate in _ex_date_rows(directory):
+    for symbol, published, when, _rate in _ex_date_rows(directory):
         key = (symbol, when)
         current = earliest.get(key)
         if current is None or published < current:
             earliest[key] = published
-        if rate is None:
-            continue
-        has_amount.add(key)
-        if rate > 0:
-            current = positive.get(key)
-            if current is None or published < current:
-                positive[key] = published
 
-    # **額が1行も公表されていないときだけ未公表扱い。**
-    unknown = {key: when for key, when in earliest.items() if key not in has_amount}
-    # **額は公表されていて、どれも 0。** 落ちるものが無い。
-    zero = has_amount - set(positive)
+    positive: dict[tuple[str, dt.date], dt.date] = {}
+    zero = 0
+    for key, (published, rate) in at_ex_date.items():
+        if rate > 0:
+            positive[key] = published
+        else:
+            zero += 1
+    unknown = {key: when for key, when in earliest.items() if key not in at_ex_date}
 
     found: dict[str, list[tuple[dt.date, dt.date]]] = {}
     kept = 0
@@ -422,7 +435,7 @@ def ex_dates_known_by(directory: Path) -> AnnouncedExDates:
     return AnnouncedExDates(
         by_symbol=found,
         kept=kept,
-        dropped_zero=len(zero),
+        dropped_zero=zero,
         unknown_amount=len(unknown),
     )
 

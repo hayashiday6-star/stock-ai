@@ -457,8 +457,22 @@ class TestAZeroDividendIsNotAnExDate:
     指摘）。**`#15` も同じ口を使っている。**
     """
 
-    _rows = staticmethod(TestHowManyExDatesTheArchiveCanSupply._rows)
     _archive = classmethod(TestHowManyExDatesTheArchiveCanSupply._archive.__func__)
+
+    @staticmethod
+    def _rows(*changes: dict[str, str]) -> str:
+        """**公表日を権利落ち日より前に置く。**
+
+        配布サンプルのテンプレは `PubDate` が 2022-03-22 で、この盤面の
+        `ExDate`（2015-03-30）より**後**である。**「その日までに公表された
+        額」を見るようになってから、そこが効くようになった**——足場のままだと
+        全部「未公表」に落ちる（2026-09-20）。
+
+        **足場のせいで落ちると、原因を探す時間が要る。**
+        """
+        return TestHowManyExDatesTheArchiveCanSupply._rows(
+            *[{"PubDate": "2015-02-01", **change} for change in changes]
+        )
 
     def test_a_zero_amount_date_is_dropped(self, tmp_path) -> None:
         from stock_ai.data.jquants_dividend import ex_dates_known_by
@@ -483,7 +497,7 @@ class TestAZeroDividendIsNotAnExDate:
 
         found = ex_dates_known_by(self._archive(tmp_path, body))
 
-        assert found.by_symbol["1301"] == [(dt.date(2022, 3, 22), dt.date(2015, 3, 30))]
+        assert found.by_symbol["1301"] == [(dt.date(2015, 2, 1), dt.date(2015, 3, 30))]
         assert found.dropped_zero == 0
         assert found.kept == 1
 
@@ -501,26 +515,49 @@ class TestAZeroDividendIsNotAnExDate:
         assert found.unknown_amount == 1
         assert any("未公表" in line for line in found.warnings())
 
-    def test_a_later_zero_does_not_undo_an_earlier_positive(self, tmp_path) -> None:
-        """**その時点で正の額が公表されていれば、権利落ちとして扱う。**
+    def test_a_zero_before_the_ex_date_wins(self, tmp_path) -> None:
+        """**権利落ち日より前に 0 へ訂正されていれば、その時点で無配である。**
 
-        後から 0 に訂正されたことを使えば**先読み**になる。
+        **先読みになるのは「権利落ち日より後の公表」だけ**で、「公表順で後」
+        ではない。前はそこを混同していて、**額が公表されていて 0 の日を
+        外す側に残していた**（2026-09-20、実データで 13 件）。
+
+        ここでは訂正が **2015-03-01**、権利落ちは **2015-03-30**。
+        **29日前に分かっていた。**
         """
         from stock_ai.data.jquants_dividend import ex_dates_known_by
 
         body = self._rows(
-            {
-                "Code": "13010",
-                "ExDate": "2015-03-30",
-                "RefNo": "1",
-                "PubDate": "2015-02-01",
-                "DivRate": "10",
-            },
+            {"Code": "13010", "ExDate": "2015-03-30", "RefNo": "1", "DivRate": "10"},
             {
                 "Code": "13010",
                 "ExDate": "2015-03-30",
                 "RefNo": "2",
                 "PubDate": "2015-03-01",
+                "DivRate": "0",
+            },
+        )
+
+        found = ex_dates_known_by(self._archive(tmp_path, body))
+
+        assert found.by_symbol == {}, "**落ちるものが無い日で外している。**"
+        assert found.dropped_zero == 1
+
+    def test_a_zero_after_the_ex_date_does_not_undo_an_earlier_positive(self, tmp_path) -> None:
+        """**両向きに置く。** こちらが先読みになるほうである。
+
+        訂正が **2015-06-01** で、権利落ち **2015-03-30** より後。
+        **その日には分かりようがなかった**ので、当時の額を消さない。
+        """
+        from stock_ai.data.jquants_dividend import ex_dates_known_by
+
+        body = self._rows(
+            {"Code": "13010", "ExDate": "2015-03-30", "RefNo": "1", "DivRate": "10"},
+            {
+                "Code": "13010",
+                "ExDate": "2015-03-30",
+                "RefNo": "2",
+                "PubDate": "2015-06-01",
                 "DivRate": "0",
             },
         )
@@ -834,3 +871,109 @@ def _date(value: str):
     import datetime as dt
 
     return dt.date.fromisoformat(value)
+
+
+class TestWhichExDatesAreLeftToExclude:
+    """**外すのは「その日までに額が1度も公表されていない」ものだけ。**
+
+    前は「いつでもいいから正の額が1度でもあれば権利落ち」だった。
+    `published <= ex_date` も後の訂正も見ていないので、**権利落ち日より前に
+    0 へ訂正された日が外す側に残っていた**——額は公表されていて 0 なのに、
+    **落ちるものが無い日で急落を外していた**（2026-09-20、実データで 13 件）。
+
+    **`#15` も同じ口を使う**（`gap_fill` は `adjusted_days` を引かないので、
+    そちらでは前からそのまま効いていた）。
+    """
+
+    @classmethod
+    def _archive(cls, tmp_path, rows):
+        return TestTheAmountKnownAtTheExDate._archive(tmp_path, rows)
+
+    @staticmethod
+    def _left(found) -> bool:
+        """外す側に残ったか。"""
+        return bool(found.by_symbol.get("2131"))
+
+    def test_a_zero_before_the_ex_date_is_not_excluded(self, tmp_path) -> None:
+        """**この検査が落ちる条件を、実際に作る。** 落ちるものが無い。"""
+        from stock_ai.data.jquants_dividend import ex_dates_known_by
+
+        rows = (("2013-05-09", "56.0", "1"), ("2014-02-14", "0.0", "2"))
+
+        found = ex_dates_known_by(self._archive(tmp_path, rows))
+
+        assert not self._left(found), "**額 0 の日で外している。**"
+        assert found.dropped_zero == 1
+        assert found.unknown_amount == 0
+
+    def test_an_amount_never_published_is_excluded(self, tmp_path) -> None:
+        """**両向きに置く。** 調整のしようが無い日は外す。"""
+        from stock_ai.data.jquants_dividend import ex_dates_known_by
+
+        rows = (("2013-05-09", "", "1"),)
+
+        found = ex_dates_known_by(self._archive(tmp_path, rows))
+
+        assert self._left(found)
+        assert found.unknown_amount == 1
+        assert found.dropped_zero == 0
+
+    def test_an_amount_published_only_after_the_ex_date_is_excluded(self, tmp_path) -> None:
+        """**権利落ち日までに分からなければ、調整できない。**"""
+        from stock_ai.data.jquants_dividend import ex_dates_known_by
+
+        rows = (("2014-06-30", "56.0", "1"),)
+
+        found = ex_dates_known_by(self._archive(tmp_path, rows))
+
+        assert self._left(found)
+        assert found.unknown_amount == 1
+
+    def test_a_positive_amount_is_listed_for_the_subtraction(self, tmp_path) -> None:
+        """正の額は一覧に残る。**`build_events` が調整済みぶんを引く。**"""
+        import datetime as dt
+
+        from stock_ai.data.jquants_dividend import ex_dates_known_by, ex_dividends_known_by
+
+        rows = (("2013-05-09", "56.0", "1"),)
+        directory = self._archive(tmp_path, rows)
+
+        found = ex_dates_known_by(directory)
+        paid = ex_dividends_known_by(directory)
+
+        assert found.by_symbol["2131"] == [(dt.date(2013, 5, 9), dt.date(2014, 3, 27))]
+        # **引く相手が揃っていること。** 揃っていないと、調整した日を外す。
+        assert {when for _p, when, _r in paid["2131"]} == {
+            when for _p, when in found.by_symbol["2131"]
+        }
+
+    def test_the_two_doors_agree_on_every_key(self, tmp_path) -> None:
+        """**判定の当てはめが2箇所にあると、片方が置き去りになる。**
+
+        `ex_dates_known_by` と `ex_dividends_known_by` が、同じ鍵について
+        食い違わないこと。
+        """
+        from stock_ai.data.jquants_dividend import (
+            ex_dates_known_by,
+            ex_dividends_known_by,
+            known_at_ex_date,
+        )
+
+        rows = (
+            ("2013-05-09", "56.0", "1"),
+            ("2014-02-14", "0.0", "2"),
+        )
+        directory = self._archive(tmp_path, rows)
+
+        at = known_at_ex_date(directory)
+        listed = {
+            when for rows_ in ex_dates_known_by(directory).by_symbol.values() for _p, when in rows_
+        }
+        paid = {
+            when for rows_ in ex_dividends_known_by(directory).values() for _p, when, _r in rows_
+        }
+        zeros = {when for (_symbol, when), (_published, rate) in at.items() if rate <= 0}
+
+        # **0 の鍵は、どちらにも入らない。** 落とすものも、外す理由も無い。
+        assert not (zeros & listed)
+        assert not (zeros & paid)
