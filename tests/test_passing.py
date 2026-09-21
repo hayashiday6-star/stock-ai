@@ -42,16 +42,36 @@ class TestTheNumbersAreComputedNotTranscribed:
         assert longer.required(3.39) == pytest.approx(shape.required(3.39) / 2)
 
     def test_the_gentlest_design_is_first(self) -> None:
-        """**いちばん甘い形でどれだけ要るか**が先頭に来ること。
+        """**いちばん通しやすい形**が先頭に来ること。
 
-        **形ごとの線で並べる。** ここも1つの線（3.39）を全部に当てていた
-        ——`docs/PASSING.md` で直したのと同じ形が、確かめる側に残っていた
-        （2026-09-19）。管が増えたときに、並びが実際と違う順になる。
+        **要る情報比で並べる。** 「要るリターンが小さい順」に並べていた
+        （2026-09-21 まで）が、それだと **#7 の形（年 8.0%）が先頭に来て、
+        いちばん通しやすく見える。** 実際は要る情報比 1.25 で、並べた中で
+        2番目に高い——散らばりが小さいぶん要るリターンだけが小さく出ていた。
+
+        **欄を足すだけでは、並び順が古い読みを残す**（ユーザーの指摘）。
         """
-        monthly = [shape for shape in SHAPES if shape.per_year]
-        needs = [shape.required_annual(shape.line()) for shape in monthly]
+        ratios = [shape.required_ir() for shape in SHAPES if shape.required_ir() is not None]
 
-        assert needs == sorted(needs)
+        assert ratios == sorted(ratios)
+
+    def test_the_old_order_would_not_pass_this(self) -> None:
+        """**この検査が落ちる条件を、実際に1つ作る。**
+
+        落ちないテストは何も守っていない。**要るリターンの順に並べ直すと、
+        要る情報比の順にはならない。**
+        """
+        annualisable = [shape for shape in SHAPES if shape.per_year > 0]
+        by_return = sorted(annualisable, key=lambda shape: shape.required_annual(shape.line()))
+        ratios = [shape.required_ir() for shape in by_return]
+
+        assert ratios != sorted(ratios), "**2つの並びが同じなら、この節は何も言っていない。**"
+
+    def test_the_designs_without_a_ratio_are_last(self) -> None:
+        """**イベント型は、この順の中に置き場所が無い。** 混ぜずに後ろへ。"""
+        placed = [shape.required_ir() is None for shape in SHAPES]
+
+        assert placed == sorted(placed), "**情報比を出さない形が、途中に挟まっている。**"
 
 
 class TestWhatCannotBeAnnualised:
@@ -387,3 +407,90 @@ class TestTheDocumentCarriesTheInvariant:
         body = _DOC.read_text(encoding="utf-8")
 
         assert "—（年率に直さない）" in body
+
+
+class TestTheFloorMovesWithTheBudgetAndTheYears:
+    """**「床は動かせない」と書かない。**
+
+    そう書くと、後で予算に気付いた人には**動かしてよい理由**に見える
+    （ユーザーの指摘、2026-09-21）。**動かないのではない。いま動かしては
+    いけない。**
+    """
+
+    def test_a_smaller_budget_lowers_the_floor(self) -> None:
+        from stock_ai.backtest.multiplicity import line_for
+        from stock_ai.backtest.power import required_information_ratio
+
+        wide = required_information_ratio(line_for("calendar", budget=20), 1.0, 8.67)
+        narrow = required_information_ratio(line_for("calendar", budget=5), 1.0, 8.67)
+
+        assert narrow < wide
+
+    def test_the_document_shows_that_it_moves(self) -> None:
+        from stock_ai.backtest.multiplicity import HYPOTHESIS_BUDGET, line_for
+        from stock_ai.backtest.power import required_information_ratio
+
+        body = _DOC.read_text(encoding="utf-8")
+
+        for size in (HYPOTHESIS_BUDGET, 10, 5):
+            found = required_information_ratio(line_for("calendar", budget=size), 1.0, 8.6667)
+            assert f"**{found:.2f}**" in body, f"予算 {size} 本の床が文書に無い"
+
+    def test_the_document_says_not_to_move_it_now(self) -> None:
+        """**8本を閉じた後に予算を減らすのは、結果を見てから規則を選ぶこと。**"""
+        body = _DOC.read_text(encoding="utf-8")
+
+        assert "結果を見てから規則を選ぶこと" in body
+        assert "予算ではなく α を動かす" in body
+
+    def test_the_document_says_waiting_lowers_it(self) -> None:
+        """**何もしなくても年数は増える。** 急いで予算を使う理由が無い。"""
+        from stock_ai.backtest.multiplicity import line_for
+        from stock_ai.backtest.power import required_information_ratio
+
+        body = _DOC.read_text(encoding="utf-8")
+        now = SHAPES[0].period_years
+        assert now is not None
+
+        assert "待てば伸びる" in body
+        for later in (now + 5, now + 10):
+            found = required_information_ratio(line_for("calendar"), 1.0, later)
+            assert f"**{found:.2f}**" in body, f"{later:.1f}年 の床が文書に無い"
+
+
+class TestTheSummaryDoesNotLeanOnTheOrder:
+    """**「年 X% 以上」と書くなら、下回る行が在ってはならない。**
+
+    ここは `shapes[0]` を採っていて、**並びを「要る情報比の順」に変えた日に、
+    先頭が最小でなくなった**（2026-09-21）。
+    """
+
+    def test_the_headline_uses_the_smallest_required_return(self) -> None:
+        from stock_ai import cli
+
+        smallest = min(
+            shape.required_annual(shape.line()) for shape in SHAPES if shape.per_year > 0
+        )
+
+        assert cli._gentlest_return(SHAPES) == pytest.approx(smallest)
+        assert f"年 {smallest:.1%} 以上" in _DOC.read_text(encoding="utf-8")
+
+    def test_the_first_row_is_not_the_smallest_any_more(self) -> None:
+        """**この検査が落ちる条件が、実際に在ること。**
+
+        先頭が最小のままなら、この節は何も守っていない。
+        """
+        first = SHAPES[0].required_annual(SHAPES[0].line())
+        smallest = min(
+            shape.required_annual(shape.line()) for shape in SHAPES if shape.per_year > 0
+        )
+
+        assert first is not None
+        assert smallest < first, "**先頭が最小なら、`shapes[0]` に戻しても緑になる。**"
+
+    def test_the_span_does_not_divide_an_event_shape(self) -> None:
+        """**`periods / 12` を直に書かない。** 年率に直せない形が混ざる。"""
+        from stock_ai import cli
+
+        assert cli._judgement_span(SHAPES) == pytest.approx(SHAPES[0].period_years)
+        assert cli._judgement_span([shape for shape in SHAPES if shape.per_year <= 0]) == 0.0

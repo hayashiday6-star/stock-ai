@@ -10271,6 +10271,38 @@ def passing(
         console.print(f"[green]{target_path} を書き直した。[/] **この文書は生成物である。**")
 
 
+def _gentlest_return(shapes: object) -> float:
+    """The smallest required annual return across the annualisable shapes.
+
+    **「年 X% 以上」と書くなら、下回る行が在ってはならない。** ここは
+    `shapes[0]` を採っていて、**並びを「要る情報比の順」に変えた日に、
+    先頭が最小でなくなった**（2026-09-21）。
+
+    **並び順に頼る読み方を残さない。** 最小が要るなら、最小を取る。
+    """
+    found = [
+        shape.required_annual(shape.line())
+        for shape in shapes  # type: ignore[attr-defined]
+        if shape.per_year > 0
+    ]
+    return min(found) if found else 0.0
+
+
+def _judgement_span(shapes: object) -> float:
+    """The judgement window in years, from the shapes that can say.
+
+    **`periods / 12` を直に書かない。** 年率に直せない形は `per_year` が 0
+    なので、割ると意味の無い数になる——`Shape.period_years` が ``None`` を
+    返すのと同じ理由である。
+    """
+    found = [
+        shape.period_years
+        for shape in shapes  # type: ignore[attr-defined]
+        if shape.period_years is not None
+    ]
+    return max(found) if found else 0.0
+
+
 def _ir_cell(shape: object) -> str:
     """Build the required-information-ratio cell, for the table and the document.
 
@@ -10336,7 +10368,7 @@ def _passing_lines(
         "",
         "- **指数に対して**（指数と同じだけ上がっても 0 である）",
         "- **手数料を引いた後で**（往復 0.4% を引いた残り）",
-        f"- **{shapes[0].periods / 12:.1f}年つづけて**",  # type: ignore[index]
+        f"- **{_judgement_span(shapes):.1f}年つづけて**",
         "",
         "という意味である。",
         "",
@@ -10377,43 +10409,85 @@ def _passing_lines(
         "",
         "**下げられるのは、膨張・線・年数の3つだけである。** SD も n も効かない。",
         "",
-        "### 年数は、いまのところ動かせない",
+        "### 年数は、いま在るぶんは増やせない。**待てば伸びる**",
         "",
-        "**判定に使える年数を増やせば、全部の設計の壁が下がる。** **だが増やす手が無い。**",
+        "**判定に使える年数を増やせば、全部の設計の壁が下がる。** **いま増やす手は無い。**",
         "",
-        "| 判定に使える年数 | 要る情報比（月次の線・膨張 1.00） |",
+        "| 期間 | 状態 |",
         "|---|---|",
     ]
     # **書き写さない。** 線が動けばここも動く（`docs/PASSING.md` が生成物で
-    # ある理由そのもの）。**年数のほうは、下の表から採っている。**
+    # ある理由そのもの）。
     # **`OOS_FROM` を、モジュールの頭の `pead` のそれと取り違えない**
     # （`CLAUDE.md`「モジュールの頭に、同じ名前の別物が居ないか」。あちらは
     # 2024-01-01 で、6年半ずれる）。**ここで束ね直す。**
     from stock_ai.backtest.gap_fill import IS_END as LOOK_END
     from stock_ai.backtest.gap_fill import OOS_FROM as JUDGE_FROM
+    from stock_ai.backtest.multiplicity import line_for
     from stock_ai.backtest.passing import LOOKED_FROM
     from stock_ai.backtest.power import required_information_ratio
 
-    now_years = shapes[0].period_years  # type: ignore[index]
-    for years in (now_years, 13.7, 20.0):
-        label = f"{years:.1f}年" + ("（いま）" if years == now_years else "")
-        lines.append(f"| {label} | **{required_information_ratio(target, 1.0, years):.2f}** |")
+    now_years = _judgement_span(shapes)
+    calendar = line_for("calendar", budget=budget)
     lines += [
-        "",
-        "| 期間 | 状態 |",
-        "|---|---|",
         f"| {LOOKED_FROM} より前 | **一度も見ていない** |",
         f"| {LOOKED_FROM} 〜 {LOOK_END:%Y-%m} | **8本の説で下見済み** |",
         f"| {JUDGE_FROM:%Y-%m} 〜 | OOS |",
         "",
-        "**2013〜2017 を OOS に入れ替えることはできない。** 8本ぶん覗いた後の"
-        "「本番」になる——下の条件②に真正面から反する。**増やせるのは、時間が"
-        "経つことだけである。**",
+        "**下見済みの期間を OOS に入れ替えることはできない。** 8本ぶん覗いた"
+        "後の「本番」になる——下の条件②に真正面から反する。",
+        "",
+        "**ただし、待てば伸びる。** OOS の終わりは今日なので、**何もしなくても"
+        "年数は増え、床は `√年数` で下がる。**",
+        "",
+        "| 判定に使える年数 | 要る情報比（暦の線・膨張 1.00） |",
+        "|---|---|",
+    ]
+    for years, when in ((now_years, "いま"), (now_years + 5, "5年後"), (now_years + 10, "10年後")):
+        lines.append(
+            f"| {years:.1f}年（{when}） | "
+            f"**{required_information_ratio(calendar, 1.0, years):.2f}** |"
+        )
+    lines += [
+        "",
+        "**いま際どい設計に判定を使わないことに、追加の理由が付く。** 5年待てば"
+        "同じ設計の壁が2割下がる。**予算を急いで使う理由が無い。**",
+        "",
+        "### 床が動くとすれば、年数ではなく**予算**である",
+        "",
+        f"**床 {required_information_ratio(calendar, 1.0, now_years):.2f} は、"
+        f"予算 {budget} 本の下での値である。** 線は予算から来ているので、"
+        "**予算を減らせば床も下がる。**",
+        "",
+        "| 予算 | 暦の線 | 床（いまの年数・膨張 1.00） |",
+        "|---|---|---|",
+    ]
+    for size in (budget, 10, 5):
+        other = line_for("calendar", budget=size)
+        lines.append(
+            f"| {size} 本 | {other:.2f} | "
+            f"**{required_information_ratio(other, 1.0, now_years):.2f}** |"
+        )
+    lines += [
+        "",
+        "**だから「床は動かせない」とは書かない。** そう書くと、後で予算に"
+        "気付いた人には**動かしてよい理由**に見える。",
+        "",
+        "**動かないのではない。いま動かしてはいけない。** 8本を §0 で閉じた"
+        "後に予算を減らすのは、**結果を見てから規則を選ぶこと**である"
+        "——#7 が「五分五分と気付いたうえで回して負けた」のと同じ形で、"
+        "**止める場所を作ったのに使わないことになる。**",
+        "",
+        "**緩めたくなったら、予算ではなく α を動かす。** そちらは「どれだけ"
+        "間違えてよいか」の宣言で、**何本試したかという事実とは別である。**",
         "",
         "## 3. 合格の条件",
         "",
         "> **先に紙に書いたとおりに売買して、手数料を引いた後で、指数を"
-        f"年 {shapes[0].required_annual(shapes[0].line()):.1%} 以上"  # type: ignore[index]
+        # **いちばん小さい要るリターンを採る。** 先頭の行を採っていたが、
+        # **並びを「要る情報比の順」に変えた日に、それが最小でなくなった**
+        # （2026-09-21）。「〜以上」と書くなら、下回る行が在ってはならない。
+        f"年 {_gentlest_return(shapes):.1%} 以上"
         "（設計によってはもっと）上回り、それが続き、しかもまぐれでは説明できないこと。**",
         "",
     ]

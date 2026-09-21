@@ -128,18 +128,20 @@ class Shape:
 
 #: 測った設計。**すべて事前登録に記録がある。**
 #:
-#: 順番は「要るリターンが小さい順」——**いちばん甘い設計でどれだけ要るか**が
-#: 先頭に来るようにする。
+#: 順番は「**要る情報比**が小さい順」——**いちばん通しやすい設計が先頭に来る
+#: ようにする。**
+#:
+#: **「要るリターンが小さい順」に並べていた**（2026-09-21 まで）。それだと
+#: #7 の形（年 8.0%）が先頭に来るが、**要る情報比は 1.25 で、並べた中で
+#: 2番目に高い。** 散らばりが小さいので要るリターンだけが小さく出ていた。
+#:
+#: **欄を足すだけでは、並び順が古い読みを残す**（ユーザーの指摘）。
+#: いちばん上がいちばん通しやすく見えるので、**そこが本当に通しやすい形で
+#: なければならない。**
+#:
+#: **イベント型は末尾に置く。** 情報比を出さない（重なる窓は取引できる系列
+#: ではない）ので、この順の中に置き場所が無い——**混ぜずに、後ろにまとめる。**
 SHAPES: tuple[Shape, ...] = (
-    Shape(
-        name="#7 の形（低ボラ・ロングのみ・α）",
-        sd=0.0184,
-        inflation=1.09,
-        periods=104,
-        unit="月",
-        per_year=12,
-        source="PREREG_LOWVOL_JP.md §8（分位1 − β×ベンチ）",
-    ),
     Shape(
         name="#13 の形（月替わり・暦・指数）",
         sd=0.0312,
@@ -160,6 +162,15 @@ SHAPES: tuple[Shape, ...] = (
         source="PREREG_LOWVOL_VALUE_JP.md §0",
     ),
     Shape(
+        name="#7 の形（低ボラ・ロングのみ・α）",
+        sd=0.0184,
+        inflation=1.09,
+        periods=104,
+        unit="月",
+        per_year=12,
+        source="PREREG_LOWVOL_JP.md §8（分位1 − β×ベンチ）",
+    ),
+    Shape(
         name="#9 の形（バリュー・ロングショート・生の差）",
         sd=0.0493,
         inflation=1.15,
@@ -178,13 +189,13 @@ SHAPES: tuple[Shape, ...] = (
         source="PREREG_MOMENTUM_JP.md §0（IS 106ヶ月、入れ替わり 29.5%／月）",
     ),
     Shape(
-        name="#5 の形（イベント型・20営業日）",
-        sd=0.1616,
-        inflation=1.04,
-        periods=950,
+        name="#16 の形（落ちるナイフ・イベント型・5営業日）",
+        sd=0.0993,
+        inflation=1.38,
+        periods=1898,
         unit="イベント日",
         per_year=0,
-        source="PREREG_REVISION_JP.md §0（1,827 件が 831 日。OOS は約 950 日）",
+        source="PREREG_KNIFE_JP.md §0（IS 5,576 件が 1,018 日。OOS は 1,898 日）",
         pipe="event",
     ),
     Shape(
@@ -198,13 +209,13 @@ SHAPES: tuple[Shape, ...] = (
         pipe="event",
     ),
     Shape(
-        name="#16 の形（落ちるナイフ・イベント型・5営業日）",
-        sd=0.0993,
-        inflation=1.38,
-        periods=1898,
+        name="#5 の形（イベント型・20営業日）",
+        sd=0.1616,
+        inflation=1.04,
+        periods=950,
         unit="イベント日",
         per_year=0,
-        source="PREREG_KNIFE_JP.md §0（IS 5,576 件が 1,018 日。OOS は 1,898 日）",
+        source="PREREG_REVISION_JP.md §0（1,827 件が 831 日。OOS は約 950 日）",
         pipe="event",
     ),
 )
