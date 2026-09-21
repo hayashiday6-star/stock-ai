@@ -1245,6 +1245,16 @@ DIVIDEND_CODE_COLUMNS: tuple[str, ...] = ("Code", "LocalCode")
 #: 開示日の列。**「いつ知れたか」である。** 先読みを外すのに要る。
 DIVIDEND_DATE_COLUMNS: tuple[str, ...] = ("DiscDate", "DisclosedDate")
 
+#: 直近の開示から、これより古くなったら使わない（候補14）。
+#:
+#: **出典は無い。決めの値である**（1年）。会社予想の年間配当は、**その会計
+#: 年度のもの**である。1年を超えて引き継ぐと、**終わった年度の予想を
+#: 今年の利回りとして使うことになる。**
+#:
+#: **これが無いと、2010年に開示をやめた銘柄が 2026年まで同じ配当を持ち歩く。**
+#: 例外は出ない——**利回りが静かに古くなるだけである。**
+DIVIDEND_STALE_DAYS = 365
+
 #: 利回りがこれを超えたら、**数えて出す。落としも直しもしない。**
 #:
 #: **出典は無い。決めの値である。** 日本株で年 20% の利回りは、無配への
@@ -1277,6 +1287,16 @@ class YieldCensus:
 
     priced_symbols: int
     """価格の側に在った銘柄。**突き合わせの相手である。**"""
+
+    stale: int
+    """**期限を越えた引き継ぎ**で落とした銘柄月。
+
+    **合計だけ出すと、その中に紛れる。** 開示が止まった銘柄が多いのか、
+    引き継ぎの期限が短すぎるのかは、**この数が言う。**
+    """
+
+    stale_days: int
+    """引き継ぎの期限（日）。**決めの値である。**"""
 
     matched_symbols: int
     """**両側に在った銘柄。** 0 なら、綴りが噛み合っていない。
@@ -1324,6 +1344,12 @@ class YieldCensus:
                 "**調整後では割らない**——1株配当はその時点の株数で書かれているので、"
                 "分割比のぶん利回りが跳ねる。"
             )
+        if self.stale:
+            found.append(
+                f"**{self.stale:,} 銘柄月は、直近の開示が {self.stale_days} 日より"
+                "古かった。** **引き継いでいない**——会社予想の年間配当はその会計"
+                "年度のものなので、越えて持ち歩くと**終わった年度の予想**になる。"
+            )
         if self.implausible:
             found.append(
                 f"**{self.implausible:,} 銘柄月は利回りが {IMPLAUSIBLE_YIELD:.0%} を超えた。** "
@@ -1347,6 +1373,7 @@ def dividend_yields(
     directory: Path,
     prices: dict[tuple[str, pd.Period], tuple[dt.date, float]],
     column: str = DIVIDEND_COLUMN,
+    stale_days: int = DIVIDEND_STALE_DAYS,
 ) -> tuple[dict[tuple[str, pd.Period], tuple[dt.date, float]], YieldCensus]:
     """会社予想の配当利回りを、**銘柄月ごとに1つ**作る（候補14）。
 
@@ -1357,6 +1384,24 @@ def dividend_yields(
     | 材料 | `/fins/summary` の :data:`DIVIDEND_COLUMN` ÷ **調整前**の月末終値 |
     | 並べ方 | 利回りの順 |
     | 1観測 | 1ヶ月 |
+
+    ## 埋まっていない 44% をどう扱うか（**測る前に決めた**）
+
+    実データで :data:`DIVIDEND_COLUMN` が埋まっているのは **56%** である
+    （2026-09-21）。**残りをどうするかは設計の決定で、選択肢は3つあった。**
+
+    | | どうなるか |
+    |---|---|
+    | 除く | **断面が3分の1に痩せる。** しかも「直前に開示した会社」だけが残り、**暦の産物になる** |
+    | 実績で埋める | **予想と実績が混ざる**（`jquants_valuation` の `Fwd` と同じ禁則） |
+    | **引き継ぐ** | **採った。** その時点で実際に知れていた値である |
+
+    **引き継ぎには期限を置く**（:data:`DIVIDEND_STALE_DAYS`）。会社予想の
+    年間配当は**その会計年度のもの**なので、1年を超えて持ち歩くと
+    **終わった年度の予想を今年の利回りとして使う。**
+
+    **期限が無いと、2010年に開示をやめた銘柄が 2026年まで同じ配当を持ち
+    歩く。例外は出ない——利回りが静かに古くなるだけである。**
 
     ## 分母は調整前である
 
@@ -1379,6 +1424,7 @@ def dividend_yields(
         directory: 原本の置き場所。
         prices: ``(銘柄, 月) -> (日, 調整前の終値)``。
         column: 使う配当の列。
+        stale_days: 開示からこれより古くなったら使わない。
 
     Returns:
         ``((銘柄, 月) -> (日, 利回り), 数えたもの)``。
@@ -1436,7 +1482,7 @@ def dividend_yields(
         by_symbol.setdefault(symbol, []).append((month, rebalance, close))
 
     values: dict[tuple[str, pd.Period], tuple[dt.date, float]] = {}
-    no_price = implausible = 0
+    no_price = implausible = stale = 0
     for symbol, entries in disclosed.items():
         entries.sort()
         days = [day for day, _amount in entries]
@@ -1446,6 +1492,11 @@ def dividend_yields(
             if position == 0:
                 continue
             when, amount = entries[position - 1]
+            # **引き継ぎに期限を置く。** 無いと、開示をやめた銘柄が
+            # いつまでも同じ配当を持ち歩く。
+            if (rebalance - when).days > stale_days:
+                stale += 1
+                continue
             if close <= 0:
                 no_price += 1
                 continue
@@ -1467,6 +1518,8 @@ def dividend_yields(
         implausible=implausible,
         priced_symbols=len(by_symbol),
         matched_symbols=len(set(disclosed) & set(by_symbol)),
+        stale=stale,
+        stale_days=stale_days,
     )
 
 

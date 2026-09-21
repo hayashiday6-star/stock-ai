@@ -1917,6 +1917,89 @@ class TestTheDividendYieldFold:
 
         assert census.implausible == 0
 
+    def test_a_gap_is_carried_forward(self, tmp_path) -> None:
+        """**埋まっていない 44% は、前回の開示を引き継ぐ。**
+
+        除くと**断面が3分の1に痩せ、「直前に開示した会社」だけが残る**
+        ——暦の産物になる。実績で埋めると**予想と実績が混ざる。**
+        """
+        from stock_ai.backtest.wall import dividend_yields
+
+        rows = [self._row("2017-01-10", amount="30")]
+        prices = self._prices(
+            ("2017-02", dt.date(2017, 2, 28), 1000.0),
+            ("2017-03", dt.date(2017, 3, 31), 1000.0),
+        )
+
+        values, census = dividend_yields(self._archive(tmp_path, rows), prices)
+
+        # **開示は1回。観測は2ヶ月ぶん出る。**
+        assert census.observations == 2  # noqa: PLR2004
+        assert all(found == pytest.approx(0.03) for _when, found in values.values())
+
+    def test_the_carry_forward_has_a_deadline(self, tmp_path) -> None:
+        """**期限が無いと、開示をやめた銘柄が同じ配当を持ち歩く。**
+
+        **例外は出ない——利回りが静かに古くなるだけである。**
+        古い実装（期限なし）では、この assert が落ちる。
+        """
+        from stock_ai.backtest.wall import dividend_yields
+
+        rows = [self._row("2010-05-10", amount="30")]
+        prices = self._prices(("2017-02", dt.date(2017, 2, 28), 1000.0))
+
+        values, census = dividend_yields(self._archive(tmp_path, rows), prices)
+
+        assert not values, "**7年前の予想を、今年の利回りとして使っている。**"
+        assert census.stale == 1
+        assert any("より古かった" in line for line in census.warnings())
+
+    def test_just_inside_the_deadline_is_kept(self, tmp_path) -> None:
+        """**両向きに置く。** 常に落とす形でも緑にならないように。"""
+        from stock_ai.backtest.wall import DIVIDEND_STALE_DAYS, dividend_yields
+
+        rebalance = dt.date(2017, 2, 28)
+        disclosed = rebalance - dt.timedelta(days=DIVIDEND_STALE_DAYS)
+        rows = [self._row(disclosed.isoformat(), amount="30")]
+        prices = self._prices(("2017-02", rebalance, 1000.0))
+
+        values, census = dividend_yields(self._archive(tmp_path, rows), prices)
+
+        assert len(values) == 1
+        assert census.stale == 0
+
+    def test_one_day_past_the_deadline_is_not(self, tmp_path) -> None:
+        """**閾値に等号を置いたら、その上にちょうど乗る入力を疑う。**"""
+        from stock_ai.backtest.wall import DIVIDEND_STALE_DAYS, dividend_yields
+
+        rebalance = dt.date(2017, 2, 28)
+        disclosed = rebalance - dt.timedelta(days=DIVIDEND_STALE_DAYS + 1)
+        rows = [self._row(disclosed.isoformat(), amount="30")]
+        prices = self._prices(("2017-02", rebalance, 1000.0))
+
+        values, census = dividend_yields(self._archive(tmp_path, rows), prices)
+
+        assert not values
+        assert census.stale == 1
+
+    def test_a_fresh_disclosure_replaces_a_stale_one(self, tmp_path) -> None:
+        """**引き継ぎは、新しいものが来たら止まる。**"""
+        from stock_ai.backtest.wall import dividend_yields
+
+        rows = [self._row("2010-05-10", amount="30"), self._row("2017-01-10", amount="40")]
+        prices = self._prices(("2017-02", dt.date(2017, 2, 28), 1000.0))
+
+        values, census = dividend_yields(self._archive(tmp_path, rows), prices)
+
+        assert census.stale == 0
+        assert next(iter(values.values()))[1] == pytest.approx(0.04)
+
+    def test_the_deadline_has_no_source(self) -> None:
+        """**決めた値がそのまま出ていること。** 書き写さない。"""
+        from stock_ai.backtest.wall import DIVIDEND_STALE_DAYS
+
+        assert DIVIDEND_STALE_DAYS == 365  # noqa: PLR2004 - 決めた値そのもの
+
     def test_the_forecast_column_is_the_one_chosen(self) -> None:
         """**測る前に決めた値が、そのまま出ていること。**"""
         from stock_ai.backtest.wall import DIVIDEND_COLUMN
