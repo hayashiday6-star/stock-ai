@@ -221,3 +221,46 @@ class TestTheColumnsAreNotThereInTheOldOriginals:
         assert not found.levels
         assert found.no_tenor == 1
         assert any("限月が" in line for line in found.warnings())
+
+
+class TestAMissingBaseVolIsNotADisagreement:
+    """**欠測を食い違いに混ぜない。**
+
+    `parse_number("0.0000")` は `0.0` を返すので、**差 +31.46 が「差の大きい
+    順」の先頭に並び、残り4件の性格を隠していた**（2026-09-21、ユーザーが
+    実データで指摘。2018-02-09）。
+
+    `DividendAdjustment` が「額が 0 以下」を別に数えているのと同じ扱いで
+    ある——`CLAUDE.md`「同じ列に、2つの単位を並べない」。
+    """
+
+    @staticmethod
+    def _with_base(tmp_path, base: str):
+        names, rows = _rows()
+        changed = [dict(row, BaseVol=base) if row["Date"] == "2026-01-05" else row for row in rows]
+        return daily_atm_iv(_archive(tmp_path, _body(changed, names)))
+
+    def test_a_zero_base_is_counted_apart(self, tmp_path) -> None:
+        found = self._with_base(tmp_path, "0.0000")
+
+        assert found.base_missing == 1
+        assert not found.disagreed, "**欠測を食い違いに数えている。**"
+        assert found.checked == 0, "**欠測を分母に入れている。**"
+        assert any("`BaseVol` が 0 以下" in line for line in found.warnings())
+
+    def test_a_real_disagreement_still_counts(self, tmp_path) -> None:
+        """**両向きに置く。** 全部を欠測に倒しても緑にならないように。"""
+        found = self._with_base(tmp_path, "99.0")
+
+        assert found.base_missing == 0
+        assert len(found.disagreed) == 1
+        assert found.checked == 1
+
+    def test_a_matching_base_is_neither(self, tmp_path) -> None:
+        names, rows = _rows()
+
+        found = daily_atm_iv(_archive(tmp_path, _body(rows, names)))
+
+        assert found.base_missing == 0
+        assert not found.disagreed
+        assert found.checked == 1

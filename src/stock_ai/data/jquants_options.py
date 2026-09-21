@@ -126,6 +126,17 @@ class ImpliedVolatility:
     no_tenor: int
     """限月が :data:`MIN_TENOR_DAYS` 日以上残っていなかった日。"""
 
+    base_missing: int = 0
+    """原本の `BaseVol` が **0 以下**だった日。**食い違いに数えない。**
+
+    **欠測を食い違いに混ぜていた**（2026-09-21、ユーザーが指摘）。
+    `parse_number("0.0000")` は `0.0` を返すので、**差 +31.46 が「差の大きい
+    順」の先頭に並び、残り4件の性格を隠していた。**
+
+    `DividendAdjustment` が「額が 0 以下」を別に数えているのと同じ扱いで
+    ある——`CLAUDE.md`「同じ列に、2つの単位を並べない」。
+    """
+
     disagreed: tuple[Disagreement, ...] = ()
     """食い違った日だけ。**中身を持っている**——`checks` がそれを刷る。"""
 
@@ -188,6 +199,11 @@ class ImpliedVolatility:
                 "**畳み方が原本の想定とずれている可能性がある**"
                 "——下の表に、採った限月と残存日数が出る。"
             )
+        if self.base_missing:
+            found.append(
+                f"**{self.base_missing:,} 日は原本の `BaseVol` が 0 以下だった。** "
+                "**欠測である**——突き合わせにも食い違いにも入れていない。"
+            )
         if not self.levels:
             found.append("**ATM の水準を1日も作れなかった。** 候補Aの材料にならない。")
         return found
@@ -241,7 +257,7 @@ def daily_atm_iv(directory: Path, min_tenor: int = MIN_TENOR_DAYS) -> ImpliedVol
     levels: dict[dt.date, float] = {}
     per_year: dict[int, tuple[int, int]] = {}
     disagreed: list[Disagreement] = []
-    no_tenor = checked = 0
+    no_tenor = checked = base_missing = 0
     for when in sorted(seen):
         days, made = per_year.get(when.year, (0, 0))
         picked = _atm_on(when, seen[when], min_tenor)
@@ -255,7 +271,11 @@ def daily_atm_iv(directory: Path, min_tenor: int = MIN_TENOR_DAYS) -> ImpliedVol
             # **別の切り口で同じ数字を出す。** 一致は当たり前ではない
             # ——限月の選び方を1日ずらすだけで崩れる。
             theirs = base_vol.get(when)
-            if theirs is not None:
+            if theirs is not None and theirs <= 0:
+                # **欠測である。** 指数オプションの基準ボラティリティが 0 に
+                # なることはない。**食い違いにも分母にも入れない。**
+                base_missing += 1
+            elif theirs is not None:
                 checked += 1
                 if abs(level - theirs) >= AGREEMENT_BAND:
                     # **中身を持って返る。** 件数だけだと、疑う材料が無い。
@@ -279,6 +299,7 @@ def daily_atm_iv(directory: Path, min_tenor: int = MIN_TENOR_DAYS) -> ImpliedVol
         with_iv=with_iv,
         days=len(seen),
         no_tenor=no_tenor,
+        base_missing=base_missing,
         disagreed=tuple(disagreed),
         checked=checked,
         per_year=per_year,

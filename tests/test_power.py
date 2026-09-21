@@ -623,3 +623,37 @@ def test_no_lags_is_never_undersampled() -> None:
     from stock_ai.backtest.power import estimate_power
 
     assert not estimate_power([0.01, -0.02, 0.03], lags=0).undersampled
+
+
+def test_just_longer_than_the_lag_is_still_undersampled() -> None:
+    """**「ラグより長ければよい」では足りない。**
+
+    ラグ 20 に標本 21 でも、**いちばん長いラグは1組の積**からできている。
+    線は `SAMPLE_PER_LAG` で、**出典の無い決めの値**である。
+    """
+    from stock_ai.backtest.power import SAMPLE_PER_LAG, estimate_power, sample_needed
+
+    estimate = estimate_power([0.01, -0.02, 0.03] * 7, lags=20)
+
+    assert estimate.observations == 21  # noqa: PLR2004 - ラグ 20 より1つ長い
+    assert estimate.undersampled
+    assert estimate.needed == 20 * SAMPLE_PER_LAG
+    assert sample_needed(20) == estimate.needed
+
+
+def test_the_requirement_scales_with_the_lag() -> None:
+    """**要る数はラグに比例する。** 式は1箇所だけ。"""
+    from stock_ai.backtest.power import sample_needed
+
+    assert sample_needed(1) * 20 == sample_needed(20)
+    assert sample_needed(0) == 0
+
+
+def test_the_existing_event_designs_are_not_newly_flagged() -> None:
+    """**常に点く旗は、何も区別しない。**
+
+    #9・#10 の IS は1,000日を超えるので、この線では鳴らない。
+    """
+    from stock_ai.backtest.power import estimate_power
+
+    assert not estimate_power([0.01, -0.02, 0.03, -0.01] * 300, lags=20).undersampled

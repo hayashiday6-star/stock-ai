@@ -43,10 +43,11 @@
 | | 候補A（候補6 の一部） | 候補B（候補7） |
 |---|---|---|
 | 材料 | オプションの ATM 予想変動率 | 投資部門別（`TokyoNagoya`） |
-| 事象 | 前日比 **+20%**（:data:`IV_SPIKE`） | その週が**買い越し** |
+| 事象 | 前日比が :data:`IV_SPIKE_LADDER` の線を超える | その週が**買い越し** |
 | 入る日 | その**翌営業日** | **公表日の翌営業日** |
 | 保有 | :data:`HOLDING` 営業日 | :data:`FLOW_HOLDING` 営業日 |
 | 1観測 | 1イベント日 | 1公表 |
+| IS/OOS | :data:`IV_IS_FROM`〜:data:`IV_IS_END` / :data:`IV_OOS_FROM`〜 | 暦どおり |
 | 引く相手 | **無い**（指数を買うだけ） | 同左 |
 | 管 | `calendar` | `calendar` |
 
@@ -55,8 +56,16 @@
 校正した値を当てていることは、そう書いておく**——`docs/PASSING.md` が月次の
 線を全部の形に当てていた件と同じ型を避けるため。
 
-**+20% と「買い越し」に出典は無い。** 決めの値である。文献から取ったのでは
+**梯子と「買い越し」に出典は無い。** 決めの値である。文献から取ったのでは
 ない——**そう書いておく**（`CLAUDE.md`「出典の無い数字を書かない」）。
+
+**線は梯子から1つに決まる**——`power.sample_needed(holding)` を満たす中で
+いちばん厳しいもの（:func:`choose_spike`）。**効果は1つも見ない。**
+選ぶのは観測数だけである。
+
+**候補11 を足した**（2026-09-21）。候補7 の絞りをやめた形で、**常に市場に
+居て直近の公表の符号で向きを切り替える。** ±1 倍は SD を変えないので、
+**壁は指数の週次の散らばりと週数だけで決まる。**
 
 **引く相手が無いので、壁は「指数そのものの散らばり」で決まる。** イベント型
 （等加重の宇宙を引く）とは別の量である。**並べても、どちらが良い設計かは
@@ -125,6 +134,37 @@ KNIFE_DAYS = _KNIFE_DAYS
 #: **出典は無い。** 「1日で2割上がったら跳ねたと呼ぶ」という、決めの値で
 #: ある。文献から取ったのではない——**そう書いておく。**
 IV_SPIKE = 0.20
+
+#: 予想変動率の跳ねを、どこまで下げてよいか。**梯子を先に固定する。**
+#:
+#: **n ≥ `power.sample_needed(lags)` を満たす中で、いちばん厳しい線を採る**
+#: （2026-09-21 にコミットした）。**効果は1つも見ない**——選ぶのは観測数だけ
+#: である。`docs/WALL.md` の冒頭が許しているのはそこまでで、**そのつど効果を
+#: 見れば #10 と同じところに落ちる。**
+#:
+#: **順に試して良いほうを採るのではない。** 上から見て**最初に条件を満たした
+#: ものを採る**ので、答えは1つに決まる。
+IV_SPIKE_LADDER: tuple[float, ...] = (0.20, 0.15, 0.10, 0.075, 0.05)
+
+#: 候補6 の IS の初日。**`IV` が原本に在る最初の日である**（実測)。
+#:
+#: 2016-07-19。それより前は `IV` / `BaseVol` / `UnderPx` が全行で空
+#: （`checks\候補6と7の材料は在るか.bat` が年ごとに数える）。
+IV_IS_FROM = dt.date(2016, 7, 19)
+
+#: 候補6 の IS の最終日。**この候補だけ暦の :data:`IS_END` を使わない。**
+#:
+#: **2026-09-21 に決めてコミットした。** 理由は算数である——暦の 2017-12-31
+#: で切ると `IV` が在るのは **359 日**しかなく、全部が事象でも 339 窓。
+#: `lags=20` の膨張に要る **200** を満たすには事象が6割の日に出る必要があり、
+#: **それは事象ではない。** どの線を選んでも膨張が推定できない。
+#:
+#: **`IV` が在る期間の最初の3年**を IS にする。代償は OOS が 8.7年 → 7.2年。
+#: **他の説と並べるときは「別の窓」と書くこと。**
+IV_IS_END = dt.date(2019, 7, 18)
+
+#: 候補6 の OOS の初日。**IS の翌日。**
+IV_OOS_FROM = dt.date(2019, 7, 19)
 
 #: 需給の週で保有する営業日数。**候補B（候補7）で使う。**
 #:
@@ -591,4 +631,98 @@ def flow_entries(
     """
     return sorted(
         published for published, share in weeks if (share > 0) is positive and math.isfinite(share)
+    )
+
+
+@dataclasses.dataclass(frozen=True)
+class SpikeChoice:
+    """梯子から選んだ線と、**その観測数だけ。** 効果は持たない。
+
+    `Wall` と同じ設計である——**平均を持てる形にすると、「効果がありそうだ
+    から通す」が書ける。**
+    """
+
+    rise: float
+    """選んだ線（前日比）。"""
+
+    events: tuple[dt.date, ...]
+    """その線で跳ねた日。**IS も OOS も入っている**——OOS は件数だけ使う。"""
+
+    is_windows: int
+    """IS で窓が最後まで在った数。**膨張を推定する標本である。**"""
+
+    needed: int
+    """その保有日数で膨張を推定するのに要る数（`power.sample_needed`）。"""
+
+    cleared: bool
+    """要る数を満たしたか。**満たさなければ壁は暫定である。**"""
+
+    tried: tuple[tuple[float, int], ...] = ()
+    """``(線, IS の窓)`` を梯子の順に。**選び方が出力に出る。**"""
+
+
+def choose_spike(  # noqa: PLR0913 - 梯子の当て方をすべて受け取る
+    levels: dict[dt.date, float],
+    returns: list[float],
+    dates: list[dt.date],
+    holding: int,
+    end: dt.date,
+    ladder: tuple[float, ...] = IV_SPIKE_LADDER,
+) -> SpikeChoice:
+    """梯子から線を1つ選ぶ。**満たす中でいちばん厳しいもの。**
+
+    **効果を1つも計算しない。** 見るのは IS の窓の数だけである——
+    `docs/WALL.md` の冒頭が許しているのはそこまでで、**そのつど効果を見れば
+    #10 と同じところに落ちる。**
+
+    **順に試して良いほうを採るのではない。** 上から見て**最初に条件を
+    満たしたもの**を採るので、答えは1つに決まる。
+
+    Args:
+        levels: ``日 -> ATM の予想変動率``。
+        returns: ベンチマークの日次リターン。
+        dates: その日付。
+        holding: 保有営業日数。**ラグでもある。**
+        end: IS の最終日。
+        ladder: 試す線。**厳しい順に並んでいること。**
+
+    Returns:
+        :class:`SpikeChoice`。**1つも満たさなければ、いちばん観測の多い線を
+        返して ``cleared=False`` を立てる**——黙って空を返さない。
+
+    Raises:
+        ValueError: ``ladder`` が空。
+    """
+    from stock_ai.backtest.power import sample_needed
+
+    if not ladder:
+        raise ValueError("ladder must not be empty.")
+
+    needed = sample_needed(holding)
+    tried: list[tuple[float, int]] = []
+    best: tuple[float, tuple[dt.date, ...], int] | None = None
+    for rise in ladder:
+        events = tuple(volatility_spikes(levels, rise))
+        _used, values = forward_windows(returns, dates, list(events), holding, end=end)
+        tried.append((rise, len(values)))
+        if best is None or len(values) > best[2]:
+            best = (rise, events, len(values))
+        if len(values) >= needed:
+            return SpikeChoice(
+                rise=rise,
+                events=events,
+                is_windows=len(values),
+                needed=needed,
+                cleared=True,
+                tried=tuple(tried),
+            )
+
+    assert best is not None  # noqa: S101 - ladder が空でないことは上で見た
+    return SpikeChoice(
+        rise=best[0],
+        events=best[1],
+        is_windows=best[2],
+        needed=needed,
+        cleared=False,
+        tried=tuple(tried),
     )

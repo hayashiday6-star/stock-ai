@@ -7479,13 +7479,15 @@ def _index_walls(
         FLOW_HOLDING,
         HOLDING,
         IS_END,
-        IV_SPIKE,
+        IV_IS_END,
+        IV_IS_FROM,
+        IV_OOS_FROM,
         OOS_END,
         OOS_FROM,
         Wall,
+        choose_spike,
         flow_entries,
         forward_windows,
-        volatility_spikes,
     )
     from stock_ai.core.logging import quiet_on_console
     from stock_ai.data.jquants_investor import SECTION, weekly_flows
@@ -7502,19 +7504,22 @@ def _index_walls(
         step = bisect.bisect_right(trading, when)
         return trading[step] if step < len(trading) else None
 
-    def oos_entries(events: list[dt.date], holding: int) -> int:
+    def oos_entries(events: list[dt.date], holding: int, since: dt.date = OOS_FROM) -> int:
         """Count the distinct OOS entry days, not the events.
 
         **件数ではなく、入った日で数える。** `#5` は 1,827 件が 831 日で、
         **件数で割ると n を 2.2倍に水増しする**（`CLAUDE.md`「独立な観測を、
         件数で数えない」）。
+
+        **OOS の初日は候補ごとに違いうる。** 候補6 は `IV` が
+        2016-07 からしか無いので、暦の切り方をこの候補だけ動かしてある。
         """
         found: set[dt.date] = set()
         limit = len(trading) - holding
         where = {when: index for index, when in enumerate(trading)}
         for event in events:
             entry = after_entry(event)
-            if entry is None or not (OOS_FROM <= entry <= OOS_END):
+            if entry is None or not (since <= entry <= OOS_END):
                 continue
             if where[entry] > limit:
                 continue
@@ -7522,101 +7527,146 @@ def _index_walls(
         return len(found)
 
     # --- A 恐怖指数の跳ね上がり（候補6）-------------------------------------
+    #
+    # **この候補だけ、IS/OOS の切り方が違う**（2026-09-21 にコミットした）。
+    # `IV` が 2016-07-19 からしか無いので、暦の 2017-12-31 で切ると IS が
+    # 1.5年・最大 339 窓しかなく、**どの線を選んでも膨張が推定できない。**
     with quiet_on_console("stock_ai.data.jquants_options"):
         iv = daily_atm_iv(archive)
     console.print(f"[dim]候補A: {iv.summary()}[/]")
     for line in iv.warnings():
         console.print(f"[yellow]候補A: {line}[/]")
-    spikes = volatility_spikes(iv.levels)
-    name = f"恐怖指数の跳ね上がり（ATM の予想変動率 前日比 +{IV_SPIKE:.0%}）"
-    if len(spikes) < 2:  # noqa: PLR2004 - 1件では散らばりが測れない
-        console.print(f"[yellow]**{name} の事象が {len(spikes)} 件しか無い。** 壁を出せない。[/]")
-    else:
-        used, values = forward_windows(returns, dates, spikes, HOLDING, end=IS_END)
-        observations = oos_entries(spikes, HOLDING)
-        if len(values) < 2 or not observations:  # noqa: PLR2004 - 同上
-            console.print(
-                f"[yellow]**{name}: IS の窓が {len(values)}、OOS の観測が "
-                f"{observations}。** 壁を出せない——**予想変動率が古い原本に"
-                "入っていないためかもしれない。**[/]"
-            )
-        else:
-            sampled[name] = values
-            with quiet_on_console("stock_ai.backtest.power"):
-                estimate = estimate_power(values, lags=HOLDING)
-            walls.append(
-                Wall(
-                    candidate=6,
-                    name=name,
-                    pipe="指数を買うだけ（引く相手が無い）",
-                    unit="イベント日",
-                    observations=observations,
-                    sd=estimate.daily_sd,
-                    inflation=estimate.inflation,
-                    line=line_for("calendar"),
-                    source=(
-                        f"{benchmark} の日次、IS {len(values):,} 窓"
-                        f"（跳ねた日 {len(spikes):,}、窓 {HOLDING} 営業日）"
-                    ),
-                    sample=len(values),
-                    undersampled=estimate.undersampled,
-                    notes=(
-                        "**管は `calendar`。** 校正したのは日次の月替わりで、"
-                        "同じ形ではあるが同じ設計ではない",
-                        f"予想変動率を作れた日 {len(iv.levels):,}（IS で入れた窓 {len(used):,}）",
-                    ),
-                )
-            )
 
-    # --- B 需給はすべての材料に優先する（候補7）-----------------------------
+    # **梯子から線を選ぶ。** 満たす中でいちばん厳しいもの——**効果は1つも
+    # 見ない。** 選ぶのは観測数だけである。
+    choice = choose_spike(iv.levels, returns, dates, HOLDING, end=IV_IS_END)
+    console.print(
+        "[dim]候補A: 線を梯子から選んだ（**観測数だけで選ぶ。効果は見ていない**）: "
+        + "、".join(f"+{rise:.1%}→{count}窓" for rise, count in choice.tried)
+        + f"。**採った線 +{choice.rise:.1%}**（要る窓 {choice.needed}）[/]"
+    )
+    if not choice.cleared:
+        console.print(
+            f"[yellow]**候補A: 梯子のどの線でも、IS の窓が {choice.needed} に"
+            f"届かない**（最大 {choice.is_windows}）。**膨張は推定できない**"
+            "——下の壁は暫定である。[/]"
+        )
+
+    # **符号を付けない。** `docs/WALL.md` は「符号付きの数字が1つも出ないこと」
+    # で効果の混入を止めている（`test_the_document_carries_no_effect`）。
+    # **守りを緩めるのではなく、札のほうを直す。**
+    name = f"恐怖指数の跳ね上がり（ATM の予想変動率 前日比 {choice.rise:.1%} 以上）"
+    used, values = forward_windows(returns, dates, list(choice.events), HOLDING, end=IV_IS_END)
+    observations = oos_entries(list(choice.events), HOLDING, since=IV_OOS_FROM)
+    if len(values) < 2 or not observations:  # noqa: PLR2004 - 1件では散らばりが測れない
+        console.print(
+            f"[yellow]**{name}: IS の窓が {len(values)}、OOS の観測が "
+            f"{observations}。** 壁を出せない。[/]"
+        )
+    else:
+        sampled[name] = values
+        with quiet_on_console("stock_ai.backtest.power"):
+            estimate = estimate_power(values, lags=HOLDING)
+        walls.append(
+            Wall(
+                candidate=6,
+                name=name,
+                pipe="指数を買うだけ（引く相手が無い）",
+                unit="イベント日",
+                observations=observations,
+                sd=estimate.daily_sd,
+                inflation=estimate.inflation,
+                line=line_for("calendar"),
+                source=(
+                    f"{benchmark} の日次、IS {IV_IS_FROM}〜{IV_IS_END} の "
+                    f"{len(values):,} 窓（跳ねた日 {len(choice.events):,}、"
+                    f"窓 {HOLDING} 営業日）"
+                ),
+                sample=len(values),
+                undersampled=estimate.undersampled,
+                notes=(
+                    f"**IS/OOS はこの候補だけ別である**（IS {IV_IS_FROM}〜{IV_IS_END}、"
+                    f"OOS {IV_OOS_FROM}〜{OOS_END}）。`IV` が 2016-07 からしか無い",
+                    "**管は `calendar`。** 校正したのは日次の月替わりで、"
+                    "同じ形ではあるが同じ設計ではない",
+                    f"予想変動率を作れた日 {len(iv.levels):,}（IS で入れた窓 {len(used):,}）",
+                ),
+            )
+        )
+
+    # --- B 需給（候補7 と候補11）--------------------------------------------
+    #
+    # **早期 return を置かない。** 候補7 で `return walls` していたので、
+    # **下に足した候補11 が黙って落ちる形**になっていた——`CLAUDE.md`
+    # 「早期 return が、下に足した検査を黙らせる」（書いてある規則である）。
     with quiet_on_console("stock_ai.data.jquants_investor"):
         flows = weekly_flows(archive)
     console.print(f"[dim]候補B: {flows.summary()}[/]")
     for line in flows.warnings():
         console.print(f"[yellow]候補B: {line}[/]")
     published = [(week.published_on, week.foreign_share) for week in flows.weeks]
-    entries = flow_entries(published)
-    name = f"需給はすべての材料に優先する（外国人の買い越した週、{SECTION}）"
-    if len(entries) < 2:  # noqa: PLR2004 - 1件では散らばりが測れない
-        console.print(f"[yellow]**{name} の週が {len(entries)} しか無い。** 壁を出せない。[/]")
-        return walls
-    _used, values = forward_windows(returns, dates, entries, FLOW_HOLDING, end=IS_END)
-    observations = oos_entries(entries, FLOW_HOLDING)
-    if len(values) < 2 or not observations:  # noqa: PLR2004 - 同上
-        console.print(
-            f"[yellow]**{name}: IS の窓が {len(values)}、OOS の観測が "
-            f"{observations}。** 壁を出せない。[/]"
-        )
-        return walls
-    sampled[name] = values
-    with quiet_on_console("stock_ai.backtest.power"):
-        # **週次で保有1週なので、窓は重ならない。** 隣どうしの相関だけ見る。
-        estimate = estimate_power(values, lags=1)
-    walls.append(
-        Wall(
-            candidate=7,
-            name=name,
-            pipe="指数を買うだけ（引く相手が無い）",
-            unit="公表",
-            observations=observations,
-            sd=estimate.daily_sd,
-            inflation=estimate.inflation,
-            line=line_for("calendar"),
-            source=(
-                f"{benchmark} の日次、IS {len(values):,} 窓"
-                f"（買い越した週 {len(entries):,}、窓 {FLOW_HOLDING} 営業日）"
-            ),
-            sample=len(values),
-            undersampled=estimate.undersampled,
-            # **年に直せる。** 週に1回、窓は重ならない。
-            per_year=52.0,
-            notes=(
-                "**公表日の翌営業日に入る。** 週末で入ると先読みになる"
-                "——公表は週の終わりの 10 日ほど後である",
-                "**管は `calendar`。** 校正したのは日次の月替わりである",
-            ),
-        )
+
+    # | 候補 | 事象 | 1観測 |
+    # |---|---|---|
+    # | 7 | その週が**買い越し** | その週の公表 |
+    # | 11 | **無い**（常に市場に居る） | 全部の公表 |
+    #
+    # **候補11 の壁は符号に依存しない。** ±1 倍は SD を変えないので、
+    # **指数の週次の散らばりと週数だけで決まる**——合図は n にも SD にも
+    # 効かない。**だから効果を見たことにならない。**
+    designs = (
+        (
+            7,
+            f"需給はすべての材料に優先する（外国人の買い越した週、{SECTION}）",
+            flow_entries(published),
+            "**公表日の翌営業日に入る。** 週末で入ると先読みになる"
+            "——公表は週の終わりの 10 日ほど後である",
+        ),
+        (
+            11,
+            f"需給の向きに従う（常に市場に居る、{SECTION}）",
+            sorted(when for when, _share in published),
+            "**絞らない。** 直近の公表の符号で向きを切り替えるだけなので、"
+            "**壁は指数の週次の散らばりと週数だけで決まる**（±1 倍は SD を変えない）",
+        ),
     )
+    for candidate, name, entries, note in designs:
+        if len(entries) < 2:  # noqa: PLR2004 - 1件では散らばりが測れない
+            console.print(f"[yellow]**{name} の週が {len(entries)} しか無い。** 壁を出せない。[/]")
+            continue
+        _used, values = forward_windows(returns, dates, entries, FLOW_HOLDING, end=IS_END)
+        observations = oos_entries(entries, FLOW_HOLDING)
+        if len(values) < 2 or not observations:  # noqa: PLR2004 - 同上
+            console.print(
+                f"[yellow]**{name}: IS の窓が {len(values)}、OOS の観測が "
+                f"{observations}。** 壁を出せない。[/]"
+            )
+            continue
+        sampled[name] = values
+        with quiet_on_console("stock_ai.backtest.power"):
+            # **週次で保有1週なので、窓は重ならない。** 隣どうしの相関だけ見る。
+            estimate = estimate_power(values, lags=1)
+        walls.append(
+            Wall(
+                candidate=candidate,
+                name=name,
+                pipe="指数を買うだけ（引く相手が無い）",
+                unit="公表",
+                observations=observations,
+                sd=estimate.daily_sd,
+                inflation=estimate.inflation,
+                line=line_for("calendar"),
+                source=(
+                    f"{benchmark} の日次、IS {len(values):,} 窓"
+                    f"（採った週 {len(entries):,}、窓 {FLOW_HOLDING} 営業日）"
+                ),
+                sample=len(values),
+                undersampled=estimate.undersampled,
+                # **年に直せる。** 週に1回、窓は重ならない。
+                per_year=52.0,
+                notes=(note, "**管は `calendar`。** 校正したのは日次の月替わりである"),
+            )
+        )
     return walls
 
 

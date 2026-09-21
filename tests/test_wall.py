@@ -504,7 +504,11 @@ class TestTheMissingOnesAreOnTheTable:
 #:
 #: 短い暦で叩いて「3年に満たない」で終わったのを、疎通の確認と読まない
 #: （`CLAUDE.md`「到達しない疎通確認を『疎通した』と読まない」）。
-_LONG = pd.bdate_range("2010-01-04", "2018-12-31", name="date")
+#:
+#: **2019 年まで伸ばしてある。** 候補6 は IS/OOS がこの候補だけ別で、
+#: OOS が 2019-07-19 から始まる（`wall.IV_OOS_FROM`）——2018 で切ると
+#: **その枝に1日も届かない。**
+_LONG = pd.bdate_range("2010-01-04", "2019-12-31", name="date")
 
 
 class TestTheCommandRunsOnARealDatabase:
@@ -973,3 +977,145 @@ class TestTheInflationTheWallUsedIsTheOneItShows:
 
         assert "1.82x" in body
         assert "→" not in body.split("1.82x")[1].split("|")[0]
+
+
+class TestTheSpikeLineIsChosenByObservationsAlone:
+    """**梯子から1つに決まる。** 効果は1つも見ない。
+
+    **順に試して良いほうを採るのではない。** 上から見て**最初に条件を
+    満たしたもの**を採るので、答えは1つに決まる——`CLAUDE.md`「#10 が
+    封印できなくなったのは効果を見て設計を選べる形だったから」。
+    """
+
+    @staticmethod
+    def _series(rises: dict[int, float], length: int = 400):
+        """``rises`` の位置で跳ねる水準と、それに合う日次リターン。"""
+        days = [stamp.date() for stamp in pd.bdate_range("2016-07-19", periods=length)]
+        rng = np.random.default_rng(3)
+        level = 20.0
+        levels: dict[dt.date, float] = {}
+        for position, when in enumerate(days):
+            level = level * (1.0 + rises.get(position, 0.0))
+            levels[when] = level
+        return levels, list(rng.normal(0.0, 0.01, length)), days
+
+    def test_the_strictest_line_that_clears_is_taken(self) -> None:
+        """**満たす中でいちばん厳しいもの。** 満たしたらそこで止まる。"""
+        from stock_ai.backtest.wall import choose_spike
+
+        # +20% が十分な窓を作る盤面。**そこで止まること。**
+        levels, returns, days = self._series(dict.fromkeys(range(0, 300, 2), 0.25))
+
+        choice = choose_spike(levels, returns, days, holding=1, end=days[-1])
+
+        assert choice.rise == pytest.approx(0.20)
+        assert choice.cleared
+        assert len(choice.tried) == 1, "**満たしたのに梯子を下り続けている。**"
+
+    def test_it_goes_down_the_ladder_until_it_clears(self) -> None:
+        """**両向きに置く。** 足りなければ次の段に行くこと。"""
+        from stock_ai.backtest.wall import choose_spike
+
+        # +20% では2回しか跳ねないが、+5% なら毎日跳ねる盤面。
+        rises = dict.fromkeys(range(400), 0.06)
+        rises[10] = 0.25
+        rises[20] = 0.25
+        levels, returns, days = self._series(rises)
+
+        choice = choose_spike(levels, returns, days, holding=1, end=days[-1])
+
+        assert choice.rise < 0.20  # noqa: PLR2004 - 下の段まで行った
+        assert choice.cleared
+        assert len(choice.tried) > 1
+
+    def test_nothing_clearing_is_said_and_not_hidden(self) -> None:
+        """**黙って空を返さない。** いちばん観測の多い線を返して旗を立てる。"""
+        from stock_ai.backtest.wall import choose_spike
+
+        levels, returns, days = self._series({10: 0.25})
+
+        choice = choose_spike(levels, returns, days, holding=20, end=days[-1])
+
+        assert not choice.cleared
+        assert choice.needed == 200  # noqa: PLR2004 - lags 20 × SAMPLE_PER_LAG 10
+        assert len(choice.tried) == 5  # noqa: PLR2004 - 梯子を最後まで下りた
+
+    def test_it_carries_no_mean(self) -> None:
+        """`Wall` と同じ。**効果を持てる形にしない。**"""
+        import dataclasses
+
+        from stock_ai.backtest.wall import SpikeChoice
+
+        names = {field.name for field in dataclasses.fields(SpikeChoice)}
+
+        assert not (names & {"mean", "effect", "average", "estimate", "t"})
+
+    def test_an_empty_ladder_is_refused(self) -> None:
+        from stock_ai.backtest.wall import choose_spike
+
+        levels, returns, days = self._series({10: 0.25})
+
+        with pytest.raises(ValueError, match="ladder"):
+            choose_spike(levels, returns, days, holding=1, end=days[-1], ladder=())
+
+    def test_the_ladder_is_ordered_strictest_first(self) -> None:
+        """**梯子の向きが逆だと、いちばん緩い線が必ず採られる。**"""
+        from stock_ai.backtest.wall import IV_SPIKE_LADDER
+
+        assert list(IV_SPIKE_LADDER) == sorted(IV_SPIKE_LADDER, reverse=True)
+
+
+class TestTheSixthCandidateHasItsOwnWindow:
+    """**この候補だけ IS/OOS が違う。** `IV` が 2016-07 からしか無い。"""
+
+    def test_the_window_is_three_years(self) -> None:
+        from stock_ai.backtest.wall import IV_IS_END, IV_IS_FROM, IV_OOS_FROM
+
+        assert dt.date(2016, 7, 19) == IV_IS_FROM
+        assert dt.date(2019, 7, 18) == IV_IS_END
+        # **OOS は IS の翌日から。** 1日も重ならず、1日も空かないこと。
+        assert IV_OOS_FROM == IV_IS_END + dt.timedelta(days=1)  # noqa: SIM300 - 定義の順
+
+    def test_the_command_says_the_window_is_different(self) -> None:
+        """**他の説と並べるときに「別の窓」と分かること。**"""
+        import inspect
+
+        from stock_ai import cli
+
+        body = inspect.getsource(cli._index_walls)
+
+        assert "IS/OOS はこの候補だけ別である" in body
+        assert "since=IV_OOS_FROM" in body
+
+
+class TestTheFlowDesignsBothReachTheTable:
+    """**早期 return が、下に足したものを黙らせないこと。**
+
+    候補7 で `return walls` していたので、**下に足した候補11 が黙って
+    落ちる形**になっていた（`CLAUDE.md` に書いてある規則である）。
+    """
+
+    def test_the_helper_has_no_early_return_before_the_last_design(self) -> None:
+        import ast
+        import inspect
+        import textwrap
+
+        from stock_ai import cli
+
+        tree = ast.parse(textwrap.dedent(inspect.getsource(cli._index_walls)))
+        function = tree.body[0]
+
+        def own_returns(nodes) -> list[ast.Return]:
+            """**入れ子の関数は見ない。** そちらの return は早期 return ではない。"""
+            found: list[ast.Return] = []
+            for node in nodes:
+                if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda):
+                    continue
+                if isinstance(node, ast.Return):
+                    found.append(node)
+                found.extend(own_returns(ast.iter_child_nodes(node)))
+            return found
+
+        early = [node for node in own_returns(function.body) if node is not function.body[-1]]
+
+        assert not early, "**早期 return が在る。** 下の設計が黙って落ちる。"

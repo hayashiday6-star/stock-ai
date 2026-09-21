@@ -109,6 +109,31 @@ def long_run_variance(gammas: Sequence[float]) -> float:
 #: 定義上ありえない。**
 INFLATION_FLOOR = 1.0
 
+#: 膨張を推定してよいと認める、**ラグ1つあたりの標本の数。**
+#:
+#: **出典は無い。決めの値である**（2026-09-21 にコミットした）。
+#: `CLAUDE.md`「幅を決め打つときは、その数字がどこから来たかを書く」。
+#:
+#: γ_k は ``n − k`` 組の積からできている。**`k` が `n` に近づくと1組か2組に
+#: なり、Ω がただの雑音になる**——実データで候補6が **0.82x** を出した。
+#:
+#: `lags=20`（20営業日保有）なら **n ≥ 200** が要る。**これを満たさない設計は
+#: 「壁が暫定である」と出力に書く。**
+SAMPLE_PER_LAG = 10
+
+
+def sample_needed(lags: int, per_lag: int = SAMPLE_PER_LAG) -> int:
+    """そのラグで膨張を推定するのに要る標本の数。**式はここ1つだけ。**
+
+    Args:
+        lags: Newey-West のラグ。
+        per_lag: ラグ1つあたりの標本（:data:`SAMPLE_PER_LAG`）。
+
+    Returns:
+        要る観測数。``lags`` が 0 なら 0（重なりを見ないので要らない）。
+    """
+    return max(lags, 0) * per_lag
+
 
 def standard_error(sd: float, inflation: float, periods: int) -> float:
     """``periods`` 期ぶんの平均の標準誤差。**式はここ1箇所だけ。**
@@ -193,15 +218,28 @@ class PowerEstimate:
     """
 
     @property
+    def asked_lags(self) -> int:
+        """呼ぶ側が頼んだラグ。**切り詰められる前の数である。**"""
+        return self.lags if self.requested_lags < 0 else self.requested_lags
+
+    @property
+    def needed(self) -> int:
+        """膨張を推定するのに要る標本。**式は `sample_needed` に1つだけ。**"""
+        return sample_needed(self.asked_lags)
+
+    @property
     def undersampled(self) -> bool:
-        """**ラグが標本より長いか。** 長ければ、膨張の推定は当てにならない。
+        """**標本が、そのラグに足りているか。**
 
         γ_k は ``n − k`` 組の積からできている。``k`` が ``n`` に近づくと
         1組か2組になり、**Ω がただの雑音になる。** 1.0 を割ることさえある
         ——実データで **0.82x** が出た。
+
+        **線は :data:`SAMPLE_PER_LAG` で、出典の無い決めの値である。**
+        『ラグより長ければよい』では足りない——**ラグ 20 に標本 21 でも、
+        いちばん長いラグは1組の積からできている。**
         """
-        asked = self.lags if self.requested_lags < 0 else self.requested_lags
-        return asked > 0 and self.observations <= asked
+        return self.asked_lags > 0 and self.observations < self.needed
 
     @property
     def daily_sd(self) -> float:
@@ -324,10 +362,11 @@ def estimate_power(values: Sequence[float], lags: int = DEFAULT_LAGS) -> PowerEs
     )
     if estimate.undersampled:
         logger.warning(
-            "**ラグ %d が標本 %d より長い。** 膨張 %.2f は当てにならない"
-            "——いちばん長いラグが1組の積からできている。",
+            "**ラグ %d に対して標本が %d しかない（%d 要る）。** 膨張 %.2f は"
+            "当てにならない——いちばん長いラグが数組の積からできている。",
             lags,
             estimate.observations,
+            estimate.needed,
             estimate.inflation,
         )
     logger.info(
