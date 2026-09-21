@@ -7906,9 +7906,8 @@ def wall_survey(
             )
         if wall.undersampled:
             console.print(
-                f"[yellow]**{wall.name}: 重なりのラグが、SD を測った標本"
-                f"（{wall.sample}）より長い。** いちばん長いラグが1組の積から"
-                "できている。**膨張の推定は当てにならない**"
+                f"[yellow]**{wall.name}: SD を測った標本（{wall.sample}）が、"
+                "重なりのラグに対して足りない。** **膨張の推定は当てにならない**"
                 f"（{wall.inflation:.2f}x。1.0 を割っていれば床で 1.0 に戻して"
                 "あるが、当てにならないことは変わらない）。[/]"
             )

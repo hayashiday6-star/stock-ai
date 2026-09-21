@@ -228,6 +228,23 @@ class PowerEstimate:
         return sample_needed(self.asked_lags)
 
     @property
+    def per_lag(self) -> float:
+        """ラグ1つあたりの標本。**`SAMPLE_PER_LAG` と比べる相手である。**"""
+        return self.observations / self.asked_lags if self.asked_lags > 0 else float("inf")
+
+    @property
+    def longest_pairs(self) -> int:
+        """いちばん長いラグが、**何組の積からできているか。**
+
+        γ_k は ``n − k`` 組である。**警告にこれを出す**——「1組の積」と
+        書いていたが、標本 147・ラグ 20 なら **127 組**である
+        （2026-09-21）。`n <= lags` のときの文面が残っていた。
+
+        **札が、数えているものと違うことを言っていた。**
+        """
+        return max(self.observations - self.asked_lags, 0)
+
+    @property
     def undersampled(self) -> bool:
         """**標本が、そのラグに足りているか。**
 
@@ -362,12 +379,15 @@ def estimate_power(values: Sequence[float], lags: int = DEFAULT_LAGS) -> PowerEs
     )
     if estimate.undersampled:
         logger.warning(
-            "**ラグ %d に対して標本が %d しかない（%d 要る）。** 膨張 %.2f は"
-            "当てにならない——いちばん長いラグが数組の積からできている。",
-            lags,
+            "**標本がラグの %.1f 倍しかない（決めた線は %d 倍）。** "
+            "標本 %d・ラグ %d で、膨張 %.2f は当てにならない"
+            "——いちばん長いラグは %d 組の積からできている。",
+            estimate.per_lag,
+            SAMPLE_PER_LAG,
             estimate.observations,
-            estimate.needed,
+            lags,
             estimate.inflation,
+            estimate.longest_pairs,
         )
     logger.info(
         "検出力の見積もり: %d 日、日次SD %.4f、重なりによる膨張 %.2f 倍",

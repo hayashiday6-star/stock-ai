@@ -657,3 +657,33 @@ def test_the_existing_event_designs_are_not_newly_flagged() -> None:
     from stock_ai.backtest.power import estimate_power
 
     assert not estimate_power([0.01, -0.02, 0.03, -0.01] * 300, lags=20).undersampled
+
+
+def test_the_warning_says_how_many_pairs_the_longest_lag_uses() -> None:
+    """**札が、数えているものと違うことを言っていた。**
+
+    「いちばん長いラグが1組の積からできている」と書いていたが、
+    **標本 147・ラグ 20 なら 127 組**である（2026-09-21、実データで出た）。
+    `n <= lags` のときの文面が残っていた。
+    """
+    from stock_ai.backtest.power import estimate_power
+
+    estimate = estimate_power([0.01, -0.02, 0.03] * 49, lags=20)
+
+    assert estimate.observations == 147  # noqa: PLR2004 - 実データと同じ形
+    assert estimate.longest_pairs == 127  # noqa: PLR2004 - 147 − 20
+    assert estimate.per_lag == pytest.approx(147 / 20)
+    assert estimate.undersampled, "**決めた線（10倍）に届いていない。**"
+
+
+def test_the_pairs_never_go_negative() -> None:
+    """ラグが標本より長くても、0 で止まること。"""
+    from stock_ai.backtest.power import estimate_power
+
+    assert estimate_power([0.01, -0.02, 0.03], lags=20).longest_pairs == 0
+
+
+def test_no_lags_reports_no_ratio_rather_than_dividing() -> None:
+    from stock_ai.backtest.power import estimate_power
+
+    assert math.isinf(estimate_power([0.01, -0.02, 0.03], lags=0).per_lag)
