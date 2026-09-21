@@ -32,16 +32,28 @@
 .PARAMETER ShowEmpty
     1行も埋まっていない列も出します。既定では伏せます。
 
+.PARAMETER Match
+    名前にこの文字を含む列だけ出します。**`/fins/summary` は 111 列あるので、
+    既定では『div』『配当』を含むものだけ出します。**
+
+.PARAMETER All
+    何列あっても全部出します。**既定の絞り込みも外します。**
+
 .EXAMPLE
     .\scripts\column-census.ps1
 
 .EXAMPLE
-    .\scripts\column-census.ps1 -Endpoint /markets/short-ratio -ShowEmpty
+    .\scripts\column-census.ps1 -Endpoint /fins/summary -Match div
+
+.EXAMPLE
+    .\scripts\column-census.ps1 -Endpoint /markets/short-ratio -All
 #>
 [CmdletBinding()]
 param(
     [string]$Endpoint = '',
-    [switch]$ShowEmpty
+    [switch]$ShowEmpty,
+    [string]$Match = '',
+    [switch]$All
 )
 
 $ErrorActionPreference = 'Continue'
@@ -60,6 +72,8 @@ Write-Host ''
 $arguments = @('run', 'stock-ai', 'column-census')
 if ($Endpoint) { $arguments += @('--endpoint', $Endpoint) }
 if ($ShowEmpty) { $arguments += '--show-empty' }
+if ($Match) { $arguments += @('--match', $Match) }
+if ($All) { $arguments += '--all' }
 
 uv @arguments
 $code = $LASTEXITCODE

@@ -29,6 +29,13 @@ echo Defaults to the endpoints the next candidates
 echo need. Pass -Endpoint to look at one, -ShowEmpty
 echo to include columns that are never filled.
 echo.
+echo One of these files carries over a hundred
+echo columns, so printing all of them buries the
+echo handful that matter. The default shows the ones
+echo being looked for and says how many were held
+echo back. -Match narrows to a spelling, -All prints
+echo the lot.
+echo.
 echo NOTHING IS FETCHED - this only reads what is
 echo already saved.
 echo.

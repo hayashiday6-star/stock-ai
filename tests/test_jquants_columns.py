@@ -206,3 +206,147 @@ class TestItCarriesRowsToLookAt:
         found = column_census(_archive(tmp_path, {"a": rows}), ENDPOINT)
 
         assert len(found.sample) < found.rows
+
+
+class TestTheOutputStaysSmall:
+    """**貼られる前提で作る**（`CLAUDE.md`「出力を小さく保つ」）。
+
+    実データで `/fins/summary` が **111 列**だった（2026-09-21）。全部刷ると
+    4つのエンドポイントで 450 行を超え、**ユーザーが先頭だけ貼ることに
+    なった**——見たかった配当の列は1つも出ていない。
+
+    **`MAX_SKIPPED_PER_REASON` と同じ形である**——件数の多いものが、
+    見たいものを押し出す。
+    """
+
+    @staticmethod
+    def _printed(**kwargs) -> str:
+        import io
+
+        from rich.console import Console
+
+        from stock_ai import cli
+
+        buffer = io.StringIO()
+        original = cli.console
+        cli.console = Console(file=buffer, width=100, force_terminal=False)
+        try:
+            cli.column_census_command(**kwargs)
+        finally:
+            cli.console = original
+        return buffer.getvalue()
+
+    @staticmethod
+    def _wide(tmp_path):
+        """**111 列の盤面。** 実データがそうだった。"""
+        row = {"Date": "2016-01-04", "Code": "13060"}
+        row.update({f"Col{index}": str(index) for index in range(60)})
+        row.update({f"FDiv{index}": str(index) for index in range(49)})
+        return _archive(tmp_path, {"a": [row]})
+
+    def test_the_defaults_do_not_print_every_column(self, tmp_path) -> None:
+        """**貼られたときの長さで見る。** 列を数えるのでは足りない。
+
+        最初この assert は `printed.count("Col")` で書いてあった。**標本が
+        同じ列をもう一度出すので、上限が効いていても2倍に数える**——
+        `CLAUDE.md`「テストの名前が主張していることと、assert が守って
+        いることを突き合わせる」。**痛いのは行数のほうである。**
+        """
+        from stock_ai.cli import MAX_COLUMNS_SHOWN
+
+        printed = self._printed(
+            endpoint=ENDPOINT,
+            directory=str(self._wide(tmp_path)),
+            show_empty=False,
+            match="",
+            show_all=False,
+        )
+
+        # 表は1列1行。**111 列なら 111 行**——枠と標本を足しても、上限の
+        # 2倍には届かないこと。
+        assert len(printed.splitlines()) < MAX_COLUMNS_SHOWN * 2
+        assert "出していない" in printed, "**切ったことを言っていない。**"
+
+    def test_without_the_cap_it_would_be_long(self, tmp_path) -> None:
+        """**この検査が落ちる条件を、実際に1つ作る。**"""
+        from stock_ai.cli import MAX_COLUMNS_SHOWN
+
+        printed = self._printed(
+            endpoint=ENDPOINT,
+            directory=str(self._wide(tmp_path)),
+            show_empty=False,
+            match="",
+            show_all=True,
+        )
+
+        assert len(printed.splitlines()) > MAX_COLUMNS_SHOWN * 2
+
+    def test_a_spelling_narrows_it(self, tmp_path) -> None:
+        printed = self._printed(
+            endpoint=ENDPOINT,
+            directory=str(self._wide(tmp_path)),
+            show_empty=False,
+            match="fdiv",
+            show_all=False,
+        )
+
+        assert "FDiv0" in printed
+        assert "Col0 " not in printed, "**絞ったのに関係ない列が出ている。**"
+
+    def test_a_spelling_that_matches_nothing_says_so(self, tmp_path) -> None:
+        """**無いことと、絞り込みで消えたことは別である。**"""
+        printed = self._printed(
+            endpoint=ENDPOINT,
+            directory=str(self._wide(tmp_path)),
+            show_empty=False,
+            match="そんな列は無い",
+            show_all=False,
+        )
+
+        assert "1つも無い" in printed
+        assert "--all" in printed, "**全部出す方法を言っていない。**"
+
+    def test_all_prints_the_lot(self, tmp_path) -> None:
+        """**両向きに置く。** 常に切る形でも緑にならないように。"""
+        printed = self._printed(
+            endpoint=ENDPOINT,
+            directory=str(self._wide(tmp_path)),
+            show_empty=False,
+            match="",
+            show_all=True,
+        )
+
+        assert "出していない" not in printed
+        assert "Col59" in printed
+
+    def test_the_title_says_how_many_columns_there_are(self, tmp_path) -> None:
+        """**切った後の数だけ出すと、原本の広さが見えなくなる。**"""
+        printed = self._printed(
+            endpoint=ENDPOINT,
+            directory=str(self._wide(tmp_path)),
+            show_empty=False,
+            match="",
+            show_all=False,
+        )
+
+        assert "111 列" in printed
+
+
+class TestTheDefaultsNameWhatTheyLookFor:
+    """**探している綴りを、コマンドの中に埋めない。** 表に出す。"""
+
+    def test_the_wide_endpoint_has_a_default_filter(self) -> None:
+        from stock_ai.cli import NEXT_MATERIALS
+
+        found = {name: patterns for name, _why, patterns in NEXT_MATERIALS}
+
+        assert found["/fins/summary"], "**111 列の口に、絞り込みが無い。**"
+
+    def test_the_narrow_endpoints_do_not(self) -> None:
+        """**列の少ない口を絞ると、在るものが見えなくなる。**"""
+        from stock_ai.cli import NEXT_MATERIALS
+
+        found = {name: patterns for name, _why, patterns in NEXT_MATERIALS}
+
+        assert not found["/markets/short-ratio"]
+        assert not found["/equities/valuation"]

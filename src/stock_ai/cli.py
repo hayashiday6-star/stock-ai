@@ -6591,12 +6591,26 @@ def _wall_document(walls: list[object], missing: list[object], span: str) -> str
 #: **「無い」と書いたことも、出力に出ない**（`CLAUDE.md`、2026-09-21）。
 #: 候補6と7を「測れない」と書いていたのが両方とも誤りだったので、
 #: **確かめる口のほうを置く。**
-NEXT_MATERIALS: tuple[tuple[str, str], ...] = (
-    ("/fins/summary", "高配当利回り（候補3）。**`/equities/valuation` に利回りの列は無い**"),
-    ("/markets/short-ratio", "空売り比率。**業種別である**——指数の1本ではない"),
-    ("/markets/margin-interest", "信用買い残（候補5）"),
-    ("/equities/valuation", "小型・低位・節目。**時価総額はここ**"),
+NEXT_MATERIALS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
+    (
+        "/fins/summary",
+        "高配当利回り（候補14）。**`/equities/valuation` に利回りの列は無い**",
+        # **111 列ある。** 全部刷ると、この1本で 111 行になる——`CLAUDE.md`
+        # 「出力を小さく保つ」。**探しているものだけ出す。**
+        ("div", "配当"),
+    ),
+    ("/markets/short-ratio", "空売り比率（候補16）。**業種別である**——指数の1本ではない", ()),
+    ("/markets/margin-interest", "信用買い残（候補15）", ()),
+    ("/equities/valuation", "小型・低位・節目（候補12・13・19）。**時価総額はここ**", ()),
 )
+
+#: 表に出す列の上限。**貼られる前提で作る**（`CLAUDE.md`「出力を小さく保つ」）。
+#:
+#: **実データで `/fins/summary` が 111 列だった**（2026-09-21）。全部刷ると
+#: 4つのエンドポイントで 450 行を超え、**ユーザーが先頭だけ貼ることになった。**
+#: **見たい列が、件数の多い列に押し出される**——`MAX_SKIPPED_PER_REASON` と
+#: 同じ形である。
+MAX_COLUMNS_SHOWN = 24
 
 
 @app.command(name="column-census")
@@ -6610,6 +6624,10 @@ def column_census_command(
     show_empty: bool = typer.Option(
         False, "--show-empty", help="Also list the columns that are never filled."
     ),
+    match: str = typer.Option(
+        "", "--match", help="Only columns whose name contains this. Empty uses the defaults."
+    ),
+    show_all: bool = typer.Option(False, "--all", help="Every column, however many there are."),
 ) -> None:
     """Count the original's own columns - what is there, and from when.
 
@@ -6632,9 +6650,12 @@ def column_census_command(
     settings = get_settings()
     configure_logging(settings.log_level)
 
-    wanted: tuple[tuple[str, str], ...]
-    wanted = ((endpoint, ""),) if endpoint else NEXT_MATERIALS
-    for name, why in wanted:
+    wanted: tuple[tuple[str, str, tuple[str, ...]], ...]
+    wanted = ((endpoint, "", ()),) if endpoint else NEXT_MATERIALS
+    for name, why, defaults in wanted:
+        # **探す綴りは、引数が在れば引数。** 無ければその口の既定。
+        # `--all` は既定も引数も無視して全部出す。
+        patterns = () if show_all else ((match,) if match else defaults)
         console.print(f"[bold]{name}[/]" + (f" — {why}" if why else ""))
         with quiet_on_console("stock_ai.data.jquants_columns"):
             census = column_census(Path(directory), name)
@@ -6645,12 +6666,25 @@ def column_census_command(
             console.print()
             continue
 
-        table = Table(title=f"{name} の列（{census.rows:,} 行）")
+        shown = [item for item in census.columns if item.filled or show_empty]
+        if patterns:
+            lowered = tuple(word.lower() for word in patterns)
+            shown = [item for item in shown if any(word in item.name.lower() for word in lowered)]
+        # **多い側を黙って切らない。** 切ったことと、全部出す方法を言う。
+        #
+        # **`--all` は上限も外す。** ここを `show_all` と繋がずに書いていて、
+        # **「全部出す」と言いながら 24 列で切っていた**（自分のテストが
+        # 落ちて分かった、2026-09-21）——`CLAUDE.md`「札が、数えているものと
+        # 違うことを言っていないか」。
+        limit = len(shown) if show_all else MAX_COLUMNS_SHOWN
+        hidden = max(len(shown) - limit, 0)
+        title = f"{name} の列（{census.rows:,} 行、{len(census.columns)} 列）"
+        if patterns:
+            title += "——『" + "』『".join(patterns) + "』を含むもの"
+        table = Table(title=title)
         for column in ("列", "埋まっていた", "割合", "在る年"):
             table.add_column(column, overflow="fold", justify="left" if column == "列" else "right")
-        for item in census.columns:
-            if not item.filled and not show_empty:
-                continue
+        for item in shown[:limit]:
             span = "—"
             if item.first_year is not None:
                 span = (
@@ -6660,6 +6694,13 @@ def column_census_command(
                 )
             table.add_row(item.name, f"{item.filled:,}", f"{item.share(census.rows):.0%}", span)
         console.print(table)
+        if not shown:
+            console.print(
+                "[yellow]**その綴りを含む列が1つも無い。** "
+                "`--all` で全部出る——**無いことと、絞り込みで消えたことは別である。**[/]"
+            )
+        if hidden:
+            console.print(f"[dim]あと {hidden} 列は出していない（`--all` で全部出る）。[/]")
         if census.dated_by:
             console.print(f"[dim]年は `{census.dated_by}` で数えた。[/]")
         if census.empty_columns and not show_empty:
@@ -6669,8 +6710,16 @@ def column_census_command(
             )
         # **標本は、桁と書式を目で見るため。** 表の数だけでは、単位の取り違え
         # （`MktCap` の百万円）は見つからない。
+        #
+        # **標本にも同じ上限を当てる。** 表だけ絞って標本を素通しにしていて、
+        # **1行に 111 個の `名前=値` が並んだ**（自分のテストが落ちて分かった）。
+        # **絞ったのに見えない、を2箇所でやらない。**
+        keep = {item.name for item in shown[:limit]}
         for row in census.sample:
-            console.print("[dim]  " + "、".join(f"{k}={v}" for k, v in row.items() if v) + "[/]")
+            pairs = [f"{key}={value}" for key, value in row.items() if value and key in keep]
+            if not pairs:
+                continue
+            console.print("[dim]  " + "、".join(pairs) + "[/]")
         console.print()
 
     console.print(
