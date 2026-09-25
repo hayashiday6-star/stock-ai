@@ -2460,8 +2460,15 @@ class TestTheImplausibleYieldsComeBack:
                 worst=(one,),
             )
 
-    def test_the_warning_gives_the_share_and_the_next_move(self, tmp_path) -> None:
-        """**件数の小ささは理由にならない**——外れ値は SD に効く。"""
+    def test_the_warning_says_where_it_bites(self, tmp_path) -> None:
+        """**利回りの値そのものは SD に入らない。** 分位に並べるだけだからである。
+
+        最初「外れ値は SD に効くので、この壁はそのぶん暫定である」と書いた
+        （2026-09-21）。**この設計には当てはまらなかった**——`build_panel` の
+        `buckets` に入るのはふつうの銘柄のリターンで、効くのは**入る分位を
+        間違えること**である。**その大きさは件数ではなく、月ごとの分位に占める
+        割合で決まる。**
+        """
         from stock_ai.backtest.wall import dividend_yields
 
         rows = [self._row(forecast="5600", actual="56")]
@@ -2469,6 +2476,130 @@ class TestTheImplausibleYieldsComeBack:
         _values, census = dividend_yields(self._archive(tmp_path, rows), self._prices())
         printed = "\n".join(census.warnings())
 
-        assert "件数の小ささは理由にならない" in printed
-        assert "暫定" in printed
+        assert "SD に入らない" in printed
+        assert "分位に占める割合" in printed
         assert "高すぎる利回りを見る.bat" in printed
+        assert "暫定" not in printed, "**この設計では、壁が暫定になる理由ではない。**"
+
+
+class TestTheSplitRatioIsMeasuredNotGuessed:
+    """**開示から組み替えまでの分割比を、その銘柄の調整の倍率から引く。**
+
+    「÷1,000 なら地銀らしい利回りになる」は範囲からの逆算である
+    （`CLAUDE.md`「範囲の中心から逆算しない」）。**銘柄ごとに測れるなら測る。**
+    """
+
+    CHANGES = (
+        (dt.date(2013, 1, 4), 1 / 400),
+        # **1:400 の分割。** 倍率が 1 に戻る。
+        (dt.date(2013, 10, 1), 1.0),
+    )
+
+    def test_a_split_between_the_two_days_is_its_ratio(self) -> None:
+        from stock_ai.backtest.wall import split_ratio_between
+
+        found = split_ratio_between(self.CHANGES, dt.date(2013, 2, 6), dt.date(2013, 10, 31))
+
+        assert found == pytest.approx(400.0)
+
+    def test_no_split_between_the_two_days_is_one(self) -> None:
+        """**両向きに置く。** 常に分割と言う形でも緑にならないように。"""
+        from stock_ai.backtest.wall import split_ratio_between
+
+        before = split_ratio_between(self.CHANGES, dt.date(2013, 2, 6), dt.date(2013, 9, 30))
+        after = split_ratio_between(self.CHANGES, dt.date(2013, 10, 2), dt.date(2014, 3, 31))
+
+        assert before == pytest.approx(1.0)
+        assert after == pytest.approx(1.0)
+
+    def test_the_split_day_itself_counts_as_after(self) -> None:
+        """**分割の日の終値は、もう分割後の株数で付いている。**"""
+        from stock_ai.backtest.wall import split_ratio_between
+
+        found = split_ratio_between(self.CHANGES, dt.date(2013, 2, 6), dt.date(2013, 10, 1))
+
+        assert found == pytest.approx(400.0)
+
+    def test_nothing_known_is_not_counted_as_a_split(self) -> None:
+        """**分からないものを分割に数えない。**"""
+        from stock_ai.backtest.wall import split_ratio_between
+
+        assert split_ratio_between((), dt.date(2013, 2, 6), dt.date(2013, 10, 31)) == 1.0
+
+    def test_a_day_before_the_first_change_uses_the_first_factor(self) -> None:
+        from stock_ai.backtest.wall import split_ratio_between
+
+        found = split_ratio_between(self.CHANGES, dt.date(2012, 6, 1), dt.date(2013, 10, 31))
+
+        assert found == pytest.approx(400.0)
+
+
+class TestTheScanMeasuresThatUnadjustedIsUnadjusted:
+    """**「調整前」と書いて、違うことを1度も測っていなかった**（2026-09-25）。
+
+    `うち調整前も取れた 321,145` は月末の終値と同じ数だったが、**それは
+    両方作れたというだけで、値が違うことは言っていない。**
+    """
+
+    @staticmethod
+    def _split_prices(split_at: int | None) -> pd.DataFrame:
+        """**乱数歩行の上に、1:400 の分割を1つだけ置く。**
+
+        分割より前の足は、原本では 400倍の値段で付いている。**調整後の終値は
+        そのまま**（分割の前後でつながる）。
+        """
+        rng = np.random.default_rng(7)
+        bars = len(_INDEX)
+        adjusted = 1_000.0 * np.exp(np.cumsum(rng.normal(0.0, 0.01, bars)))
+        traded = adjusted.copy()
+        if split_at is not None:
+            traded[:split_at] *= 400.0
+        return pd.DataFrame(
+            {
+                OPEN: traded,
+                HIGH: traded,
+                LOW: traded,
+                CLOSE: traded,
+                ADJ_CLOSE: adjusted,
+                VOLUME: [500_000.0] * bars,
+            },
+            index=_INDEX,
+        )
+
+    def _scan(self, split_at: int | None):
+        from stock_ai.backtest.wall import scan
+
+        database = Database("sqlite:///:memory:")
+        database.create_all()
+        with database.session() as session:
+            PriceRepository(session).upsert_prices(
+                "1605", self._split_prices(split_at), market="JP"
+            )
+        return scan(database, symbols=["1605"])
+
+    def test_a_split_shows_up_as_different_values(self) -> None:
+        materials = self._scan(split_at=len(_INDEX) // 2)
+
+        assert materials.raw_differs > 0
+        assert not materials.warnings()
+
+    def test_the_split_ratio_comes_back_from_the_scan(self) -> None:
+        """**組み立てを1本通す。** 部品だけ試して終わりにしない。"""
+        from stock_ai.backtest.wall import split_ratio_between
+
+        split_at = len(_INDEX) // 2
+        materials = self._scan(split_at=split_at)
+        before = _INDEX[split_at - 10].date()
+        after = _INDEX[split_at + 10].date()
+
+        found = split_ratio_between(materials.factor_changes["1605"], before, after)
+
+        assert found == pytest.approx(400.0)
+
+    def test_no_split_at_all_is_said_out_loud(self) -> None:
+        """**0 なら、調整前と言っているものが調整後である。**"""
+        materials = self._scan(split_at=None)
+
+        assert materials.raw_price_level
+        assert materials.raw_differs == 0
+        assert any("調整後である" in line for line in materials.warnings())

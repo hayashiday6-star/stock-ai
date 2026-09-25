@@ -6602,6 +6602,12 @@ NEXT_MATERIALS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
     ("/markets/short-ratio", "空売り比率（候補16）。**業種別である**——指数の1本ではない", ()),
     ("/markets/margin-interest", "信用買い残（候補15）", ()),
     ("/equities/valuation", "小型・低位・節目（候補12・13・19）。**時価総額はここ**", ()),
+    (
+        "/fins/earnings-date",
+        "決算発表日（候補17）。**API は直近しか返さないが、毎日保存した断面の積み重ねは"
+        "「その日に何が予定されていたか」になる**",
+        (),
+    ),
 )
 
 #: 表に出す列の上限。**貼られる前提で作る**（`CLAUDE.md`「出力を小さく保つ」）。
@@ -6622,9 +6628,14 @@ def yield_audit(
 ) -> None:
     """Look at the dividend yields that came out impossibly high - nothing is fetched.
 
-    **実データで 647 銘柄月（0.26%）が 20% を超えた**（2026-09-21）。
-    **外していないので、その 647 件が SD に入ったまま壁が出ている**
-    ——外れ値は SD に効くので、**件数の小ささは理由にならない。**
+    **件数はここに書かない**——その回の出力が数える（`CLAUDE.md`「測った
+    件数を、文面に焼き付けない」。ここには一度 647 と書いてあり、次の回で
+    376 になった）。
+
+    **利回りの値そのものは SD に入らない。** 候補14 は分位に並べるだけで、
+    `build_panel` の `buckets` に入るのはふつうの銘柄のリターンである。
+    **効くのは入る分位を間違えること**で、その大きさは**月ごとの、分位に
+    占める割合**で決まる。ここはそれを出す。
 
     **3つのどれかである。**
 
@@ -6642,7 +6653,15 @@ def yield_audit(
 
     **取りには行かない。** 原本を読むだけである。
     """
-    from stock_ai.backtest.wall import IMPLAUSIBLE_YIELD, dividend_yields, scan
+    import pandas as pd
+
+    from stock_ai.backtest.quantile_series import QUANTILES
+    from stock_ai.backtest.wall import (
+        IMPLAUSIBLE_YIELD,
+        dividend_yields,
+        scan,
+        split_ratio_between,
+    )
     from stock_ai.core.logging import quiet_on_console
 
     settings = get_settings()
@@ -6653,8 +6672,11 @@ def yield_audit(
     console.print("[dim]価格を走査しています（1銘柄1行は出しません）...[/]")
     with quiet_on_console("stock_ai.backtest.wall"):
         materials = scan(database)
-        _values, census = dividend_yields(Path(directory), materials.raw_price_level)
+        values, census = dividend_yields(Path(directory), materials.raw_price_level)
 
+    console.print(f"[dim]{materials.summary()}[/]")
+    for line in materials.warnings():
+        console.print(f"[yellow]{line}[/]")
     console.print(f"[dim]{census.summary()}[/]")
     for line in census.warnings():
         console.print(f"[yellow]{line}[/]")
@@ -6662,42 +6684,103 @@ def yield_audit(
         console.print("[green]**20% を超えた銘柄月は1つも無い。**[/]")
         return
 
+    # **開示から組み替えまでの分割比を、その銘柄の調整の倍率から引く。**
+    # 「÷1,000 なら地銀らしい利回りになる」は範囲からの逆算である
+    # （`CLAUDE.md`「範囲の中心から逆算しない」）。**銘柄ごとに測れるなら
+    # 測る。**
+    def rebalanced_on(item: object) -> dt.date | None:
+        found = materials.raw_price_level.get(
+            (item.symbol, pd.Period(item.month, freq="M"))  # type: ignore[attr-defined]
+        )
+        return None if found is None else found[0]
+
+    measured: list[tuple[object, float]] = []
+    for item in census.worst:
+        when = rebalanced_on(item)
+        changes = materials.factor_changes.get(item.symbol, ())  # type: ignore[attr-defined]
+        ratio = (
+            1.0 if when is None else split_ratio_between(changes, item.disclosed_on, when)  # type: ignore[attr-defined]
+        )
+        measured.append((item, ratio))
+
     table = Table(title=f"利回りが {IMPLAUSIBLE_YIELD:.0%} を超えた銘柄月（大きい順）")
-    for column in ("銘柄", "月", "開示日", "予想", "実績", "終値", "利回り", "予想÷実績"):
+    for column in ("銘柄", "月", "開示日", "予想", "終値", "利回り", "分割比", "割り戻すと"):
         table.add_column(column, overflow="fold", justify="right" if column != "月" else "left")
-    for item in census.worst[:limit]:
-        ratio = item.ratio
+    for item, ratio in measured[:limit]:
         table.add_row(
-            item.symbol,
-            item.month,
-            f"{item.disclosed_on}",
-            f"{item.forecast:,.2f}",
-            "—" if item.actual is None else f"{item.actual:,.2f}",
-            f"{item.close:,.1f}",
-            f"{item.yielded:.1%}",
-            "—" if ratio is None else f"{ratio:,.1f}",
+            item.symbol,  # type: ignore[attr-defined]
+            item.month,  # type: ignore[attr-defined]
+            f"{item.disclosed_on}",  # type: ignore[attr-defined]
+            f"{item.forecast:,.2f}",  # type: ignore[attr-defined]
+            f"{item.close:,.1f}",  # type: ignore[attr-defined]
+            f"{item.yielded:.1%}",  # type: ignore[attr-defined]
+            f"{ratio:,.1f}",
+            f"{item.yielded / ratio:.1%}",  # type: ignore[attr-defined]
         )
     console.print(table)
-    if len(census.worst) > limit:
+    if len(measured) > limit:
         console.print(
-            f"[dim]あと {len(census.worst) - limit:,} 件は出していない（`--limit` で増える）。[/]"
+            f"[dim]あと {len(measured) - limit:,} 件は出していない（`--limit` で増える）。"
+            "**下の数は全部の行で数えている。**[/]"
         )
 
-    # **割合で見る。** 「比が 100 の行が在る」では、何も決まらない。
-    rounds = [
-        item.ratio
-        for item in census.worst
-        if item.ratio is not None and item.ratio >= 5.0  # noqa: PLR2004
+    # **割合で見る。** 上位 20 件だけ見て筋を立てない。
+    #
+    # 「分割の桁」の 1.5 は**表示の区切りで、決めた線ではない。** 調整の
+    # 倍率が配当でわずかに動く原本でも、分割はそれより桁が大きい。
+    crossed = [(item, ratio) for item, ratio in measured if ratio >= 1.5]  # noqa: PLR2004
+    explained = [
+        item
+        for item, ratio in crossed
+        if item.yielded / ratio <= IMPLAUSIBLE_YIELD  # type: ignore[attr-defined]
     ]
-    without = [item for item in census.worst if item.actual is None]
     console.print(
-        f"[dim]持って返った {len(census.worst):,} 件のうち、"
-        f"**予想が実績の5倍以上 {len(rounds):,} 件**、"
-        f"**実績が空 {len(without):,} 件**。[/]"
+        f"[dim]持って返った {len(measured):,} 件のうち、"
+        f"**開示から組み替えまでに分割をまたいだもの {len(crossed):,} 件**"
+        f"（そのうち**分割比で割り戻すと {IMPLAUSIBLE_YIELD:.0%} 以下に収まる "
+        f"{len(explained):,} 件**）、**またいでいないもの "
+        f"{len(measured) - len(crossed):,} 件**。[/]"
+    )
+    if census.implausible > len(measured):
+        console.print(
+            f"[yellow]**数えたのは {census.implausible:,} 件で、持って返ったのは "
+            f"{len(measured):,} 件である。** 上の割合は持って返ったぶんだけの話である。[/]"
+        )
+
+    # **効く大きさは、件数ではなく「その月の分位に占める割合」で決まる。**
+    # 利回りの値そのものは SD に入らない——分位に並べるだけだからである。
+    per_month: dict[str, int] = {}
+    for item, _ratio in measured:
+        per_month[item.month] = per_month.get(item.month, 0) + 1  # type: ignore[attr-defined]
+    made: dict[str, int] = {}
+    for (_symbol, month), _found in values.items():
+        made[str(month)] = made.get(str(month), 0) + 1
+    shares = [
+        (month, count, count / (made[month] / QUANTILES))
+        for month, count in per_month.items()
+        if made.get(month)
+    ]
+    if shares:
+        month, count, share = max(shares, key=lambda row: row[2])
+        console.print(
+            f"[dim]**{len(per_month):,} ヶ月にまたがる。** いちばん多い月は {month} の "
+            f"{count:,} 件で、その月の上位 {QUANTILES} 分位（利回りを作れた "
+            f"{made[month]:,} 銘柄の {QUANTILES} 分の1）の **{share:.1%}** にあたる。"
+            "**流動性の絞りの前の数で割っている**——絞った後は分母が小さいので、"
+            "割合はこれより大きく出うる。[/]"
+        )
+
+    # **用意した切り分けが効かなかったことも出す。** 実績の年間（`DivAnn`）は
+    # 期末の開示にしか載らないので、予想と同じ行にはまず来ない。
+    without = sum(1 for item, _ratio in measured if item.actual is None)  # type: ignore[attr-defined]
+    console.print(
+        f"[dim]実績（`DivAnn`）が同じ開示に在ったのは {len(measured) - without:,} 件。"
+        "**予想と実績を同じ行で比べる切り分けは、ほとんど効かない**——実績の年間は"
+        "期末の開示にしか載らないからである。**分割比のほうで見る。**[/]"
     )
     console.print(
-        "[dim]**どれか1つに決めない。** 比が 100 に揃っていても「訂正はいつも "
-        "100倍」にはならない——**割合で見る。**[/]"
+        "[dim]**どれか1つに決めない。** 分割で説明が付く割合と、付かない行"
+        "（株価の急落・訂正前の誤記など）を分けて見る。[/]"
     )
 
 
@@ -8192,6 +8275,9 @@ def wall_survey(
         with quiet_on_console("stock_ai.backtest.wall"):
             materials = scan(database, progress=step)
     console.print(materials.summary())
+    # **「調整前」と書いたものが、本当に調整前かを測って言う。**
+    for line in materials.warnings():
+        console.print(f"[yellow]{line}[/]")
 
     # --- 5・12・13・19 月次・分位ロングショート -------------------------------
     #

@@ -521,6 +521,26 @@ class Materials:
     は順位づけに使うもので、**割り算の分母ではない。**
     """
 
+    raw_differs: int
+    """**調整前と調整後が違った**月末の銘柄月。
+
+    **「調整前」と書いて、違うことを1度も測っていなかった**（2026-09-25）。
+    件数が `raw_price_level` と同じと出ても、**それは両方作れたというだけで、
+    値が違うことは言っていない。** 分割が1つでも在れば、分割より前の月では
+    ここが増える。**0 なら、調整前と言っているものが調整後である。**
+    """
+
+    factor_changes: dict[str, tuple[tuple[dt.date, float], ...]]
+    """``銘柄 -> ((日, 調整の倍率), ...)``。**倍率が変わった日だけ持つ。**
+
+    倍率は ``調整後の終値 ÷ 調整前の終値``（`split_adjusted` が掛けている
+    もの）。**分割の比は、この倍率の変わり方そのものである**——こちらで
+    推測した係数ではなく、**その銘柄のその日の値**である。
+
+    毎日持つと 5千銘柄 × 4千日になるので、**変わった日だけ**持つ。
+    :func:`split_ratio_between` が2つの日の間の比を引く。
+    """
+
     gaps_is: list[tuple[str, dt.date]]
     gaps_oos_days: int
     knives_is: list[tuple[str, dt.date]]
@@ -543,11 +563,64 @@ class Materials:
             f"52週高値への近さ {len(self.high52):,} 銘柄月"
             f"（履歴が足りず外した銘柄 {self.skipped_short:,}）、"
             f"月末の終値 {len(self.price_level):,} 銘柄月、"
-            f"うち調整前も取れた {len(self.raw_price_level):,}、"
+            f"うち調整前も取れた {len(self.raw_price_level):,}"
+            f"（**調整後と値が違ったのは {self.raw_differs:,}**）、"
             f"下窓 {len(self.gaps_is):,} 件（IS）、"
             f"急落 {len(self.knives_is):,} 件（IS）。"
             f"**不連続をまたぐので捨てた {self.dropped_broken:,} 件。**"
         )
+
+    def warnings(self) -> list[str]:
+        """気付かなくても目に入るべきこと。**早期 return しない。**"""
+        found: list[str] = []
+        if self.raw_price_level and not self.raw_differs:
+            found.append(
+                f"**調整前の終値 {len(self.raw_price_level):,} 銘柄月が、1つも調整後と"
+                "違わなかった。** 分割が1つも無いことはありえないので、**「調整前」と"
+                "言っているものが調整後である。** 配当利回りの分母が崩れている。"
+            )
+        return found
+
+
+def split_ratio_between(
+    changes: tuple[tuple[dt.date, float], ...],
+    start: dt.date,
+    end: dt.date,
+) -> float:
+    """``start`` から ``end`` までに、**株数が何倍になったか。**
+
+    倍率（調整後 ÷ 調整前）は、分割より前の足では ``1 ÷ 分割比`` になり、
+    分割の日に 1 へ戻る。だから ``倍率(end) ÷ 倍率(start)`` が、その間の
+    **分割比そのもの**になる。1:400 なら 400。
+
+    **推測した係数ではない。** その銘柄の、その日の値である——
+    `CLAUDE.md`「推測した係数で割るのが、いちばんやってはいけない直しである」
+    の、やってよい側である。
+
+    Args:
+        changes: :attr:`Materials.factor_changes` の1銘柄ぶん。
+        start: 開示日など、前の日。
+        end: 組み替え日など、後の日。
+
+    Returns:
+        比。**分割が無ければ 1.0。** 材料が無くても 1.0（分からないものを
+        分割に数えない）。
+    """
+    if not changes:
+        return 1.0
+
+    def factor_on(day: dt.date) -> float:
+        days = [when for when, _factor in changes]
+        position = bisect_right(days, day)
+        # **最初の変わり目より前は、最初の値を使う。** その前の足は無いので、
+        # 倍率が変わっていないと読むしかない。
+        return changes[max(position - 1, 0)][1]
+
+    before = factor_on(start)
+    after = factor_on(end)
+    if before <= 0 or after <= 0:
+        return 1.0
+    return after / before
 
 
 def scan(
@@ -576,6 +649,8 @@ def scan(
     price_level: dict[tuple[str, pd.Period], tuple[dt.date, float]] = {}
     round_position: dict[tuple[str, pd.Period], tuple[dt.date, float]] = {}
     raw_price_level: dict[tuple[str, pd.Period], tuple[dt.date, float]] = {}
+    factor_changes: dict[str, tuple[tuple[dt.date, float], ...]] = {}
+    raw_differs = 0
     gaps_is: list[tuple[str, dt.date]] = []
     knives_is: list[tuple[str, dt.date]] = []
     gap_days_oos: set[dt.date] = set()
@@ -606,6 +681,19 @@ def scan(
             index = adjusted.index
             if len(closes) < 2:  # noqa: PLR2004 - 1本では何も作れない
                 continue
+
+            # **調整の倍率が変わった日だけ持つ。** 分割の比はその変わり方で
+            # ある——推測した係数ではなく、その銘柄のその日の値。
+            changes: list[tuple[dt.date, float]] = []
+            with np.errstate(divide="ignore", invalid="ignore"):
+                factors = closes / unadjusted
+            for stamp, factor in zip(index, factors, strict=True):
+                if not np.isfinite(factor) or factor <= 0:
+                    continue
+                if not changes or abs(factor / changes[-1][1] - 1.0) > 1e-9:  # noqa: PLR2004
+                    changes.append((stamp.date(), float(factor)))
+            if changes:
+                factor_changes[symbol] = tuple(changes)
 
             liquid = liquid_bars(closes, volumes, min_turnover)
             days = [stamp.date() for stamp in index]
@@ -669,6 +757,9 @@ def scan(
                 bare = float(unadjusted[offset])
                 if bare > 0:
                     raw_price_level[(symbol, months[offset])] = (days[offset], bare)
+                    # **「調整前」を主張のままにしない。** 違う値であることを数える。
+                    if abs(bare / close - 1.0) > 1e-9:  # noqa: PLR2004
+                        raw_differs += 1
 
             # --- 52週高値への近さ（月末だけ）-----------------------------
             if len(closes) < HIGH_WINDOW:
@@ -688,6 +779,8 @@ def scan(
         price_level=price_level,
         round_position=round_position,
         raw_price_level=raw_price_level,
+        raw_differs=raw_differs,
+        factor_changes=factor_changes,
         gaps_is=gaps_is,
         gaps_oos_days=len(gap_days_oos),
         knives_is=knives_is,
@@ -1487,11 +1580,13 @@ class YieldCensus:
                 f"**{self.implausible:,} 銘柄月は利回りが {IMPLAUSIBLE_YIELD:.0%} を超えた**"
                 f"（{share:.2%}）。**外していない**——無配への訂正前か、単位の取り違えか、"
                 "株価の異常である。**どれかは、中身を見るまで決めない。**"
-                "\n  **件数の小ささは理由にならない**——外れ値は SD に効くので、"
-                "**この壁はそのぶん暫定である。**"
-                "\n  `checks\\高すぎる利回りを見る.bat` が中身を出す。"
-                f"**予想 ÷ 実績が 10 や 100 なら訂正前の誤記**、"
-                "どちらも大きいなら株価か単位である。"
+                "\n  **この候補は分位に並べるだけなので、利回りの値そのものは SD に"
+                "入らない。** 効くのは**入る分位を間違えること**で、その大きさは"
+                "**その月の分位に占める割合**で決まる。"
+                "\n  `checks\\高すぎる利回りを見る.bat` が、**開示から組み替えまでの"
+                "分割の比**（その銘柄の調整の倍率から引く）と、**月ごとの最大の割合**"
+                "を出す。**それでも直す**——判定では、間違った分位の銘柄がそのまま"
+                "取り高に入る。"
             )
         # **突き合わせが空振りしたことは、列の検査では捕まらない。**
         # 列は全部読めていて、`no_symbol` も 0 のまま観測が出ない。
@@ -1548,8 +1643,14 @@ def dividend_yields(
     :attr:`Materials.raw_price_level` を渡すこと。
 
     **残る限界を書いておく。** 開示から組み替えまでに分割が起きると、
-    分子（開示時点の株数）と分母（いまの株数）がずれる。四半期ごとに
-    出し直されるので**ずれは3ヶ月以内**だが、**消えてはいない。**
+    分子（開示時点の株数）と分母（いまの株数）がずれる。
+
+    **「四半期ごとに出し直されるので、ずれは3ヶ月以内」と書いていた。
+    外れだった**（2026-09-25、実データ）。予想が埋まっているのは開示の
+    56% だけで、**出し直されない四半期がある。** 8328 は 2008-08-07 の
+    開示が 2009-07 まで、1605 は 2013-02-06 の開示が 2013-10・11 に
+    使われていた——**引き継ぎの期限（1年）いっぱいまで、分割をまたげる。**
+    :func:`split_ratio_between` が、その間の分割比を測る。
 
     ## 先読みを外す
 
