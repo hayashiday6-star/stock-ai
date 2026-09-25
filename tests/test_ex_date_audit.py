@@ -526,7 +526,7 @@ class TestAdjustingMovesTheCrashSet:
     def test_a_genuinely_deeper_fall_still_raises(self) -> None:
         """**同点を許しても、本当に深くなったら落ちる。**
 
-        許容が広すぎれば、`CLAUDE.md`「落ちようのない検査を『合格』と
+        許容が広すぎれば、`docs/POSTMORTEMS.md`「落ちようのない検査を『合格』と
         読まない」に戻る。
         """
         import numpy as np_

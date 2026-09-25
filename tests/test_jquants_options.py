@@ -231,7 +231,7 @@ class TestAMissingBaseVolIsNotADisagreement:
     実データで指摘。2018-02-09）。
 
     `DividendAdjustment` が「額が 0 以下」を別に数えているのと同じ扱いで
-    ある——`CLAUDE.md`「同じ列に、2つの単位を並べない」。
+    ある——`docs/POSTMORTEMS.md`「同じ列に、2つの単位を並べない」。
     """
 
     @staticmethod

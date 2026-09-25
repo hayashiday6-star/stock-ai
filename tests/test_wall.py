@@ -246,7 +246,7 @@ def _prices(
 ) -> pd.DataFrame:
     """乱数歩行に、下窓と急落を**決め打ちの位置**で仕込む。
 
-    **定数の足を置かない**（`CLAUDE.md`）——散らばりが 0 だと標準誤差も 0 に
+    **定数の足を置かない**（`docs/POSTMORTEMS.md`）——散らばりが 0 だと標準誤差も 0 に
     なり、落ちた理由を探す時間が要る。
     """
     index = _INDEX if index is None else index
@@ -475,7 +475,7 @@ class TestTheMissingOnesAreOnTheTable:
         """**測れなかった候補が、1つも出ない形にしない。**
 
         **件数は焼き付けない。** ここは `== 1` と書いてあった
-        （2026-09-21 まで）。候補を足すたびに落ちる——`CLAUDE.md`
+        （2026-09-21 まで）。候補を足すたびに落ちる——`docs/POSTMORTEMS.md`
         「測った件数を、文面に焼き付けない」のテスト版である。
         """
         import inspect
@@ -533,7 +533,7 @@ class TestTheMissingOnesAreOnTheTable:
 #: 1本通すときの暦。**Sell in May の枝に届く長さが要る。**
 #:
 #: 短い暦で叩いて「3年に満たない」で終わったのを、疎通の確認と読まない
-#: （`CLAUDE.md`「到達しない疎通確認を『疎通した』と読まない」）。
+#: （`docs/POSTMORTEMS.md`「空の DB で叩いて手前で終わるのを『疎通した』と読まない」）。
 #:
 #: **2019 年まで伸ばしてある。** 候補6 は IS/OOS がこの候補だけ別で、
 #: OOS が 2019-07-19 から始まる（`wall.IV_OOS_FROM`）——2018 で切ると
@@ -554,8 +554,8 @@ class TestTheCommandRunsOnARealDatabase:
 
         fixture の実物は 2026-01 と 2008-01 で、**この盤面（2010〜2018）に
         1日も掛からない。** 掛からないまま「壁を出せない」で終わったのを
-        疎通の確認と読まない（`CLAUDE.md`「到達しない疎通確認を『疎通した』
-        と読まない」）。**列名は実物から採る。**
+        疎通の確認と読まない（`docs/POSTMORTEMS.md`「空の DB で叩いて手前で終わるの
+        を『疎通した』と読まない」）。**列名は実物から採る。**
         """
         import csv
         import gzip
@@ -1014,7 +1014,7 @@ class TestTheSpikeLineIsChosenByObservationsAlone:
     """**梯子から1つに決まる。** 効果は1つも見ない。
 
     **順に試して良いほうを採るのではない。** 上から見て**最初に条件を
-    満たしたもの**を採るので、答えは1つに決まる——`CLAUDE.md`「#10 が
+    満たしたもの**を採るので、答えは1つに決まる——`docs/POSTMORTEMS.md`「#10 が
     封印できなくなったのは効果を見て設計を選べる形だったから」。
     """
 
@@ -1286,7 +1286,7 @@ class TestTheRateComesFromTheYears:
     |---|---|---|
     | 候補7 の年率 | 年 32.0% | **年 15.1%** |
 
-    **同じ行の2つの列が、別々の標本を指していた**——`CLAUDE.md` に5度書いて
+    **同じ行の2つの列が、別々の標本を指していた**——`docs/POSTMORTEMS.md` に5度書いて
     ある形である。`observations` は絞った後、`per_year` は絞る前。
     """
 
@@ -2486,7 +2486,8 @@ class TestTheSplitRatioIsMeasuredNotGuessed:
     """**開示から組み替えまでの分割比を、その銘柄の調整の倍率から引く。**
 
     「÷1,000 なら地銀らしい利回りになる」は範囲からの逆算である
-    （`CLAUDE.md`「範囲の中心から逆算しない」）。**銘柄ごとに測れるなら測る。**
+    （`docs/POSTMORTEMS.md`「範囲の中心から逆算すると根拠の無い数字になる」）。
+    **銘柄ごとに測れるなら測る。**
     """
 
     CHANGES = (

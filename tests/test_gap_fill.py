@@ -118,7 +118,7 @@ def _at(when: str) -> int:
 def _prices(seed: int, gaps: tuple[int, ...] = (), merger: int | None = None) -> pd.DataFrame:
     """乱数歩行に、下窓を決め打ちの位置で仕込む。
 
-    **定数の足を置かない**（`CLAUDE.md`）——散らばりが 0 だと標準誤差も 0 に
+    **定数の足を置かない**（`docs/POSTMORTEMS.md`）——散らばりが 0 だと標準誤差も 0 に
     なる。
     """
     rng = np.random.default_rng(seed)
@@ -127,7 +127,7 @@ def _prices(seed: int, gaps: tuple[int, ...] = (), merger: int | None = None) ->
         close[merger:] *= 0.001
     # **寄り付きを終値と同じにしない。** 同じにすると窓＝その日のリターンに
     # なり、乱数歩行が勝手に 3% の窓を開ける（1,950本で数件出た）。**足場の
-    # せいで落ちると、原因を探す時間が要る**（`CLAUDE.md`）。
+    # せいで落ちると、原因を探す時間が要る**（`docs/POSTMORTEMS.md`）。
     opens = close.copy()
     opens[1:] = close[:-1] * (1.0 + rng.normal(0.0, 0.002, _BARS - 1))
     for position in gaps:
@@ -534,7 +534,7 @@ class TestTheNeededTableSaysSomething:
     """**検出できる差を「検出したい効果」に入れない**（2026-09-20、ユーザーが発見）。
 
     それに要る期数は、定義上いま在る期数そのものである——**答えが必ず
-    「ちょうど足りる」になる行。** `CLAUDE.md`「落ちようのない検査を『合格』と
+    「ちょうど足りる」になる行。** `docs/POSTMORTEMS.md`「落ちようのない検査を『合格』と
     読まない」の表版である。
 
     #15 では線（1.2%）と検出できる差（1.2043%）が偶然ほぼ一致し、**同じ

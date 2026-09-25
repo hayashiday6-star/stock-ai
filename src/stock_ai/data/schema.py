@@ -243,7 +243,7 @@ class DividendAdjustment:
     def breakdown(self) -> list[tuple[str, int]]:
         """理由ごとの数。**合計だけにしない。**
 
-        **列ごとに独立に数える**（`CLAUDE.md`）。「当てなかった 2,264 件」
+        **列ごとに独立に数える**（`docs/POSTMORTEMS.md`）。「当てなかった 2,264 件」
         とだけ出していたので、**どれか1つが大きくてもその中に紛れた**
         （2026-09-20、ユーザーが指摘）。
         """

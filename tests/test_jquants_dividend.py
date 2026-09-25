@@ -303,7 +303,7 @@ class TestTheHalvesAreCountedInTheSameUnitAsTheRowAbove:
     「別々の権利落ち 114,942」とは **2.6倍**違っていた。**同じ列に2つの単位が
     並んでいた。**
 
-    `CLAUDE.md`「独立な観測を、件数で数えない」「系列を作るときの単位と、
+    `docs/POSTMORTEMS.md`「独立な観測を、件数で数えない」「系列を作るときの単位と、
     検出力を計算するときの単位を揃える」に当たる形である。**例外は出ない。**
     """
 

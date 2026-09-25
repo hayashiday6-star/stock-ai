@@ -403,7 +403,7 @@ class HoldingDividends:
 
     `drag` と食い違うのは、**後から訂正された**か、**額が公表される前だった**
     かである。**「その日に知りようがなかったこと」で過去の判断を裁かない**
-    ので、別の欄に置く（`CLAUDE.md`）。
+    ので、別の欄に置く（`docs/POSTMORTEMS.md`）。
     """
 
     final_only: int = 0
@@ -450,7 +450,7 @@ class HoldingDividends:
         **前は 4分の1 の幅だった。** `drag` を利回りの単純和で、しかも
         監査専用（先読みあり）の額から作っていたので、**そもそも同じ量を
         測っていなかった。** 幅を広く取ると、**そのずれが幅の中に隠れる**
-        ——`CLAUDE.md`「広すぎる幅は、狭すぎる幅より悪い」。
+        ——`docs/POSTMORTEMS.md`「広すぎる幅は、狭すぎる幅より悪い」。
         """
         if not self.drag:
             return abs(self.removed) <= _MATCH_BAND

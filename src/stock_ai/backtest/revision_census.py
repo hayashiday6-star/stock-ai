@@ -123,7 +123,7 @@ class Readability:
         """`FNP` が空の行で何が埋まっていたか。**件数の多い順に、割合つき。**
 
         **割合で見る。** 件数だけだと「1件でもあれば」で読んでしまう
-        （`CLAUDE.md`「『ゼロでない』を根拠に断定しない」）。
+        （`docs/POSTMORTEMS.md`「『ゼロでない』を根拠に断定しない」）。
         """
         if not self.no_forecast:
             return []

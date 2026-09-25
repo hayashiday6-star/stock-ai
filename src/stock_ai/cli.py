@@ -2470,7 +2470,7 @@ def _event_gate(  # noqa: PLR0913 - §0 の材料をすべて受け取る
     # なる行**で、何も言えない（2026-09-20、ユーザーが発見）。しかも #15 では
     # 線と偶然ほぼ一致し、**同じ 1.20% が2行並んで「あと4件」に読めた。**
     #
-    # **`CLAUDE.md`「落ちようのない検査を『合格』と読まない」の表版である。**
+    # **`docs/POSTMORTEMS.md`「落ちようのない検査を『合格』と読まない」の表版である。**
     targets = {round(committed, 4)}
     if floor_estimate > 0:
         # **見込みの下限。** #12・#13 の「下限を検出するには何年要るか」と同じ。
@@ -6462,7 +6462,7 @@ def _market_cap_values() -> dict[tuple[str, object], tuple[object, float]]:
     `MktCap` を月末に畳んだ生成物（`valuation_monthly`）を読む。
 
     **無ければ空を返す。** 呼ぶ側が「材料が無い」と出す——**黙って候補を
-    1つ落とさない**（`CLAUDE.md`「無いことは、出力に出ない」）。
+    1つ落とさない**（`docs/POSTMORTEMS.md`「無いことは、出力に出ない」）。
 
     **`MktCap` は百万円単位である。** 分位に並べるだけなので単位は効かない
     が、**額として使うなら百万倍間違える**（2026-09-15 に踏んだ）。
@@ -6628,7 +6628,7 @@ def yield_audit(
 ) -> None:
     """Look at the dividend yields that came out impossibly high - nothing is fetched.
 
-    **件数はここに書かない**——その回の出力が数える（`CLAUDE.md`「測った
+    **件数はここに書かない**——その回の出力が数える（`docs/POSTMORTEMS.md`「測った
     件数を、文面に焼き付けない」。ここには一度 647 と書いてあり、次の回で
     376 になった）。
 
@@ -6686,8 +6686,8 @@ def yield_audit(
 
     # **開示から組み替えまでの分割比を、その銘柄の調整の倍率から引く。**
     # 「÷1,000 なら地銀らしい利回りになる」は範囲からの逆算である
-    # （`CLAUDE.md`「範囲の中心から逆算しない」）。**銘柄ごとに測れるなら
-    # 測る。**
+    # （`docs/POSTMORTEMS.md`「範囲の中心から逆算すると根拠の無い数字になる」）。
+    # **銘柄ごとに測れるなら測る。**
     def rebalanced_on(item: object) -> dt.date | None:
         found = materials.raw_price_level.get(
             (item.symbol, pd.Period(item.month, freq="M"))  # type: ignore[attr-defined]
@@ -6845,7 +6845,7 @@ def column_census_command(
         #
         # **`--all` は上限も外す。** ここを `show_all` と繋がずに書いていて、
         # **「全部出す」と言いながら 24 列で切っていた**（自分のテストが
-        # 落ちて分かった、2026-09-21）——`CLAUDE.md`「札が、数えているものと
+        # 落ちて分かった、2026-09-21）——`docs/POSTMORTEMS.md`「札が、数えているものと
         # 違うことを言っていないか」。
         limit = len(shown) if show_all else MAX_COLUMNS_SHOWN
         hidden = max(len(shown) - limit, 0)
@@ -6918,7 +6918,7 @@ def material_coverage(
 
     **`IV` は古い原本に入っていない。** 2008-05 では `IV` / `BaseVol` /
     `UnderPx` など9列が全行で空で、2026-01 では全部埋まっている。
-    **どこから埋まるのかは、数えないと分からない**——`CLAUDE.md`「無いことは、
+    **どこから埋まるのかは、数えないと分からない**——`docs/POSTMORTEMS.md`「無いことは、
     出力に出ない」。
 
     **取りには行かない。** 原本を読むだけである。
@@ -6962,7 +6962,7 @@ def material_coverage(
     if iv.disagreed:
         # **「限月の選び方を疑うこと」と書くなら、疑う材料を出す。**
         # 件数しか返していなかったので、どの日なのかを追えなかった
-        # （2026-09-21。`CLAUDE.md`「『見ること』と書いただけで、見る道具を
+        # （2026-09-21。`docs/POSTMORTEMS.md`「『見ること』と書いただけで、見る道具を
         # 置いていないか」）。**差の大きい順**に出す。
         worst = sorted(iv.disagreed, key=lambda item: -abs(item.gap))
         table = Table(title="`BaseVol` と食い違った日（差の大きい順）")
@@ -7352,7 +7352,7 @@ def knife_power(
     for line in netting.warnings():
         console.print(f"[yellow]{line}[/]")
     # **理由ごとに割る。** 急落側には既に表が在るのに、**保有窓側だけ合計の
-    # ままだった**（2026-09-21、ユーザーが指摘）。`CLAUDE.md`「合計だけ出すと、
+    # ままだった**（2026-09-21、ユーザーが指摘）。`docs/POSTMORTEMS.md`「合計だけ出すと、
     # その中に紛れる」——#5 で会計年度末が全件読めていなかったのが表の1行に
     # しか出なかったのと同じ形である。
     _print_dividend_breakdown(netting, "保有窓で落とした配当")
@@ -7545,7 +7545,7 @@ def _print_dividend_breakdown(counted: object, title: str) -> None:
 
     **合計だけにしない。** 「当てなかった 2,264 件」とだけ出していたので、
     **どれか1つが大きくてもその中に紛れた**（2026-09-20、ユーザーが指摘）。
-    `CLAUDE.md`「列ごとに独立に数える」。
+    `docs/POSTMORTEMS.md`「列ごとに独立に数える」。
 
     そして**中身も出す。** 「額か終値のどちらかが読み違いである」と書いて
     おきながら、**銘柄も日付も額も出ていなかった**ので、どちら側かを決め
@@ -7693,10 +7693,10 @@ def _print_unpublished_amounts(archive: Path, known: object, limit: int = 3) -> 
 
     **そして読み口が捨てている列を数える。** 「予想の行が在るのに拾えて
     いないのではないか」は、`FRCode` を読まないと答えられない——
-    **捨てている列は、読み口からは見えない**（`CLAUDE.md`、#5 と同じ形）。
+    **捨てている列は、読み口からは見えない**（`docs/POSTMORTEMS.md`、#5 と同じ形）。
 
     **全体と並べる。** 絞った先で `DivRate` が空なのは当たり前なので、
-    **全体と食い違う列だけ**を出す（`CLAUDE.md`「件数ではなく割合を見る」）。
+    **全体と食い違う列だけ**を出す（`docs/POSTMORTEMS.md`「件数ではなく割合を出す」）。
 
     Args:
         archive: 原本の置き場所。
@@ -7782,8 +7782,8 @@ def _print_dividend_revisions(archive: Path) -> None:
     """Report how often the amount was corrected before the ex-date, and by how much.
 
     **割合で見る。** 4件の訂正比がどれも 100 だったからといって、
-    **「訂正はいつも 100 倍」にはならない**（`CLAUDE.md`「ゼロでないことを
-    根拠に断定しない」）。**100 以外が在るかどうかは、全部数えないと出ない。**
+    **「訂正はいつも 100 倍」にはならない**（`docs/POSTMORTEMS.md`
+    「『ゼロでない』を根拠に断定しない」）。**100 以外が在るかどうかは、全部数えないと出ない。**
 
     **直した後も残す。** 「いちばん早い正の額」から「権利落ち日時点の額」に
     変えたので、ここに出るのが**その直しが動かした鍵**である。
@@ -7822,7 +7822,7 @@ def _inflation_cell(wall: object) -> str:
     """Render the inflation column so the row cannot contradict itself.
 
     **欄そのものに出す。** 注記に書くと、**表だけ見た人には落ちる**
-    （2026-09-21、ユーザーの指摘）。`CLAUDE.md`「表は読む側が気付く必要が
+    （2026-09-21、ユーザーの指摘）。`docs/POSTMORTEMS.md`「表は読む側が気付く必要が
     ある」。
 
     | 何が効いたか | 出し方 |
@@ -7907,7 +7907,7 @@ def _index_walls(
         """Count the distinct OOS entry days, not the events.
 
         **件数ではなく、入った日で数える。** `#5` は 1,827 件が 831 日で、
-        **件数で割ると n を 2.2倍に水増しする**（`CLAUDE.md`「独立な観測を、
+        **件数で割ると n を 2.2倍に水増しする**（`docs/POSTMORTEMS.md`「独立な観測を、
         件数で数えない」）。
 
         **OOS の初日は候補ごとに違いうる。** 候補6 は `IV` が
@@ -8057,7 +8057,7 @@ def _index_walls(
     # --- B 需給（候補7 と候補11）--------------------------------------------
     #
     # **早期 return を置かない。** 候補7 で `return walls` していたので、
-    # **下に足した候補11 が黙って落ちる形**になっていた——`CLAUDE.md`
+    # **下に足した候補11 が黙って落ちる形**になっていた——`docs/POSTMORTEMS.md`
     # 「早期 return が、下に足した検査を黙らせる」（書いてある規則である）。
     with quiet_on_console("stock_ai.data.jquants_investor"):
         flows = weekly_flows(archive)
@@ -8132,7 +8132,7 @@ def _index_walls(
                 period_years=_judgement_years(OOS_FROM, OOS_END),
                 # **n の出どころを注記に出す。** 「974 週」と「n 450」が並ぶ
                 # だけだと、**どこで減ったのかが出力から読み取れない**——
-                # `CLAUDE.md`「同じ列に、2つの単位を並べない」の隣の形である。
+                # `docs/POSTMORTEMS.md`「同じ列に、2つの単位を並べない」の隣の形である。
                 notes=(
                     note,
                     f"**`{SECTION}` の公表は {len(flows.weeks):,} 週。** "
@@ -8282,7 +8282,7 @@ def wall_survey(
     # --- 5・12・13・19 月次・分位ロングショート -------------------------------
     #
     # **1つのループで回す。** 同じ処理を4つ書けば、1つは間違える
-    # （`CLAUDE.md`「同じ式を3つ書けば、1つは間違える」）。**畳み方は
+    # （`docs/POSTMORTEMS.md`「同じ式を3つ書けば、1つは間違える」）。**畳み方は
     # `wall.py` の説明に書いてから測っている。**
     with database.session() as session:
         calendar = split_adjusted(PriceRepository(session).get_raw_prices(benchmark)).index
@@ -10598,7 +10598,7 @@ def _ir_cell(shape: object) -> str:
 
     **表と `docs/PASSING.md` の両方がここを呼ぶ。** 2つ持つと、片方だけ
     直したときに食い違う——`_inflation_cell` と同じ理由である
-    （`CLAUDE.md`「判定の当てはめが2箇所にあると、片方が緩む」）。
+    （`docs/POSTMORTEMS.md`「判定の当てはめが2箇所にあると、片方が緩む」）。
 
     **重なる窓には出さない。** イベント型は1観測が取引できる系列では
     ないので、年率に直すには資金の張り方を決める必要がある。**決めずに
@@ -10709,7 +10709,7 @@ def _passing_lines(
     # **書き写さない。** 線が動けばここも動く（`docs/PASSING.md` が生成物で
     # ある理由そのもの）。
     # **`OOS_FROM` を、モジュールの頭の `pead` のそれと取り違えない**
-    # （`CLAUDE.md`「モジュールの頭に、同じ名前の別物が居ないか」。あちらは
+    # （`docs/POSTMORTEMS.md`「モジュールの頭に、同じ名前の別物が居ないか」。あちらは
     # 2024-01-01 で、6年半ずれる）。**ここで束ね直す。**
     from stock_ai.backtest.gap_fill import IS_END as LOOK_END
     from stock_ai.backtest.gap_fill import OOS_FROM as JUDGE_FROM

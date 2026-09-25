@@ -104,7 +104,7 @@ def _at(when: str) -> int:
 def _prices(seed: int, crashes: tuple[int, ...] = (), merger: int | None = None) -> pd.DataFrame:
     """乱数歩行に、急落を決め打ちの位置で仕込む。
 
-    **定数の足を置かない**（`CLAUDE.md`）。
+    **定数の足を置かない**（`docs/POSTMORTEMS.md`）。
     """
     rng = np.random.default_rng(seed)
     steps = rng.normal(0.0, 0.01, _BARS)

@@ -33,7 +33,7 @@
 
 ## `market_cap` は百万円単位である
 
-**円ではない**（`CLAUDE.md`「出した数字を、自分で見る」）。ここでは順位しか
+**円ではない**（`docs/POSTMORTEMS.md`「出した数字を、自分で見る」）。ここでは順位しか
 使わないので尺度は結果を変えないが、**円として表示すれば百万倍間違える。**
 
 ## 観測は年に1回しかない
@@ -135,7 +135,7 @@ class SizeSeries(QuantileSeries):
     def warnings(self) -> list[str]:
         """気付かなくても目に入るべきこと。**表は読む側が気付く必要がある。**
 
-        **早期 return しない。** 理由を隠す形を2度踏んでいる（`CLAUDE.md`）。
+        **早期 return しない。** 理由を隠す形を2度踏んでいる（`docs/POSTMORTEMS.md`）。
         """
         found: list[str] = []
         if not self.months:

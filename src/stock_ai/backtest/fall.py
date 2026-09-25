@@ -44,7 +44,7 @@ gap_fill.py  fell[usable] = opened[usable] / previous[usable] - 1.0 <= -gap
 ——事前登録が「以下」と書いているほうに合わせる。
 
 **イプシロンは足していない。** 幅を推測で置くより、**式を変えるほうが根拠を
-書ける**（`CLAUDE.md`「許容幅を推測で置かない」）。
+書ける**（`docs/POSTMORTEMS.md`「許容幅を推測で置かない」）。
 """
 
 from __future__ import annotations

@@ -249,7 +249,7 @@ class TestTheOutputStaysSmall:
 
         最初この assert は `printed.count("Col")` で書いてあった。**標本が
         同じ列をもう一度出すので、上限が効いていても2倍に数える**——
-        `CLAUDE.md`「テストの名前が主張していることと、assert が守って
+        `docs/POSTMORTEMS.md`「テストの名前が主張していることと、assert が守って
         いることを突き合わせる」。**痛いのは行数のほうである。**
         """
         from stock_ai.cli import MAX_COLUMNS_SHOWN
