@@ -33,7 +33,7 @@ from __future__ import annotations
 import dataclasses
 import datetime as dt
 import math
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from pathlib import Path
 
 from stock_ai.data.jquants_bulk import records_from_csv
@@ -134,7 +134,9 @@ def previous_weekday(day: dt.date) -> dt.date:
     return day
 
 
-def known_schedules(rows: Iterable[EarningsDate]) -> list[EarningsDate]:
+def known_schedules(
+    rows: Iterable[EarningsDate], previous_day: Callable[[dt.date], dt.date | None]
+) -> list[EarningsDate]:
     """**窓の始まりの日より前に公表された中で最新の予定**だけを返す（候補17 の事象）。
 
     予定日 S の窓は、S の前営業日 W の寄付きから始まる。**原本に公表時刻が無い**
@@ -147,7 +149,18 @@ def known_schedules(rows: Iterable[EarningsDate]) -> list[EarningsDate]:
     ——先読みになるのは**その日より後の公表**だけで、公表順で後のものではない。
 
     同じ期（銘柄・`FQName`・`FYE`、公表日が :data:`REVISION_DAYS` 以内）の行を
-    まとめて判断する。**前営業日は平日で近似している**（:func:`previous_weekday`）。
+    まとめて判断する。
+
+    Args:
+        rows: 予定の行。
+        previous_day: 前営業日を返す関数。**既定を置かない**——数えるだけの道具は
+            平日の近似（:func:`previous_weekday`）、壁を測る本番は**価格に在る
+            実際の営業日**を渡す。既定があると、渡し忘れたとき祝日の前後で黙って
+            近似になる。営業日が分からなければ ``None`` を返してよい（その予定は
+            使わない）。
+
+    Returns:
+        事象にする予定の行。
     """
     by_term: dict[tuple[str, str, str], list[EarningsDate]] = {}
     for row in rows:
@@ -158,7 +171,9 @@ def known_schedules(rows: Iterable[EarningsDate]) -> list[EarningsDate]:
     for group in by_term.values():
         group.sort(key=lambda row: row.published_on)
         for row in group:
-            window = previous_weekday(row.scheduled_on)  # type: ignore[arg-type]
+            window = previous_day(row.scheduled_on)  # type: ignore[arg-type]
+            if window is None:
+                continue
             known = [
                 other
                 for other in group
@@ -351,30 +366,7 @@ def schedule_census(directory: Path, is_end: dt.date) -> ScheduleCensus:
     """
     import statistics
 
-    from stock_ai.data.jquants_archive import key_period, path_for, read_manifest
-    from stock_ai.data.jquants_read import endpoint_of, read_archived
-
-    keys = sorted(key for key in read_manifest(directory) if endpoint_of(key) == ENDPOINT)
-    periods = sorted(period for key in keys if (period := key_period(key)))
-    rows = unreadable = 0
-    distinct: dict[tuple[str, dt.date, dt.date | None, str, str], EarningsDate] = {}
-    for key in keys:
-        try:
-            items = parse_earnings_dates(read_archived(path_for(directory, key)))
-        except Exception:  # noqa: BLE001 - 1本読めないことで全体を止めない
-            unreadable += 1
-            continue
-        rows += len(items)
-        for item in items:
-            distinct[
-                (
-                    item.symbol,
-                    item.published_on,
-                    item.scheduled_on,
-                    item.quarter,
-                    item.fiscal_year_end,
-                )
-            ] = item
+    keys, periods, rows, unreadable, distinct = _read_originals(directory)
 
     ahead = same_day = behind = no_schedule = 0
     leads: list[int] = []
@@ -429,7 +421,7 @@ def schedule_census(directory: Path, is_end: dt.date) -> ScheduleCensus:
         is_days = len(
             {
                 row.scheduled_on
-                for row in known_schedules(distinct.values())
+                for row in known_schedules(distinct.values(), previous_weekday)
                 if row.scheduled_on is not None and is_start <= row.scheduled_on <= is_end
             }
         )
@@ -460,3 +452,49 @@ def schedule_census(directory: Path, is_end: dt.date) -> ScheduleCensus:
         is_end=is_end if is_start is not None else None,
         is_days=is_days,
     )
+
+
+def _read_originals(
+    directory: Path,
+) -> tuple[
+    list[str],
+    list[str],
+    int,
+    int,
+    dict[tuple[str, dt.date, dt.date | None, str, str], EarningsDate],
+]:
+    """原本を読む。**歩き方をここ1箇所に置く**——数える道具と壁の両方がここを呼ぶ。
+
+    Returns:
+        ``(鍵, 鍵の日付, 読めた行, 開けなかった本数, 重ならない行)``。
+    """
+    from stock_ai.data.jquants_archive import key_period, path_for, read_manifest
+    from stock_ai.data.jquants_read import endpoint_of, read_archived
+
+    keys = sorted(key for key in read_manifest(directory) if endpoint_of(key) == ENDPOINT)
+    periods = sorted(period for key in keys if (period := key_period(key)))
+    rows = unreadable = 0
+    distinct: dict[tuple[str, dt.date, dt.date | None, str, str], EarningsDate] = {}
+    for key in keys:
+        try:
+            items = parse_earnings_dates(read_archived(path_for(directory, key)))
+        except Exception:  # noqa: BLE001 - 1本読めないことで全体を止めない
+            unreadable += 1
+            continue
+        rows += len(items)
+        for item in items:
+            distinct[
+                (
+                    item.symbol,
+                    item.published_on,
+                    item.scheduled_on,
+                    item.quarter,
+                    item.fiscal_year_end,
+                )
+            ] = item
+    return keys, periods, rows, unreadable, distinct
+
+
+def read_schedules(directory: Path) -> list[EarningsDate]:
+    """保存した原本の、**ファイルをまたいで重ならない行**。**取りには行かない。**"""
+    return list(_read_originals(directory)[4].values())

@@ -110,7 +110,7 @@ from __future__ import annotations
 import dataclasses
 import datetime as dt
 import math
-from bisect import bisect_right
+from bisect import bisect_left, bisect_right
 from collections.abc import Callable, Iterable
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -515,6 +515,107 @@ def stale_reasons(directory: Path, missing: Iterable[Missing]) -> list[str]:
                 "「API が直近しか返さない」ことと、「手元に歴史が無い」ことは別である。"
             )
     return found
+
+
+#: 候補17 の窓（営業日）。予定日の前営業日の寄付き 〜 予定日の翌営業日の大引け。
+#:
+#: **出典は無い。決めの値である**（`docs/CANDIDATES.md`、壁を測る前に決めた）。
+EARNINGS_WINDOW = 3
+
+
+@dataclasses.dataclass(frozen=True)
+class EarningsEvents:
+    """候補17 の事象（`jquants_earnings.known_schedules` の規則、**実際の営業日**で）。
+
+    ``drawn`` は ``(銘柄, D)`` で、D は**窓の始まりの前営業日**である
+    ——`event_window.event_sample` は D の翌営業日の寄付きで入り、D +
+    :data:`EARNINGS_WINDOW` 営業日の大引けで出るので、窓がちょうど
+    「予定日の前営業日の寄付き 〜 翌営業日の大引け」になる。
+    """
+
+    drawn: tuple[tuple[str, dt.date], ...]
+    """IS（``is_start`` 〜 ``is_end``）の事象。"""
+
+    oos_days: int
+    """OOS の**別々の予定日の数**。観測の数である（件数ではない）。"""
+
+    is_start: dt.date
+    per_day: tuple[int, ...]
+    """IS の予定日ごとの社数（予定の上で。価格で落ちる前）。**重みの偏りを数で見る。**"""
+
+    unplaced: int
+    """営業日の暦の外に在って、窓を置けなかった予定。"""
+
+    @property
+    def median_per_day(self) -> float:
+        """予定日ごとの社数の中央値。"""
+        import statistics
+
+        return float(statistics.median(self.per_day)) if self.per_day else 0.0
+
+    @property
+    def single_days(self) -> int:
+        """**1社だけの予定日。** 数百社の日と同じ重みの1観測になる。"""
+        return sum(1 for count in self.per_day if count == 1)
+
+
+def earnings_events(
+    directory: Path,
+    sessions: list[dt.date],
+    is_start: dt.date,
+    is_end: dt.date,
+    oos_from: dt.date,
+    oos_end: dt.date,
+) -> EarningsEvents:
+    """候補17 の事象を、**価格に在る実際の営業日**で作る。
+
+    **平日の近似を使わない。** 祝日の前後で「前営業日に公表された予定」を通して
+    しまう——その予定は窓の始まりの寄付きで見えていたと言えない（原本に公表時刻
+    が無い）。
+
+    Args:
+        directory: 原本の置き場所。
+        sessions: 営業日（昇順）。ベンチマークの足から作る。
+        is_start: IS の始まり（`earnings-schedule` の 95% 点から決まる）。
+        is_end: IS の終わり。
+        oos_from: OOS の始まり。
+        oos_end: OOS の終わり。
+
+    Returns:
+        事象。
+    """
+    from stock_ai.data.jquants_earnings import known_schedules, read_schedules
+
+    def previous_session(day: dt.date) -> dt.date | None:
+        position = bisect_left(sessions, day) - 1
+        return sessions[position] if position >= 0 else None
+
+    drawn: list[tuple[str, dt.date]] = []
+    oos: set[dt.date] = set()
+    per_day: dict[dt.date, int] = {}
+    unplaced = 0
+    last = sessions[-1] if sessions else dt.date.min
+    for row in known_schedules(read_schedules(directory), previous_session):
+        scheduled = row.scheduled_on
+        if scheduled is None:
+            continue
+        start = previous_session(scheduled)
+        entry_eve = previous_session(start) if start is not None else None
+        if entry_eve is None or scheduled > last:
+            unplaced += 1
+            continue
+        if is_start <= scheduled <= is_end:
+            drawn.append((row.symbol, entry_eve))
+            per_day[scheduled] = per_day.get(scheduled, 0) + 1
+        elif oos_from <= scheduled <= oos_end:
+            oos.add(scheduled)
+    return EarningsEvents(
+        drawn=tuple(drawn),
+        oos_days=len(oos),
+        is_start=is_start,
+        per_day=tuple(per_day[day] for day in sorted(per_day)),
+        unplaced=unplaced,
+    )
 
 
 def _earnings_schedule_present(directory: Path) -> str | None:

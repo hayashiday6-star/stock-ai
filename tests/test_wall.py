@@ -3441,11 +3441,11 @@ class TestTheScheduleKnownBeforeTheWindowIsTheEvent:
         ]
 
     def test_a_revision_known_in_time_replaces_the_old_date(self) -> None:
-        from stock_ai.data.jquants_earnings import known_schedules
+        from stock_ai.data.jquants_earnings import known_schedules, previous_weekday
 
         rows = self._rows(("2014-10-01", "2014-10-30"), ("2014-10-20", "2014-11-05"))
 
-        found = [row.scheduled_on for row in known_schedules(rows)]
+        found = [row.scheduled_on for row in known_schedules(rows, previous_weekday)]
 
         assert found == [dt.date(2014, 11, 5)], (
             "**動いた後の日だけ。** 古い日は知れていた予定ではない"
@@ -3453,29 +3453,29 @@ class TestTheScheduleKnownBeforeTheWindowIsTheEvent:
 
     def test_a_revision_published_too_late_leaves_the_old_date(self) -> None:
         """出し直しが元の窓の始まり以降なら、その時点で避けられたのは古い日だけ。"""
-        from stock_ai.data.jquants_earnings import known_schedules
+        from stock_ai.data.jquants_earnings import known_schedules, previous_weekday
 
         rows = self._rows(("2014-10-01", "2014-10-30"), ("2014-10-29", "2014-11-05"))
 
-        found = sorted(row.scheduled_on for row in known_schedules(rows))
+        found = sorted(row.scheduled_on for row in known_schedules(rows, previous_weekday))
 
         assert dt.date(2014, 10, 30) in found
 
     def test_one_published_on_the_day_before_is_not_known_at_the_open(self) -> None:
         """**原本に公表時刻が無い。** 前営業日に公表された予定は、寄付きでは見えていない。"""
-        from stock_ai.data.jquants_earnings import known_schedules
+        from stock_ai.data.jquants_earnings import known_schedules, previous_weekday
 
         rows = self._rows(("2014-10-29", "2014-10-30"))
 
-        assert not known_schedules(rows)
+        assert not known_schedules(rows, previous_weekday)
 
     def test_the_day_before_skips_the_weekend(self) -> None:
         """月曜の予定なら、窓の始まりは金曜。金曜に公表されたものは使えない。"""
         from stock_ai.data.jquants_earnings import known_schedules, previous_weekday
 
         assert previous_weekday(dt.date(2014, 11, 3)) == dt.date(2014, 10, 31)
-        assert not known_schedules(self._rows(("2014-10-31", "2014-11-03")))
-        assert known_schedules(self._rows(("2014-10-30", "2014-11-03")))
+        assert not known_schedules(self._rows(("2014-10-31", "2014-11-03")), previous_weekday)
+        assert known_schedules(self._rows(("2014-10-30", "2014-11-03")), previous_weekday)
 
 
 class TestTheScheduleCensusSaysWhereTheISReallyStarts:
@@ -3538,3 +3538,159 @@ class TestTheScheduleCensusSaysWhereTheISReallyStarts:
 
         assert (census.moved, census.moved_in_time, census.moved_late) == (2, 1, 1)
         assert any("祝日は見ていない" in line for line in census.warnings())
+
+
+class TestTheEarningsEventsUseTheRealCalendar:
+    """**壁の本番は、価格に在る実際の営業日で事象を作る**（候補17）。
+
+    平日の近似だと、祝日の前後で「前営業日に公表された予定」を通してしまう。
+    """
+
+    # 2015-01-12（月）は成人の日。**1/13（火）の予定の窓は、金曜 1/9 に始まる。**
+    SESSIONS = [
+        dt.date(2015, 1, 6),
+        dt.date(2015, 1, 7),
+        dt.date(2015, 1, 8),
+        dt.date(2015, 1, 9),
+        dt.date(2015, 1, 13),
+        dt.date(2015, 1, 14),
+        dt.date(2018, 1, 9),
+        dt.date(2018, 1, 10),
+        dt.date(2018, 1, 11),
+    ]
+
+    def _events(self, tmp_path, rows):
+        from stock_ai.backtest.wall import earnings_events
+
+        archive = TestTheEarningsScheduleIsCounted._archive(tmp_path, {"20150101": rows})
+        return earnings_events(
+            archive,
+            self.SESSIONS,
+            dt.date(2015, 1, 1),
+            dt.date(2017, 12, 31),
+            dt.date(2018, 1, 1),
+            dt.date(2018, 12, 31),
+        )
+
+    def test_one_published_on_the_real_day_before_is_not_used(self, tmp_path) -> None:
+        """**金曜に公表された火曜の予定。** 平日の近似（前営業日 = 月曜）なら通っていた。"""
+        from stock_ai.data.jquants_earnings import known_schedules, previous_weekday
+
+        row = TestTheEarningsScheduleIsCounted._row("13060", "2015-01-09", "2015-01-13")
+
+        assert not self._events(tmp_path, [row]).drawn
+        # **近似では通ってしまう**——だから本番は実際の営業日を渡す。
+        parsed = TestTheScheduleKnownBeforeTheWindowIsTheEvent._rows(("2015-01-09", "2015-01-13"))
+        assert known_schedules(parsed, previous_weekday)
+
+    def test_the_entry_eve_is_two_sessions_before(self, tmp_path) -> None:
+        """事象日 D は窓の始まり（1/9）の前営業日 1/8。
+
+        **`event_sample` は D の翌営業日の寄付きで入る。**
+        """
+        row = TestTheEarningsScheduleIsCounted._row("13060", "2015-01-07", "2015-01-13")
+
+        events = self._events(tmp_path, [row])
+
+        assert events.drawn == (("1306", dt.date(2015, 1, 8)),)
+
+    def test_oos_is_counted_in_schedule_days_not_rows(self, tmp_path) -> None:
+        """**観測の数は予定日の数。** 同じ日に2社なら1つ。"""
+        row = TestTheEarningsScheduleIsCounted._row
+        rows = [row("13060", "2018-01-02", "2018-01-11"), row("72030", "2018-01-03", "2018-01-11")]
+
+        events = self._events(tmp_path, rows)
+
+        assert events.oos_days == 1
+        assert not events.drawn
+
+    def test_the_weights_are_shown_as_numbers(self, tmp_path) -> None:
+        """**重みが偏っているかを、文面ではなく数で見る**（ユーザーの指摘）。"""
+        row = TestTheEarningsScheduleIsCounted._row
+        rows = [
+            row("13060", "2015-01-05", "2015-01-13"),
+            row("72030", "2015-01-05", "2015-01-13"),
+            row("99840", "2015-01-05", "2015-01-14"),
+        ]
+
+        events = self._events(tmp_path, rows)
+
+        assert events.per_day == (2, 1)
+        assert events.single_days == 1
+        assert events.median_per_day == pytest.approx(1.5)
+
+
+def _walk(seed: int) -> pd.DataFrame:
+    rng = np.random.default_rng(seed)
+    closes = 1_000.0 * np.exp(np.cumsum(rng.normal(0.0, 0.01, len(_INDEX))))
+    return pd.DataFrame(
+        {
+            OPEN: closes,
+            HIGH: closes,
+            LOW: closes,
+            CLOSE: closes,
+            ADJ_CLOSE: closes,
+            VOLUME: [500_000.0] * len(_INDEX),
+        },
+        index=_INDEX,
+    )
+
+
+class TestTheEarningsWallIsBuiltEndToEnd:
+    """**組み立てを1本通す。** 中身の入った DB と原本で、候補17 の壁を実際に作る。"""
+
+    # **引く相手（等加重の宇宙）は、1日 30 社に届かないと値を出さない。** 足場も
+    # それだけ置く——4社で組んだら、全部の日が「引く相手が無い」で落ちた。
+    SYMBOLS = ("1306", "7203", "9984", *(f"{2000 + number}" for number in range(30)))
+
+    def test_the_wall_comes_out(self, tmp_path, monkeypatch) -> None:
+        from stock_ai import cli
+
+        database = Database("sqlite:///:memory:")
+        database.create_all()
+        with database.session() as session:
+            repo = PriceRepository(session)
+            for seed, symbol in enumerate(self.SYMBOLS):
+                repo.upsert_prices(symbol, _walk(seed), market="JP")
+
+        row = TestTheEarningsScheduleIsCounted._row
+        sessions = [stamp.date() for stamp in _INDEX]
+        rows = []
+        # IS に 30 日、OOS に 10 日。どれも予定日の 20 営業日前に公表する。
+        picks = [sessions[index] for index in range(60, 360, 10)]
+        picks += [sessions[index] for index in range(len(sessions) - 200, len(sessions) - 20, 18)]
+        # **予定ごとに別の期にする。** 同じ期（銘柄・`FQName`・`FYE`）を 10 営業日
+        # おきに並べると、次の予定が「出し直し」に見えて最後の1件しか残らない
+        # ——実データでは同じ期は年に1回である。
+        for number, scheduled in enumerate(picks):
+            published = sessions[sessions.index(scheduled) - 20]
+            for code in ("72030", "99840"):
+                rows.append({**row(code, f"{published}", f"{scheduled}"), "FYE": f"{number:04d}"})
+        archive = TestTheEarningsScheduleIsCounted._archive(tmp_path, {"20160701": rows})
+
+        built = cli._earnings_wall(database, archive, sessions, "1306")
+
+        assert built is not None
+        wall, values = built
+        assert wall.candidate == 17
+        assert wall.observations == 10, "**OOS の予定日の数**（件数は 20）"
+        assert len(values) >= 2
+        notes = "\n".join(wall.notes)
+        assert "中央値 2" in notes
+        assert "1社だけの日 0" in notes
+        assert "他の説とは始まりが違う" in notes
+
+    def test_the_survey_calls_it_and_drops_the_old_note(self) -> None:
+        """**17 を壁の表に移したら、「決まったら足す」の注記も残す理由が無い**（ユーザー）。"""
+        import ast
+
+        from stock_ai import cli
+
+        called = [
+            node.func.id
+            for node in ast.walk(ast.parse(inspect.getsource(cli.wall_survey)))
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+        ]
+        assert "_earnings_wall" in called
+        source = inspect.getsource(cli)
+        assert "決まったら、壁の下見に足す" not in source

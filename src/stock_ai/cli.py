@@ -6498,6 +6498,75 @@ def _wall_ir_cell(wall: object) -> str:
     return f"{found:.2f}（{years:.1f}年）"
 
 
+def _earnings_wall(
+    database: Database, archive: Path, sessions: list[dt.date], benchmark: str
+) -> tuple[object, list[float]] | None:
+    """Measure candidate 17's wall - the earnings-date window, no effect computed.
+
+    **畳み方は `docs/CANDIDATES.md` に、壁を測る前に決めてある。** 事象は
+    「窓の始まりより前に公表された中で最新の予定」で、**実際の営業日**で作る。
+
+    Returns:
+        ``(壁, IS の観測)``。材料が無いか足りなければ ``None``。
+    """
+    from stock_ai.backtest.event_window import event_sample
+    from stock_ai.backtest.multiplicity import line_for
+    from stock_ai.backtest.power import estimate_power
+    from stock_ai.backtest.universe_benchmark import equal_weighted_windows
+    from stock_ai.backtest.wall import (
+        EARNINGS_WINDOW,
+        IS_END,
+        OOS_END,
+        OOS_FROM,
+        Wall,
+        earnings_events,
+    )
+    from stock_ai.core.logging import quiet_on_console
+    from stock_ai.data.jquants_earnings import schedule_census
+
+    schedule = schedule_census(archive, IS_END)
+    if not schedule.ahead or schedule.is_start is None:
+        return None
+    events = earnings_events(archive, sessions, schedule.is_start, IS_END, OOS_FROM, OOS_END)
+    console.print("[dim]17: 引く相手（等加重の宇宙、窓 3 営業日）を作っています...[/]")
+    with quiet_on_console("stock_ai.backtest.universe_benchmark"):
+        universe = equal_weighted_windows(database, EARNINGS_WINDOW)
+    with quiet_on_console("stock_ai.backtest.event_window"):
+        sample = event_sample(database, events.drawn, EARNINGS_WINDOW, benchmark, IS_END, universe)
+    if len(sample.values) < 2 or not events.oos_days:  # noqa: PLR2004
+        console.print("[yellow]**17: 使えた予定日が足りない。** 壁を出せない。[/]")
+        return None
+    with quiet_on_console("stock_ai.backtest.power"):
+        estimate = estimate_power(sample.values, lags=EARNINGS_WINDOW)
+    wall = Wall(
+        candidate=17,
+        name="決算発表日を避ける（予定日の前営業日の寄付き〜翌営業日の大引け）",
+        pipe="イベント型（等加重を引く）",
+        unit="予定日",
+        observations=events.oos_days,
+        sd=estimate.daily_sd,
+        inflation=estimate.inflation,
+        line=line_for("event"),
+        source=f"IS {sample.drawn:,} 件が {len(sample.values):,} 日、窓 {EARNINGS_WINDOW} 営業日",
+        sample=len(sample.values),
+        undersampled=estimate.undersampled,
+        window=EARNINGS_WINDOW,
+        notes=(
+            f"**IS は {events.is_start} 〜 {IS_END}**（原本の始まり ＋ 公表から予定日までの "
+            "95% 点。**他の説とは始まりが違う**）",
+            "事象は**窓の始まりの日より前に公表された中で最新の予定**（実際の営業日で。"
+            "原本に公表時刻が無いので、公表日は前々営業日まで）",
+            f"**予定日ごとの社数: 中央値 {events.median_per_day:.0f}・1社だけの日 "
+            f"{events.single_days:,}**（IS の予定日 {len(events.per_day):,} のうち、価格で"
+            "落ちる前）。**1社の日も数百社の日も同じ重みの1観測**（#5 と同じ作り。"
+            "変えるなら壁を測る前）",
+            f"価格が1本も無くて捨てた {sample.no_prices:,}、その日に足が無くて捨てた "
+            f"{sample.not_trading:,}、窓を置けなかった予定 {events.unplaced:,}",
+        ),
+    )
+    return wall, sample.values
+
+
 def _wall_console_table(walls: list[object]) -> Table:
     """Build the on-screen wall table - short names, the detail goes below it.
 
@@ -6596,8 +6665,6 @@ def _wall_document(
     if present:
         lines += [
             "## 材料は在る。壁はまだ測っていない",
-            "",
-            "**畳み方は壁を測る前に決めてコミットする**（`docs/CANDIDATES.md`）。",
             "",
             "| 候補 | 説 | 数えたもの |",
             "|---|---|---|",
@@ -8733,6 +8800,14 @@ def wall_survey(
             )
         )
 
+    # --- 17 決算発表日を避ける（イベント型、窓 3 営業日）--------------------
+    earnings = _earnings_wall(database, Path(archive), list(dates), benchmark)
+    earnings_measured = earnings is not None
+    if earnings is not None:
+        wall17, values17 = earnings
+        walls.append(wall17)
+        sampled["決算発表日を避ける"] = values17
+
     if not walls:
         console.print("[red]壁を1つも出せなかった。[/]")
         raise typer.Exit(code=1)
@@ -8834,6 +8909,9 @@ def wall_survey(
     # **`read_manifest` は開かないので、費用が無い。**
     # **数えたら在った候補は、ここで「無い」から外す**（`wall.MATERIAL_CHECKS`）。
     # 3度、数えた結果が表に戻らなかった——人の手で書き直す手順に頼らない。
+    # **壁を測れた候補は、どちらの表にも残さない。**
+    if earnings_measured:
+        missing = [item for item in missing if item.candidate != 17]  # noqa: PLR2004
     present, missing = split_missing(Path(archive), missing)
     for line in stale_reasons(Path(archive), missing):
         console.print(f"[yellow]{line}[/]")
@@ -8845,10 +8923,6 @@ def wall_survey(
         for item, summary in present:
             found.add_row(f"{item.candidate}", item.name, summary)
         console.print(found)
-        console.print(
-            "[dim]**畳み方は壁を測る前に決めてコミットする**（`docs/CANDIDATES.md`）。"
-            "決まったら、壁の下見に足す。[/]"
-        )
     absent = Table(title="材料が無くて測れなかった候補")
     for column in ("候補", "説", "なぜ測れないか"):
         absent.add_column(column, overflow="fold")
