@@ -387,6 +387,21 @@ class Wall:
         return self.observations / self.period_years
 
     @property
+    def short(self) -> str:
+        """画面の表に出す短い名前（``name`` の「（」より前）。
+
+        **幅 80 の画面で、設計の欄が5〜7行に折り返していた**（2026-09-26）。
+        14 行の表が約 70 行になる。中身は :attr:`detail` として表の下に出す。
+        """
+        return self.name.split("（", 1)[0]
+
+    @property
+    def detail(self) -> str:
+        """``name`` の括弧の中。無ければ空。"""
+        head, _sep, rest = self.name.partition("（")
+        return rest[:-1] if rest.endswith("）") else rest
+
+    @property
     def annual(self) -> float | None:
         """年あたりに直した壁。**直せない設計では ``None``。**
 
@@ -490,8 +505,8 @@ def stale_reasons(directory: Path, missing: Iterable[Missing]) -> list[str]:
             found.append(
                 f"**{item.candidate} は「材料が無い」に載っているが、"
                 f"`{item.endpoint}` の原本が {files:,} ファイル在る。** "
-                "**中身を数えてから書き直すこと**——`checks\\原本の列は"
-                "埋まっているか.bat`。"
+                "**中身を数えてから書き直すこと**——`checks\\決算発表予定は"
+                "積み重なっているか.bat`（引数は要らない）。"
                 "\n  **1本ずつが「その日の断面」でも、積み重なれば歴史になる。**"
                 "「API が直近しか返さない」ことと、「手元に歴史が無い」ことは別である。"
             )
@@ -1423,8 +1438,9 @@ DIVIDEND_STALE_DAYS = 365
 
 #: 利回りがこれを超えたら、**数えて出す。落としも直しもしない。**
 #:
-#: **出典は無い。決めの値である。** 日本株で年 20% の利回りは、無配への
-#: 訂正前か、単位の取り違えか、株価の異常である。
+#: **出典は無い。決めの値である。** 日本株で年 20% の利回りは、まず何かの
+#: 読み違いか、予想が直される前の株価の急落である。**実データでは、開示から
+#: 組み替えまでに分割をまたいだ持ち越しがいちばん多かった**（2026-09-25）。
 #:
 #: **範囲から係数を逆算しない**——`MktCap` を百万倍間違えたときに書いた
 #: 「範囲の中心から逆算すると根拠の無い数字になる」そのものである。
@@ -1479,6 +1495,42 @@ class ImplausibleYield:
 
 
 @dataclasses.dataclass(frozen=True)
+class CrossedForecast:
+    """開示から組み替えまでに**分割か併合をまたいだ**予想。**持ち越していない。**
+
+    **(b) またいだら持ち越さない**（2026-09-26 に決めた）。予想がどちらの基準で
+    書かれていたかを、その時点では見分けられないからである——(a) 分割比で
+    割り戻すと、既に分割後の基準で書かれた予想を**2回割る**。
+
+    **中身を持って返る。** (a) に変えるかどうかは、:func:`audit_splits` が
+    これを測って決める。
+    """
+
+    symbol: str
+    month: str
+    disclosed_on: dt.date
+    forecast: float
+    rebalanced_on: dt.date
+    close: float
+    """**調整前**の月末終値。"""
+
+    ratio: float
+    """開示から組み替えまでの分割比（:func:`split_ratio_between`）。併合なら 1 未満。"""
+
+    next_forecast: float | None
+    """**その銘柄の、組み替え日より後の最初の予想**（分割後の基準で書かれている）。
+
+    監査でだけ使う物差しである。**判定には混ぜない**——後から出た開示だから
+    である。引き継ぎの期限内に無いか、その間にまた分割があれば ``None``。
+    """
+
+    @property
+    def yielded(self) -> float:
+        """持ち越していたら、こう出ていた利回り。"""
+        return self.forecast / self.close
+
+
+@dataclasses.dataclass(frozen=True)
 class YieldCensus:
     """配当利回りを畳むときに落ちたもの。**合計だけ出すと、その中に紛れる。**"""
 
@@ -1520,6 +1572,9 @@ class YieldCensus:
 
     implausible: int
     """利回りが :data:`IMPLAUSIBLE_YIELD` を超えた銘柄月。**外していない。**"""
+
+    crossed: tuple[CrossedForecast, ...] = ()
+    """**分割か併合をまたいだので持ち越さなかった**予想（(b)）。全部持って返る。"""
 
     worst: tuple[ImplausibleYield, ...] = ()
     """そのうちの中身（利回りの大きい順）。**件数だけ返さない。**
@@ -1580,8 +1635,9 @@ class YieldCensus:
             share = self.implausible / self.observations if self.observations else 0.0
             found.append(
                 f"**{self.implausible:,} 銘柄月は利回りが {IMPLAUSIBLE_YIELD:.0%} を超えた**"
-                f"（{share:.2%}）。**外していない**——無配への訂正前か、単位の取り違えか、"
-                "株価の異常である。**どれかは、中身を見るまで決めない。**"
+                f"（{share:.2%}）。**外していない**——分割の後に分割前の基準で書かれた"
+                "予想か、予想が直される前の株価の急落か、別の原因である。"
+                "**どれかは、中身を見るまで決めない。**"
                 "\n  **この候補は分位に並べるだけなので、利回りの値そのものは SD に"
                 "入らない。** 効くのは**入る分位を間違えること**で、その大きさは"
                 "**その月の分位に占める割合**で決まる。"
@@ -1589,6 +1645,14 @@ class YieldCensus:
                 "分割の比**（その銘柄の調整の倍率から引く）と、**月ごとの最大の割合**"
                 "を出す。**それでも直す**——判定では、間違った分位の銘柄がそのまま"
                 "取り高に入る。"
+            )
+        if self.crossed:
+            found.append(
+                f"**{len(self.crossed):,} 銘柄月は、開示から組み替えまでに分割か併合を"
+                "またいだので持ち越していない**（(b)、2026-09-26 に決めた）。予想が"
+                "どちらの基準で書かれていたかを、その時点では見分けられない。"
+                "\n  `checks\\高すぎる利回りを見る.bat` が、(a) 割り戻すに変えてよいかを"
+                "測る。"
             )
         # **突き合わせが空振りしたことは、列の検査では捕まらない。**
         # 列は全部読めていて、`no_symbol` も 0 のまま観測が出ない。
@@ -1606,6 +1670,7 @@ class YieldCensus:
 def dividend_yields(
     directory: Path,
     prices: dict[tuple[str, pd.Period], tuple[dt.date, float]],
+    factor_changes: dict[str, tuple[tuple[dt.date, float], ...]],
     column: str = DIVIDEND_COLUMN,
     stale_days: int = DIVIDEND_STALE_DAYS,
 ) -> tuple[dict[tuple[str, pd.Period], tuple[dt.date, float]], YieldCensus]:
@@ -1654,6 +1719,24 @@ def dividend_yields(
     使われていた——**引き継ぎの期限（1年）いっぱいまで、分割をまたげる。**
     :func:`split_ratio_between` が、その間の分割比を測る。
 
+    ## 分割か併合をまたいだら、持ち越さない（**(b)、2026-09-26 に決めた**）
+
+    **予想がどちらの基準で書かれていたかは、その時点では見分けられない。**
+    分割の前に開示した予想でも、分割後の基準で書く会社がある。
+
+    | 案 | 何が起きるか |
+    |---|---|
+    | (a) 分割比で割り戻す | 分割後の基準で書かれた予想を**2回割り**、**低すぎる側に黙って出る** |
+    | **(b) 持ち越さない** | **採った。** その銘柄は次の開示まで並べる対象から外れる |
+    | (c) そのまま | 分割前の基準のものが上位分位に入る（20% 超の 376 件の 67%） |
+
+    **(b) は中立な除外ではない。** 分割は株価の上がった銘柄が、併合は安い銘柄が
+    するので、外れる側に偏りがある——:func:`audit_splits` が大きさを測る。
+
+    **(a) に変えてよいかも、そこで測る**（その銘柄の次の開示を物差しにする）。
+    見るのはデータの書き方で、リターンではないので、測ってから変えても
+    結果を見て規則を選ぶことにはならない。
+
     ## 先読みを外す
 
     ``開示日 <= 組み替え日`` の中で**いちばん新しいもの**を採る。
@@ -1663,6 +1746,8 @@ def dividend_yields(
     Args:
         directory: 原本の置き場所。
         prices: ``(銘柄, 月) -> (日, 調整前の終値)``。
+        factor_changes: :attr:`Materials.factor_changes`。**既定は置かない**——
+            渡し忘れると、分割をまたいだ予想が黙って持ち越される。
         column: 使う配当の列。
         stale_days: 開示からこれより古くなったら使わない。
 
@@ -1726,9 +1811,11 @@ def dividend_yields(
     values: dict[tuple[str, pd.Period], tuple[dt.date, float]] = {}
     no_price = implausible = stale = 0
     worst: list[ImplausibleYield] = []
+    crossed: list[CrossedForecast] = []
     for symbol, entries in disclosed.items():
         entries.sort(key=lambda item: item[0])
         days = [day for day, _amount, _actual in entries]
+        changes = factor_changes.get(symbol, ())
         for month, rebalance, close in by_symbol.get(symbol, ()):
             # **その組み替え日までに開示されたうち、いちばん新しいもの。**
             position = bisect_right(days, rebalance)
@@ -1742,6 +1829,23 @@ def dividend_yields(
                 continue
             if close <= 0:
                 no_price += 1
+                continue
+            # **(b) 分割か併合をまたいだら、持ち越さない。** どちらの基準で書かれた
+            # 予想かを、その時点では見分けられない。
+            ratio = split_ratio_between(changes, when, rebalance)
+            if _crossed(ratio):
+                crossed.append(
+                    CrossedForecast(
+                        symbol=symbol,
+                        month=str(month),
+                        disclosed_on=when,
+                        forecast=amount,
+                        rebalanced_on=rebalance,
+                        close=close,
+                        ratio=ratio,
+                        next_forecast=_next_forecast(entries, days, changes, rebalance, stale_days),
+                    )
+                )
                 continue
             found = amount / close
             if found > IMPLAUSIBLE_YIELD:
@@ -1776,6 +1880,7 @@ def dividend_yields(
         matched_symbols=len(set(disclosed) & set(by_symbol)),
         stale=stale,
         stale_days=stale_days,
+        crossed=tuple(crossed),
         # **利回りの大きい順に、上限まで。** 貼られる前提で作る。
         worst=tuple(
             sorted(worst, key=lambda item: item.yielded, reverse=True)[:MAX_IMPLAUSIBLE_KEPT]
@@ -1801,17 +1906,112 @@ def _crossed(ratio: float) -> bool:
     return ratio >= SPLIT_STEP or ratio <= 1.0 / SPLIT_STEP
 
 
+#: 分割比の区切り（**測る前に決めた**、2026-09-26）。併合は同じ区切りを逆向きに当てる。
+#:
+#: **出典は無い。決めの値である。** 比が小さいほど「どちらの基準か」が見分け
+#: にくいので、比の大きさで分けて出す。**区切りを動かして良いほうを採れば、
+#: 結果を見て規則を選ぶことになる**——ここに固定する。
+BASIS_BUCKETS = (SPLIT_STEP, 10.0, 100.0)
+
+#: (a) 分割比で割り戻す、に変えてよい条件（**測る前に決めた**、2026-09-26）。
+#:
+#: その銘柄の次の開示で判定できた行のうち、**「割り戻す前が近い」（既に分割後の
+#: 基準で書かれていた）が、どの区切りでもこの割合以下**なら、原本は一貫して
+#: 分割前の基準で書かれているとみなし、(a) に変えてよい。**出典は無い。決めの値
+#: である**（2026-09-26、ユーザーが承認）。
+BASIS_BREAK_LIMIT = 0.01
+
+
+def _bucket_of(ratio: float) -> int:
+    """比の大きさ（併合は逆数）が、:data:`BASIS_BUCKETS` のどこに入るか。"""
+    size = ratio if ratio >= 1.0 else 1.0 / ratio
+    return max(0, bisect_right(BASIS_BUCKETS, size) - 1)
+
+
+def _closer(value: float, as_carried: float, rescaled: float) -> str | None:
+    """``value`` が、割り戻す前と後のどちらに近いか。比べられなければ ``None``。"""
+    if value <= 0 or as_carried <= 0 or rescaled <= 0:
+        return None
+    before = abs(math.log(value / as_carried))
+    after = abs(math.log(value / rescaled))
+    return "as_carried" if before < after else "rescaled"
+
+
+@dataclasses.dataclass(frozen=True)
+class BasisBucket:
+    """1つの区切り・1つの向き（分割／併合）で、予想がどちらの基準で書かれていたか。
+
+    **物差しを2つ並べる。** その銘柄の次の開示（**本命**）と、その月の利回りの
+    中央値（**目安**。前回まで使っていた）。中央値の物差しは、本当の利回りが
+    「中央値 ÷ √比 〜 中央値 × √比」の外に在る銘柄で外れる。
+
+    **判定できなかった行を分母に入れない**（`docs/POSTMORTEMS.md`）。
+    """
+
+    direction: str
+    low: float
+    high: float | None
+    rows: int
+    next_rescaled: int
+    """次の開示が、割り戻した**後**に近い。**分割前の基準で書かれていた。**"""
+
+    next_as_carried: int
+    """次の開示が、割り戻す**前**に近い。
+
+    **既に分割後の基準で書かれていた**——(a) なら2回割る。
+    """
+
+    next_unjudged: int
+    """次の開示が無い、額が 0、またはその間にまた分割があった。"""
+
+    median_rescaled: int
+    median_as_carried: int
+    median_unjudged: int
+
+    def __post_init__(self) -> None:
+        """**2つの物差しの内訳が、どちらも足して行数に合うこと。**"""
+        for name, parts in (
+            ("次の開示", self.next_rescaled + self.next_as_carried + self.next_unjudged),
+            ("中央値", self.median_rescaled + self.median_as_carried + self.median_unjudged),
+        ):
+            if parts != self.rows:
+                raise ValueError(f"{name}の内訳 {parts} が、行数 {self.rows} と合わない。")
+
+    @property
+    def label(self) -> str:
+        """``1.5〜10`` のような札。"""
+        top = "" if self.high is None else f"{self.high:g}"
+        return f"{self.direction} {self.low:g}〜{top}"
+
+    @property
+    def break_share(self) -> float | None:
+        """次の開示で判定できた行のうち、**割り戻す前が近い**割合。
+
+        判定できた行が無ければ ``None``。
+        """
+        judged = self.next_rescaled + self.next_as_carried
+        return self.next_as_carried / judged if judged else None
+
+
 @dataclasses.dataclass(frozen=True)
 class Uncrossed:
     """利回りが高すぎるのに、開示から組み替えまでに**分割をまたいでいない**1件。
 
-    **原因は決め打ちしない。** 2つの物差しを並べて返す——どちらにも当たら
-    なければ、**分割でも株価でもない別の原因**が在る。
+    **原因は決め打ちしない。** 2つの物差しを並べて返す。**どちらかが測れない行は
+    「判定できない」で、「どちらでもない」に混ぜない**——:func:`split_ratio_between`
+    は材料が無いと 1.0 を返すので、**「分割が無かった」と「履歴が届いていない」が
+    同じ 1.0 になる**（2026-09-26、8410 で気付いた）。
     """
 
     item: ImplausibleYield
     split_before: float
     """開示の前 :data:`SPLIT_LOOKBACK_DAYS` 日の分割比。1.0 なら分割は無い。"""
+
+    history_reaches: bool
+    """**価格の履歴が、開示の :data:`SPLIT_LOOKBACK_DAYS` 日前まで届いているか。**
+
+    届いていなければ ``split_before`` の 1.0 は「分からない」である。
+    """
 
     at_disclosure: float | None
     """**開示した月**の調整前の終値で割った利回り。終値が無ければ ``None``。"""
@@ -1836,89 +2036,95 @@ class Uncrossed:
         """
         return self.at_disclosure is not None and self.at_disclosure <= IMPLAUSIBLE_YIELD
 
+    @property
+    def unjudged(self) -> bool:
+        """どちらかの物差しが測れない（履歴が届かない、開示月の終値が無い）。"""
+        return not self.history_reaches or self.at_disclosure is None
 
-@dataclasses.dataclass(frozen=True)
-class Crossing:
-    """開示から組み替えまでに、分割（または併合）をまたいだ銘柄月の数。
+    @property
+    def neither(self) -> bool:
+        """**両方測れて、どちらにも当たらない。** 別の原因が在る。"""
+        return not self.unjudged and not self.split_before_explains and not self.price_fell
 
-    **高い側だけ見ていると、半分しか見えない。** 20% を超えたものは分割前の
-    基準のまま持ち越した形だが、**既に分割後の基準で書かれた予想**を割り
-    戻すと、**2回割ることになって低すぎる側に出る**——20% の線では捕まらない。
 
-    だから1件ずつ、**その月の利回りの中央値に近いのは、割り戻す前か後か**を
-    数える。**目安であって判定ではない。** 1:2 の分割なら、どちらの基準でも
-    もっともらしく見える。
-    """
-
-    crossing: int
-    closer_as_carried: int
-    """割り戻す**前**のほうが中央値に近い。割り戻すと、**2回割る**形である。"""
-
-    closer_rescaled: int
-    """割り戻した**後**のほうが中央値に近い。分割前の基準のまま持ち越した形。"""
-
-    unaffected: int
-    """予想が 0 か、その月の中央値が作れなかった。**割り戻しても変わらない。**"""
-
-    def __post_init__(self) -> None:
-        """**内訳が、足して合うこと。**"""
-        parts = self.closer_as_carried + self.closer_rescaled + self.unaffected
-        if parts != self.crossing:
-            raise ValueError(f"内訳 {parts} が、またいだ数 {self.crossing} と合わない。")
+#: (b) で外れる銘柄月が、直前の月にどの分位に居たか。**分位の数**である。
+BIAS_QUANTILES = 5
 
 
 @dataclasses.dataclass(frozen=True)
 class SplitAudit:
-    """分割をまたいだ予想を、**どう扱うかを決める前に**測ったもの（候補14）。
+    """分割をまたいだ予想の扱いを決める材料（候補14）。
 
-    | 案 | 何を見れば決まるか |
+    | 何を | どこで |
     |---|---|
-    | (a) 分割比で割り戻す | **低い側に出る形**の数（``closer_as_carried``） |
-    | (b) またいだら持ち越さない | **その月の断面から何割が外れるか**（:attr:`worst_share`） |
-    | (c) そのまま | 20% 超の行が、その月の上位分位に占める割合（`yield-audit` の表） |
+    | (a) に変えてよいか | どの区切りでも ``break_share`` ≤ :data:`BASIS_BREAK_LIMIT` |
+    | (b) の代償 | :attr:`worst_share`（その月の断面から外れる割合） |
+    | (b) の偏り | :attr:`bias`（外れた銘柄月が、直前の月にどの分位に居たか） |
 
-    **この数では決めない。** 決めるのは、この数を見た人である。
+    **この数を見て規則を選び直さない。** 条件は測る前に決めてある。
     """
 
-    observations: int
-    splits: Crossing
-    consolidations: Crossing
+    kept: int
+    """(b) の後に残った銘柄月（利回りを作れたもの）。"""
+
+    buckets: tuple[BasisBucket, ...]
     worst_month: str | None
-    worst_month_crossing: int
-    worst_month_observations: int
+    worst_month_splits: int
+    worst_month_consolidations: int
+    worst_month_rows: int
+    """その月の、(b) の前の銘柄月（残ったもの + 外したもの）。"""
+
+    bias: dict[str, tuple[int, ...]]
+    """``{"分割": (第1分位, …, 第5分位, 直前の月が無い), "併合": …}``。第5分位が利回りの高い側。"""
+
     uncrossed: tuple[Uncrossed, ...]
 
     @property
     def crossing(self) -> int:
-        """分割と併合を合わせた、またいだ銘柄月。**(b) で外れる数である。**"""
-        return self.splits.crossing + self.consolidations.crossing
+        """(b) で外した銘柄月。"""
+        return sum(bucket.rows for bucket in self.buckets)
 
     @property
     def worst_share(self) -> float:
         """(b) で外れる割合が、いちばん大きかった月の割合。"""
-        if not self.worst_month_observations:
+        if not self.worst_month_rows:
             return 0.0
-        return self.worst_month_crossing / self.worst_month_observations
+        return (self.worst_month_splits + self.worst_month_consolidations) / self.worst_month_rows
+
+    @property
+    def rescaling_holds(self) -> bool:
+        """**(a) に変えてよい条件を満たすか**（:data:`BASIS_BREAK_LIMIT`）。
+
+        判定できた行が1つも無い区切りは、条件を破らない——ただし、**満たした
+        こともまた言えない**ので、呼ぶ側がその区切りを出すこと。
+        """
+        shares = [bucket.break_share for bucket in self.buckets if bucket.rows]
+        judged = [share for share in shares if share is not None]
+        return bool(judged) and all(share <= BASIS_BREAK_LIMIT for share in judged)
 
 
 def audit_splits(
     values: dict[tuple[str, pd.Period], tuple[dt.date, float]],
+    crossed: Iterable[CrossedForecast],
     prices: dict[tuple[str, pd.Period], tuple[dt.date, float]],
     factor_changes: dict[str, tuple[tuple[dt.date, float], ...]],
     worst: Iterable[ImplausibleYield],
 ) -> SplitAudit:
-    """分割をまたいだ予想の扱いを決める前に、**3つを測る**（候補14）。
+    """分割をまたいだ予想を、**(b) で外したあと**に測る（候補14）。
 
-    1. **(b) の代償。** 20% を超えたものに限らず、分割か併合をまたいだ
-       銘柄月の総数と、それが月ごとの断面に占める割合のいちばん大きい値
-    2. **(a) の危険。** またいだ銘柄月を割り戻したとき、**低すぎる側に出る
-       形**（:class:`Crossing`）
-    3. **またいでいない高すぎる行の仕分け。** 開示前の分割比と、開示した月の
-       株価で割った利回り（:class:`Uncrossed`）
+    1. **(a) に変えてよいか。** 外した予想それぞれについて、その銘柄の次の開示
+       （分割後の基準）が、持ち越した額と、分割比で割り戻した額の**どちらに近いか。**
+       比の大きさで :data:`BASIS_BUCKETS` に分け、分割と併合も分ける
+    2. **(b) の代償。** 月ごとに断面から外れる割合のいちばん大きい値
+    3. **(b) の偏り。** 外れた銘柄月が、**直前の月に**どの分位に居たか。直前の月は
+       分子も分母も同じ基準なので、そこでの分位は信用できる。**流動性の絞りの
+       前**の分位である
+    4. **分割をまたいでいない高すぎる行の仕分け**（:class:`Uncrossed`）
 
     Args:
-        values: :func:`dividend_yields` の返り値。``(銘柄, 月) -> (開示日, 利回り)``。
-        prices: 同じ関数に渡した調整前の月末終値。``(銘柄, 月) -> (日, 終値)``。
+        values: :func:`dividend_yields` の返り値（(b) の後）。
+        crossed: :attr:`YieldCensus.crossed`（(b) で外したもの）。
+        prices: 同じ関数に渡した調整前の月末終値。
         factor_changes: :attr:`Materials.factor_changes`。
         worst: :attr:`YieldCensus.worst`。
 
@@ -1927,39 +2133,90 @@ def audit_splits(
     """
     import statistics
 
+    crossed = list(crossed)
     by_month: dict[str, list[float]] = {}
     for (_symbol, month), (_when, found) in values.items():
         by_month.setdefault(str(month), []).append(found)
+    for found in by_month.values():
+        found.sort()
     medians = {month: statistics.median(found) for month, found in by_month.items() if found}
 
-    tallies = {"split": [0, 0, 0, 0], "consolidation": [0, 0, 0, 0]}
-    crossing_by_month: dict[str, int] = {}
-    for (symbol, month), (disclosed_on, found) in values.items():
-        priced = prices.get((symbol, month))
-        if priced is None:
-            continue
-        ratio = split_ratio_between(factor_changes.get(symbol, ()), disclosed_on, priced[0])
-        if not _crossed(ratio):
-            continue
-        tally = tallies["split" if ratio > 1.0 else "consolidation"]
+    # **区切り × 向き**ごとに、2つの物差しで数える。
+    tallies: dict[tuple[str, int], list[int]] = {}
+    for row in crossed:
+        direction = "分割" if row.ratio > 1.0 else "併合"
+        tally = tallies.setdefault((direction, _bucket_of(row.ratio)), [0] * 7)
         tally[0] += 1
-        crossing_by_month[str(month)] = crossing_by_month.get(str(month), 0) + 1
-        middle = medians.get(str(month), 0.0)
-        if found <= 0 or middle <= 0:
-            tally[3] += 1
-            continue
-        as_carried = abs(math.log(found / middle))
-        rescaled = abs(math.log(found / ratio / middle))
-        tally[1 if as_carried <= rescaled else 2] += 1
-
-    worst_month = None
-    worst_crossing = worst_observations = 0
-    if crossing_by_month:
-        worst_month = max(
-            crossing_by_month, key=lambda month: crossing_by_month[month] / len(by_month[month])
+        as_carried = row.forecast
+        rescaled = row.forecast / row.ratio
+        verdict = (
+            None if row.next_forecast is None else _closer(row.next_forecast, as_carried, rescaled)
         )
-        worst_crossing = crossing_by_month[worst_month]
-        worst_observations = len(by_month[worst_month])
+        tally[{None: 3, "rescaled": 1, "as_carried": 2}[verdict]] += 1
+        middle = medians.get(row.month, 0.0)
+        verdict = _closer(middle, row.yielded, row.yielded / row.ratio) if middle > 0 else None
+        tally[{None: 6, "rescaled": 4, "as_carried": 5}[verdict]] += 1
+
+    buckets = []
+    for direction in ("分割", "併合"):
+        for index, low in enumerate(BASIS_BUCKETS):
+            tally = tallies.get((direction, index))
+            if tally is None:
+                continue
+            high = BASIS_BUCKETS[index + 1] if index + 1 < len(BASIS_BUCKETS) else None
+            buckets.append(
+                BasisBucket(
+                    direction=direction,
+                    low=low,
+                    high=high,
+                    rows=tally[0],
+                    next_rescaled=tally[1],
+                    next_as_carried=tally[2],
+                    next_unjudged=tally[3],
+                    median_rescaled=tally[4],
+                    median_as_carried=tally[5],
+                    median_unjudged=tally[6],
+                )
+            )
+
+    # (b) の代償: 月ごとに、外した割合（分母は (b) の前の銘柄月）。
+    removed: dict[str, list[int]] = {}
+    for row in crossed:
+        pair = removed.setdefault(row.month, [0, 0])
+        pair[0 if row.ratio > 1.0 else 1] += 1
+    worst_month = None
+    splits = merges = rows_then = 0
+    if removed:
+
+        def share_of(month: str) -> float:
+            total = len(by_month.get(month, ())) + sum(removed[month])
+            return sum(removed[month]) / total
+
+        worst_month = max(removed, key=share_of)
+        splits, merges = removed[worst_month]
+        rows_then = len(by_month.get(worst_month, ())) + splits + merges
+
+    # (b) の偏り: 直前の月（12ヶ月以内）の分位。
+    history: dict[str, list[pd.Period]] = {}
+    for symbol, month in values:
+        history.setdefault(symbol, []).append(month)
+    for months in history.values():
+        months.sort()
+    bias = {"分割": [0] * (BIAS_QUANTILES + 1), "併合": [0] * (BIAS_QUANTILES + 1)}
+    for row in crossed:
+        counts = bias["分割" if row.ratio > 1.0 else "併合"]
+        month = pd.Period(row.month, freq="M")
+        months = history.get(row.symbol, [])
+        position = bisect_right(months, month - 1) - 1
+        previous = months[position] if position >= 0 else None
+        if previous is None or (month - previous).n > 12:  # noqa: PLR2004 - 1年
+            counts[BIAS_QUANTILES] += 1
+            continue
+        found = values[(row.symbol, previous)][1]
+        ranked = by_month[str(previous)]
+        below = bisect_right(ranked, found) - 1
+        quantile = min(BIAS_QUANTILES - 1, below * BIAS_QUANTILES // len(ranked))
+        counts[quantile] += 1
 
     uncrossed: list[Uncrossed] = []
     for item in worst:
@@ -1969,32 +2226,52 @@ def audit_splits(
             split_ratio_between(changes, item.disclosed_on, rebalance[0])
         ):
             continue
-        before = split_ratio_between(
-            changes,
-            item.disclosed_on - dt.timedelta(days=SPLIT_LOOKBACK_DAYS),
-            item.disclosed_on,
-        )
+        since = item.disclosed_on - dt.timedelta(days=SPLIT_LOOKBACK_DAYS)
+        before = split_ratio_between(changes, since, item.disclosed_on)
         then = prices.get((item.symbol, pd.Period(item.disclosed_on, freq="M")))
         at_disclosure = item.forecast / then[1] if then is not None and then[1] > 0 else None
-        uncrossed.append(Uncrossed(item=item, split_before=before, at_disclosure=at_disclosure))
-
-    def crossing_of(tally: list[int]) -> Crossing:
-        return Crossing(
-            crossing=tally[0],
-            closer_as_carried=tally[1],
-            closer_rescaled=tally[2],
-            unaffected=tally[3],
+        uncrossed.append(
+            Uncrossed(
+                item=item,
+                split_before=before,
+                history_reaches=bool(changes) and changes[0][0] <= since,
+                at_disclosure=at_disclosure,
+            )
         )
 
     return SplitAudit(
-        observations=len(values),
-        splits=crossing_of(tallies["split"]),
-        consolidations=crossing_of(tallies["consolidation"]),
+        kept=len(values),
+        buckets=tuple(buckets),
         worst_month=worst_month,
-        worst_month_crossing=worst_crossing,
-        worst_month_observations=worst_observations,
+        worst_month_splits=splits,
+        worst_month_consolidations=merges,
+        worst_month_rows=rows_then,
+        bias={name: tuple(counts) for name, counts in bias.items()},
         uncrossed=tuple(uncrossed),
     )
+
+
+def _next_forecast(
+    entries: list[tuple[dt.date, float, float | None]],
+    days: list[dt.date],
+    changes: tuple[tuple[dt.date, float], ...],
+    after: dt.date,
+    within_days: int,
+) -> float | None:
+    """``after`` より後の、その銘柄の最初の予想。**監査の物差しで、判定には使わない。**
+
+    引き継ぎの期限内に無いか、**その間にまた分割か併合があれば** ``None``
+    ——基準が2度変わると、どちらに近いかが何も言わない。
+    """
+    position = bisect_right(days, after)
+    if position >= len(entries):
+        return None
+    when, amount, _actual = entries[position]
+    if (when - after).days > within_days:
+        return None
+    if _crossed(split_ratio_between(changes, after, when)):
+        return None
+    return amount
 
 
 def _summary_files(directory: Path):

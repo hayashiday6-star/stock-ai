@@ -1230,7 +1230,16 @@ class TestTheInflationColumnSaysWhichRuleBit:
 
         from stock_ai import cli
 
-        body = inspect.getsource(cli.wall_survey) + inspect.getsource(cli._wall_document)
+        # **画面の表は `_wall_console_table` に切り出した**（2026-09-26）。
+        # `wall_survey` がそれを呼んでいることも一緒に見る——呼ばずに別の表を
+        # 組めば、また2つになる。
+        surveyed = [
+            node.func.id
+            for node in ast.walk(ast.parse(inspect.getsource(cli.wall_survey)))
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+        ]
+        assert "_wall_console_table" in surveyed
+        body = inspect.getsource(cli._wall_console_table) + inspect.getsource(cli._wall_document)
         calls = [
             node.func.id
             for node in ast.walk(ast.parse(body))
@@ -1371,7 +1380,16 @@ class TestTheWallCarriesTheInvariant:
 
         from stock_ai import cli
 
-        body = inspect.getsource(cli.wall_survey) + inspect.getsource(cli._wall_document)
+        # **画面の表は `_wall_console_table` に切り出した**（2026-09-26）。
+        # `wall_survey` がそれを呼んでいることも一緒に見る——呼ばずに別の表を
+        # 組めば、また2つになる。
+        surveyed = [
+            node.func.id
+            for node in ast.walk(ast.parse(inspect.getsource(cli.wall_survey)))
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+        ]
+        assert "_wall_console_table" in surveyed
+        body = inspect.getsource(cli._wall_console_table) + inspect.getsource(cli._wall_document)
         calls = [
             node.func.id
             for node in ast.walk(ast.parse(body))
@@ -1806,7 +1824,7 @@ class TestTheDividendYieldFold:
         rows = [self._row("2017-01-10", amount="30")]
         prices = self._prices(("2017-02", dt.date(2017, 2, 28), 1000.0))
 
-        values, census = dividend_yields(self._archive(tmp_path, rows), prices)
+        values, census = dividend_yields(self._archive(tmp_path, rows), prices, {})
 
         assert census.observations == 1
         (_when, found) = next(iter(values.values()))
@@ -1818,7 +1836,7 @@ class TestTheDividendYieldFold:
         rows = [self._row("2017-01-10", amount="30"), self._row("2017-02-10", amount="40")]
         prices = self._prices(("2017-02", dt.date(2017, 2, 28), 1000.0))
 
-        values, _census = dividend_yields(self._archive(tmp_path, rows), prices)
+        values, _census = dividend_yields(self._archive(tmp_path, rows), prices, {})
 
         assert next(iter(values.values()))[1] == pytest.approx(0.04)
 
@@ -1829,7 +1847,7 @@ class TestTheDividendYieldFold:
         rows = [self._row("2017-01-10", amount="30"), self._row("2017-03-10", amount="99")]
         prices = self._prices(("2017-02", dt.date(2017, 2, 28), 1000.0))
 
-        values, _census = dividend_yields(self._archive(tmp_path, rows), prices)
+        values, _census = dividend_yields(self._archive(tmp_path, rows), prices, {})
 
         assert next(iter(values.values()))[1] == pytest.approx(0.03)
 
@@ -1839,7 +1857,7 @@ class TestTheDividendYieldFold:
         rows = [self._row("2017-03-10")]
         prices = self._prices(("2017-02", dt.date(2017, 2, 28), 1000.0))
 
-        values, census = dividend_yields(self._archive(tmp_path, rows), prices)
+        values, census = dividend_yields(self._archive(tmp_path, rows), prices, {})
 
         assert not values
         assert census.observations == 0
@@ -1851,7 +1869,7 @@ class TestTheDividendYieldFold:
         rows = [self._row("2017-01-10")]
         prices = self._prices(("2017-02", dt.date(2017, 2, 28), 1000.0))
 
-        values, _census = dividend_yields(self._archive(tmp_path, rows), prices)
+        values, _census = dividend_yields(self._archive(tmp_path, rows), prices, {})
 
         assert next(iter(values.values()))[0] == dt.date(2017, 1, 10)
 
@@ -1862,7 +1880,7 @@ class TestTheDividendYieldFold:
         rows = [{"DiscDate": "2017-01-10", "Ticker": "13060", DIVIDEND_COLUMN: "30"}]
         prices = self._prices(("2017-02", dt.date(2017, 2, 28), 1000.0))
 
-        values, census = dividend_yields(self._archive(tmp_path, rows), prices)
+        values, census = dividend_yields(self._archive(tmp_path, rows), prices, {})
 
         assert not values
         assert census.no_symbol == census.rows
@@ -1874,7 +1892,7 @@ class TestTheDividendYieldFold:
         rows = [{"WhenSaid": "2017-01-10", "Code": "13060", DIVIDEND_COLUMN: "30"}]
         prices = self._prices(("2017-02", dt.date(2017, 2, 28), 1000.0))
 
-        _values, census = dividend_yields(self._archive(tmp_path, rows), prices)
+        _values, census = dividend_yields(self._archive(tmp_path, rows), prices, {})
 
         assert census.no_date == census.rows
         assert any("開示日が読めなかった" in line for line in census.warnings())
@@ -1886,7 +1904,7 @@ class TestTheDividendYieldFold:
         rows = [{"Ticker": "13060", "WhenSaid": "2017-01-10", DIVIDEND_COLUMN: ""}]
         prices = self._prices(("2017-02", dt.date(2017, 2, 28), 1000.0))
 
-        _values, census = dividend_yields(self._archive(tmp_path, rows), prices)
+        _values, census = dividend_yields(self._archive(tmp_path, rows), prices, {})
 
         assert census.no_symbol == 1
         assert census.no_date == 1
@@ -1899,7 +1917,7 @@ class TestTheDividendYieldFold:
         rows = [self._row("2017-01-10", amount="900")]
         prices = self._prices(("2017-02", dt.date(2017, 2, 28), 1000.0))
 
-        values, census = dividend_yields(self._archive(tmp_path, rows), prices)
+        values, census = dividend_yields(self._archive(tmp_path, rows), prices, {})
 
         assert census.implausible == 1
         assert len(values) == 1, "**数えるだけで、落とさないこと。**"
@@ -1913,7 +1931,7 @@ class TestTheDividendYieldFold:
         rows = [self._row("2017-01-10", amount="30")]
         prices = self._prices(("2017-02", dt.date(2017, 2, 28), 1000.0))
 
-        _values, census = dividend_yields(self._archive(tmp_path, rows), prices)
+        _values, census = dividend_yields(self._archive(tmp_path, rows), prices, {})
 
         assert census.implausible == 0
 
@@ -1931,7 +1949,7 @@ class TestTheDividendYieldFold:
             ("2017-03", dt.date(2017, 3, 31), 1000.0),
         )
 
-        values, census = dividend_yields(self._archive(tmp_path, rows), prices)
+        values, census = dividend_yields(self._archive(tmp_path, rows), prices, {})
 
         # **開示は1回。観測は2ヶ月ぶん出る。**
         assert census.observations == 2  # noqa: PLR2004
@@ -1948,7 +1966,7 @@ class TestTheDividendYieldFold:
         rows = [self._row("2010-05-10", amount="30")]
         prices = self._prices(("2017-02", dt.date(2017, 2, 28), 1000.0))
 
-        values, census = dividend_yields(self._archive(tmp_path, rows), prices)
+        values, census = dividend_yields(self._archive(tmp_path, rows), prices, {})
 
         assert not values, "**7年前の予想を、今年の利回りとして使っている。**"
         assert census.stale == 1
@@ -1963,7 +1981,7 @@ class TestTheDividendYieldFold:
         rows = [self._row(disclosed.isoformat(), amount="30")]
         prices = self._prices(("2017-02", rebalance, 1000.0))
 
-        values, census = dividend_yields(self._archive(tmp_path, rows), prices)
+        values, census = dividend_yields(self._archive(tmp_path, rows), prices, {})
 
         assert len(values) == 1
         assert census.stale == 0
@@ -1977,7 +1995,7 @@ class TestTheDividendYieldFold:
         rows = [self._row(disclosed.isoformat(), amount="30")]
         prices = self._prices(("2017-02", rebalance, 1000.0))
 
-        values, census = dividend_yields(self._archive(tmp_path, rows), prices)
+        values, census = dividend_yields(self._archive(tmp_path, rows), prices, {})
 
         assert not values
         assert census.stale == 1
@@ -1989,7 +2007,7 @@ class TestTheDividendYieldFold:
         rows = [self._row("2010-05-10", amount="30"), self._row("2017-01-10", amount="40")]
         prices = self._prices(("2017-02", dt.date(2017, 2, 28), 1000.0))
 
-        values, census = dividend_yields(self._archive(tmp_path, rows), prices)
+        values, census = dividend_yields(self._archive(tmp_path, rows), prices, {})
 
         assert census.stale == 0
         assert next(iter(values.values()))[1] == pytest.approx(0.04)
@@ -2016,7 +2034,7 @@ class TestTheDividendYieldFold:
         rows = [self._row("2017-01-10")]
         prices = self._prices(("2017-02", dt.date(2017, 2, 28), 1000.0), symbol="13060")
 
-        values, census = dividend_yields(self._archive(tmp_path, rows), prices)
+        values, census = dividend_yields(self._archive(tmp_path, rows), prices, {})
 
         assert not values
         assert census.no_symbol == 0, "**列は読めている。** そちらでは捕まらない"
@@ -2030,7 +2048,7 @@ class TestTheDividendYieldFold:
         rows = [self._row("2017-01-10")]
         prices = self._prices(("2017-02", dt.date(2017, 2, 28), 1000.0))
 
-        _values, census = dividend_yields(self._archive(tmp_path, rows), prices)
+        _values, census = dividend_yields(self._archive(tmp_path, rows), prices, {})
 
         assert census.matched_symbols == 1
         assert not any("噛み合わなかった" in line for line in census.warnings())
@@ -2041,7 +2059,7 @@ class TestTheDividendYieldFold:
 
         (tmp_path / MANIFEST).write_text(",".join(MANIFEST_COLUMNS) + "\n", encoding="utf-8")
 
-        values, census = dividend_yields(tmp_path, {})
+        values, census = dividend_yields(tmp_path, {}, {})
 
         assert not values
         assert any("1行も読めなかった" in line for line in census.warnings())
@@ -2400,7 +2418,7 @@ class TestTheImplausibleYieldsComeBack:
 
         rows = [self._row(forecast="5600", actual="56")]
 
-        _values, census = dividend_yields(self._archive(tmp_path, rows), self._prices())
+        _values, census = dividend_yields(self._archive(tmp_path, rows), self._prices(), {})
 
         assert len(census.worst) == 1
         item = census.worst[0]
@@ -2416,7 +2434,7 @@ class TestTheImplausibleYieldsComeBack:
 
         rows = [self._row(forecast="5600")]
 
-        _values, census = dividend_yields(self._archive(tmp_path, rows), self._prices())
+        _values, census = dividend_yields(self._archive(tmp_path, rows), self._prices(), {})
 
         assert census.worst[0].actual is None
         assert census.worst[0].ratio is None
@@ -2427,7 +2445,7 @@ class TestTheImplausibleYieldsComeBack:
 
         rows = [self._row(forecast="30", actual="30")]
 
-        _values, census = dividend_yields(self._archive(tmp_path, rows), self._prices())
+        _values, census = dividend_yields(self._archive(tmp_path, rows), self._prices(), {})
 
         assert not census.worst
 
@@ -2474,7 +2492,7 @@ class TestTheImplausibleYieldsComeBack:
 
         rows = [self._row(forecast="5600", actual="56")]
 
-        _values, census = dividend_yields(self._archive(tmp_path, rows), self._prices())
+        _values, census = dividend_yields(self._archive(tmp_path, rows), self._prices(), {})
         printed = "\n".join(census.warnings())
 
         assert "SD に入らない" in printed
@@ -2621,127 +2639,264 @@ def _implausible(symbol, month, disclosed_on, forecast, close):
     )
 
 
-class TestTheSplitAuditMeasuresBothSides:
-    """**高い側だけ見ていると、半分しか見えない**（候補14、2026-09-26）。
+class TestNotCarryingAcrossASplit:
+    """**(b) 分割か併合をまたいだら、持ち越さない**（2026-09-26 に決めた）。
 
-    20% の線は、分割前の基準のまま持ち越した予想しか捕まえない。**既に分割後の
-    基準で書かれた予想**を割り戻すと2回割ることになり、**低すぎる側に出る。**
-    **併合は逆向きで**、同じ線では1件も捕まらない。
+    予想がどちらの基準で書かれていたかを、その時点では見分けられない。
+    **既定を置かない**——渡し忘れると、分割をまたいだ予想が黙って持ち越される。
     """
 
-    SPLIT = ((dt.date(2013, 1, 4), 1 / 400), (dt.date(2013, 10, 1), 1.0))
-    MERGE = ((dt.date(2017, 1, 4), 10.0), (dt.date(2017, 10, 2), 1.0))
-    MONTH = pd.Period("2013-10", freq="M")
-    REBALANCE = dt.date(2013, 10, 31)
+    SPLIT = ((dt.date(2016, 1, 4), 1 / 400), (dt.date(2017, 3, 1), 1.0))
 
-    def _board(self, forecast: float, changes=SPLIT):
-        """1銘柄だけ分割をまたぎ、残り4銘柄は利回り 2% でまたがない。"""
-        values = {("A", self.MONTH): (dt.date(2013, 2, 6), forecast / 1_000.0)}
-        prices = {("A", self.MONTH): (self.REBALANCE, 1_000.0)}
-        for name in ("B", "C", "D", "E"):
-            values[(name, self.MONTH)] = (dt.date(2013, 9, 1), 0.02)
-            prices[(name, self.MONTH)] = (self.REBALANCE, 1_000.0)
-        return values, prices, {"A": changes}
+    @staticmethod
+    def _prices():
+        return {
+            ("1306", pd.Period("2017-02", freq="M")): (dt.date(2017, 2, 28), 400_000.0),
+            ("1306", pd.Period("2017-04", freq="M")): (dt.date(2017, 4, 28), 1_000.0),
+        }
 
-    def test_a_pre_split_forecast_is_closer_once_rescaled(self) -> None:
+    def _rows(self, later: str | None):
+        from stock_ai.backtest.wall import DIVIDEND_COLUMN
+
+        rows = [TestTheImplausibleYieldsComeBack._row(forecast="7000")]
+        if later is not None:
+            rows.append({**rows[0], "DiscDate": "2017-05-10", DIVIDEND_COLUMN: later})
+        return rows
+
+    def test_the_month_after_the_split_is_not_carried(self, tmp_path) -> None:
+        from stock_ai.backtest.wall import dividend_yields
+
+        archive = TestTheImplausibleYieldsComeBack._archive(tmp_path, self._rows(later=None))
+
+        values, census = dividend_yields(archive, self._prices(), {"1306": self.SPLIT})
+
+        assert ("1306", pd.Period("2017-02", freq="M")) in values, "**分割の前は持ち越す。**"
+        assert ("1306", pd.Period("2017-04", freq="M")) not in values
+        (crossed,) = census.crossed
+        assert crossed.ratio == pytest.approx(400.0)
+        assert crossed.month == "2017-04"
+        assert not census.worst, "**持ち越さないので、700% の行は出ない。**"
+        assert any("持ち越していない" in line for line in census.warnings())
+
+    def test_without_the_factors_it_would_have_been_carried(self, tmp_path) -> None:
+        """**両向きに置く。** 倍率を渡さなければ、分割の後も 700% で持ち越す。"""
+        from stock_ai.backtest.wall import dividend_yields
+
+        archive = TestTheImplausibleYieldsComeBack._archive(tmp_path, self._rows(later=None))
+
+        values, census = dividend_yields(archive, self._prices(), {})
+
+        assert ("1306", pd.Period("2017-04", freq="M")) in values
+        assert not census.crossed
+        assert census.worst
+
+    def test_the_next_disclosure_is_kept_as_the_yardstick(self, tmp_path) -> None:
+        """**その銘柄の次の予想**（分割後の基準）を持って返る。監査でだけ使う。"""
+        from stock_ai.backtest.wall import dividend_yields
+
+        archive = TestTheImplausibleYieldsComeBack._archive(tmp_path, self._rows(later="18"))
+
+        _values, census = dividend_yields(archive, self._prices(), {"1306": self.SPLIT})
+
+        (crossed,) = census.crossed
+        assert crossed.next_forecast == pytest.approx(18.0)
+
+    def test_the_factors_have_no_default(self) -> None:
+        from stock_ai.backtest.wall import dividend_yields
+
+        parameter = inspect.signature(dividend_yields).parameters["factor_changes"]
+        assert parameter.default is inspect.Parameter.empty
+
+
+def _crossed(forecast, ratio, next_forecast, *, symbol="A", month="2013-10", close=1_000.0):
+    from stock_ai.backtest.wall import CrossedForecast
+
+    return CrossedForecast(
+        symbol=symbol,
+        month=month,
+        disclosed_on=dt.date(2013, 2, 6),
+        forecast=forecast,
+        rebalanced_on=dt.date(2013, 10, 31),
+        close=close,
+        ratio=ratio,
+        next_forecast=next_forecast,
+    )
+
+
+class TestTheBasisIsJudgedByTheCompanysOwnNextForecast:
+    """**(a) に変えてよいかを、その銘柄の次の開示で測る**（2026-09-26）。
+
+    中央値の物差しは、本当の利回りが「中央値 ÷ √比 〜 中央値 × √比」の外に在る
+    銘柄で外れる。**次の開示は、配当が √比 倍以上変わらない限り外れない。**
+    """
+
+    @staticmethod
+    def _values(month="2013-10"):
+        period = pd.Period(month, freq="M")
+        return {(name, period): (dt.date(2013, 9, 1), 0.02) for name in "BCDE"}
+
+    def _audit(self, crossed, values=None):
         from stock_ai.backtest.wall import audit_splits
 
-        values, prices, changes = self._board(forecast=8_000.0)  # 800% のまま
+        return audit_splits(values if values is not None else self._values(), crossed, {}, {}, ())
 
-        audit = audit_splits(values, prices, changes, ())
+    def test_a_pre_split_forecast_matches_the_rescaled_amount(self) -> None:
+        audit = self._audit([_crossed(forecast=7_000.0, ratio=400.0, next_forecast=18.0)])
 
-        assert audit.splits.crossing == 1
-        assert audit.splits.closer_rescaled == 1
-        assert audit.splits.closer_as_carried == 0
+        (bucket,) = audit.buckets
+        assert bucket.next_rescaled == 1
+        assert bucket.next_as_carried == 0
 
-    def test_a_post_split_forecast_would_be_divided_twice(self) -> None:
-        """**20% の線では捕まらない形。** (a) はこれも割る。"""
-        from stock_ai.backtest.wall import audit_splits
+    def test_a_post_split_forecast_matches_the_carried_amount(self) -> None:
+        """**既に分割後の基準で書かれていた形。** (a) ならこれを2回割る。"""
+        audit = self._audit([_crossed(forecast=18.0, ratio=400.0, next_forecast=18.0)])
 
-        values, prices, changes = self._board(forecast=20.0)  # 既に分割後の基準で 2%
+        (bucket,) = audit.buckets
+        assert bucket.next_as_carried == 1
+        assert not audit.rescaling_holds
 
-        audit = audit_splits(values, prices, changes, ())
+    def test_a_small_split_is_judged_too(self) -> None:
+        """**1:2 でも、次の開示なら見分けられる**（中央値の物差しでは五分五分）。"""
+        audit = self._audit([_crossed(forecast=40.0, ratio=2.0, next_forecast=20.0)])
 
-        assert audit.splits.closer_as_carried == 1
-        assert audit.splits.closer_rescaled == 0
+        (bucket,) = audit.buckets
+        assert bucket.label.startswith("分割 1.5")
+        assert bucket.next_rescaled == 1
 
-    def test_a_consolidation_is_counted_on_its_own(self) -> None:
-        """**併合は逆向き**（比が 1 より小さい）。分割に混ぜない。"""
-        from stock_ai.backtest.wall import audit_splits
+    def test_the_buckets_are_fixed_and_consolidations_are_their_own(self) -> None:
+        audit = self._audit(
+            [
+                _crossed(forecast=40.0, ratio=2.0, next_forecast=20.0, symbol="A"),
+                _crossed(forecast=7_000.0, ratio=400.0, next_forecast=18.0, symbol="F"),
+                _crossed(forecast=5.0, ratio=0.1, next_forecast=50.0, symbol="G"),
+            ]
+        )
 
-        month = pd.Period("2017-10", freq="M")
-        values = {("A", month): (dt.date(2017, 2, 1), 0.002)}
-        prices = {("A", month): (dt.date(2017, 10, 31), 1_000.0)}
+        labels = [bucket.label for bucket in audit.buckets]
+        assert labels == ["分割 1.5〜10", "分割 100〜", "併合 10〜100"]
 
-        audit = audit_splits(values, prices, {"A": self.MERGE}, ())
+    def test_no_next_forecast_is_unjudged_not_counted_either_way(self) -> None:
+        """**判定できなかった行を分母に入れない。**"""
+        audit = self._audit([_crossed(forecast=7_000.0, ratio=400.0, next_forecast=None)])
 
-        assert audit.consolidations.crossing == 1
-        assert audit.splits.crossing == 0
+        (bucket,) = audit.buckets
+        assert bucket.next_unjudged == 1
+        assert bucket.break_share is None
+        assert not audit.rescaling_holds, "**判定できた行が無ければ、満たしたとも言えない。**"
 
-    def test_the_cost_of_not_carrying_is_the_worst_month_share(self) -> None:
-        """**(b) の代償は、その月の断面から何割が外れるか**で見る。"""
-        from stock_ai.backtest.wall import audit_splits
+    def test_the_rule_holds_only_when_every_bucket_is_clean(self) -> None:
+        clean = [
+            _crossed(forecast=7_000.0, ratio=400.0, next_forecast=18.0, symbol=f"S{index}")
+            for index in range(200)
+        ]
+        assert self._audit(clean).rescaling_holds
 
-        values, prices, changes = self._board(forecast=8_000.0)
-
-        audit = audit_splits(values, prices, changes, ())
-
-        assert audit.crossing == 1
-        assert audit.worst_month == "2013-10"
-        assert audit.worst_share == pytest.approx(1 / 5)
-
-    def test_nothing_crossed_is_nothing_crossed(self) -> None:
-        """**両向きに置く。** 全部をまたいだと数える形でも緑にならないように。"""
-        from stock_ai.backtest.wall import audit_splits
-
-        values, prices, _changes = self._board(forecast=8_000.0)
-
-        audit = audit_splits(values, prices, {}, ())
-
-        assert audit.crossing == 0
-        assert audit.worst_month is None
+        dirty = [*clean, _crossed(forecast=18.0, ratio=400.0, next_forecast=18.0, symbol="X")]
+        dirty += [
+            _crossed(forecast=18.0, ratio=400.0, next_forecast=18.0, symbol=f"Y{index}")
+            for index in range(2)
+        ]
+        assert not self._audit(dirty).rescaling_holds, "3 / 203 は 1% を超える"
 
     def test_the_parts_must_add_up(self) -> None:
-        from stock_ai.backtest.wall import Crossing
+        from stock_ai.backtest.wall import BasisBucket
 
         with pytest.raises(ValueError, match="合わない"):
-            Crossing(crossing=3, closer_as_carried=1, closer_rescaled=1, unaffected=0)
+            BasisBucket(
+                direction="分割",
+                low=1.5,
+                high=10.0,
+                rows=3,
+                next_rescaled=1,
+                next_as_carried=1,
+                next_unjudged=0,
+                median_rescaled=3,
+                median_as_carried=0,
+                median_unjudged=0,
+            )
+
+
+class TestTheCostAndTheBiasOfNotCarrying:
+    """**(b) は中立な除外ではない。** 外した銘柄月が、直前の月にどの分位に居たか。"""
+
+    def test_the_worst_month_counts_what_was_there_before_b(self) -> None:
+        from stock_ai.backtest.wall import audit_splits
+
+        values = TestTheBasisIsJudgedByTheCompanysOwnNextForecast._values()
+        audit = audit_splits(values, [_crossed(7_000.0, 400.0, 18.0)], {}, {}, ())
+
+        assert audit.worst_month == "2013-10"
+        assert audit.worst_month_rows == 5, "**分母は (b) の前**（残った4 + 外した1）"
+        assert audit.worst_share == pytest.approx(1 / 5)
+
+    def test_the_bias_is_the_quintile_of_the_month_before(self) -> None:
+        from stock_ai.backtest.wall import BIAS_QUANTILES, audit_splits
+
+        before = pd.Period("2013-09", freq="M")
+        values = {
+            (f"S{index}", before): (dt.date(2013, 8, 1), 0.01 * (index + 1)) for index in range(9)
+        }
+        # **A は直前の月にいちばん低い利回りだった。**
+        values[("A", before)] = (dt.date(2013, 8, 1), 0.001)
+
+        audit = audit_splits(values, [_crossed(7_000.0, 400.0, 18.0)], {}, {}, ())
+
+        counts = audit.bias["分割"]
+        assert counts[0] == 1, "第1分位（利回りの低い側）"
+        assert sum(counts[1:BIAS_QUANTILES]) == 0
+
+    def test_no_month_before_is_said_out_loud(self) -> None:
+        from stock_ai.backtest.wall import BIAS_QUANTILES, audit_splits
+
+        audit = audit_splits({}, [_crossed(7_000.0, 400.0, 18.0)], {}, {}, ())
+
+        assert audit.bias["分割"][BIAS_QUANTILES] == 1
 
 
 class TestTheUncrossedRowsAreSortedNotExplained:
-    """**分割をまたいでいない高すぎる行を、2つの物差しで仕分ける。** 原因は決めない。"""
+    """**(b) の後も高すぎる行を、2つの物差しで仕分ける。** 原因は決めない。
+
+    **「判定できない」を「どちらでもない」に混ぜない**——材料が無いと
+    `split_ratio_between` は 1.0 を返すので、「分割が無かった」と「履歴が届いて
+    いない」が同じ 1.0 になる（2026-09-26、8410 で気付いた）。
+    """
+
+    LONG = ((dt.date(2008, 1, 4), 1.0),)
 
     def _audit(self, items, prices, changes):
         from stock_ai.backtest.wall import audit_splits
 
-        return audit_splits({}, prices, changes, items)
+        return audit_splits({}, (), prices, changes, items)
 
     def test_a_split_before_the_disclosure_is_found(self) -> None:
-        """**分割の後に、分割前の基準で書かれた予想**の形（8410 で見えた形）。"""
+        """**分割の後に、分割前の基準で書かれた予想**の形。"""
         item = _implausible("B", "2012-05", dt.date(2012, 2, 3), 2_603.6, 175.0)
         prices = {
             ("B", pd.Period("2012-05", freq="M")): (dt.date(2012, 5, 31), 175.0),
             ("B", pd.Period("2012-02", freq="M")): (dt.date(2012, 2, 29), 170.0),
         }
-        changes = {"B": ((dt.date(2011, 6, 1), 1 / 1_000), (dt.date(2011, 12, 1), 1.0))}
+        changes = {"B": ((dt.date(2008, 1, 4), 1 / 1_000), (dt.date(2011, 12, 1), 1.0))}
 
         (row,) = self._audit([item], prices, changes).uncrossed
 
         assert row.split_before == pytest.approx(1_000.0)
         assert row.split_before_explains
-        assert not row.price_fell
+        assert not row.neither
 
     def test_a_split_too_small_to_explain_it_does_not_explain_it(self) -> None:
         """**分割が在っただけでは説明にならない。** 割り戻して収まるかで見る。"""
         item = _implausible("B", "2012-05", dt.date(2012, 2, 3), 2_603.6, 175.0)
-        prices = {("B", pd.Period("2012-05", freq="M")): (dt.date(2012, 5, 31), 175.0)}
-        changes = {"B": ((dt.date(2011, 6, 1), 1 / 2), (dt.date(2011, 12, 1), 1.0))}
+        prices = {
+            ("B", pd.Period("2012-05", freq="M")): (dt.date(2012, 5, 31), 175.0),
+            ("B", pd.Period("2012-02", freq="M")): (dt.date(2012, 2, 29), 170.0),
+        }
+        changes = {"B": ((dt.date(2008, 1, 4), 1 / 2), (dt.date(2011, 12, 1), 1.0))}
 
         (row,) = self._audit([item], prices, changes).uncrossed
 
         assert row.split_before == pytest.approx(2.0)
         assert not row.split_before_explains
-        assert row.at_disclosure is None
+        assert row.neither
 
     def test_a_price_that_fell_after_the_disclosure_is_found(self) -> None:
         """**予想が直される前に株価が下げた。** 当時本当に見えていた数字である。"""
@@ -2751,36 +2906,137 @@ class TestTheUncrossedRowsAreSortedNotExplained:
             ("C", pd.Period("2009-01", freq="M")): (dt.date(2009, 1, 30), 3_000.0),
         }
 
-        (row,) = self._audit([item], prices, {}).uncrossed
+        (row,) = self._audit([item], prices, {"C": ((dt.date(2007, 1, 4), 1.0),)}).uncrossed
 
         assert row.price_fell
-        assert not row.split_before_explains
+        assert not row.neither
+
+    def test_a_short_history_is_unjudged_not_neither(self) -> None:
+        """**履歴が開示の1年前に届かなければ、1.0 は「分からない」である。**"""
+        item = _implausible("D", "2012-05", dt.date(2012, 2, 3), 2_603.6, 175.0)
+        prices = {
+            ("D", pd.Period("2012-05", freq="M")): (dt.date(2012, 5, 31), 175.0),
+            ("D", pd.Period("2012-02", freq="M")): (dt.date(2012, 2, 29), 170.0),
+        }
+        changes = {"D": ((dt.date(2011, 12, 26), 1.0),)}
+
+        (row,) = self._audit([item], prices, changes).uncrossed
+
+        assert not row.history_reaches
+        assert row.unjudged
+        assert not row.neither
+
+    def test_a_missing_close_is_unjudged_not_neither(self) -> None:
+        item = _implausible("E", "2009-02", dt.date(2009, 1, 10), 300.0, 7.0)
+        prices = {("E", pd.Period("2009-02", freq="M")): (dt.date(2009, 2, 27), 7.0)}
+
+        (row,) = self._audit([item], prices, {"E": ((dt.date(2007, 1, 4), 1.0),)}).uncrossed
+
+        assert row.at_disclosure is None
+        assert row.unjudged
+        assert not row.neither
 
     def test_neither_is_left_as_neither(self) -> None:
-        """**どちらでもない行は、別の原因が在る。** 無理に当てはめない。"""
-        item = _implausible("D", "2009-02", dt.date(2009, 1, 10), 300.0, 7.0)
+        """**両方測れて、どちらにも当たらない。** 無理に当てはめない。"""
+        item = _implausible("F", "2009-02", dt.date(2009, 1, 10), 300.0, 7.0)
         prices = {
-            ("D", pd.Period("2009-02", freq="M")): (dt.date(2009, 2, 27), 7.0),
-            ("D", pd.Period("2009-01", freq="M")): (dt.date(2009, 1, 30), 7.0),
+            ("F", pd.Period("2009-02", freq="M")): (dt.date(2009, 2, 27), 7.0),
+            ("F", pd.Period("2009-01", freq="M")): (dt.date(2009, 1, 30), 7.0),
         }
 
-        (row,) = self._audit([item], prices, {}).uncrossed
+        (row,) = self._audit([item], prices, {"F": ((dt.date(2007, 1, 4), 1.0),)}).uncrossed
 
-        assert not row.price_fell
-        assert not row.split_before_explains
+        assert row.neither
 
-    def test_a_row_that_crossed_a_split_is_not_here(self) -> None:
-        item = _implausible("E", "2013-10", dt.date(2013, 2, 6), 7_000.0, 1_000.0)
-        prices = {("E", pd.Period("2013-10", freq="M")): (dt.date(2013, 10, 31), 1_000.0)}
-        changes = {"E": TestTheSplitAuditMeasuresBothSides.SPLIT}
 
-        assert not self._audit([item], prices, changes).uncrossed
+def _render(renderable, width: int = 80) -> str:
+    from rich.console import Console
+
+    console = Console(width=width, record=True, force_terminal=False, color_system=None)
+    console.print(renderable)
+    return console.export_text()
+
+
+class TestTheAuditTablesFitEightyColumns:
+    """**列を折り返さない設定にしたら、幅 80 で月と銘柄が「…」で切れた**（2026-09-26）。
+
+    テストが幅 200 で見ていたので気付かなかった（`conftest` が `COLUMNS=200` に
+    固定している）。**ここは幅を決めて刷る**——環境で変わるものに賭けない。
+    """
+
+    def test_the_implausible_table_keeps_every_cell(self) -> None:
+        from stock_ai import cli
+
+        rows = (
+            _implausible("8328", "2009-02", dt.date(2008, 8, 7), 12_000.0, 247.0),
+            _implausible("8410", "2012-05", dt.date(2012, 2, 3), 2_603.6, 175.0),
+        )
+
+        printed = _render(cli._implausible_table(rows))
+
+        assert "…" not in printed
+        assert "2009-02" in printed
+        assert "8410" in printed
+        assert "2,603.60" in printed
+        assert "4858%" in printed, "**100% 以上は小数を付けない。**"
+        data_lines = [line for line in printed.splitlines() if "8328" in line or "8410" in line]
+        assert len(data_lines) == 2, "**1件1行。** 割れていない"
+
+    def test_the_basis_table_keeps_every_cell(self) -> None:
+        from stock_ai import cli
+        from stock_ai.backtest.wall import audit_splits
+
+        audit = audit_splits(
+            {},
+            [
+                _crossed(40.0, 2.0, 20.0, symbol="A"),
+                _crossed(7_000.0, 400.0, 18.0, symbol="F"),
+                _crossed(5.0, 0.1, 50.0, symbol="G"),
+            ],
+            {},
+            {},
+            (),
+        )
+
+        printed = _render(cli._basis_table(audit.buckets))
+
+        assert "…" not in printed
+        assert "分割 1.5〜10" in printed
+        assert "併合 10〜100" in printed
+
+    def test_the_wall_table_uses_the_short_name(self) -> None:
+        """**設計の欄が幅 80 で5〜7行に折り返していた。** 表には短い名前だけを置く。"""
+        from stock_ai import cli
+
+        wall = Wall(
+            candidate=14,
+            name="高配当利回り（`FDivAnn` ÷ 調整前の終値）",
+            pipe="monthly",
+            unit="月",
+            observations=102,
+            sd=0.0384,
+            inflation=1.0,
+            line=3.39,
+            source="monthly",
+            period_years=8.5,
+        )
+
+        printed = _render(cli._wall_console_table([wall]))
+
+        assert "…" not in printed
+        assert "高配当利回" in printed
+        assert "FDivAnn" not in printed, "中身は表の下に出す"
+        # **欄が8つあるので、幅 80 では1行が2行に折り返す。** 5〜7行よりは短い。
+        body = [line for line in printed.splitlines() if line.startswith("│")]
+        assert len(body) <= 2
+        assert wall.detail == "`FDivAnn` ÷ 調整前の終値"
 
 
 class TestTheYieldAuditRunsEndToEnd:
     """**組み立てを1本通す。** 中身の入った DB と原本で、本物のコマンドを叩く。
 
-    1:400 の分割の前に開示した予想（分割前の基準）を、分割の後まで持ち越す。
+    1:400 の分割の前に開示した予想（分割前の基準）と、分割の後の予想を置く。
+    **(b) で持ち越さず、(a) の検査では「割り戻した後が近い」に数える。**
     """
 
     def test_the_command_prints_the_split_audit(self, tmp_path, monkeypatch) -> None:
@@ -2800,15 +3056,106 @@ class TestTheYieldAuditRunsEndToEnd:
             )
         monkeypatch.setattr(cli, "Database", lambda: database)
         disclosed = _INDEX[split_at - 40].date()
-        row = {"DiscDate": f"{disclosed}", "Code": "16050", DIVIDEND_COLUMN: "7000"}
-        archive = TestTheImplausibleYieldsComeBack._archive(tmp_path, [row])
+        later = _INDEX[split_at + 60].date()
+        rows = [
+            {"DiscDate": f"{disclosed}", "Code": "16050", DIVIDEND_COLUMN: "7000"},
+            {"DiscDate": f"{later}", "Code": "16050", DIVIDEND_COLUMN: "18"},
+        ]
+        archive = TestTheImplausibleYieldsComeBack._archive(tmp_path, rows)
 
         result = CliRunner().invoke(cli.app, ["yield-audit", "--dir", str(archive)])
 
         assert result.exit_code == 0, result.output
-        assert "分割か併合をまたいだ銘柄月" in result.output
-        assert "(b) またいだら持ち越さない" in result.output
-        assert "割り戻した後が近い" in result.output
-        # **整数の額に小数を付けない。** 付けると行が2行に割れていた。
-        assert "7,000.00" not in result.output
-        assert "7,000" in result.output
+        assert "持ち越さなかった銘柄月" in result.output
+        assert "(a) に変えてよい条件" in result.output
+        assert "分割 100〜" in result.output
+        assert "20% を超えた銘柄月は1つも無い" in result.output, "**(b) の後は残らない。**"
+
+
+class TestTheEarningsScheduleIsCounted:
+    """**候補17: 保存した原本が、予定の履歴になっているか。** 効果は計算しない。
+
+    `jquants_plan.NO_HISTORY`（直近のみ）と `jquants_earnings` の冒頭（`PubDate` が
+    在る）が**食い違っていた**（2026-09-26）。数えれば決まる。
+    """
+
+    @staticmethod
+    def _archive(tmp_path, files):
+        import csv as csv_module
+        import gzip
+        import io
+
+        from stock_ai.data.jquants_archive import MANIFEST, MANIFEST_COLUMNS
+
+        manifest = [",".join(MANIFEST_COLUMNS)]
+        for day, rows in files.items():
+            out = io.StringIO()
+            writer = csv_module.DictWriter(
+                out,
+                fieldnames=["Code", "PubDate", "SchDate", "FQName", "FYE", "CoName"],
+                lineterminator="\n",
+            )
+            writer.writeheader()
+            writer.writerows(rows)
+            key = f"fins/earnings-date/fins_earnings_date_{day}.csv.gz"
+            target = tmp_path / key
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(gzip.compress(out.getvalue().encode("utf-8")))
+            manifest.append(f"/{key},1,1,x,,2026-09-21")
+        (tmp_path / MANIFEST).write_text("\n".join(manifest) + "\n", encoding="utf-8")
+        return tmp_path
+
+    @staticmethod
+    def _row(code, published, scheduled):
+        return {
+            "Code": code,
+            "PubDate": published,
+            "SchDate": scheduled,
+            "FQName": "2Q",
+            "FYE": "0331",
+            "CoName": "x",
+        }
+
+    def test_overlapping_files_are_counted_once(self, tmp_path) -> None:
+        from stock_ai.data.jquants_earnings import schedule_census
+
+        ahead = self._row("13060", "2014-10-01", "2014-10-30")
+        files = {
+            "20141001": [ahead],
+            "20141002": [ahead, self._row("72030", "2014-10-02", "2014-10-01")],
+            "20161003": [self._row("99840", "2016-10-03", "2016-11-05")],
+        }
+
+        census = schedule_census(self._archive(tmp_path, files))
+
+        assert census.files == 3
+        assert census.rows == 4
+        assert census.distinct == 3
+        assert census.ahead == 2
+        assert census.behind == 1
+        assert census.first_file == "20141001"
+        printed = "\n".join(census.warnings())
+        assert "2015" in printed, "**抜けている年を言う。**"
+        assert "予定ではない" in printed
+
+    def test_no_files_is_said_out_loud(self, tmp_path) -> None:
+        from stock_ai.data.jquants_earnings import schedule_census
+
+        census = schedule_census(tmp_path)
+
+        assert census.files == 0
+        assert any("1本も無い" in line for line in census.warnings())
+
+    def test_the_command_runs(self, tmp_path) -> None:
+        from typer.testing import CliRunner
+
+        from stock_ai import cli
+
+        files = {"20141001": [self._row("13060", "2014-10-01", "2014-10-30")]}
+        archive = self._archive(tmp_path, files)
+
+        result = CliRunner().invoke(cli.app, ["earnings-schedule", "--dir", str(archive)])
+
+        assert result.exit_code == 0, result.output
+        assert "重ならない行" in result.output
+        assert "予定日が公表日より後の行" in result.output
