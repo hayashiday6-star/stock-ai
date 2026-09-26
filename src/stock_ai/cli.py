@@ -13105,6 +13105,57 @@ def hypothesis_report(
         )
 
 
+@app.command(name="note-articles")
+def note_articles(
+    public: str = typer.Option("docs/PUBLIC.md", "--public", help="The reader-facing source."),
+    registry: str = typer.Option("docs/HYPOTHESES.md", "--registry", help="The registry file."),
+    into: str = typer.Option("reports/note", "--into", help="Where the note drafts go."),
+) -> None:
+    """Write note-ready articles and PNG figures from docs/PUBLIC.md.
+
+    **正本は `docs/PUBLIC.md` だけである。** 出力は生成物で、git に載せない。
+
+    **検査に1つでも当たれば、1本も書かない**——内部の言葉、見出しの欠け、
+    限界に上場廃止と手数料の扱いが無い、出典の無い図、表（note は表を表示
+    できない）。全部を並べてから止まる。
+    """
+    from stock_ai.hypotheses import read_registry
+    from stock_ai.publish import build_all, find_font, read_public, write_all
+
+    settings = get_settings()
+    configure_logging(settings.log_level)
+
+    source = Path(public)
+    if not source.is_file():
+        console.print(f"[red]{source} が無い。[/]")
+        raise typer.Exit(code=1)
+    found = read_registry(Path(registry))
+    articles, problems = read_public(source.read_text(encoding="utf-8"))
+    problems += build_all(articles, found, source.parent)
+    if problems:
+        console.print(f"[red]**{len(problems)} 件の問題があるので、1本も書かなかった。**[/]")
+        for line in problems:
+            console.print(f"[yellow]- {line}[/]")
+        raise typer.Exit(code=1)
+    try:
+        font = find_font()
+    except FileNotFoundError as error:
+        console.print(f"[red]{error}[/]")
+        raise typer.Exit(code=1) from error
+
+    written = write_all(articles, found, Path(into), font)
+    table = Table(title=f"note 用の下書き（{into}/）")
+    for column in ("ファイル", "中身"):
+        table.add_column(column, overflow="fold")
+    for path in written:
+        table.add_row(path.name, "図" if path.suffix == ".png" else "本文")
+    console.print(table)
+    console.print(
+        f"[dim]フォント: {font.name}。本文の［図n をここに挿入］の場所に、同じ名前の PNG を"
+        "入れる。[/]"
+    )
+
+
 @app.command(name="power-budget")
 def power_budget(
     alpha: float = typer.Option(

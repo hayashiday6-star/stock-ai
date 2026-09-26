@@ -83,6 +83,12 @@ data/universe_daily/
 docs/WALL.md
 data/valuation_monthly.csv.gz
 
+# --- note に貼る下書き（2026-09-26） ---
+# 正本は `docs/PUBLIC.md`。図の字形は手元のフォント（Windows ならメイリオ）で
+# 決まるので、どこで作ったかで PNG の中身が変わる。追跡すると、作り直すたびに
+# 意味の無い差分が出て、`0-最新にする.bat` の早送りを止める（WALL と同じ理由）。
+reports/note/
+
 # --- Diagnostic reports (regenerated on demand; may name an account) ---
 verify-output.txt
 verify-ai-output.txt
