@@ -69,8 +69,16 @@ class Dividend:
     rate: float | None
     """`DivRate`。1株あたり。**分割の前後で尺度が変わる。**"""
 
-    ordinary_rate: float | None
+    commemorative_rate: float | None
+    """`CommDivRate`。**記念配当である。**
+
+    最初 ``ordinary_rate``（普通配当）と名付けていた。原本には `CommSpecCode`
+    （記念・特別配当の符号）が並んでいるので、**Comm は記念**である
+    （2026-09-26）。札の間違いで、値を使う処理は無かった。
+    """
+
     special_rate: float | None
+    """`SpecDivRate`。特別配当。"""
     ex_date: dt.date | None
     record_date: dt.date | None
     pay_date: dt.date | None
@@ -105,7 +113,7 @@ def parse_dividends(payload: bytes) -> list[Dividend]:
                 reference=(row.get("RefNo") or "").strip(),
                 term=(row.get("IFTerm") or "").strip(),
                 rate=parse_number(row.get("DivRate")),
-                ordinary_rate=parse_number(row.get("CommDivRate")),
+                commemorative_rate=parse_number(row.get("CommDivRate")),
                 special_rate=parse_number(row.get("SpecDivRate")),
                 ex_date=parse_date(row.get("ExDate")),
                 record_date=parse_date(row.get("RecDate")),
@@ -773,6 +781,33 @@ def _dividend_files(directory: Path) -> Iterable[tuple[str, bytes]]:
             yield key, read_archived(path_for(directory, key))
         except Exception as exc:  # noqa: BLE001 - どこで読めないかが記録に値する
             logger.warning("配当の原本を開けなかった: %s: %s", key, exc)
+
+
+def extra_dividends(
+    directory: Path,
+) -> tuple[dict[str, list[tuple[dt.date, dt.date, float, float]]], set[str]]:
+    """特別配当か記念配当の**額が正の行**を、銘柄ごとに。**取りには行かない。**
+
+    候補14 の監査で、**開示した時点で既に利回りが高すぎる行**が特別配当の形か
+    どうかを見るために使う（2026-09-26）。**原因とは言わない**——形が合うかだけ。
+
+    Returns:
+        ``({銘柄: [(公表日, 権利落ち日, 特別配当, 記念配当)]}, 配当の原本に居た銘柄)``。
+        **後者が要る**——原本に銘柄が居なければ「無かった」ではなく「分からない」。
+    """
+    extras: dict[str, list[tuple[dt.date, dt.date, float, float]]] = {}
+    seen: set[str] = set()
+    for _key, payload in _dividend_files(directory):
+        for row in parse_dividends(payload):
+            seen.add(row.symbol)
+            special = row.special_rate or 0.0
+            commemorative = row.commemorative_rate or 0.0
+            if row.ex_date is None or (special <= 0 and commemorative <= 0):
+                continue
+            extras.setdefault(row.symbol, []).append(
+                (row.published_on, row.ex_date, special, commemorative)
+            )
+    return extras, seen
 
 
 def raw_rows(

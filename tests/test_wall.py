@@ -996,7 +996,7 @@ class TestTheInflationTheWallUsedIsTheOneItShows:
         """**行が自分と食い違わないこと。**"""
         from stock_ai import cli
 
-        body = cli._wall_document([_wall(inflation=0.82, candidate=6)], [], "ためし")
+        body = cli._wall_document([_wall(inflation=0.82, candidate=6)], [], "ためし", [])
 
         # **どの規則が効いたかも欄に出る**（2026-09-21 に足した）。
         assert "0.82x → 床 1.00x" in body
@@ -1004,7 +1004,7 @@ class TestTheInflationTheWallUsedIsTheOneItShows:
     def test_the_document_shows_one_when_it_did_not(self) -> None:
         from stock_ai import cli
 
-        body = cli._wall_document([_wall(inflation=1.82, candidate=9)], [], "ためし")
+        body = cli._wall_document([_wall(inflation=1.82, candidate=9)], [], "ためし", [])
 
         assert "1.82x" in body
         assert "→" not in body.split("1.82x")[1].split("|")[0]
@@ -2738,7 +2738,9 @@ class TestTheBasisIsJudgedByTheCompanysOwnNextForecast:
     def _audit(self, crossed, values=None):
         from stock_ai.backtest.wall import audit_splits
 
-        return audit_splits(values if values is not None else self._values(), crossed, {}, {}, ())
+        return audit_splits(
+            values if values is not None else self._values(), crossed, {}, {}, (), {}, set()
+        )
 
     def test_a_pre_split_forecast_matches_the_rescaled_amount(self) -> None:
         audit = self._audit([_crossed(forecast=7_000.0, ratio=400.0, next_forecast=18.0)])
@@ -2823,7 +2825,7 @@ class TestTheCostAndTheBiasOfNotCarrying:
         from stock_ai.backtest.wall import audit_splits
 
         values = TestTheBasisIsJudgedByTheCompanysOwnNextForecast._values()
-        audit = audit_splits(values, [_crossed(7_000.0, 400.0, 18.0)], {}, {}, ())
+        audit = audit_splits(values, [_crossed(7_000.0, 400.0, 18.0)], {}, {}, (), {}, set())
 
         assert audit.worst_month == "2013-10"
         assert audit.worst_month_rows == 5, "**分母は (b) の前**（残った4 + 外した1）"
@@ -2839,7 +2841,7 @@ class TestTheCostAndTheBiasOfNotCarrying:
         # **A は直前の月にいちばん低い利回りだった。**
         values[("A", before)] = (dt.date(2013, 8, 1), 0.001)
 
-        audit = audit_splits(values, [_crossed(7_000.0, 400.0, 18.0)], {}, {}, ())
+        audit = audit_splits(values, [_crossed(7_000.0, 400.0, 18.0)], {}, {}, (), {}, set())
 
         counts = audit.bias["分割"]
         assert counts[0] == 1, "第1分位（利回りの低い側）"
@@ -2848,7 +2850,7 @@ class TestTheCostAndTheBiasOfNotCarrying:
     def test_no_month_before_is_said_out_loud(self) -> None:
         from stock_ai.backtest.wall import BIAS_QUANTILES, audit_splits
 
-        audit = audit_splits({}, [_crossed(7_000.0, 400.0, 18.0)], {}, {}, ())
+        audit = audit_splits({}, [_crossed(7_000.0, 400.0, 18.0)], {}, {}, (), {}, set())
 
         assert audit.bias["分割"][BIAS_QUANTILES] == 1
 
@@ -2866,7 +2868,7 @@ class TestTheUncrossedRowsAreSortedNotExplained:
     def _audit(self, items, prices, changes):
         from stock_ai.backtest.wall import audit_splits
 
-        return audit_splits({}, (), prices, changes, items)
+        return audit_splits({}, (), prices, changes, items, {}, set())
 
     def test_a_split_before_the_disclosure_is_found(self) -> None:
         """**分割の後に、分割前の基準で書かれた予想**の形。"""
@@ -2996,6 +2998,8 @@ class TestTheAuditTablesFitEightyColumns:
             {},
             {},
             (),
+            {},
+            set(),
         )
 
         printed = _render(cli._basis_table(audit.buckets))
@@ -3159,3 +3163,196 @@ class TestTheEarningsScheduleIsCounted:
         assert result.exit_code == 0, result.output
         assert "重ならない行" in result.output
         assert "予定日が公表日より後の行" in result.output
+
+
+class TestTheExtraDividendIsLookedUpNotAssumed:
+    """**79 件は特別配当の形に見える**（ユーザーの読み）。**形が合うかだけ**を数える。
+
+    **配当の原本に銘柄が居なければ「無かった」ではなく「分からない」。**
+    """
+
+    ITEM_MONTH = "2016-06"
+
+    def _audit(self, extras, seen):
+        from stock_ai.backtest.wall import audit_splits
+
+        item = _implausible("1972", self.ITEM_MONTH, dt.date(2016, 5, 13), 300.0, 660.0)
+        prices = {
+            ("1972", pd.Period(self.ITEM_MONTH, freq="M")): (dt.date(2016, 6, 30), 660.0),
+            ("1972", pd.Period("2016-05", freq="M")): (dt.date(2016, 5, 31), 662.0),
+        }
+        changes = {"1972": ((dt.date(2008, 1, 4), 1.0),)}
+        (row,) = audit_splits({}, (), prices, changes, [item], extras, seen).uncrossed
+        return row
+
+    def test_a_special_dividend_in_the_window_is_found(self) -> None:
+        extras = {"1972": [(dt.date(2016, 5, 13), dt.date(2017, 3, 29), 250.0, 0.0)]}
+
+        row = self._audit(extras, {"1972"})
+
+        assert row.neither
+        assert row.extra_paid is True
+
+    def test_one_published_after_the_rebalance_is_not_used(self) -> None:
+        """**組み替え日までに公表された行だけ。** 後から出た特別配当は、その日には見えない。"""
+        extras = {"1972": [(dt.date(2016, 9, 1), dt.date(2017, 3, 29), 250.0, 0.0)]}
+
+        assert self._audit(extras, {"1972"}).extra_paid is False
+
+    def test_a_symbol_the_dividend_files_never_saw_is_unknown(self) -> None:
+        assert self._audit({}, set()).extra_paid is None
+
+    def test_the_dividend_reader_collects_only_positive_extras(self, tmp_path) -> None:
+        import csv as csv_module
+        import gzip
+        import io
+
+        from stock_ai.data.jquants_archive import MANIFEST, MANIFEST_COLUMNS
+        from stock_ai.data.jquants_dividend import extra_dividends
+
+        fields = ["PubDate", "Code", "ExDate", "DivRate", "CommDivRate", "SpecDivRate"]
+        rows = [
+            ["2016-05-13", "19720", "2017-03-29", "300", "", "250"],
+            ["2016-05-13", "72030", "2017-03-29", "100", "", ""],
+            ["2016-05-13", "86970", "2017-03-29", "50", "10", ""],
+        ]
+        out = io.StringIO()
+        writer = csv_module.writer(out, lineterminator="\n")
+        writer.writerow(fields)
+        writer.writerows(rows)
+        key = "fins/dividend/fins_dividend_201605.csv.gz"
+        (tmp_path / key).parent.mkdir(parents=True)
+        (tmp_path / key).write_bytes(gzip.compress(out.getvalue().encode()))
+        (tmp_path / MANIFEST).write_text(
+            ",".join(MANIFEST_COLUMNS) + f"\n/{key},1,1,x,,2026-09-21\n", encoding="utf-8"
+        )
+
+        extras, seen = extra_dividends(tmp_path)
+
+        assert seen == {"1972", "7203", "8697"}
+        assert set(extras) == {"1972", "8697"}, "**記念配当も数える。普通の配当は数えない。**"
+        assert extras["8697"][0][3] == pytest.approx(10.0)
+
+
+class TestTheCountsAreNotCalledASorting:
+    """**列ごとに数えたら、札を「仕分け」にしない**（2026-09-26、ユーザーの指摘）。
+
+    足して件数になると読まれる。**2つ以上の列に入った件数を出す。**
+    """
+
+    def test_the_overlap_is_said_out_loud(self, capsys) -> None:
+        from stock_ai import cli
+        from stock_ai.backtest.wall import Uncrossed
+
+        both = Uncrossed(
+            item=_implausible("8597", "2009-02", dt.date(2008, 12, 15), 300.0, 7.0),
+            split_before=1.0,
+            history_reaches=False,
+            at_disclosure=0.078,
+        )
+
+        cli._print_uncrossed((both,))
+
+        printed = capsys.readouterr().out
+        assert "列ごとの数" in printed
+        assert "仕分け" not in printed
+        assert "2つ以上の列に数えた件 1" in printed
+
+
+class TestMaterialThatTurnsUpLeavesTheMissingTable:
+    """**数えた結果を、壁の表に戻す**（2026-09-26）。
+
+    候補14・16・17 で3度、見張りは鳴ったのに表を書き直すのは人の手だった。
+    **在ると数えたら、その場で「材料が無い」から外す。**
+    """
+
+    def _missing(self):
+        return [
+            Missing(8, "噂で買って事実で売る", "口が無い"),
+            Missing(17, "決算発表日を避ける", "原本が無い", endpoint="/fins/earnings-date"),
+        ]
+
+    def test_counted_material_moves_to_its_own_table(self, tmp_path) -> None:
+        from stock_ai.backtest.wall import split_missing
+
+        files = {
+            "20141001": [TestTheEarningsScheduleIsCounted._row("13060", "2014-10-01", "2014-10-30")]
+        }
+        archive = TestTheEarningsScheduleIsCounted._archive(tmp_path, files)
+
+        present, absent = split_missing(archive, self._missing())
+
+        assert [item.candidate for item, _summary in present] == [17]
+        assert [item.candidate for item in absent] == [8]
+
+    def test_no_files_keeps_it_in_the_missing_table(self, tmp_path) -> None:
+        """**両向きに置く。** 原本が無ければ「無い」のまま。"""
+        from stock_ai.backtest.wall import split_missing
+
+        present, absent = split_missing(tmp_path, self._missing())
+
+        assert not present
+        assert [item.candidate for item in absent] == [8, 17]
+
+    def test_files_with_no_usable_rows_stay_missing(self, tmp_path) -> None:
+        """原本は在っても、予定として使える行が無ければ「無い」のまま。"""
+        from stock_ai.backtest.wall import split_missing
+
+        files = {
+            "20141001": [TestTheEarningsScheduleIsCounted._row("13060", "2014-10-01", "2014-09-01")]
+        }
+        archive = TestTheEarningsScheduleIsCounted._archive(tmp_path, files)
+
+        present, _absent = split_missing(archive, self._missing())
+
+        assert not present
+
+    def test_the_document_carries_the_present_table(self) -> None:
+        from stock_ai import cli
+
+        item = Missing(17, "決算発表日を避ける", "原本が無い", endpoint="/fins/earnings-date")
+
+        body = cli._wall_document([], [], "ためし", [(item, "原本 155 本")])
+
+        assert "## 材料は在る。壁はまだ測っていない" in body
+        assert "| 17 | 決算発表日を避ける | 原本 155 本 |" in body
+
+
+class TestAMovedScheduleIsVisible:
+    """**原本は「公表された予定を1回ずつ」持つ形**（重なり 0、2026-09-26）。
+
+    だから予定が動いたことは、**同じ期の、公表日の遅い2本目の行**として見える。
+    """
+
+    def test_a_moved_and_a_repeated_schedule_are_counted_apart(self, tmp_path) -> None:
+        from stock_ai.data.jquants_earnings import schedule_census
+
+        row = TestTheEarningsScheduleIsCounted._row
+        files = {
+            "20141001": [row("13060", "2014-10-01", "2014-10-30")],
+            "20141101": [
+                row("13060", "2014-10-20", "2014-11-05"),  # 動いた
+                row("72030", "2014-10-01", "2014-10-30"),
+            ],
+            "20141201": [row("72030", "2014-10-25", "2014-10-30")],  # 同じ日のまま
+        }
+
+        census = schedule_census(TestTheEarningsScheduleIsCounted._archive(tmp_path, files))
+
+        assert census.moved == 1
+        assert census.repeated == 1
+        assert any("予定日が動いた組 1" in line for line in census.warnings())
+
+    def test_a_year_later_is_not_a_revision(self, tmp_path) -> None:
+        """**`FYE` に年が無い。** 間隔で絞らないと、翌年の同じ期が「出し直し」に化ける。"""
+        from stock_ai.data.jquants_earnings import schedule_census
+
+        row = TestTheEarningsScheduleIsCounted._row
+        files = {
+            "20141001": [row("13060", "2014-10-01", "2014-10-30")],
+            "20151001": [row("13060", "2015-10-01", "2015-10-29")],
+        }
+
+        census = schedule_census(TestTheEarningsScheduleIsCounted._archive(tmp_path, files))
+
+        assert census.moved == 0

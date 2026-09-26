@@ -505,12 +505,57 @@ def stale_reasons(directory: Path, missing: Iterable[Missing]) -> list[str]:
             found.append(
                 f"**{item.candidate} は「材料が無い」に載っているが、"
                 f"`{item.endpoint}` の原本が {files:,} ファイル在る。** "
-                "**中身を数えてから書き直すこと**——`checks\\決算発表予定は"
-                "積み重なっているか.bat`（引数は要らない）。"
+                "**中身を数えてから書き直すこと**——数える関数を "
+                "`wall.MATERIAL_CHECKS` に置けば、在ると出たときに表から外れる。"
                 "\n  **1本ずつが「その日の断面」でも、積み重なれば歴史になる。**"
                 "「API が直近しか返さない」ことと、「手元に歴史が無い」ことは別である。"
             )
     return found
+
+
+def _earnings_schedule_present(directory: Path) -> str | None:
+    """候補17: 保存した発表予定日の原本が、予定の履歴として使えるか。"""
+    from stock_ai.data.jquants_earnings import schedule_census
+
+    census = schedule_census(directory)
+    return census.summary() if census.ahead else None
+
+
+#: **「材料が無い」を、数えた結果で書き換える**（2026-09-26）。
+#:
+#: 原本ごとに「使える材料が在るか」を答える関数を置く。在ると答えたら、その候補は
+#: 「材料が無い」の表から外れる。**候補14・16・17 で3度、数えた結果が壁の表に
+#: 戻らなかった**——見張りは鳴ったが、表を書き直すのは人の手だった。
+MATERIAL_CHECKS: dict[str, Callable[[Path], str | None]] = {
+    "/fins/earnings-date": _earnings_schedule_present,
+}
+
+
+def split_missing(
+    directory: Path, missing: Iterable[Missing]
+) -> tuple[list[tuple[Missing, str]], list[Missing]]:
+    """測れないと書いた候補を、**数えたら材料が在ったもの**と、無いものに分ける。
+
+    **数える関数が無い原本は、在っても「無い」側に残す**——その場合は
+    :func:`stale_reasons` が鳴る。
+
+    Returns:
+        ``([(候補, 数えたまとめ)], [まだ材料が無い候補])``。
+    """
+    present: list[tuple[Missing, str]] = []
+    absent: list[Missing] = []
+    for item in missing:
+        check = MATERIAL_CHECKS.get(item.endpoint)
+        summary = (
+            check(directory)
+            if check is not None and archived_files(directory, item.endpoint)
+            else None
+        )
+        if summary is None:
+            absent.append(item)
+        else:
+            present.append((item, summary))
+    return present, absent
 
 
 @dataclasses.dataclass
@@ -1651,8 +1696,9 @@ class YieldCensus:
                 f"**{len(self.crossed):,} 銘柄月は、開示から組み替えまでに分割か併合を"
                 "またいだので持ち越していない**（(b)、2026-09-26 に決めた）。予想が"
                 "どちらの基準で書かれていたかを、その時点では見分けられない。"
-                "\n  `checks\\高すぎる利回りを見る.bat` が、(a) 割り戻すに変えてよいかを"
-                "測る。"
+                "\n  (a) 分割比で割り戻すは、**測る前に決めた条件を満たさなかった**"
+                "（2026-09-26。比 100 以上でも一部は既に分割後の基準で書かれていた）。"
+                "`checks\\高すぎる利回りを見る.bat` が同じ検査を毎回出す。"
             )
         # **突き合わせが空振りしたことは、列の検査では捕まらない。**
         # 列は全部読めていて、`no_symbol` も 0 のまま観測が出ない。
@@ -1733,9 +1779,9 @@ def dividend_yields(
     **(b) は中立な除外ではない。** 分割は株価の上がった銘柄が、併合は安い銘柄が
     するので、外れる側に偏りがある——:func:`audit_splits` が大きさを測る。
 
-    **(a) に変えてよいかも、そこで測る**（その銘柄の次の開示を物差しにする）。
-    見るのはデータの書き方で、リターンではないので、測ってから変えても
-    結果を見て規則を選ぶことにはならない。
+    **(a) は測る前に決めた条件を満たさなかった**（2026-09-26、`42b385b`）。その
+    銘柄の次の開示を物差しにすると、比 100 以上でも 8.3% が既に分割後の基準で
+    書かれていた——**原本の基準そのものが一貫していない。** (b) で確定した。
 
     ## 先読みを外す
 
@@ -2016,6 +2062,14 @@ class Uncrossed:
     at_disclosure: float | None
     """**開示した月**の調整前の終値で割った利回り。終値が無ければ ``None``。"""
 
+    extra_paid: bool | None = None
+    """**特別配当か記念配当の額が正の行が在ったか**（:data:`EXTRA_WINDOW_DAYS`）。
+
+    配当の原本にその銘柄が居なければ ``None``（「無かった」ではなく「分からない」）。
+    **原因とは言わない。** 在れば値は正しいかもしれず、問題は「一度きりの配当で
+    高利回りの分位に入れてよいか」という**設計の問い**になる。
+    """
+
     @property
     def split_before_explains(self) -> bool:
         """開示前の分割比で割り戻すと、ありえる高さに収まる。
@@ -2046,6 +2100,12 @@ class Uncrossed:
         """**両方測れて、どちらにも当たらない。** 別の原因が在る。"""
         return not self.unjudged and not self.split_before_explains and not self.price_fell
 
+
+#: 特別配当・記念配当を探す窓（日）。**権利落ちが開示から何日以内か。**
+#:
+#: **出典は無い。決めの値である**（2026-09-26、測る前に決めた）。会社予想は
+#: 会計年度ごとなので1年とした。**組み替え日までに公表された行だけ**を見る。
+EXTRA_WINDOW_DAYS = 365
 
 #: (b) で外れる銘柄月が、直前の月にどの分位に居たか。**分位の数**である。
 BIAS_QUANTILES = 5
@@ -2109,6 +2169,8 @@ def audit_splits(
     prices: dict[tuple[str, pd.Period], tuple[dt.date, float]],
     factor_changes: dict[str, tuple[tuple[dt.date, float], ...]],
     worst: Iterable[ImplausibleYield],
+    extras: dict[str, list[tuple[dt.date, dt.date, float, float]]],
+    dividend_symbols: set[str],
 ) -> SplitAudit:
     """分割をまたいだ予想を、**(b) で外したあと**に測る（候補14）。
 
@@ -2127,6 +2189,8 @@ def audit_splits(
         prices: 同じ関数に渡した調整前の月末終値。
         factor_changes: :attr:`Materials.factor_changes`。
         worst: :attr:`YieldCensus.worst`。
+        extras: `jquants_dividend.extra_dividends` の1つ目。**既定を置かない。**
+        dividend_symbols: 同じ関数の2つ目（配当の原本に居た銘柄）。
 
     Returns:
         測ったもの。
@@ -2230,12 +2294,20 @@ def audit_splits(
         before = split_ratio_between(changes, since, item.disclosed_on)
         then = prices.get((item.symbol, pd.Period(item.disclosed_on, freq="M")))
         at_disclosure = item.forecast / then[1] if then is not None and then[1] > 0 else None
+        extra_paid: bool | None = None
+        if item.symbol in dividend_symbols and rebalance is not None:
+            until = item.disclosed_on + dt.timedelta(days=EXTRA_WINDOW_DAYS)
+            extra_paid = any(
+                published <= rebalance[0] and item.disclosed_on <= ex_date <= until
+                for published, ex_date, _special, _commemorative in extras.get(item.symbol, ())
+            )
         uncrossed.append(
             Uncrossed(
                 item=item,
                 split_before=before,
                 history_reaches=bool(changes) and changes[0][0] <= since,
                 at_disclosure=at_disclosure,
+                extra_paid=extra_paid,
             )
         )
 

@@ -106,6 +106,13 @@ def by_symbol(items: Iterable[EarningsDate]) -> dict[str, list[EarningsDate]]:
 #: 決算発表予定日の原本の置き場所で使う、エンドポイントの名前。
 ENDPOINT = "/fins/earnings-date"
 
+#: 「同じ期の予定が出し直された」とみなす、公表日どうしの間隔（日）。
+#:
+#: **出典は無い。決めの値である**（2026-09-26）。四半期は約 90 日ごとだが、
+#: 期（`FQName`・`FYE`）が同じ行どうしだけを比べるので、次の期と混ざらない。
+#: `FYE` には年が入っていない（上の表）ので、**間隔で同じ年の期に絞る。**
+REVISION_DAYS = 120
+
 
 @dataclasses.dataclass(frozen=True)
 class ScheduleCensus:
@@ -151,6 +158,16 @@ class ScheduleCensus:
     by_year: tuple[tuple[int, int], ...]
     """``(PubDate の年, 重ならない行)``。**抜けている年が在れば、そこは履歴が無い。**"""
 
+    moved: int = 0
+    """**同じ期の予定が、公表日を変えて出し直され、予定日も変わった**組。
+
+    原本は「公表された予定を1回ずつ」持つ形なので（ファイルをまたいだ重なりが
+    0）、**予定が動いたことは、公表日の遅い2本目の行として見える**はずである。
+    """
+
+    repeated: int = 0
+    """同じ期の予定が出し直されたが、**予定日は同じ**だった組。"""
+
     def __post_init__(self) -> None:
         """**内訳が足して合うこと**（重ならない行で数える）。"""
         parts = self.ahead + self.same_day + self.behind + self.no_schedule
@@ -189,6 +206,12 @@ class ScheduleCensus:
         if self.behind:
             found.append(
                 f"**{self.behind:,} 行は予定日が公表日より前だった。** 予定ではない——使うなら外す。"
+            )
+        if self.distinct:
+            found.append(
+                f"**同じ期の予定が {REVISION_DAYS} 日以内に出し直され、予定日が動いた組 "
+                f"{self.moved:,}**（予定日は同じ {self.repeated:,}）。動いた銘柄は、"
+                "**動く前の予定日で**避けることになる。"
             )
         years = [year for year, _count in self.by_year]
         if years:
@@ -252,6 +275,21 @@ def schedule_census(directory: Path) -> ScheduleCensus:
             same_day += 1
         else:
             behind += 1
+    moved = repeated = 0
+    # **`periods`（ファイルの日付）と別の名前にする。** 同じ名前で上書きして、
+    # いちばん古いファイルの欄が `KeyError` で落ちた（2026-09-26）。
+    by_term: dict[tuple[str, str, str], list[EarningsDate]] = {}
+    for item in distinct.values():
+        by_term.setdefault((item.symbol, item.quarter, item.fiscal_year_end), []).append(item)
+    for rows_of_period in by_term.values():
+        rows_of_period.sort(key=lambda row: row.published_on)
+        for earlier, later in zip(rows_of_period, rows_of_period[1:], strict=False):
+            if (later.published_on - earlier.published_on).days > REVISION_DAYS:
+                continue
+            if later.scheduled_on != earlier.scheduled_on:
+                moved += 1
+            else:
+                repeated += 1
     published = [item.published_on for item in distinct.values()]
     scheduled = [item.scheduled_on for item in distinct.values() if item.scheduled_on]
     return ScheduleCensus(
@@ -270,4 +308,6 @@ def schedule_census(directory: Path) -> ScheduleCensus:
         no_schedule=no_schedule,
         lead_days_median=statistics.median(leads) if leads else None,
         by_year=tuple(sorted(years.items())),
+        moved=moved,
+        repeated=repeated,
     )

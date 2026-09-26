@@ -6526,12 +6526,19 @@ def _wall_console_table(walls: list[object]) -> Table:
     return table
 
 
-def _wall_document(walls: list[object], missing: list[object], span: str) -> str:
+def _wall_document(
+    walls: list[object],
+    missing: list[object],
+    span: str,
+    present: list[tuple[object, str]],
+) -> str:
     """Build the body of `docs/WALL.md` - a generated file, never edited by hand.
 
     Args:
         walls: 測れた設計。
         missing: 材料が無くて測れなかった候補。
+        present: **数えたら材料が在った**候補と、そのまとめ（`wall.split_missing`）。
+            **既定を置かない**——渡し忘れると、その候補がどちらの表にも出ない。
         span: 何を読んだか。
 
     Returns:
@@ -6585,6 +6592,20 @@ def _wall_document(walls: list[object], missing: list[object], span: str) -> str
         "**要る情報比は `線 × 膨張 ÷ √年数` で、設計によらない。** n も SD も"
         "効かない（`docs/PASSING.md` §2）。**そこを比べる。**",
         "",
+    ]
+    if present:
+        lines += [
+            "## 材料は在る。壁はまだ測っていない",
+            "",
+            "**畳み方は壁を測る前に決めてコミットする**（`docs/CANDIDATES.md`）。",
+            "",
+            "| 候補 | 説 | 数えたもの |",
+            "|---|---|---|",
+        ]
+        for item, summary in present:
+            lines.append(f"| {item.candidate} | {item.name} | {summary} |")  # type: ignore[attr-defined]
+        lines.append("")
+    lines += [
         "## 材料が無くて測れなかった候補",
         "",
         "| 候補 | 説 | なぜ測れないか |",
@@ -6684,6 +6705,7 @@ def yield_audit(
         scan,
     )
     from stock_ai.core.logging import quiet_on_console
+    from stock_ai.data.jquants_dividend import extra_dividends
 
     settings = get_settings()
     configure_logging(settings.log_level)
@@ -6704,12 +6726,15 @@ def yield_audit(
     for line in census.warnings():
         console.print(f"[yellow]{line}[/]")
 
+    extras, dividend_symbols = extra_dividends(Path(directory))
     audit = audit_splits(
         values,
         census.crossed,
         materials.raw_price_level,
         materials.factor_changes,
         census.worst,
+        extras,
+        dividend_symbols,
     )
     _print_split_audit(audit)
     if not census.worst:
@@ -6875,12 +6900,14 @@ def _basis_table(buckets: tuple[object, ...]) -> Table:
 
 
 def _print_uncrossed(uncrossed: tuple[object, ...]) -> None:
-    """Sort the implausible rows that crossed no split, by two yardsticks.
+    """Count the implausible rows that crossed no split, column by column.
 
     **列ごとに独立に数える。** そして**「判定できない」を「どちらでもない」に
     混ぜない**——開示前の価格の履歴が届かない行と、開示した月の終値が無い行は、
     どちらの物差しでも測れていない（2026-09-26）。
     """
+    from stock_ai.backtest.wall import EXTRA_WINDOW_DAYS
+
     if not uncrossed:
         return
     before = [row for row in uncrossed if row.split_before_explains]  # type: ignore[attr-defined]
@@ -6888,8 +6915,15 @@ def _print_uncrossed(uncrossed: tuple[object, ...]) -> None:
     short = [row for row in uncrossed if not row.history_reaches]  # type: ignore[attr-defined]
     no_close = [row for row in uncrossed if row.at_disclosure is None]  # type: ignore[attr-defined]
     neither = [row for row in uncrossed if row.neither]  # type: ignore[attr-defined]
+    # **札を「仕分け」にしない。** 列ごとに独立に数えると、足して件数にならない
+    # ——「仕分け」と書くと、足せば件数になると読まれる（2026-09-26、ユーザーの指摘）。
+    columns = (before, fell, short, no_close)
+    counted = Counter(id(row) for column in columns for row in column)
+    twice = sum(1 for times in counted.values() if times >= 2)  # noqa: PLR2004
     console.print(
-        f"[dim]**(b) の後も高すぎる {len(uncrossed):,} 件の仕分け**（列ごとに独立に数える）: "
+        f"[dim]**(b) の後も高すぎる {len(uncrossed):,} 件の、列ごとの数**"
+        f"（1件が2つ以上の列に入る。**足しても {len(uncrossed):,} にならない**"
+        f"——2つ以上の列に数えた件 {twice:,}）: "
         f"開示前1年の分割比で割り戻すと収まる **{len(before):,}**、"
         f"開示した月の株価なら収まっていた **{len(fell):,}**、"
         f"**判定できない**（開示前1年の価格が無い {len(short):,}・開示月の終値が無い "
@@ -6907,7 +6941,17 @@ def _print_uncrossed(uncrossed: tuple[object, ...]) -> None:
             + "・".join(f"{year} {count}" for year, count in sorted(years.items()))
             + "。**別の原因が在る**——決め打ちしない。[/]"
         )
-    table = Table(title="仕分け（群ごとに上位）")
+        paid = sum(1 for row in neither if row.extra_paid)  # type: ignore[attr-defined]
+        unpaid = sum(1 for row in neither if row.extra_paid is False)  # type: ignore[attr-defined]
+        unknown = sum(1 for row in neither if row.extra_paid is None)  # type: ignore[attr-defined]
+        console.print(
+            f"[dim]  そのうち、権利落ちが開示から {EXTRA_WINDOW_DAYS} 日以内の**特別配当か"
+            f"記念配当の額が正の行が在った {paid:,}**・無かった {unpaid:,}・配当の原本に"
+            f"銘柄が居ない {unknown:,}。**在っても原因とは言わない**——形が合うだけで、"
+            "そうなら値は正しく、問いは「一度きりの配当で高利回りの分位に入れて"
+            "よいか」という設計のほうになる。[/]"
+        )
+    table = Table(title="列ごとの上位（群は重なりうる）")
     for column in ("群", "銘柄", "月", "開示日", "利回り", "前の比", "開示月"):
         table.add_column(column, justify="left" if column in ("群", "月") else "right")
     groups = (("前分割", before), ("株価", fell), ("不明", short + no_close), ("他", neither))
@@ -8390,6 +8434,7 @@ def wall_survey(
         margin_change,
         scan,
         signal_overlap,
+        split_missing,
         stale_reasons,
         tail_episodes,
         usable_rebalances,
@@ -8540,7 +8585,10 @@ def wall_survey(
                 sample=len(spread),
                 undersampled=estimate.undersampled,
                 period_years=oos_months / 12.0,
-                notes=(f"{what}を作れず外した銘柄月 {panel.skipped_no_value:,}",),
+                notes=(
+                    f"**IS の組み替え日で**{what}が無かった銘柄月 {panel.skipped_no_value:,}"
+                    "（上場していた銘柄だけ。全期間の数とは突き合わない）",
+                ),
             )
         )
 
@@ -8744,11 +8792,10 @@ def wall_survey(
         Missing(
             17,
             "決算発表日を避ける",
-            "**`/fins/earnings-date` は全プランで「直近のみ」**"
-            "（公式表、`jquants_plan.NO_HISTORY`）。`fins/summary` の "
-            "`DisclosedDate` は**実現した発表日**なので、それで避けるのは先読み。"
-            "**ただし原本を毎日保存していれば、その積み重ねが**"
-            "**「その日に何が予定されていたか」になる**——下の警告が数える",
+            "**`/fins/earnings-date` の原本が無いか、予定として使える行が無い。**"
+            "`fins/summary` の `DisclosedDate` は**実現した発表日**なので、それで"
+            "避けるのは先読み。原本が在れば `wall.MATERIAL_CHECKS` が数えて、"
+            "この表から外す",
             endpoint="/fins/earnings-date",
         ),
     ]
@@ -8756,9 +8803,23 @@ def wall_survey(
     # **2度やった**（14 と 16。どちらもユーザーが指摘）——列の棚卸しが
     # 答えを出しているのに、こちらの文面が古いまま残る。
     # **`read_manifest` は開かないので、費用が無い。**
+    # **数えたら在った候補は、ここで「無い」から外す**（`wall.MATERIAL_CHECKS`）。
+    # 3度、数えた結果が表に戻らなかった——人の手で書き直す手順に頼らない。
+    present, missing = split_missing(Path(archive), missing)
     for line in stale_reasons(Path(archive), missing):
         console.print(f"[yellow]{line}[/]")
 
+    if present:
+        found = Table(title="材料は在る。壁はまだ測っていない")
+        for column in ("候補", "説", "数えたもの"):
+            found.add_column(column, overflow="fold")
+        for item, summary in present:
+            found.add_row(f"{item.candidate}", item.name, summary)
+        console.print(found)
+        console.print(
+            "[dim]**畳み方は壁を測る前に決めてコミットする**（`docs/CANDIDATES.md`）。"
+            "決まったら、壁の下見に足す。[/]"
+        )
     absent = Table(title="材料が無くて測れなかった候補")
     for column in ("候補", "説", "なぜ測れないか"):
         absent.add_column(column, overflow="fold")
@@ -8777,7 +8838,7 @@ def wall_survey(
             f"イベント型の窓は {HOLDING} 営業日に揃えた"
         )
         target = Path(into)
-        target.write_text(_wall_document(walls, missing, span), encoding="utf-8")
+        target.write_text(_wall_document(walls, missing, span, present), encoding="utf-8")
         console.print(f"[green]{target} を書き直した。[/] **生成物である。手で直さない。**")
 
 
