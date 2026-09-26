@@ -521,7 +521,7 @@ def _earnings_schedule_present(directory: Path) -> str | None:
     """候補17: 保存した発表予定日の原本が、予定の履歴として使えるか。"""
     from stock_ai.data.jquants_earnings import schedule_census
 
-    census = schedule_census(directory)
+    census = schedule_census(directory, IS_END)
     return census.usable() if census.ahead else None
 
 

@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import dataclasses
 import datetime as dt
+import math
 from collections.abc import Iterable
 from pathlib import Path
 
@@ -113,6 +114,61 @@ ENDPOINT = "/fins/earnings-date"
 #: `FYE` には年が入っていない（上の表）ので、**間隔で同じ年の期に絞る。**
 REVISION_DAYS = 120
 
+#: IS の本当の始まりを決める、公表から予定日までの日数の分位点。
+#:
+#: **出典は無い。決めの値である**（2026-09-26、壁を測る前に決めた）。原本が
+#: 2014-09-01 から始まるので、それより前に公表された予定は載っていない。
+#: 中央値（52 日）では残り半分を取りこぼすので、95% 点を足して月初に切り上げる。
+LEAD_QUANTILE = 0.95
+
+
+def previous_weekday(day: dt.date) -> dt.date:
+    """``day`` の前の平日。**祝日は見ていない**——数えるだけの道具の近似である。
+
+    壁を測る本番では、価格に在る実際の営業日を使うこと。平日だけで数えると、
+    祝日の前後で「前営業日に公表された予定」を通してしまう。
+    """
+    day -= dt.timedelta(days=1)
+    while day.weekday() >= 5:  # noqa: PLR2004 - 土日
+        day -= dt.timedelta(days=1)
+    return day
+
+
+def known_schedules(rows: Iterable[EarningsDate]) -> list[EarningsDate]:
+    """**窓の始まりの日より前に公表された中で最新の予定**だけを返す（候補17 の事象）。
+
+    予定日 S の窓は、S の前営業日 W の寄付きから始まる。**原本に公表時刻が無い**
+    ので、W に公表された予定は W の寄付きでは見えていないかもしれない——だから
+    **W より前に公表されたもの**だけを使う。
+
+    **「動く前の予定日で数える」と最初に決めて、取り消した**（2026-09-26、
+    ユーザーの指摘）。出し直しが W より前に公表されていれば、その日に知れて
+    いたのは**動いた後の**予定である。#16 の `known_at_ex_date` と同じ規則
+    ——先読みになるのは**その日より後の公表**だけで、公表順で後のものではない。
+
+    同じ期（銘柄・`FQName`・`FYE`、公表日が :data:`REVISION_DAYS` 以内）の行を
+    まとめて判断する。**前営業日は平日で近似している**（:func:`previous_weekday`）。
+    """
+    by_term: dict[tuple[str, str, str], list[EarningsDate]] = {}
+    for row in rows:
+        if row.scheduled_on is None:
+            continue
+        by_term.setdefault((row.symbol, row.quarter, row.fiscal_year_end), []).append(row)
+    found: list[EarningsDate] = []
+    for group in by_term.values():
+        group.sort(key=lambda row: row.published_on)
+        for row in group:
+            window = previous_weekday(row.scheduled_on)  # type: ignore[arg-type]
+            known = [
+                other
+                for other in group
+                if other.published_on < window
+                and abs((other.published_on - row.published_on).days) <= REVISION_DAYS
+            ]
+            if known and known[-1] is row:
+                found.append(row)
+    return found
+
 
 @dataclasses.dataclass(frozen=True)
 class ScheduleCensus:
@@ -168,11 +224,39 @@ class ScheduleCensus:
     repeated: int = 0
     """同じ期の予定が出し直されたが、**予定日は同じ**だった組。"""
 
+    moved_in_time: int = 0
+    """動いた組のうち、出し直しが**元の予定日の窓の始まりより前に**公表されたもの。
+
+    その日に知れていたのは**動いた後の**予定である。
+    """
+
+    moved_late: int = 0
+    """動いた組のうち、出し直しが元の予定日の窓の始まり**以降に**公表されたもの。
+
+    その時点で避けられたのは**動く前の**予定日だけである。
+    """
+
+    lead_high_days: float | None = None
+    """公表から予定日までの日数の :data:`LEAD_QUANTILE` 点（予定日が後の行）。"""
+
+    is_start: dt.date | None = None
+    """**IS の本当の始まり。** 原本の始まり ＋ :attr:`lead_high_days`、月初に切り上げ。"""
+
+    is_end: dt.date | None = None
+    is_days: int = 0
+    """IS（:attr:`is_start` 〜 :attr:`is_end`）の**別々の予定日の数**。**観測の数である**
+    ——1観測は予定日ごとのバスケットなので、件数では数えない（`docs/POSTMORTEMS.md`
+    「独立な観測を、件数で数えない」）。:func:`known_schedules` の規則で数える。
+    """
+
     def __post_init__(self) -> None:
         """**内訳が足して合うこと**（重ならない行で数える）。"""
         parts = self.ahead + self.same_day + self.behind + self.no_schedule
         if parts != self.distinct:
             raise ValueError(f"内訳 {parts} が、重ならない行 {self.distinct} と合わない。")
+        split = self.moved_in_time + self.moved_late
+        if split != self.moved:
+            raise ValueError(f"動いた組の内訳 {split} が {self.moved} と合わない。")
 
     def summary(self) -> str:
         """1行のまとめ。"""
@@ -205,9 +289,15 @@ class ScheduleCensus:
             else f"、公表から予定日まで中央値 {self.lead_days_median:.0f} 日"
         )
         start = "" if self.published is None else f"、`PubDate` {self.published[0]:%Y-%m}〜"
+        sample = (
+            ""
+            if self.is_start is None
+            else f"、IS の予定日 {self.is_days:,}（{self.is_start:%Y-%m}〜{self.is_end:%Y-%m}）"
+        )
         return (
             f"予定日が公表日より後 {self.ahead:,}（{share:.1%}）{lead}、"
-            f"予定日が動いた組 {self.moved:,}（動く前の予定日で避ける）{start}"
+            f"予定日が動いた組 {self.moved:,}（窓より前に出し直し {self.moved_in_time:,}）"
+            f"{start}{sample}"
         )
 
     def warnings(self) -> list[str]:
@@ -232,8 +322,10 @@ class ScheduleCensus:
         if self.distinct:
             found.append(
                 f"**同じ期の予定が {REVISION_DAYS} 日以内に出し直され、予定日が動いた組 "
-                f"{self.moved:,}**（予定日は同じ {self.repeated:,}）。動いた銘柄は、"
-                "**動く前の予定日で**避けることになる。"
+                f"{self.moved:,}**（予定日は同じ {self.repeated:,}）。そのうち出し直しが"
+                f"**元の予定日の窓の始まりより前に公表 {self.moved_in_time:,}**"
+                f"（動いた後の日で数える）・以降に公表 {self.moved_late:,}"
+                "（動く前の日で数える）。**前営業日は平日で近似した（祝日は見ていない）。**"
             )
         years = [year for year, _count in self.by_year]
         if years:
@@ -247,11 +339,12 @@ class ScheduleCensus:
         return found
 
 
-def schedule_census(directory: Path) -> ScheduleCensus:
+def schedule_census(directory: Path, is_end: dt.date) -> ScheduleCensus:
     """保存した `/fins/earnings-date` の原本を数える。**取りには行かない。**
 
     Args:
         directory: 原本の置き場所。
+        is_end: IS の終わり（`wall.IS_END`）。**既定を置かない。**
 
     Returns:
         数えたもの。
@@ -297,7 +390,7 @@ def schedule_census(directory: Path) -> ScheduleCensus:
             same_day += 1
         else:
             behind += 1
-    moved = repeated = 0
+    moved = repeated = moved_in_time = moved_late = 0
     # **`periods`（ファイルの日付）と別の名前にする。** 同じ名前で上書きして、
     # いちばん古いファイルの欄が `KeyError` で落ちた（2026-09-26）。
     by_term: dict[tuple[str, str, str], list[EarningsDate]] = {}
@@ -310,8 +403,36 @@ def schedule_census(directory: Path) -> ScheduleCensus:
                 continue
             if later.scheduled_on != earlier.scheduled_on:
                 moved += 1
+                if earlier.scheduled_on is not None and later.published_on < previous_weekday(
+                    earlier.scheduled_on
+                ):
+                    moved_in_time += 1
+                else:
+                    moved_late += 1
             else:
                 repeated += 1
+    lead_high = (
+        statistics.quantiles(leads, n=100, method="inclusive")[round(LEAD_QUANTILE * 100) - 1]
+        if len(leads) >= 2  # noqa: PLR2004 - 分位点には2つ要る
+        else None
+    )
+    is_start = None
+    is_days = 0
+    if periods and lead_high is not None:
+        began = dt.datetime.strptime(periods[0], "%Y%m%d").date()
+        reach = began + dt.timedelta(days=math.ceil(lead_high))
+        is_start = (
+            reach
+            if reach.day == 1
+            else (reach.replace(day=1) + dt.timedelta(days=32)).replace(day=1)
+        )
+        is_days = len(
+            {
+                row.scheduled_on
+                for row in known_schedules(distinct.values())
+                if row.scheduled_on is not None and is_start <= row.scheduled_on <= is_end
+            }
+        )
     published = [item.published_on for item in distinct.values()]
     scheduled = [item.scheduled_on for item in distinct.values() if item.scheduled_on]
     return ScheduleCensus(
@@ -332,4 +453,10 @@ def schedule_census(directory: Path) -> ScheduleCensus:
         by_year=tuple(sorted(years.items())),
         moved=moved,
         repeated=repeated,
+        moved_in_time=moved_in_time,
+        moved_late=moved_late,
+        lead_high_days=lead_high,
+        is_start=is_start,
+        is_end=is_end if is_start is not None else None,
+        is_days=is_days,
     )

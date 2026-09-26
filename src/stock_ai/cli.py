@@ -7020,12 +7020,13 @@ def earnings_schedule(
 
     **取りには行かない。** 原本を読むだけである。
     """
-    from stock_ai.data.jquants_earnings import schedule_census
+    from stock_ai.backtest.wall import IS_END
+    from stock_ai.data.jquants_earnings import LEAD_QUANTILE, schedule_census
 
     settings = get_settings()
     configure_logging(settings.log_level)
 
-    census = schedule_census(Path(directory))
+    census = schedule_census(Path(directory), IS_END)
     console.print(f"[dim]{census.summary()}[/]")
     if census.by_year:
         console.print(
@@ -7038,6 +7039,14 @@ def earnings_schedule(
             f"[dim]予定日が公表日より後の行で、公表から予定日までの日数の中央値 "
             f"{census.lead_days_median:.0f} 日。同じ日 {census.same_day:,}・予定日が無い "
             f"{census.no_schedule:,}。[/]"
+        )
+    if census.is_start is not None and census.lead_high_days is not None:
+        console.print(
+            f"[dim]公表から予定日までの {LEAD_QUANTILE:.0%} 点 {census.lead_high_days:.0f} 日 "
+            f"→ **IS の本当の始まり {census.is_start}**（原本の始まりに足して月初に切り上げ）。"
+            f"**IS（〜{census.is_end}）の別々の予定日 {census.is_days:,}**——観測の数は"
+            "件数ではなく予定日の数である。窓の始まりより前に公表された中で最新の予定だけ"
+            "を数えた（前営業日は平日で近似）。[/]"
         )
     for line in census.warnings():
         console.print(f"[yellow]{line}[/]")

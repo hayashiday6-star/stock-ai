@@ -3135,7 +3135,7 @@ class TestTheEarningsScheduleIsCounted:
             "20161003": [self._row("99840", "2016-10-03", "2016-11-05")],
         }
 
-        census = schedule_census(self._archive(tmp_path, files))
+        census = schedule_census(self._archive(tmp_path, files), IS_END)
 
         assert census.files == 3
         assert census.rows == 4
@@ -3150,7 +3150,7 @@ class TestTheEarningsScheduleIsCounted:
     def test_no_files_is_said_out_loud(self, tmp_path) -> None:
         from stock_ai.data.jquants_earnings import schedule_census
 
-        census = schedule_census(tmp_path)
+        census = schedule_census(tmp_path, IS_END)
 
         assert census.files == 0
         assert any("1本も無い" in line for line in census.warnings())
@@ -3395,7 +3395,7 @@ class TestAMovedScheduleIsVisible:
             "20141201": [row("72030", "2014-10-25", "2014-10-30")],  # 同じ日のまま
         }
 
-        census = schedule_census(TestTheEarningsScheduleIsCounted._archive(tmp_path, files))
+        census = schedule_census(TestTheEarningsScheduleIsCounted._archive(tmp_path, files), IS_END)
 
         assert census.moved == 1
         assert census.repeated == 1
@@ -3411,6 +3411,130 @@ class TestAMovedScheduleIsVisible:
             "20151001": [row("13060", "2015-10-01", "2015-10-29")],
         }
 
-        census = schedule_census(TestTheEarningsScheduleIsCounted._archive(tmp_path, files))
+        census = schedule_census(TestTheEarningsScheduleIsCounted._archive(tmp_path, files), IS_END)
 
         assert census.moved == 0
+
+
+class TestTheScheduleKnownBeforeTheWindowIsTheEvent:
+    """**窓の始まりより前に公表された中で最新の予定**だけを事象にする（候補17）。
+
+    最初は「動く前の予定日で数える」と決めて、**壁を測る前に取り消した**
+    （2026-09-26、ユーザーの指摘）。#16 の `known_at_ex_date` と同じ規則である
+    ——先読みになるのは**その日より後の公表**だけで、公表順で後のものではない。
+    """
+
+    @staticmethod
+    def _rows(*pairs):
+        from stock_ai.data.jquants_earnings import EarningsDate
+
+        return [
+            EarningsDate(
+                symbol="1306",
+                published_on=dt.date.fromisoformat(published),
+                scheduled_on=dt.date.fromisoformat(scheduled),
+                quarter="2Q",
+                fiscal_year_end="0331",
+                name="x",
+            )
+            for published, scheduled in pairs
+        ]
+
+    def test_a_revision_known_in_time_replaces_the_old_date(self) -> None:
+        from stock_ai.data.jquants_earnings import known_schedules
+
+        rows = self._rows(("2014-10-01", "2014-10-30"), ("2014-10-20", "2014-11-05"))
+
+        found = [row.scheduled_on for row in known_schedules(rows)]
+
+        assert found == [dt.date(2014, 11, 5)], (
+            "**動いた後の日だけ。** 古い日は知れていた予定ではない"
+        )
+
+    def test_a_revision_published_too_late_leaves_the_old_date(self) -> None:
+        """出し直しが元の窓の始まり以降なら、その時点で避けられたのは古い日だけ。"""
+        from stock_ai.data.jquants_earnings import known_schedules
+
+        rows = self._rows(("2014-10-01", "2014-10-30"), ("2014-10-29", "2014-11-05"))
+
+        found = sorted(row.scheduled_on for row in known_schedules(rows))
+
+        assert dt.date(2014, 10, 30) in found
+
+    def test_one_published_on_the_day_before_is_not_known_at_the_open(self) -> None:
+        """**原本に公表時刻が無い。** 前営業日に公表された予定は、寄付きでは見えていない。"""
+        from stock_ai.data.jquants_earnings import known_schedules
+
+        rows = self._rows(("2014-10-29", "2014-10-30"))
+
+        assert not known_schedules(rows)
+
+    def test_the_day_before_skips_the_weekend(self) -> None:
+        """月曜の予定なら、窓の始まりは金曜。金曜に公表されたものは使えない。"""
+        from stock_ai.data.jquants_earnings import known_schedules, previous_weekday
+
+        assert previous_weekday(dt.date(2014, 11, 3)) == dt.date(2014, 10, 31)
+        assert not known_schedules(self._rows(("2014-10-31", "2014-11-03")))
+        assert known_schedules(self._rows(("2014-10-30", "2014-11-03")))
+
+
+class TestTheScheduleCensusSaysWhereTheISReallyStarts:
+    """**原本より前に公表された予定は載っていない。** IS の最初は薄い（ユーザーの指摘）。
+
+    IS の本当の始まりを、原本の始まり ＋ 公表から予定日までの 95% 点で決める。
+    **観測の数は件数ではなく予定日の数**で数える。
+    """
+
+    def test_the_start_and_the_number_of_schedule_days(self, tmp_path) -> None:
+        from stock_ai.data.jquants_earnings import schedule_census
+
+        row = TestTheEarningsScheduleIsCounted._row
+        files = {
+            "20140901": [
+                row("13060", "2014-09-01", "2014-10-31"),  # 60 日
+                row("72030", "2014-09-02", "2014-10-31"),  # 同じ予定日
+                row("99840", "2014-09-03", "2014-11-14"),
+            ],
+            "20141001": [
+                row("13060", "2014-10-01", "2014-12-19"),  # 79 日
+                row("86970", "2016-01-04", "2016-02-05"),
+            ],
+        }
+
+        census = schedule_census(TestTheEarningsScheduleIsCounted._archive(tmp_path, files), IS_END)
+
+        assert census.lead_high_days is not None
+        assert census.is_start is not None and census.is_start.day == 1
+        assert census.is_start > dt.date(2014, 9, 1)
+        # IS の始まりより後の、別々の予定日だけを数える。
+        expected = {
+            day
+            for day in (
+                dt.date(2014, 10, 31),
+                dt.date(2014, 11, 14),
+                dt.date(2014, 12, 19),
+                dt.date(2016, 2, 5),
+            )
+            if day >= census.is_start
+        }
+        assert census.is_days == len(expected)
+
+    def test_a_moved_schedule_is_split_by_when_the_revision_came(self, tmp_path) -> None:
+        from stock_ai.data.jquants_earnings import schedule_census
+
+        row = TestTheEarningsScheduleIsCounted._row
+        files = {
+            "20141001": [
+                row("13060", "2014-10-01", "2014-10-30"),
+                row("72030", "2014-10-01", "2014-10-30"),
+            ],
+            "20141101": [
+                row("13060", "2014-10-20", "2014-11-05"),  # 窓より前に出し直し
+                row("72030", "2014-10-29", "2014-11-06"),  # 窓の始まりの日に出し直し
+            ],
+        }
+
+        census = schedule_census(TestTheEarningsScheduleIsCounted._archive(tmp_path, files), IS_END)
+
+        assert (census.moved, census.moved_in_time, census.moved_late) == (2, 1, 1)
+        assert any("祝日は見ていない" in line for line in census.warnings())
