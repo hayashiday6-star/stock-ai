@@ -89,7 +89,12 @@ class TestTheControlActuallyUsesIt:
 
         from stock_ai import cli
 
-        for command in (cli.rehearsal, cli.rehearsal_events, cli.rehearsal_calendar):
+        for command in (
+            cli.rehearsal,
+            cli.rehearsal_events,
+            cli.rehearsal_calendar,
+            cli.positive_control,
+        ):
             body = inspect.getsource(command)
             assert "quiet_on_console(" in body, command.__name__
             assert '"stock_ai.backtest.power"' in body, command.__name__

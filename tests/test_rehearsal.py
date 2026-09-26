@@ -539,3 +539,260 @@ class TestTheDenominatorIsShownToo:
         assert "benchmark_fraction" in body
         assert "fraction=benchmark_fraction" in body
         assert "fraction=fraction" in inspect.getsource(cli._universe_to_subtract)
+
+
+# --- 陽性対照 -----------------------------------------------------------------
+
+
+def _month(count: int, seed: int = 0):
+    import numpy as np
+
+    rng = np.random.default_rng(seed)
+    return [((float(value),), float(forward)) for value, forward in rng.normal(size=(count, 2))]
+
+
+class TestThePlantedEffectIsTheOneAskedFor:
+    """**大きさの分かった効果を埋める。** 分位の組み方は書き直さない。"""
+
+    def test_zero_strength_is_the_negative_control(self) -> None:
+        """**0 でも足し算の経路は通す。** 特別扱いすると、一致が確かめにならない。"""
+        from stock_ai.backtest.rehearsal import planted_sections
+
+        sections = [_month(50, 1), _month(40, 2)]
+
+        assert planted_sections(sections, 0.0, seed=7) == placebo_sections(sections, seed=7)
+
+    def test_the_signal_is_the_negative_controls(self) -> None:
+        from stock_ai.backtest.rehearsal import planted_sections
+
+        sections = [_month(50, 1)]
+        planted = planted_sections(sections, 0.3, seed=7)
+        placebo = placebo_sections(sections, seed=7)
+
+        assert [signal for signal, _f in planted[0]] == [signal for signal, _f in placebo[0]]
+
+    def test_the_quintile_gap_opens_by_strength_times_the_rank_gap(self) -> None:
+        """**別の切り口で照合する。** 管の分位ではなく、理屈の順位の差 0.8 で。"""
+        from stock_ai.backtest.rehearsal import planted_sections, rank_gap
+
+        sections = [_month(1_000, 3)]
+        planted = planted_sections(sections, 0.05, seed=7)[0]
+        placebo = placebo_sections(sections, seed=7)[0]
+        added = sorted(
+            (signal, after - before)
+            for (signal, after), (_s, before) in zip(planted, placebo, strict=True)
+        )
+        top = [gain for _s, gain in added[-200:]]
+        bottom = [gain for _s, gain in added[:200]]
+
+        gap = sum(top) / 200 - sum(bottom) / 200
+        assert gap == pytest.approx(0.05 * rank_gap(5), rel=0.01)
+
+    def test_a_higher_signal_gets_more(self) -> None:
+        """**向きを取り違えると、効果が逆に埋まる。**"""
+        from stock_ai.backtest.rehearsal import planted_sections
+
+        sections = [_month(30, 4)]
+        planted = planted_sections(sections, 0.1, seed=7)[0]
+        placebo = placebo_sections(sections, seed=7)[0]
+        best = max(range(30), key=lambda i: planted[i][0])
+        worst = min(range(30), key=lambda i: planted[i][0])
+
+        assert planted[best][1] - placebo[best][1] == pytest.approx(0.05)
+        assert planted[worst][1] - placebo[worst][1] == pytest.approx(-0.05)
+
+    def test_a_month_too_small_to_rank_is_kept(self) -> None:
+        from stock_ai.backtest.rehearsal import planted_sections
+
+        assert len(planted_sections([_month(1), _month(5)], 0.1, seed=7)[0]) == 1
+
+    def test_the_rank_gap_is_one_minus_one_over_q(self) -> None:
+        from stock_ai.backtest.rehearsal import rank_gap
+
+        assert rank_gap(5) == pytest.approx(0.8)
+        assert rank_gap(10) == pytest.approx(0.9)
+        with pytest.raises(ValueError):
+            rank_gap(1)
+
+    def test_the_monthly_effect_inverts_the_information_ratio(self) -> None:
+        """``情報比 = μ√r / σ`` を ``μ`` について解いたもの。"""
+        import math
+
+        from stock_ai.backtest.rehearsal import monthly_effect
+
+        effect = monthly_effect(1.2, 0.04)
+
+        assert effect * math.sqrt(12) / 0.04 == pytest.approx(1.2)
+
+
+class TestThePredictionAndTheBand:
+    def test_an_effect_on_the_line_is_a_coin_flip(self) -> None:
+        """**要る情報比ちょうどは五分五分である。** 合格が保証される大きさではない。"""
+        from stock_ai.backtest.rehearsal import predicted_share
+
+        assert predicted_share(3.39 * 0.01, [0.01] * 5, 3.39, 1.12) == pytest.approx(0.5)
+
+    def test_the_null_spread_is_used(self) -> None:
+        """**帰無の SD を 1.0 と置くと、線に掛けた膨張を予測だけ落とす。**"""
+        from stock_ai.backtest.rehearsal import predicted_share
+
+        wide = predicted_share(0.0, [0.01], 3.39, 1.12)
+        narrow = predicted_share(0.0, [0.01], 3.39, 1.0)
+
+        assert wide > narrow
+
+    def test_a_zero_error_is_not_counted(self) -> None:
+        from stock_ai.backtest.rehearsal import predicted_share
+
+        assert predicted_share(0.03, [0.0, 0.01], 3.0, 1.0) == pytest.approx(0.5)
+
+    def test_the_band_at_a_coin_flip(self) -> None:
+        """200回・五分五分なら ±3標準誤差は約11ポイント。"""
+        from stock_ai.backtest.rehearsal import share_band
+
+        assert share_band(0.5, 200) == pytest.approx(0.106, abs=0.001)
+
+    def test_the_band_never_shrinks_below_one_run(self) -> None:
+        """**予測がほぼ 0 のとき、1回の合格だけで「壊れている」と言わない。**"""
+        from stock_ai.backtest.rehearsal import share_band
+
+        assert share_band(0.0, 200) == pytest.approx(1 / 200)
+
+    def test_both_conditions_can_fire(self) -> None:
+        """**両向きに置く。** 落ちる条件を作って、落ちることを見る。"""
+        from stock_ai.backtest.rehearsal import PositiveRow
+
+        def row(transmission, measured):
+            return PositiveRow(
+                multiple=1.0,
+                information_ratio=1.1,
+                effect=0.01,
+                transmission=transmission,
+                gate_passes=True,
+                predicted=0.5,
+                measured=measured,
+                runs=200,
+            )
+
+        assert not row(1.0, 0.52).problems()
+        assert any("伝達率" in line for line in row(0.85, 0.52).problems())
+        assert any("予測" in line for line in row(1.0, 0.30).problems())
+
+    def test_the_multiples_were_decided_before_measuring(self) -> None:
+        """**書いたあとには動かさない**（2026-09-26、ユーザーが承認）。"""
+        from stock_ai.backtest.rehearsal import (
+            PASS_BAND_SE,
+            POSITIVE_MULTIPLES,
+            TRANSMISSION_BAND,
+        )
+
+        assert POSITIVE_MULTIPLES == (0.0, 0.5, 1.0, 1.25, 1.5)
+        assert TRANSMISSION_BAND == (0.9, 1.1)
+        assert PASS_BAND_SE == 3.0
+
+
+class TestThePositiveControlRunsEndToEnd:
+    """**組み立てを1本通す。** 中身の入った DB で、本物のコマンドを叩く。"""
+
+    ARGS = (
+        "positive-control",
+        "--is-start",
+        "2022-01-03",
+        "--is-end",
+        "2023-06-30",
+        "--oos-end",
+        "2024-09-30",
+        "--window",
+        "60",
+        "--min-symbols",
+        "10",
+        "--runs",
+        "40",
+        "--lags",
+        "3",
+    )
+
+    def _run(self, monkeypatch):
+        import sys
+        from pathlib import Path
+
+        from typer.testing import CliRunner
+
+        from stock_ai import cli
+
+        sys.path.insert(0, str(Path(__file__).parent))
+        from test_factor_panel import _database
+
+        database = _database(40)
+        monkeypatch.setenv("COLUMNS", "200")
+        monkeypatch.setattr(cli, "Database", lambda *a, **k: database)
+        return CliRunner().invoke(cli.app, list(self.ARGS))
+
+    def test_the_table_comes_out_and_nothing_is_broken(self, monkeypatch) -> None:
+        result = self._run(monkeypatch)
+
+        assert result.exit_code == 0, result.output
+        assert "陽性対照" in result.output
+        assert "要る情報比" in result.output
+        for multiple in ("0.5", "1.25", "1.5"):
+            assert f"│ {multiple.rjust(4)} │" in result.output
+        assert "どれも当たらなかった" in result.output
+        assert "陰性対照と同じ t にならない" not in result.output
+        rows = {
+            line.split("│")[1].strip(): line
+            for line in result.output.splitlines()
+            if line.startswith("│")
+        }
+        assert "止める" in rows["0"], "**0 を埋めた設計を §0 が通したら壊れている。**"
+        assert "通す" in rows["1.5"]
+
+    def test_the_prediction_uses_the_measured_null_spread(self) -> None:
+        """**部品が正しくても、呼ぶ側が 1.0 を渡せば意味が無い。**"""
+        import inspect
+
+        from stock_ai import cli
+
+        body = inspect.getsource(cli.positive_control)
+
+        assert 'predicted_share(effect, tally["errors"], target, MEASURED_INFLATION)' in body
+
+    def test_an_effect_planted_backwards_is_caught(self, monkeypatch) -> None:
+        """**向きを逆に埋めたら、赤くなること。**"""
+        from stock_ai.backtest import rehearsal
+
+        original = rehearsal.planted_sections
+        monkeypatch.setattr(
+            rehearsal,
+            "planted_sections",
+            lambda sections, strength, seed: original(sections, -strength, seed=seed),
+        )
+
+        result = self._run(monkeypatch)
+
+        assert result.exit_code == 0, result.output
+        assert "伝達率" in result.output
+        assert "どれも当たらなかった" not in result.output
+
+    def test_a_path_that_reshuffles_the_pairs_is_caught(self, monkeypatch) -> None:
+        """**0 を埋めた行は、陰性対照と同じ t のはず。** 銘柄とリターンの組を崩す経路なら違う。
+
+        月を落とす経路は、管の側が月数の食い違いで例外にする——ここで拾うのは、
+        **例外にならずに黙って値が変わる**ほうである。
+        """
+        from stock_ai.backtest import rehearsal
+
+        original = rehearsal.planted_sections
+
+        def rotated(sections, strength, seed):
+            built = original(sections, strength, seed=seed)
+            return [
+                [(signal, month[index - 1][1]) for index, (signal, _f) in enumerate(month)]
+                for month in built
+            ]
+
+        monkeypatch.setattr(rehearsal, "planted_sections", rotated)
+
+        result = self._run(monkeypatch)
+
+        assert result.exit_code == 0, result.output
+        assert "陰性対照と同じ t にならない" in result.output

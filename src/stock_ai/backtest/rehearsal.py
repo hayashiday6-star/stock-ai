@@ -268,3 +268,176 @@ def calibrate(scores: Sequence[float], target: float) -> Calibration:
         result.plain_share * 100,
     )
     return result
+
+
+# --- 陽性対照 -----------------------------------------------------------------
+#
+# **陰性対照は「何も無いときに合格を出さないか」しか見ていない。** 逆の問い
+# ——**在るときに合格を出せるか**——は一度も試していなかった（2026-09-26、
+# LLM Council の議長が指摘し、リポジトリで確かめた）。
+#
+# 合格 0 が「効果が無いから」なのか「検出器が厳しすぎるから」なのかは、
+# 陰性対照だけでは区別できない。**大きさの分かった効果を埋め、同じ管に通して、
+# 合格する割合が予測どおりかを見る。**
+
+#: 埋める効果。**要る情報比の何倍か**（2026-09-26、測る前に決めた。ユーザーが承認）。
+#:
+#: **出典は無い。決めの値である。** 1.0 は、合格が五分五分になる点である
+#: ——要る情報比は「期待される `t` がちょうど線に乗る」大きさだからである
+#: （`power.required_information_ratio`）。
+POSITIVE_MULTIPLES = (0.0, 0.5, 1.0, 1.25, 1.5)
+
+#: 伝達率（管から戻ってきた効果 ÷ 埋めたつもりの効果）がこの外なら、**効果が
+#: 途中で削られているか、膨らんでいる。** 出典は無い。決めの値である。
+TRANSMISSION_BAND = (0.9, 1.1)
+
+#: 合格の割合が、予測からこの標準誤差の倍数より離れたら、**線か標準誤差の
+#: 見積もりがずれている。** 出典は無い。決めの値である。
+PASS_BAND_SE = 3.0
+
+#: m ごとに回す回数（既定）。200回・五分五分なら ±3標準誤差が ±約11ポイント。
+POSITIVE_RUNS = 200
+
+
+def rank_gap(quantiles: int) -> float:
+    """順位（0〜1）が一様なとき、**上の分位と下の分位の平均順位の差**。
+
+    上の分位の平均は ``1 − 1/(2q)``、下は ``1/(2q)`` なので差は ``1 − 1/q``。
+    五分位なら 0.8。**分位の組み方を書き直さない**——ここは理屈の値で、管が
+    実際に組んだ分位と突き合わせるための、別の切り口である。
+
+    Raises:
+        ValueError: ``quantiles`` が 2 未満。
+    """
+    if quantiles < 2:  # noqa: PLR2004 - 上と下の2つが要る
+        raise ValueError(f"quantiles must be at least 2; got {quantiles}.")
+    return 1.0 - 1.0 / quantiles
+
+
+def monthly_effect(information_ratio: float, sd: float, periods_per_year: int = 12) -> float:
+    """年率の情報比を、1期あたりの効果に直す。``情報比 × SD ÷ √(年あたりの期数)``。
+
+    `power.required_information_ratio` の「情報比 ``= μ√r / σ``」を ``μ`` に
+    ついて解いたもの。
+    """
+    return information_ratio * sd / math.sqrt(periods_per_year)
+
+
+def planted_sections(
+    sections: Sequence[Sequence[tuple[tuple[float, ...], float]]],
+    strength: float,
+    seed: int = SEED,
+) -> list[list[tuple[float, float]]]:
+    """陰性対照と同じ乱数の signal に、**大きさの分かった効果を埋める。**
+
+    翌月リターンに ``strength × (その月の signal の順位 − 0.5)`` を足す。順位は
+    0〜1。**signal と種は陰性対照と同じ**なので、``strength=0`` なら陰性対照と
+    同じ数字が出るはずである——**0 でも足し算の経路は通す**（特別扱いすると、
+    その一致が確かめにならない）。
+
+    Args:
+        sections: 盤面の月ごとの断面。
+        strength: 順位 0 と 1 のあいだで開くリターンの差。
+        seed: 乱数の種。
+
+    Returns:
+        ``(乱数 signal, 効果を足した翌月リターン)`` の断面。
+    """
+    built = placebo_sections(sections, seed=seed)
+    planted: list[list[tuple[float, float]]] = []
+    for month in built:
+        count = len(month)
+        if count < 2:  # noqa: PLR2004 - 順位を振るには2つ要る
+            planted.append(list(month))
+            continue
+        order = sorted(range(count), key=lambda position: month[position][0])
+        rank = [0.0] * count
+        for place, position in enumerate(order):
+            rank[position] = place / (count - 1)
+        planted.append(
+            [
+                (signal, forward + strength * (rank[position] - 0.5))
+                for position, (signal, forward) in enumerate(month)
+            ]
+        )
+    return planted
+
+
+def predicted_share(
+    effect: float, errors: Sequence[float], line: float, null_spread: float
+) -> float:
+    """``t ≥ line`` になる割合の予測。回ごとの ``Φ((効果 ÷ 標準誤差 − 線) ÷ 帰無の SD)`` の平均。
+
+    **帰無の下の `t` の SD（陰性対照で測った値）を使う。** 1.0 と置くと、線に
+    掛けた膨張と同じものを予測だけ落とすことになる。標準誤差が 0 以下の回は
+    数えない。
+
+    Raises:
+        ValueError: ``null_spread`` が 0 以下。
+    """
+    if null_spread <= 0:
+        raise ValueError(f"null_spread must be positive; got {null_spread}.")
+    shares = [
+        _normal_cdf((effect / error - line) / null_spread)
+        for error in errors
+        if error > 0 and math.isfinite(error)
+    ]
+    return fmean(shares) if shares else float("nan")
+
+
+def share_band(predicted: float, runs: int) -> float:
+    """実測の割合が、予測からどれだけ離れたら「ずれている」と言うか。
+
+    ``PASS_BAND_SE × √(p(1−p)/回数)``。**ただし 1回ぶん（1/回数）より狭くしない**
+    ——予測がほぼ 0 のとき、1回の合格だけで「壊れている」と言わないため。
+    **この下限も決めの値である。**
+    """
+    if runs < 1:
+        raise ValueError(f"runs must be at least 1; got {runs}.")
+    spread = PASS_BAND_SE * math.sqrt(max(predicted * (1.0 - predicted), 0.0) / runs)
+    return max(spread, 1.0 / runs)
+
+
+@dataclasses.dataclass(frozen=True)
+class PositiveRow:
+    """1つの大きさで、埋めた効果が判定まで届いたか。"""
+
+    multiple: float
+    """要る情報比の何倍を埋めたか。"""
+
+    information_ratio: float
+    """埋めた年率の情報比（IS の SD で換算）。"""
+
+    effect: float
+    """埋めたつもりの、1期あたりの効果。"""
+
+    transmission: float | None
+    """OOS で戻ってきた効果 ÷ 埋めたつもりの効果（回の平均）。0 を埋めた行は ``None``。"""
+
+    gate_passes: bool
+    """IS で §0 を通るか（IS で戻ってきた効果を、見込みの下限として当てた）。"""
+
+    predicted: float
+    measured: float
+    runs: int
+
+    @property
+    def band(self) -> float:
+        """:func:`share_band`。"""
+        return share_band(self.predicted, self.runs)
+
+    def problems(self) -> list[str]:
+        """**壊れていると言う条件**（測る前に決めた）に当たったもの。"""
+        found: list[str] = []
+        low, high = TRANSMISSION_BAND
+        if self.transmission is not None and not low <= self.transmission <= high:
+            found.append(
+                f"伝達率 {self.transmission:.3f} が {low}〜{high} の外"
+                "——**効果が途中で削られているか、膨らんでいる。**"
+            )
+        if not math.isfinite(self.predicted) or abs(self.measured - self.predicted) > self.band:
+            found.append(
+                f"合格 {self.measured:.1%} が予測 {self.predicted:.1%} から "
+                f"±{self.band:.1%} の外——**線か標準誤差の見積もりがずれている。**"
+            )
+        return found

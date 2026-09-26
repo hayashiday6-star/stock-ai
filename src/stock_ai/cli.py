@@ -11796,6 +11796,60 @@ def _universe_calendar(month_ends: list[int], dates: list[dt.date], cut: dt.date
     return turn_series(values, dates, month_ends, source="universe", end=cut)
 
 
+#: 対照の分位数。**陽性対照が効果の大きさを換算するのにも使う**（`rehearsal.rank_gap`）。
+CONTROL_QUANTILES = 5
+
+
+def _control_panels(
+    database: Database,
+    begin: dt.date,
+    cut: dt.date,
+    finish: dt.date,
+    window: int,
+    min_symbols: int,
+) -> tuple[object, object]:
+    """Build the IS and OOS panels both controls run on.
+
+    **陰性対照と陽性対照で1つだけ。** 別々に組むと、2つの対照が別の管を
+    確かめることになる。
+
+    Raises:
+        ValueError: 盤面を作れなかった。
+    """
+    from stock_ai.backtest.factor_panel import build_panel
+
+    def panel_for(start: dt.date, end: dt.date):
+        return build_panel(
+            database,
+            factors=("低ボラ",),
+            start=start,
+            end=end,
+            window=window,
+            min_symbols=min_symbols,
+        )
+
+    return panel_for(begin, cut), panel_for(cut + dt.timedelta(days=1), finish)
+
+
+def _control_alpha(
+    sections: list[list[tuple[float, float]]], benchmark: list[float]
+) -> list[float] | None:
+    """Turn a control's cross-sections into the alpha series a real factor is judged on.
+
+    分位ロングショート − β×ベンチ。**本物の因子と同じ経路である**——別の管を
+    作ったら、確かめたことにならない。月が2つ未満なら ``None``。
+    """
+    from stock_ai.backtest.cross_section import beta_to_benchmark, build_estimators
+
+    built = build_estimators(
+        sections, benchmark, quantiles=CONTROL_QUANTILES, higher_is_better=True
+    )
+    if built.months < 2:  # noqa: PLR2004 - β に2点要る
+        return None
+    beta = beta_to_benchmark(built.quantile_spread, built.benchmark)
+    return built.alpha(built.quantile_spread, beta)
+
+
 @app.command(name="rehearsal")
 def rehearsal(  # noqa: PLR0913 - 本物と同じ条件をすべて受け取る
     is_start: str = typer.Option("2009-01-01", "--is-start", help="First day of the IS window."),
@@ -11824,8 +11878,6 @@ def rehearsal(  # noqa: PLR0913 - 本物と同じ条件をすべて受け取る
     1.0 のはずで、**1.15 なら補正は足りていない。** 1回では分からない——
     `t ≥ 3.02` を越える確率は 0.125% で、400回の期待値が 0.5 回だからである。
     """
-    from stock_ai.backtest.cross_section import beta_to_benchmark, build_estimators
-    from stock_ai.backtest.factor_panel import build_panel
     from stock_ai.backtest.multiplicity import (
         HYPOTHESIS_BUDGET,
         MEASURED_INFLATION,
@@ -11856,34 +11908,17 @@ def rehearsal(  # noqa: PLR0913 - 本物と同じ条件をすべて受け取る
     database = Database()
     database.create_all()
 
-    def panel_for(start: dt.date, end: dt.date):
-        return build_panel(
-            database,
-            factors=("低ボラ",),
-            start=start,
-            end=end,
-            window=window,
-            min_symbols=min_symbols,
-        )
-
     try:
-        inside = panel_for(begin, cut)
-        outside = panel_for(cut + dt.timedelta(days=1), finish)
+        inside, outside = _control_panels(database, begin, cut, finish, window, min_symbols)
     except ValueError as error:
         console.print(f"[red]盤面を作れなかった: {error}[/]")
         raise typer.Exit(code=1) from error
 
     def score(panel, draw: int) -> float:
         """Score one placebo draw through the same path a real factor takes."""
-        built = build_estimators(
-            placebo_sections(panel.sections, seed=draw),
-            panel.benchmark,
-            higher_is_better=True,
-        )
-        if built.months < 2:
+        values = _control_alpha(placebo_sections(panel.sections, seed=draw), panel.benchmark)
+        if values is None:
             return float("nan")
-        beta = beta_to_benchmark(built.quantile_spread, built.benchmark)
-        values = built.alpha(built.quantile_spread, beta)
         estimate = estimate_power(values, lags=lags)
         stderr = estimate.standard_error(len(values))
         return fmean(values) / stderr if stderr > 0 else float("nan")
@@ -11976,6 +12011,224 @@ def rehearsal(  # noqa: PLR0913 - 本物と同じ条件をすべて受け取る
     if found.calibrated and not found.warnings():
         console.print(
             "[green]`t` は素直に効いている。[/] **判定の線は、見かけどおりの意味を持つ。**"
+        )
+
+
+@app.command(name="positive-control")
+def positive_control(  # noqa: PLR0913, PLR0915 - 陰性対照と同じ条件をすべて受け取る
+    is_start: str = typer.Option("2009-01-01", "--is-start", help="First day of the IS window."),
+    is_end: str = typer.Option("2017-12-31", "--is-end", help="Last day of the IS window."),
+    oos_end: str = typer.Option("2026-08-31", "--oos-end", help="Last day of the OOS window."),
+    seed: int = typer.Option(REHEARSAL_SEED, "--seed", help="Fixed, so the run reproduces."),
+    runs: int = typer.Option(200, "--runs", help="Draws per effect size."),
+    window: int = typer.Option(DEFAULT_WINDOW, "--window", help="Volatility window in sessions."),
+    min_symbols: int = typer.Option(MIN_SYMBOLS_PER_MONTH, "--min-symbols", help="Per month."),
+    lags: int = typer.Option(LOWVOL_LAGS, "--lags", help="Newey-West lags, in months."),
+) -> None:
+    """Plant an effect of known size and see whether the pipe passes it - the positive control.
+
+    **陰性対照の逆の問いである。** 陰性対照は「何も無いときに合格を出さないか」
+    しか見ていない。**在るときに合格を出せるか**は一度も試していなかった
+    （2026-09-26）。合格 0 が「効果が無いから」か「検出器が厳しすぎるから」かは、
+    これが無いと区別できない。
+
+    **説ではない。予算に数えない。** 陰性対照と同じ乱数の signal・同じ種・
+    同じ盤面に、要る情報比の何倍かの効果を埋め、**同じ管**（分位ロングショート
+    − β×ベンチ → Newey-West の `t` → 線）に通す。
+
+    - 効果の大きさは **IS で決める**（IS の α の SD・膨張と、OOS の年数から）
+    - OOS で種を変えて回し、**線を越えた割合**を予測と比べる
+    - 予測は ``Φ((効果 ÷ 標準誤差 − 線) ÷ 帰無の t の SD)``。帰無の SD は陰性対照で
+      測った値（`multiplicity.MEASURED_INFLATION`）
+
+    **壊れていると言う条件は、測る前に決めてある**（`rehearsal.TRANSMISSION_BAND`・
+    `PASS_BAND_SE`、および 0 を埋めた行が陰性対照と同じ数字になること）。
+    """
+    from stock_ai.backtest.multiplicity import (
+        HYPOTHESIS_BUDGET,
+        MEASURED_INFLATION,
+        calibrated_t,
+    )
+    from stock_ai.backtest.power import estimate_power, gate, required_information_ratio
+    from stock_ai.backtest.rehearsal import (
+        POSITIVE_MULTIPLES,
+        PositiveRow,
+        monthly_effect,
+        oos_seed,
+        placebo_sections,
+        planted_sections,
+        predicted_share,
+        rank_gap,
+    )
+    from stock_ai.core.logging import quiet_on_console
+
+    settings = get_settings()
+    configure_logging(settings.log_level)
+
+    begin, cut, finish = _parse_date(is_start), _parse_date(is_end), _parse_date(oos_end)
+    if begin is None or cut is None or finish is None or not begin < cut < finish:
+        raise typer.BadParameter("--is-start < --is-end < --oos-end のこと。")
+    if runs < 1:
+        raise typer.BadParameter("--runs must be at least 1.")
+
+    target = calibrated_t(HYPOTHESIS_BUDGET)
+    console.print("[bold yellow]これは説ではない。陽性対照である。[/]")
+
+    database = Database()
+    database.create_all()
+    try:
+        inside, outside = _control_panels(database, begin, cut, finish, window, min_symbols)
+    except ValueError as error:
+        console.print(f"[red]盤面を作れなかった: {error}[/]")
+        raise typer.Exit(code=1) from error
+
+    def measured(sections, benchmark) -> tuple[float, float] | None:
+        """Mean and standard error of one alpha series, through the real path."""
+        values = _control_alpha(sections, benchmark)
+        if values is None:
+            return None
+        stderr = estimate_power(values, lags=lags).standard_error(len(values))
+        return fmean(values), stderr
+
+    # --- IS で大きさを決める ---------------------------------------------------
+    with quiet_on_console("stock_ai.backtest.power"):
+        base = _control_alpha(placebo_sections(inside.sections, seed=seed), inside.benchmark)
+    if base is None:
+        console.print("[red]IS の系列が作れなかった（月が足りない）。[/]")
+        raise typer.Exit(code=1)
+    inside_estimate = estimate_power(base, lags=lags)
+    periods = len(outside.months)
+    years = periods / 12
+    required = required_information_ratio(target, inside_estimate.inflation, years)
+    detectable = inside_estimate.detectable(periods, target)
+    gap = rank_gap(CONTROL_QUANTILES)
+    console.print(
+        f"[dim]IS {begin} 〜 {cut}（{len(inside.months)}ヶ月）、OOS 〜 {finish}"
+        f"（{periods}ヶ月 = {years:.1f}年）。**要る情報比 {required:.2f}**"
+        f"（線 {target:.2f} × IS の膨張 {inside_estimate.inflation:.2f} ÷ √{years:.1f}）。"
+        f"m ごとに {runs} 回。[/]"
+    )
+
+    plans = []
+    for multiple in POSITIVE_MULTIPLES:
+        effect = monthly_effect(multiple * required, inside_estimate.daily_sd)
+        strength = effect / gap
+        with quiet_on_console("stock_ai.backtest.power"):
+            planted_inside = measured(
+                planted_sections(inside.sections, strength, seed=seed), inside.benchmark
+            )
+        recovered = 0.0 if planted_inside is None else planted_inside[0] - fmean(base)
+        passes = gate(detectable, recovered, recovered).passed
+        plans.append((multiple, effect, strength, passes))
+
+    # --- OOS で回す ------------------------------------------------------------
+    tallies = {multiple: {"t": [], "errors": [], "gains": []} for multiple in POSITIVE_MULTIPLES}
+    mismatch: tuple[float, float] | None = None
+    with (
+        quiet_on_console("stock_ai.backtest.power"),
+        Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            BarColumn(),
+            TaskProgressColumn(),
+            TimeRemainingColumn(),
+            console=console,
+        ) as progress,
+    ):
+        task = progress.add_task("効果を埋めて回す", total=runs)
+        for index in range(runs):
+            progress.update(task, completed=index + 1)
+            draw = oos_seed(seed) + index
+            null_mean: float | None = None
+            for multiple, _effect, strength, _passes in plans:
+                found = measured(
+                    planted_sections(outside.sections, strength, seed=draw), outside.benchmark
+                )
+                if found is None or not found[1] > 0:
+                    continue
+                mean, stderr = found
+                if multiple == 0.0:
+                    null_mean = mean
+                elif null_mean is not None:
+                    tallies[multiple]["gains"].append(mean - null_mean)
+                tallies[multiple]["t"].append(mean / stderr)
+                tallies[multiple]["errors"].append(stderr)
+            # **0 を埋めた行は、陰性対照と同じ数字のはず**（1回目で確かめる）。
+            if index == 0 and tallies[0.0]["t"]:
+                control = measured(placebo_sections(outside.sections, seed=draw), outside.benchmark)
+                if control is not None and control[1] > 0:
+                    mismatch = (tallies[0.0]["t"][0], control[0] / control[1])
+
+    rows = []
+    for multiple, effect, _strength, passes in plans:
+        tally = tallies[multiple]
+        scores = tally["t"]
+        rows.append(
+            PositiveRow(
+                multiple=multiple,
+                information_ratio=multiple * required,
+                effect=effect,
+                transmission=(
+                    fmean(tally["gains"]) / effect if tally["gains"] and effect > 0 else None
+                ),
+                gate_passes=passes,
+                predicted=predicted_share(effect, tally["errors"], target, MEASURED_INFLATION),
+                measured=(
+                    sum(1 for value in scores if value >= target) / len(scores)
+                    if scores
+                    else float("nan")
+                ),
+                runs=len(scores),
+            )
+        )
+
+    table = Table(title=f"陽性対照（**説ではない**）: 効果を埋めて `t ≥ {target:.2f}` を数える")
+    for column in ("m", "埋めた情報比", "伝達率", "§0", "予測", "実測", ""):
+        table.add_column(column, justify="right", overflow="fold")
+    for row in rows:
+        table.add_row(
+            f"{row.multiple:g}",
+            f"{row.information_ratio:.2f}",
+            "—" if row.transmission is None else f"{row.transmission:.3f}",
+            "通す" if row.gate_passes else "止める",
+            f"{row.predicted:.1%}",
+            f"[bold]{row.measured:.1%}[/]",
+            "[red]ずれ[/]" if row.problems() else "[green]OK[/]",
+        )
+    console.print(table)
+    console.print(
+        "[dim]m＝要る情報比の何倍を埋めたか。伝達率＝OOS で戻ってきた効果 ÷ 埋めた効果"
+        f"（順位の差 {gap:g} で換算）。予測は帰無の t の SD {MEASURED_INFLATION:.2f}"
+        "（陰性対照）を使う。**m=1 は五分五分になる点である。**[/]"
+    )
+
+    null_errors = tallies[0.0]["errors"]
+    if null_errors:
+        expected_error = inside_estimate.standard_error(periods)
+        console.print(
+            f"[dim]OOS の標準誤差は、IS から見込んだ値の "
+            f"**{fmean(null_errors) / expected_error:.2f} 倍**だった。予測はこれを織り込んで"
+            "いる——m=1 がちょうど 50% にならないのは、このためである。[/]"
+        )
+
+    broken = False
+    if mismatch is None or not math.isclose(mismatch[0], mismatch[1], abs_tol=1e-9):
+        broken = True
+        seen = (
+            "比べられなかった" if mismatch is None else f"{mismatch[0]:+.4f} 対 {mismatch[1]:+.4f}"
+        )
+        console.print(
+            f"[red]**0 を埋めた行が、陰性対照と同じ t にならない**（{seen}）。"
+            "**埋める経路が、断面を並べ替えている。**[/]"
+        )
+    for row in rows:
+        for line in row.problems():
+            broken = True
+            console.print(f"[red]m={row.multiple:g}: {line}[/]")
+    if not broken:
+        console.print(
+            "[green]**壊れていると言う条件には、どれも当たらなかった。**[/] "
+            "埋めた効果は判定まで届き、合格の割合は予測どおりだった。"
         )
 
 
