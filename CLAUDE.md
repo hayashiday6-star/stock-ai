@@ -110,8 +110,8 @@ docs/PASSING.md`（`research\合格の条件.bat`）が作り直す。**手で�
 **順番は約束ではない。** 上から §0 を当て、通らなければ次に行く。
 **§0 で閉じても判定は減らない**ので、そこを速く回すほうが得である。
 
-**壁の下見（`research\壁の下見.bat`、`docs/WALL.md` は生成物）は効果を1つも
-計算しない。** `Wall` に平均の欄を作らない（`tests/test_wall.py`）。
+**壁の下見（`research\壁の下見.bat`。`docs/WALL.md` は手元で作る生成物で、
+追跡しない——`.gitignore` に理由）は効果を1つも計算しない。** `Wall` に平均の欄を作らない（`tests/test_wall.py`）。
 
 **比べられるのは `線 × 膨張 ÷ √年数`（要る年率の情報比）だけ**で、
 `power.required_information_ratio` に1つだけ置いてある。検出できる差は行どうしで

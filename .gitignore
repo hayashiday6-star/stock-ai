@@ -74,6 +74,15 @@ data/backup-destination.txt
 # 5年で約1,220枚、20年で約5,000枚になる。git に置く必要が無い。
 data/universe_daily/
 
+# --- 手元の原本からしか作れない生成物（2026-09-26） ---
+# **`docs/PASSING.md` とは扱いが違う。理由がある。** PASSING は `SHAPES` の定数から
+# 作るので、どこでも作り直せて、コミットの差分に意味がある。WALL は**ユーザーの
+# PC に在る原本が無いと作れない**——追跡すると、こちらのコミットは常に古い版か
+# 空になり、本家がそれをコミットした日に `0-最新にする.bat` の早送りが
+# 「untracked working tree files would be overwritten」で止まる。
+docs/WALL.md
+data/valuation_monthly.csv.gz
+
 # --- Diagnostic reports (regenerated on demand; may name an account) ---
 verify-output.txt
 verify-ai-output.txt
