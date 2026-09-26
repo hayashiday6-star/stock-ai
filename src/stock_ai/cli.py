@@ -6637,19 +6637,17 @@ def yield_audit(
     **効くのは入る分位を間違えること**で、その大きさは**月ごとの、分位に
     占める割合**で決まる。ここはそれを出す。
 
-    **3つのどれかである。**
+    **出すもの**（原因は決め打ちしない）:
 
-    | 見え方 | どれか |
-    |---|---|
-    | **予想 ÷ 実績 が 10 や 100** | **訂正前の誤記**（2131 の `5600 → 56` と同じ形） |
-    | どちらも大きい | **株価か単位**である |
-    | 実績が空 | **無配への訂正前**か、予想しか出していない |
+    - 20% を超えた行と、**開示から組み替えまでの分割比**（その銘柄の調整の
+      倍率から引く。推測した係数ではない）
+    - **分割をまたいだ予想をどう扱うか**を決める材料（`wall.audit_splits`）
+      ——(b) で外れる割合、(a) で低すぎる側に出る形、**併合**（逆向き）も
+    - **分割をまたいでいない行の仕分け**——開示前1年の分割比と、開示した
+      月の株価で割った利回り
 
-    **「中身を見ること」と書いて見る道具が無い、を3度やった。** ここは
-    **銘柄・月・開示日・予想・実績・終値・利回り・比**を出す。
-
-    **原因を推測で決めない。** 比が 100 に揃っていても「訂正はいつも 100倍」
-    にはならない——**割合で見る。**
+    **予想と実績を並べる切り分けは効かなかった**（2026-09-25）。実績の年間は
+    期末の開示にしか載らないので、同じ行にはまず来ない。
 
     **取りには行かない。** 原本を読むだけである。
     """
@@ -6658,6 +6656,9 @@ def yield_audit(
     from stock_ai.backtest.quantile_series import QUANTILES
     from stock_ai.backtest.wall import (
         IMPLAUSIBLE_YIELD,
+        SPLIT_LOOKBACK_DAYS,
+        SPLIT_STEP,
+        audit_splits,
         dividend_yields,
         scan,
         split_ratio_between,
@@ -6680,6 +6681,11 @@ def yield_audit(
     console.print(f"[dim]{census.summary()}[/]")
     for line in census.warnings():
         console.print(f"[yellow]{line}[/]")
+
+    # **高すぎる行が無くても、分割をまたいだ予想は在りうる。** 併合をまたいだ
+    # ものは低すぎる側に出るので、20% の線では1件も捕まらない。
+    audit = audit_splits(values, materials.raw_price_level, materials.factor_changes, census.worst)
+    _print_split_audit(audit)
     if not census.worst:
         console.print("[green]**20% を超えた銘柄月は1つも無い。**[/]")
         return
@@ -6703,16 +6709,17 @@ def yield_audit(
         )
         measured.append((item, ratio))
 
+    # **行を割らない。** 日付と額が2行に割れると、376 件で 750 行を超える。
     table = Table(title=f"利回りが {IMPLAUSIBLE_YIELD:.0%} を超えた銘柄月（大きい順）")
     for column in ("銘柄", "月", "開示日", "予想", "終値", "利回り", "分割比", "割り戻すと"):
-        table.add_column(column, overflow="fold", justify="right" if column != "月" else "left")
+        table.add_column(column, no_wrap=True, justify="right" if column != "月" else "left")
     for item, ratio in measured[:limit]:
         table.add_row(
             item.symbol,  # type: ignore[attr-defined]
             item.month,  # type: ignore[attr-defined]
             f"{item.disclosed_on}",  # type: ignore[attr-defined]
-            f"{item.forecast:,.2f}",  # type: ignore[attr-defined]
-            f"{item.close:,.1f}",  # type: ignore[attr-defined]
+            _amount(item.forecast),  # type: ignore[attr-defined]
+            _amount(item.close),  # type: ignore[attr-defined]
             f"{item.yielded:.1%}",  # type: ignore[attr-defined]
             f"{ratio:,.1f}",
             f"{item.yielded / ratio:.1%}",  # type: ignore[attr-defined]
@@ -6725,10 +6732,7 @@ def yield_audit(
         )
 
     # **割合で見る。** 上位 20 件だけ見て筋を立てない。
-    #
-    # 「分割の桁」の 1.5 は**表示の区切りで、決めた線ではない。** 調整の
-    # 倍率が配当でわずかに動く原本でも、分割はそれより桁が大きい。
-    crossed = [(item, ratio) for item, ratio in measured if ratio >= 1.5]  # noqa: PLR2004
+    crossed = [(item, ratio) for item, ratio in measured if ratio >= SPLIT_STEP]
     explained = [
         item
         for item, ratio in crossed
@@ -6770,18 +6774,128 @@ def yield_audit(
             "割合はこれより大きく出うる。[/]"
         )
 
+    _print_uncrossed(audit.uncrossed, SPLIT_LOOKBACK_DAYS)
+
     # **用意した切り分けが効かなかったことも出す。** 実績の年間（`DivAnn`）は
     # 期末の開示にしか載らないので、予想と同じ行にはまず来ない。
     without = sum(1 for item, _ratio in measured if item.actual is None)  # type: ignore[attr-defined]
     console.print(
         f"[dim]実績（`DivAnn`）が同じ開示に在ったのは {len(measured) - without:,} 件。"
-        "**予想と実績を同じ行で比べる切り分けは、ほとんど効かない**——実績の年間は"
-        "期末の開示にしか載らないからである。**分割比のほうで見る。**[/]"
+        "**予想と実績を同じ行で比べる切り分けは、ほとんど効かない**。[/]"
+    )
+
+
+def _amount(value: float) -> str:
+    """Write an amount briefly.
+
+    **整数なら小数を付けない**（表の行が2行に割れないように）。
+    """
+    return f"{value:,.0f}" if float(value).is_integer() else f"{value:,.2f}"
+
+
+def _print_split_audit(audit: object) -> None:
+    """Print what the split-crossing decision rests on.
+
+    分割をまたいだ予想の扱いを決める材料（`wall.audit_splits`）。
+    """
+    splits = audit.splits  # type: ignore[attr-defined]
+    merges = audit.consolidations  # type: ignore[attr-defined]
+    observations = audit.observations  # type: ignore[attr-defined]
+    crossing = audit.crossing  # type: ignore[attr-defined]
+    share = crossing / observations if observations else 0.0
+    console.print(
+        f"[dim]**開示から組み替えまでに分割か併合をまたいだ銘柄月 {crossing:,}**"
+        f"（利回りを作れた {observations:,} の {share:.2%}）。"
+        f"分割 {splits.crossing:,}・併合 {merges.crossing:,}。[/]"
+    )
+    if audit.worst_month is not None:  # type: ignore[attr-defined]
+        console.print(
+            f"[dim]  **(b) またいだら持ち越さない**: いちばん外れる月は "
+            f"{audit.worst_month}（{audit.worst_month_crossing:,} / "  # type: ignore[attr-defined]
+            f"{audit.worst_month_observations:,}、**{audit.worst_share:.1%}**）。"  # type: ignore[attr-defined]
+            "その銘柄は次の開示まで並べる対象から外れる。[/]"
+        )
+    # **旗が立ったときと立たないときに言えることを、両方書く。**
+    console.print(
+        "[dim]  **(a) 分割比で割り戻す**: 1件ずつ、その月の利回りの中央値に近いのが"
+        "割り戻す前か後かを数えた（**目安である**。1:2 ならどちらの基準でも"
+        "もっともらしく見える）。[/]"
+    )
+    for name, crossed in (("分割", splits), ("併合", merges)):
+        if not crossed.crossing:
+            continue
+        console.print(
+            f"[dim]    {name} {crossed.crossing:,}: 割り戻した後が近い "
+            f"{crossed.closer_rescaled:,}・**割り戻す前が近い "
+            f"{crossed.closer_as_carried:,}**・変わらない {crossed.unaffected:,}。[/]"
+        )
+    if splits.closer_as_carried or merges.closer_as_carried:
+        console.print(
+            "[yellow]  **割り戻す前が近い行は、予想が既に分割後の基準で書かれていた"
+            "形である。** (a) はそれも割るので、**低すぎる側（または併合なら"
+            "高すぎる側）に出る**——20% の線では捕まらない。[/]"
+        )
+
+
+def _print_uncrossed(uncrossed: tuple[object, ...], lookback_days: int) -> None:
+    """Sort the implausible rows that crossed no split, by two yardsticks.
+
+    分割をまたいでいない高すぎる行を、2つの物差しで仕分けて出す。
+
+    **列ごとに独立に数える。** 両方に当たる行も、どちらにも当たらない行も
+    在りうる。**原因は決め打ちしない**——並べるまでである。
+    """
+    if not uncrossed:
+        return
+    before = [row for row in uncrossed if row.split_before_explains]  # type: ignore[attr-defined]
+    fell = [row for row in uncrossed if row.price_fell]  # type: ignore[attr-defined]
+    neither = [
+        row
+        for row in uncrossed
+        if not row.split_before_explains and not row.price_fell  # type: ignore[attr-defined]
+    ]
+    unknown = sum(1 for row in uncrossed if row.at_disclosure is None)  # type: ignore[attr-defined]
+    console.print(
+        f"[dim]**分割をまたいでいない {len(uncrossed):,} 件の仕分け**"
+        f"（列ごとに独立に数える）: "
+        f"開示前 {lookback_days} 日の分割比で割り戻すと収まる **{len(before):,}**、"
+        f"開示した月の株価なら収まっていた **{len(fell):,}**、"
+        f"**どちらでもない {len(neither):,}**（開示した月の終値が無い {unknown:,}）。[/]"
     )
     console.print(
-        "[dim]**どれか1つに決めない。** 分割で説明が付く割合と、付かない行"
-        "（株価の急落・訂正前の誤記など）を分けて見る。[/]"
+        "[dim]  前者は**分割の後に、分割前の基準で書かれた予想**の形、後者は"
+        "**予想が直される前に株価が下げた**形である（後者は当時本当に見えていた"
+        "数字で、読み違いではない）。**どちらでもない行は、別の原因が在る。**[/]"
     )
+    table = Table(title="分割をまたいでいない行（群ごとに上位）")
+    for column in ("群", "銘柄", "月", "開示日", "利回り", "開示前の分割比", "開示月の利回り"):
+        table.add_column(
+            column, no_wrap=True, justify="left" if column in ("群", "月") else "right"
+        )
+    for label, rows in (
+        ("開示前に分割", before),
+        ("株価が下げた", fell),
+        ("どちらでもない", neither),
+    ):
+        for row in rows[:MAX_UNCROSSED_PER_GROUP]:
+            item = row.item  # type: ignore[attr-defined]
+            then = row.at_disclosure  # type: ignore[attr-defined]
+            table.add_row(
+                label,
+                item.symbol,
+                item.month,
+                f"{item.disclosed_on}",
+                f"{item.yielded:.1%}",
+                f"{row.split_before:,.1f}",  # type: ignore[attr-defined]
+                "—" if then is None else f"{then:.1%}",
+            )
+    console.print(table)
+
+
+#: 仕分けの表に群ごとに出す行数。**件数の多い群が少ない群を押し出さない**
+#: ように、上限は群ごとに置く（`docs/POSTMORTEMS.md`「標本は、見たいものを
+#: 見るために在る」）。
+MAX_UNCROSSED_PER_GROUP = 5
 
 
 @app.command(name="column-census")

@@ -2394,7 +2394,8 @@ class TestTheImplausibleYieldsComeBack:
         return {("1306", pd.Period("2017-02", freq="M")): (dt.date(2017, 2, 28), 1000.0)}
 
     def test_the_row_carries_both_the_forecast_and_the_actual(self, tmp_path) -> None:
-        """**予想 ÷ 実績 が 10 や 100 なら、訂正前の誤記である。**"""
+        """予想と実績を両方持って返る（**切り分けにはほとんど効かなかった**。実データでは
+        同じ開示に実績がまず無い）。"""
         from stock_ai.backtest.wall import dividend_yields
 
         rows = [self._row(forecast="5600", actual="56")]
@@ -2410,7 +2411,7 @@ class TestTheImplausibleYieldsComeBack:
         assert item.close == pytest.approx(1000.0)
 
     def test_a_missing_actual_says_so(self, tmp_path) -> None:
-        """**実績が空なら、無配への訂正前か、予想しか出していない。**"""
+        """**実績が空なら、空と言う。** 実データではほぼ全部がこれである。"""
         from stock_ai.backtest.wall import dividend_yields
 
         rows = [self._row(forecast="5600")]
@@ -2604,3 +2605,210 @@ class TestTheScanMeasuresThatUnadjustedIsUnadjusted:
         assert materials.raw_price_level
         assert materials.raw_differs == 0
         assert any("調整後である" in line for line in materials.warnings())
+
+
+def _implausible(symbol, month, disclosed_on, forecast, close):
+    from stock_ai.backtest.wall import ImplausibleYield
+
+    return ImplausibleYield(
+        symbol=symbol,
+        month=month,
+        disclosed_on=disclosed_on,
+        forecast=forecast,
+        actual=None,
+        close=close,
+        yielded=forecast / close,
+    )
+
+
+class TestTheSplitAuditMeasuresBothSides:
+    """**高い側だけ見ていると、半分しか見えない**（候補14、2026-09-26）。
+
+    20% の線は、分割前の基準のまま持ち越した予想しか捕まえない。**既に分割後の
+    基準で書かれた予想**を割り戻すと2回割ることになり、**低すぎる側に出る。**
+    **併合は逆向きで**、同じ線では1件も捕まらない。
+    """
+
+    SPLIT = ((dt.date(2013, 1, 4), 1 / 400), (dt.date(2013, 10, 1), 1.0))
+    MERGE = ((dt.date(2017, 1, 4), 10.0), (dt.date(2017, 10, 2), 1.0))
+    MONTH = pd.Period("2013-10", freq="M")
+    REBALANCE = dt.date(2013, 10, 31)
+
+    def _board(self, forecast: float, changes=SPLIT):
+        """1銘柄だけ分割をまたぎ、残り4銘柄は利回り 2% でまたがない。"""
+        values = {("A", self.MONTH): (dt.date(2013, 2, 6), forecast / 1_000.0)}
+        prices = {("A", self.MONTH): (self.REBALANCE, 1_000.0)}
+        for name in ("B", "C", "D", "E"):
+            values[(name, self.MONTH)] = (dt.date(2013, 9, 1), 0.02)
+            prices[(name, self.MONTH)] = (self.REBALANCE, 1_000.0)
+        return values, prices, {"A": changes}
+
+    def test_a_pre_split_forecast_is_closer_once_rescaled(self) -> None:
+        from stock_ai.backtest.wall import audit_splits
+
+        values, prices, changes = self._board(forecast=8_000.0)  # 800% のまま
+
+        audit = audit_splits(values, prices, changes, ())
+
+        assert audit.splits.crossing == 1
+        assert audit.splits.closer_rescaled == 1
+        assert audit.splits.closer_as_carried == 0
+
+    def test_a_post_split_forecast_would_be_divided_twice(self) -> None:
+        """**20% の線では捕まらない形。** (a) はこれも割る。"""
+        from stock_ai.backtest.wall import audit_splits
+
+        values, prices, changes = self._board(forecast=20.0)  # 既に分割後の基準で 2%
+
+        audit = audit_splits(values, prices, changes, ())
+
+        assert audit.splits.closer_as_carried == 1
+        assert audit.splits.closer_rescaled == 0
+
+    def test_a_consolidation_is_counted_on_its_own(self) -> None:
+        """**併合は逆向き**（比が 1 より小さい）。分割に混ぜない。"""
+        from stock_ai.backtest.wall import audit_splits
+
+        month = pd.Period("2017-10", freq="M")
+        values = {("A", month): (dt.date(2017, 2, 1), 0.002)}
+        prices = {("A", month): (dt.date(2017, 10, 31), 1_000.0)}
+
+        audit = audit_splits(values, prices, {"A": self.MERGE}, ())
+
+        assert audit.consolidations.crossing == 1
+        assert audit.splits.crossing == 0
+
+    def test_the_cost_of_not_carrying_is_the_worst_month_share(self) -> None:
+        """**(b) の代償は、その月の断面から何割が外れるか**で見る。"""
+        from stock_ai.backtest.wall import audit_splits
+
+        values, prices, changes = self._board(forecast=8_000.0)
+
+        audit = audit_splits(values, prices, changes, ())
+
+        assert audit.crossing == 1
+        assert audit.worst_month == "2013-10"
+        assert audit.worst_share == pytest.approx(1 / 5)
+
+    def test_nothing_crossed_is_nothing_crossed(self) -> None:
+        """**両向きに置く。** 全部をまたいだと数える形でも緑にならないように。"""
+        from stock_ai.backtest.wall import audit_splits
+
+        values, prices, _changes = self._board(forecast=8_000.0)
+
+        audit = audit_splits(values, prices, {}, ())
+
+        assert audit.crossing == 0
+        assert audit.worst_month is None
+
+    def test_the_parts_must_add_up(self) -> None:
+        from stock_ai.backtest.wall import Crossing
+
+        with pytest.raises(ValueError, match="合わない"):
+            Crossing(crossing=3, closer_as_carried=1, closer_rescaled=1, unaffected=0)
+
+
+class TestTheUncrossedRowsAreSortedNotExplained:
+    """**分割をまたいでいない高すぎる行を、2つの物差しで仕分ける。** 原因は決めない。"""
+
+    def _audit(self, items, prices, changes):
+        from stock_ai.backtest.wall import audit_splits
+
+        return audit_splits({}, prices, changes, items)
+
+    def test_a_split_before_the_disclosure_is_found(self) -> None:
+        """**分割の後に、分割前の基準で書かれた予想**の形（8410 で見えた形）。"""
+        item = _implausible("B", "2012-05", dt.date(2012, 2, 3), 2_603.6, 175.0)
+        prices = {
+            ("B", pd.Period("2012-05", freq="M")): (dt.date(2012, 5, 31), 175.0),
+            ("B", pd.Period("2012-02", freq="M")): (dt.date(2012, 2, 29), 170.0),
+        }
+        changes = {"B": ((dt.date(2011, 6, 1), 1 / 1_000), (dt.date(2011, 12, 1), 1.0))}
+
+        (row,) = self._audit([item], prices, changes).uncrossed
+
+        assert row.split_before == pytest.approx(1_000.0)
+        assert row.split_before_explains
+        assert not row.price_fell
+
+    def test_a_split_too_small_to_explain_it_does_not_explain_it(self) -> None:
+        """**分割が在っただけでは説明にならない。** 割り戻して収まるかで見る。"""
+        item = _implausible("B", "2012-05", dt.date(2012, 2, 3), 2_603.6, 175.0)
+        prices = {("B", pd.Period("2012-05", freq="M")): (dt.date(2012, 5, 31), 175.0)}
+        changes = {"B": ((dt.date(2011, 6, 1), 1 / 2), (dt.date(2011, 12, 1), 1.0))}
+
+        (row,) = self._audit([item], prices, changes).uncrossed
+
+        assert row.split_before == pytest.approx(2.0)
+        assert not row.split_before_explains
+        assert row.at_disclosure is None
+
+    def test_a_price_that_fell_after_the_disclosure_is_found(self) -> None:
+        """**予想が直される前に株価が下げた。** 当時本当に見えていた数字である。"""
+        item = _implausible("C", "2009-02", dt.date(2009, 1, 10), 300.0, 7.0)
+        prices = {
+            ("C", pd.Period("2009-02", freq="M")): (dt.date(2009, 2, 27), 7.0),
+            ("C", pd.Period("2009-01", freq="M")): (dt.date(2009, 1, 30), 3_000.0),
+        }
+
+        (row,) = self._audit([item], prices, {}).uncrossed
+
+        assert row.price_fell
+        assert not row.split_before_explains
+
+    def test_neither_is_left_as_neither(self) -> None:
+        """**どちらでもない行は、別の原因が在る。** 無理に当てはめない。"""
+        item = _implausible("D", "2009-02", dt.date(2009, 1, 10), 300.0, 7.0)
+        prices = {
+            ("D", pd.Period("2009-02", freq="M")): (dt.date(2009, 2, 27), 7.0),
+            ("D", pd.Period("2009-01", freq="M")): (dt.date(2009, 1, 30), 7.0),
+        }
+
+        (row,) = self._audit([item], prices, {}).uncrossed
+
+        assert not row.price_fell
+        assert not row.split_before_explains
+
+    def test_a_row_that_crossed_a_split_is_not_here(self) -> None:
+        item = _implausible("E", "2013-10", dt.date(2013, 2, 6), 7_000.0, 1_000.0)
+        prices = {("E", pd.Period("2013-10", freq="M")): (dt.date(2013, 10, 31), 1_000.0)}
+        changes = {"E": TestTheSplitAuditMeasuresBothSides.SPLIT}
+
+        assert not self._audit([item], prices, changes).uncrossed
+
+
+class TestTheYieldAuditRunsEndToEnd:
+    """**組み立てを1本通す。** 中身の入った DB と原本で、本物のコマンドを叩く。
+
+    1:400 の分割の前に開示した予想（分割前の基準）を、分割の後まで持ち越す。
+    """
+
+    def test_the_command_prints_the_split_audit(self, tmp_path, monkeypatch) -> None:
+        from typer.testing import CliRunner
+
+        from stock_ai import cli
+        from stock_ai.backtest.wall import DIVIDEND_COLUMN
+
+        split_at = len(_INDEX) // 2
+        database = Database("sqlite:///:memory:")
+        database.create_all()
+        with database.session() as session:
+            PriceRepository(session).upsert_prices(
+                "1605",
+                TestTheScanMeasuresThatUnadjustedIsUnadjusted._split_prices(split_at),
+                market="JP",
+            )
+        monkeypatch.setattr(cli, "Database", lambda: database)
+        disclosed = _INDEX[split_at - 40].date()
+        row = {"DiscDate": f"{disclosed}", "Code": "16050", DIVIDEND_COLUMN: "7000"}
+        archive = TestTheImplausibleYieldsComeBack._archive(tmp_path, [row])
+
+        result = CliRunner().invoke(cli.app, ["yield-audit", "--dir", str(archive)])
+
+        assert result.exit_code == 0, result.output
+        assert "分割か併合をまたいだ銘柄月" in result.output
+        assert "(b) またいだら持ち越さない" in result.output
+        assert "割り戻した後が近い" in result.output
+        # **整数の額に小数を付けない。** 付けると行が2行に割れていた。
+        assert "7,000.00" not in result.output
+        assert "7,000" in result.output

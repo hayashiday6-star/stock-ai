@@ -12,21 +12,20 @@ echo   stock-ai : dividend yields that came out absurd
 echo ==================================================
 echo.
 echo Some months produce a dividend yield far higher
-echo than any Japanese listed company pays. Those rows
-echo are NOT dropped, so they sit inside the spread
-echo that sets the wall. An outlier moves a standard
-echo deviation, so a small count is not a reason to
-echo leave it alone.
+echo than any Japanese listed company pays. Candidate
+echo 14 only ranks stocks into quintiles, so the value
+echo itself never enters the spread - what it does is
+echo put a stock in the wrong quintile. The share of
+echo the month's quintile decides how much that bites.
 echo.
-echo There are three ways it can happen: a figure that
-echo was later corrected, a price or unit that is
-echo wrong, or a forecast with no matching actual. The
-echo forecast and the actual are printed side by side,
-echo so the first of those separates out on sight.
+echo Printed: the split ratio from disclosure to month,
+echo how many stock-months crossed a split or a reverse
+echo split (what each way of handling them would cost),
+echo and the rows that crossed none, sorted by two
+echo yardsticks: a split just before the disclosure,
+echo and the price at the disclosure month.
 echo.
-echo No cause is assumed. A ratio landing on a round
-echo number in some rows does not make it the rule -
-echo the share is what decides.
+echo No cause is assumed. The share is what decides.
 echo.
 echo NOTHING IS FETCHED - this only reads what is
 echo already saved.

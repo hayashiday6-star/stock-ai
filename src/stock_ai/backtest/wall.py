@@ -1434,9 +1434,10 @@ IMPLAUSIBLE_YIELD = 0.20
 
 #: 実績の年間配当。**利回りには使わない。** 予想と混ぜないため。
 #:
-#: **監査でだけ並べる。** 予想が実績と桁違いなら、**訂正前の誤記**である
-#: ——2131 の `DivRate` が `5600.0 → 56.0` と訂正されていたのと同じ形を、
-#: 配当予想でも見る（2026-09-20）。
+#: 監査で並べるために持って返る。**ただし切り分けにはほとんど効かない**
+#: ——実績の年間は期末の開示にしか載らないので、予想と同じ行にはまず来ない
+#: （2026-09-25、利回り 20% 超の 376 件で 0 件）。**分割比のほうで見る**
+#: （:func:`split_ratio_between`、:func:`audit_splits`）。
 DIVIDEND_ACTUAL_COLUMN = "DivAnn"
 
 #: 監査で持って返る、ありえない利回りの上限。**貼られる前提で作る。**
@@ -1448,10 +1449,11 @@ class ImplausibleYield:
     """利回りが :data:`IMPLAUSIBLE_YIELD` を超えた1件。**中身を持って返る。**
 
     **件数だけ返すと、どちらの読み違いか追えない。** 「中身を見ること」と
-    書いて見る道具が無い、を3度やった（`CLAUDE.md`）。
+    書いて見る道具が無い、を3度やった（`docs/POSTMORTEMS.md`）。
 
-    **`DivAnn`（実績）も並べる。** 予想が実績と桁違いなら**訂正前の誤記**、
-    どちらも大きいなら**株価か単位**である——**1回で分けられる。**
+    **`DivAnn`（実績）も持って返るが、切り分けには効かない。** 「予想と実績を
+    並べれば1回で分けられる」と書いたが、**実データでは同じ開示に実績が
+    まず無い**（:data:`DIVIDEND_ACTUAL_COLUMN`）。**分割比で見る。**
     """
 
     symbol: str
@@ -1470,7 +1472,7 @@ class ImplausibleYield:
 
     @property
     def ratio(self) -> float | None:
-        """予想 ÷ 実績。**訂正前の誤記なら、ここが 10 や 100 になる。**"""
+        """予想 ÷ 実績。実績が同じ開示に無ければ ``None``（実データではほぼ全部）。"""
         if self.actual is None or self.actual <= 0:
             return None
         return self.forecast / self.actual
@@ -1778,6 +1780,220 @@ def dividend_yields(
         worst=tuple(
             sorted(worst, key=lambda item: item.yielded, reverse=True)[:MAX_IMPLAUSIBLE_KEPT]
         ),
+    )
+
+
+#: 「分割をまたいだ」と数える倍率。**表示の区切りで、決めた線ではない。**
+#:
+#: 調整の倍率は配当でわずかに動く原本でも、分割はそれより桁が大きい。
+#: **併合は逆向き**（1:10 の併合なら 0.1）なので、``1 ÷ この値`` 以下も数える。
+SPLIT_STEP = 1.5
+
+#: 開示の**前**にさかのぼって分割を探す日数（候補14 の監査）。
+#:
+#: **出典は無い。決めの値である。** 分割の後に**分割前の基準で**書かれた予想
+#: を探すためのもので、会社予想は会計年度ごとなので1年とした。
+SPLIT_LOOKBACK_DAYS = 365
+
+
+def _crossed(ratio: float) -> bool:
+    """分割か併合を1つでもまたいだか。"""
+    return ratio >= SPLIT_STEP or ratio <= 1.0 / SPLIT_STEP
+
+
+@dataclasses.dataclass(frozen=True)
+class Uncrossed:
+    """利回りが高すぎるのに、開示から組み替えまでに**分割をまたいでいない**1件。
+
+    **原因は決め打ちしない。** 2つの物差しを並べて返す——どちらにも当たら
+    なければ、**分割でも株価でもない別の原因**が在る。
+    """
+
+    item: ImplausibleYield
+    split_before: float
+    """開示の前 :data:`SPLIT_LOOKBACK_DAYS` 日の分割比。1.0 なら分割は無い。"""
+
+    at_disclosure: float | None
+    """**開示した月**の調整前の終値で割った利回り。終値が無ければ ``None``。"""
+
+    @property
+    def split_before_explains(self) -> bool:
+        """開示前の分割比で割り戻すと、ありえる高さに収まる。
+
+        **分割の後に、分割前の基準で書かれた予想**の形である。
+        """
+        return (
+            self.split_before >= SPLIT_STEP
+            and self.item.yielded / self.split_before <= IMPLAUSIBLE_YIELD
+        )
+
+    @property
+    def price_fell(self) -> bool:
+        """開示した月の株価なら、ありえる高さだった。
+
+        **予想が直される前に株価が下げた**形である。その時点で本当に見えて
+        いた数字なので、**読み違いではない。**
+        """
+        return self.at_disclosure is not None and self.at_disclosure <= IMPLAUSIBLE_YIELD
+
+
+@dataclasses.dataclass(frozen=True)
+class Crossing:
+    """開示から組み替えまでに、分割（または併合）をまたいだ銘柄月の数。
+
+    **高い側だけ見ていると、半分しか見えない。** 20% を超えたものは分割前の
+    基準のまま持ち越した形だが、**既に分割後の基準で書かれた予想**を割り
+    戻すと、**2回割ることになって低すぎる側に出る**——20% の線では捕まらない。
+
+    だから1件ずつ、**その月の利回りの中央値に近いのは、割り戻す前か後か**を
+    数える。**目安であって判定ではない。** 1:2 の分割なら、どちらの基準でも
+    もっともらしく見える。
+    """
+
+    crossing: int
+    closer_as_carried: int
+    """割り戻す**前**のほうが中央値に近い。割り戻すと、**2回割る**形である。"""
+
+    closer_rescaled: int
+    """割り戻した**後**のほうが中央値に近い。分割前の基準のまま持ち越した形。"""
+
+    unaffected: int
+    """予想が 0 か、その月の中央値が作れなかった。**割り戻しても変わらない。**"""
+
+    def __post_init__(self) -> None:
+        """**内訳が、足して合うこと。**"""
+        parts = self.closer_as_carried + self.closer_rescaled + self.unaffected
+        if parts != self.crossing:
+            raise ValueError(f"内訳 {parts} が、またいだ数 {self.crossing} と合わない。")
+
+
+@dataclasses.dataclass(frozen=True)
+class SplitAudit:
+    """分割をまたいだ予想を、**どう扱うかを決める前に**測ったもの（候補14）。
+
+    | 案 | 何を見れば決まるか |
+    |---|---|
+    | (a) 分割比で割り戻す | **低い側に出る形**の数（``closer_as_carried``） |
+    | (b) またいだら持ち越さない | **その月の断面から何割が外れるか**（:attr:`worst_share`） |
+    | (c) そのまま | 20% 超の行が、その月の上位分位に占める割合（`yield-audit` の表） |
+
+    **この数では決めない。** 決めるのは、この数を見た人である。
+    """
+
+    observations: int
+    splits: Crossing
+    consolidations: Crossing
+    worst_month: str | None
+    worst_month_crossing: int
+    worst_month_observations: int
+    uncrossed: tuple[Uncrossed, ...]
+
+    @property
+    def crossing(self) -> int:
+        """分割と併合を合わせた、またいだ銘柄月。**(b) で外れる数である。**"""
+        return self.splits.crossing + self.consolidations.crossing
+
+    @property
+    def worst_share(self) -> float:
+        """(b) で外れる割合が、いちばん大きかった月の割合。"""
+        if not self.worst_month_observations:
+            return 0.0
+        return self.worst_month_crossing / self.worst_month_observations
+
+
+def audit_splits(
+    values: dict[tuple[str, pd.Period], tuple[dt.date, float]],
+    prices: dict[tuple[str, pd.Period], tuple[dt.date, float]],
+    factor_changes: dict[str, tuple[tuple[dt.date, float], ...]],
+    worst: Iterable[ImplausibleYield],
+) -> SplitAudit:
+    """分割をまたいだ予想の扱いを決める前に、**3つを測る**（候補14）。
+
+    1. **(b) の代償。** 20% を超えたものに限らず、分割か併合をまたいだ
+       銘柄月の総数と、それが月ごとの断面に占める割合のいちばん大きい値
+    2. **(a) の危険。** またいだ銘柄月を割り戻したとき、**低すぎる側に出る
+       形**（:class:`Crossing`）
+    3. **またいでいない高すぎる行の仕分け。** 開示前の分割比と、開示した月の
+       株価で割った利回り（:class:`Uncrossed`）
+
+    Args:
+        values: :func:`dividend_yields` の返り値。``(銘柄, 月) -> (開示日, 利回り)``。
+        prices: 同じ関数に渡した調整前の月末終値。``(銘柄, 月) -> (日, 終値)``。
+        factor_changes: :attr:`Materials.factor_changes`。
+        worst: :attr:`YieldCensus.worst`。
+
+    Returns:
+        測ったもの。
+    """
+    import statistics
+
+    by_month: dict[str, list[float]] = {}
+    for (_symbol, month), (_when, found) in values.items():
+        by_month.setdefault(str(month), []).append(found)
+    medians = {month: statistics.median(found) for month, found in by_month.items() if found}
+
+    tallies = {"split": [0, 0, 0, 0], "consolidation": [0, 0, 0, 0]}
+    crossing_by_month: dict[str, int] = {}
+    for (symbol, month), (disclosed_on, found) in values.items():
+        priced = prices.get((symbol, month))
+        if priced is None:
+            continue
+        ratio = split_ratio_between(factor_changes.get(symbol, ()), disclosed_on, priced[0])
+        if not _crossed(ratio):
+            continue
+        tally = tallies["split" if ratio > 1.0 else "consolidation"]
+        tally[0] += 1
+        crossing_by_month[str(month)] = crossing_by_month.get(str(month), 0) + 1
+        middle = medians.get(str(month), 0.0)
+        if found <= 0 or middle <= 0:
+            tally[3] += 1
+            continue
+        as_carried = abs(math.log(found / middle))
+        rescaled = abs(math.log(found / ratio / middle))
+        tally[1 if as_carried <= rescaled else 2] += 1
+
+    worst_month = None
+    worst_crossing = worst_observations = 0
+    if crossing_by_month:
+        worst_month = max(
+            crossing_by_month, key=lambda month: crossing_by_month[month] / len(by_month[month])
+        )
+        worst_crossing = crossing_by_month[worst_month]
+        worst_observations = len(by_month[worst_month])
+
+    uncrossed: list[Uncrossed] = []
+    for item in worst:
+        changes = factor_changes.get(item.symbol, ())
+        rebalance = prices.get((item.symbol, pd.Period(item.month, freq="M")))
+        if rebalance is not None and _crossed(
+            split_ratio_between(changes, item.disclosed_on, rebalance[0])
+        ):
+            continue
+        before = split_ratio_between(
+            changes,
+            item.disclosed_on - dt.timedelta(days=SPLIT_LOOKBACK_DAYS),
+            item.disclosed_on,
+        )
+        then = prices.get((item.symbol, pd.Period(item.disclosed_on, freq="M")))
+        at_disclosure = item.forecast / then[1] if then is not None and then[1] > 0 else None
+        uncrossed.append(Uncrossed(item=item, split_before=before, at_disclosure=at_disclosure))
+
+    def crossing_of(tally: list[int]) -> Crossing:
+        return Crossing(
+            crossing=tally[0],
+            closer_as_carried=tally[1],
+            closer_rescaled=tally[2],
+            unaffected=tally[3],
+        )
+
+    return SplitAudit(
+        observations=len(values),
+        splits=crossing_of(tallies["split"]),
+        consolidations=crossing_of(tallies["consolidation"]),
+        worst_month=worst_month,
+        worst_month_crossing=worst_crossing,
+        worst_month_observations=worst_observations,
+        uncrossed=tuple(uncrossed),
     )
 
 
