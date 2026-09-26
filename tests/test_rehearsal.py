@@ -13,6 +13,8 @@
 
 from __future__ import annotations
 
+import dataclasses
+
 import pytest
 
 from stock_ai.backtest.rehearsal import (
@@ -745,6 +747,30 @@ class TestThePositiveControlRunsEndToEnd:
         }
         assert "止める" in rows["0"], "**0 を埋めた設計を §0 が通したら壊れている。**"
         assert "通す" in rows["1.5"]
+
+    def test_the_label_shows_the_inflation_the_formula_used(self, monkeypatch) -> None:
+        """**札と計算が別のことを言わない。** 測った膨張が 1.0 を下回っても、式は 1.0 を使う。
+
+        実データで「IS の膨張 0.74」と出たのに、要る情報比 1.16 は 1.0 で計算
+        されていた（2026-09-26）。
+        """
+        import re
+
+        from stock_ai.backtest import power
+
+        original = power.estimate_power
+
+        def shrunk(values, lags=power.DEFAULT_LAGS):
+            estimate = original(values, lags=lags)
+            return dataclasses.replace(estimate, omega=estimate.variance * 0.5)
+
+        monkeypatch.setattr(power, "estimate_power", shrunk)
+
+        result = self._run(monkeypatch)
+
+        assert result.exit_code == 0, result.output
+        text = re.sub(r"\s+", "", result.output)
+        assert "IS の膨張1.00（測った0.71を床に上げた）".replace(" ", "") in text
 
     def test_the_prediction_uses_the_measured_null_spread(self) -> None:
         """**部品が正しくても、呼ぶ側が 1.0 を渡せば意味が無い。**"""

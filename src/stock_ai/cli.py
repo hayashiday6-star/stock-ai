@@ -12049,7 +12049,12 @@ def positive_control(  # noqa: PLR0913, PLR0915 - 陰性対照と同じ条件を
         MEASURED_INFLATION,
         calibrated_t,
     )
-    from stock_ai.backtest.power import estimate_power, gate, required_information_ratio
+    from stock_ai.backtest.power import (
+        estimate_power,
+        floored_inflation,
+        gate,
+        required_information_ratio,
+    )
     from stock_ai.backtest.rehearsal import (
         POSITIVE_MULTIPLES,
         PositiveRow,
@@ -12102,10 +12107,19 @@ def positive_control(  # noqa: PLR0913, PLR0915 - 陰性対照と同じ条件を
     required = required_information_ratio(target, inside_estimate.inflation, years)
     detectable = inside_estimate.detectable(periods, target)
     gap = rank_gap(CONTROL_QUANTILES)
+    # **計算に使った値を出す。** 測った膨張が 1.0 を下回ると、式は床の 1.0 を
+    # 使う。生の値を札に書くと、札と計算が別のことを言う（2026-09-26、0.74 と
+    # 出たのに 1.16 は 1.0 で計算されていた）。
+    floor_note = (
+        f"（測った {inside_estimate.inflation:.2f} を床に上げた）"
+        if inside_estimate.inflation < floored_inflation(inside_estimate.inflation)
+        else ""
+    )
     console.print(
         f"[dim]IS {begin} 〜 {cut}（{len(inside.months)}ヶ月）、OOS 〜 {finish}"
         f"（{periods}ヶ月 = {years:.1f}年）。**要る情報比 {required:.2f}**"
-        f"（線 {target:.2f} × IS の膨張 {inside_estimate.inflation:.2f} ÷ √{years:.1f}）。"
+        f"（線 {target:.2f} × IS の膨張 {floored_inflation(inside_estimate.inflation):.2f}"
+        f"{floor_note} ÷ √{years:.1f}）。"
         f"m ごとに {runs} 回。[/]"
     )
 
