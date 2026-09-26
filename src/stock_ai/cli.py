@@ -6726,7 +6726,7 @@ def yield_audit(
     for line in census.warnings():
         console.print(f"[yellow]{line}[/]")
 
-    extras, dividend_symbols = extra_dividends(Path(directory))
+    extras = extra_dividends(Path(directory))
     audit = audit_splits(
         values,
         census.crossed,
@@ -6734,7 +6734,6 @@ def yield_audit(
         materials.factor_changes,
         census.worst,
         extras,
-        dividend_symbols,
     )
     _print_split_audit(audit)
     if not census.worst:
@@ -6776,7 +6775,7 @@ def yield_audit(
             "いる**——絞った後は分母が小さいので、割合はこれより大きく出うる。[/]"
         )
 
-    _print_uncrossed(audit.uncrossed)
+    _print_uncrossed(audit.uncrossed, extras)
 
 
 def _yield_cell(value: float) -> str:
@@ -6899,7 +6898,7 @@ def _basis_table(buckets: tuple[object, ...]) -> Table:
     return table
 
 
-def _print_uncrossed(uncrossed: tuple[object, ...]) -> None:
+def _print_uncrossed(uncrossed: tuple[object, ...], extras: object) -> None:
     """Count the implausible rows that crossed no split, column by column.
 
     **列ごとに独立に数える。** そして**「判定できない」を「どちらでもない」に
@@ -6941,6 +6940,22 @@ def _print_uncrossed(uncrossed: tuple[object, ...]) -> None:
             + "・".join(f"{year} {count}" for year, count in sorted(years.items()))
             + "。**別の原因が在る**——決め打ちしない。[/]"
         )
+        # **「在った 0」の強さは、探した列の埋まり方で決まる**（2026-09-26）。
+        # 列が空なら、0 は「無かった」ではなく「見えなかった」である。
+        rows = extras.rows  # type: ignore[attr-defined]
+        if rows:
+            console.print(
+                f"[dim]  探した列の埋まり方（配当の原本 {rows:,} 行）: "
+                f"`SpecDivRate`（特別）が空でない {extras.special_filled:,}"  # type: ignore[attr-defined]
+                f"（{extras.special_filled / rows:.2%}、正 {extras.special_positive:,}）・"  # type: ignore[attr-defined]
+                f"`CommDivRate`（記念）が空でない {extras.commemorative_filled:,}"  # type: ignore[attr-defined]
+                f"（{extras.commemorative_filled / rows:.2%}、正 "  # type: ignore[attr-defined]
+                f"{extras.commemorative_positive:,}）・`CommSpecCode` の印 "  # type: ignore[attr-defined]
+                f"{extras.marked_rows:,}（{extras.marked_rows / rows:.2%}）。[/]"  # type: ignore[attr-defined]
+            )
+        for line in extras.warnings():  # type: ignore[attr-defined]
+            console.print(f"[yellow]  {line}[/]")
+        marked = sum(1 for row in neither if row.extra_marked)  # type: ignore[attr-defined]
         paid = sum(1 for row in neither if row.extra_paid)  # type: ignore[attr-defined]
         unpaid = sum(1 for row in neither if row.extra_paid is False)  # type: ignore[attr-defined]
         unknown = sum(1 for row in neither if row.extra_paid is None)  # type: ignore[attr-defined]
@@ -6950,6 +6965,11 @@ def _print_uncrossed(uncrossed: tuple[object, ...]) -> None:
             f"銘柄が居ない {unknown:,}。**在っても原因とは言わない**——形が合うだけで、"
             "そうなら値は正しく、問いは「一度きりの配当で高利回りの分位に入れて"
             "よいか」という設計のほうになる。[/]"
+        )
+        console.print(
+            f"[dim]  同じ窓に `CommSpecCode` の印が立った行が在った {marked:,}"
+            "（額が空でも印だけ立つ行がありうる。**符号の意味は分からないので、"
+            "特別配当とは読み替えない**）。[/]"
         )
     table = Table(title="列ごとの上位（群は重なりうる）")
     for column in ("群", "銘柄", "月", "開示日", "利回り", "前の比", "開示月"):

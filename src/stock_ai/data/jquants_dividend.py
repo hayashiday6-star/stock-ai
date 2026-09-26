@@ -96,6 +96,14 @@ class Dividend:
     interim_code: str = ""
     """`IFCode`。**意味は分からないので符号のまま持つ。**"""
 
+    comm_spec_code: str = ""
+    """`CommSpecCode`（記念・特別配当の符号）。**意味は分からないので符号のまま持つ。**
+
+    配布サンプルに、**この符号が 2 なのに `CommDivRate`・`SpecDivRate` が空**の行が
+    在る（8697、2022-03）。特別配当が在っても、額は `DivRate` に込みで内訳の列は
+    空、という書き方がありうる——**額の列だけ見る検査は、それを 0 と数える。**
+    """
+
 
 def parse_dividends(payload: bytes) -> list[Dividend]:
     """配当の CSV を読む。**公表日か銘柄コードの無い行は落とす。**"""
@@ -121,6 +129,7 @@ def parse_dividends(payload: bytes) -> list[Dividend]:
                 status_code=(row.get("StatCode") or "").strip(),
                 forecast_code=(row.get("FRCode") or "").strip(),
                 interim_code=(row.get("IFCode") or "").strip(),
+                comm_spec_code=(row.get("CommSpecCode") or "").strip(),
             )
         )
     return items
@@ -783,23 +792,84 @@ def _dividend_files(directory: Path) -> Iterable[tuple[str, bytes]]:
             logger.warning("配当の原本を開けなかった: %s: %s", key, exc)
 
 
-def extra_dividends(
-    directory: Path,
-) -> tuple[dict[str, list[tuple[dt.date, dt.date, float, float]]], set[str]]:
-    """特別配当か記念配当の**額が正の行**を、銘柄ごとに。**取りには行かない。**
+#: `CommSpecCode` のうち、**印が無い**とみなす値。意味は分からないので、空と 0 だけ。
+_NO_MARK = frozenset({"", "0"})
+
+
+@dataclasses.dataclass(frozen=True)
+class ExtraDividends:
+    """特別配当・記念配当を探した結果と、**探した列がどれだけ埋まっていたか**。
+
+    **「在った 0」は、列が埋まっていなければ落ちようのない検査である**
+    （2026-09-26、ユーザーの指摘）。だから埋まり方を一緒に返す。そして額の列の
+    ほかに、`CommSpecCode` の**印**を別に持つ——額が空でも印だけ立っている行が
+    ありうる（:attr:`Dividend.comm_spec_code`）。
+    """
+
+    extras: dict[str, list[tuple[dt.date, dt.date, float, float]]] = dataclasses.field(
+        default_factory=dict
+    )
+    """``{銘柄: [(公表日, 権利落ち日, 特別配当, 記念配当)]}``。**額が正の行だけ。**"""
+
+    marked: dict[str, list[tuple[dt.date, dt.date]]] = dataclasses.field(default_factory=dict)
+    """``{銘柄: [(公表日, 権利落ち日)]}``。**`CommSpecCode` が空でも 0 でもない行。**"""
+
+    seen: frozenset[str] = frozenset()
+    """配当の原本に居た銘柄。居なければ「無かった」ではなく「分からない」。"""
+
+    rows: int = 0
+    special_filled: int = 0
+    """`SpecDivRate` が空でなかった行。"""
+
+    special_positive: int = 0
+    commemorative_filled: int = 0
+    """`CommDivRate` が空でなかった行。"""
+
+    commemorative_positive: int = 0
+    marked_rows: int = 0
+
+    def warnings(self) -> list[str]:
+        """**列が空なら「在った 0」は根拠にならない**と言う。早期 return しない。"""
+        found: list[str] = []
+        for name, filled in (
+            ("SpecDivRate（特別配当）", self.special_filled),
+            ("CommDivRate（記念配当）", self.commemorative_filled),
+        ):
+            if self.rows and not filled:
+                found.append(
+                    f"**`{name}` は配当の原本 {self.rows:,} 行で1度も埋まっていない。** "
+                    "この列で「在った 0」と出ても、**根拠にならない**——見えなかっただけである。"
+                )
+        return found
+
+
+def extra_dividends(directory: Path) -> ExtraDividends:
+    """特別配当・記念配当を、銘柄ごとに探す。**取りには行かない。**
 
     候補14 の監査で、**開示した時点で既に利回りが高すぎる行**が特別配当の形か
     どうかを見るために使う（2026-09-26）。**原因とは言わない**——形が合うかだけ。
-
-    Returns:
-        ``({銘柄: [(公表日, 権利落ち日, 特別配当, 記念配当)]}, 配当の原本に居た銘柄)``。
-        **後者が要る**——原本に銘柄が居なければ「無かった」ではなく「分からない」。
+    **列の埋まり方と `CommSpecCode` の印も一緒に数える**（:class:`ExtraDividends`）。
     """
     extras: dict[str, list[tuple[dt.date, dt.date, float, float]]] = {}
+    marked: dict[str, list[tuple[dt.date, dt.date]]] = {}
     seen: set[str] = set()
+    rows = special_filled = special_positive = 0
+    commemorative_filled = commemorative_positive = marked_rows = 0
     for _key, payload in _dividend_files(directory):
         for row in parse_dividends(payload):
+            rows += 1
             seen.add(row.symbol)
+            # **列ごとに独立に数える。** 手前で弾くと、後ろの数が 0 のまま残る。
+            if row.special_rate is not None:
+                special_filled += 1
+                special_positive += row.special_rate > 0
+            if row.commemorative_rate is not None:
+                commemorative_filled += 1
+                commemorative_positive += row.commemorative_rate > 0
+            if row.comm_spec_code not in _NO_MARK:
+                marked_rows += 1
+                if row.ex_date is not None:
+                    marked.setdefault(row.symbol, []).append((row.published_on, row.ex_date))
             special = row.special_rate or 0.0
             commemorative = row.commemorative_rate or 0.0
             if row.ex_date is None or (special <= 0 and commemorative <= 0):
@@ -807,7 +877,17 @@ def extra_dividends(
             extras.setdefault(row.symbol, []).append(
                 (row.published_on, row.ex_date, special, commemorative)
             )
-    return extras, seen
+    return ExtraDividends(
+        extras=extras,
+        marked=marked,
+        seen=frozenset(seen),
+        rows=rows,
+        special_filled=special_filled,
+        special_positive=special_positive,
+        commemorative_filled=commemorative_filled,
+        commemorative_positive=commemorative_positive,
+        marked_rows=marked_rows,
+    )
 
 
 def raw_rows(

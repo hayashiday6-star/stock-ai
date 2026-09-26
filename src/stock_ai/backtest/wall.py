@@ -113,6 +113,7 @@ import math
 from bisect import bisect_right
 from collections.abc import Callable, Iterable
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import numpy as np
 import pandas as pd
@@ -128,6 +129,9 @@ from stock_ai.backtest.pead import MIN_TURNOVER
 from stock_ai.core.logging import get_logger
 from stock_ai.data.schema import CLOSE, OPEN, VOLUME, split_adjusted
 from stock_ai.database.engine import Database
+
+if TYPE_CHECKING:
+    from stock_ai.data.jquants_dividend import ExtraDividends
 
 logger = get_logger(__name__)
 
@@ -518,7 +522,7 @@ def _earnings_schedule_present(directory: Path) -> str | None:
     from stock_ai.data.jquants_earnings import schedule_census
 
     census = schedule_census(directory)
-    return census.summary() if census.ahead else None
+    return census.usable() if census.ahead else None
 
 
 #: **「材料が無い」を、数えた結果で書き換える**（2026-09-26）。
@@ -2070,6 +2074,13 @@ class Uncrossed:
     高利回りの分位に入れてよいか」という**設計の問い**になる。
     """
 
+    extra_marked: bool | None = None
+    """同じ窓に **`CommSpecCode` の印（空でも 0 でもない）** が立った行が在ったか。
+
+    **額が空でも印だけ立っている行がありうる**——額の列だけ見ると 0 と数える。
+    符号の意味は分からないので、**特別配当とは読み替えない。**
+    """
+
     @property
     def split_before_explains(self) -> bool:
         """開示前の分割比で割り戻すと、ありえる高さに収まる。
@@ -2169,8 +2180,7 @@ def audit_splits(
     prices: dict[tuple[str, pd.Period], tuple[dt.date, float]],
     factor_changes: dict[str, tuple[tuple[dt.date, float], ...]],
     worst: Iterable[ImplausibleYield],
-    extras: dict[str, list[tuple[dt.date, dt.date, float, float]]],
-    dividend_symbols: set[str],
+    extras: ExtraDividends,
 ) -> SplitAudit:
     """分割をまたいだ予想を、**(b) で外したあと**に測る（候補14）。
 
@@ -2189,8 +2199,7 @@ def audit_splits(
         prices: 同じ関数に渡した調整前の月末終値。
         factor_changes: :attr:`Materials.factor_changes`。
         worst: :attr:`YieldCensus.worst`。
-        extras: `jquants_dividend.extra_dividends` の1つ目。**既定を置かない。**
-        dividend_symbols: 同じ関数の2つ目（配当の原本に居た銘柄）。
+        extras: `jquants_dividend.extra_dividends`。**既定を置かない。**
 
     Returns:
         測ったもの。
@@ -2295,11 +2304,30 @@ def audit_splits(
         then = prices.get((item.symbol, pd.Period(item.disclosed_on, freq="M")))
         at_disclosure = item.forecast / then[1] if then is not None and then[1] > 0 else None
         extra_paid: bool | None = None
-        if item.symbol in dividend_symbols and rebalance is not None:
+        extra_marked: bool | None = None
+        if item.symbol in extras.seen and rebalance is not None:
             until = item.disclosed_on + dt.timedelta(days=EXTRA_WINDOW_DAYS)
+
+            cutoff, start = rebalance[0], item.disclosed_on
+
+            def within(
+                published: dt.date,
+                ex_date: dt.date,
+                cutoff: dt.date = cutoff,
+                start: dt.date = start,
+                until: dt.date = until,
+            ) -> bool:
+                return published <= cutoff and start <= ex_date <= until
+
             extra_paid = any(
-                published <= rebalance[0] and item.disclosed_on <= ex_date <= until
-                for published, ex_date, _special, _commemorative in extras.get(item.symbol, ())
+                within(published, ex_date)
+                for published, ex_date, _special, _commemorative in extras.extras.get(
+                    item.symbol, ()
+                )
+            )
+            extra_marked = any(
+                within(published, ex_date)
+                for published, ex_date in extras.marked.get(item.symbol, ())
             )
         uncrossed.append(
             Uncrossed(
@@ -2308,6 +2336,7 @@ def audit_splits(
                 history_reaches=bool(changes) and changes[0][0] <= since,
                 at_disclosure=at_disclosure,
                 extra_paid=extra_paid,
+                extra_marked=extra_marked,
             )
         )
 

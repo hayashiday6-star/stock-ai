@@ -188,6 +188,28 @@ class ScheduleCensus:
             f"{self.rows:,} 行、**重ならない行 {self.distinct:,}**、{self.symbols:,} 銘柄{span}。"
         )
 
+    def usable(self) -> str:
+        """**使えると決めた数**を1行で。壁の下見の「数えたもの」の欄に出す。
+
+        最初は :meth:`summary`（原本の本数と総行数）を出していた。**札は「材料は
+        在る」と言い、欄は材料の量しか見せていなかった**（2026-09-26、ユーザーの
+        指摘）。しかも「重ならない行」だけを見ると「出し直しが無い」と読める
+        ——出し直しは別の行として在る。
+        """
+        if not self.distinct:
+            return self.summary()
+        share = self.ahead / self.distinct
+        lead = (
+            ""
+            if self.lead_days_median is None
+            else f"、公表から予定日まで中央値 {self.lead_days_median:.0f} 日"
+        )
+        start = "" if self.published is None else f"、`PubDate` {self.published[0]:%Y-%m}〜"
+        return (
+            f"予定日が公表日より後 {self.ahead:,}（{share:.1%}）{lead}、"
+            f"予定日が動いた組 {self.moved:,}（動く前の予定日で避ける）{start}"
+        )
+
     def warnings(self) -> list[str]:
         """気付かなくても目に入るべきこと。**早期 return しない。**"""
         found: list[str] = []

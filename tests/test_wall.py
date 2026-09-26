@@ -2708,6 +2708,12 @@ class TestNotCarryingAcrossASplit:
         assert parameter.default is inspect.Parameter.empty
 
 
+def _no_extras():
+    from stock_ai.data.jquants_dividend import ExtraDividends
+
+    return ExtraDividends()
+
+
 def _crossed(forecast, ratio, next_forecast, *, symbol="A", month="2013-10", close=1_000.0):
     from stock_ai.backtest.wall import CrossedForecast
 
@@ -2739,7 +2745,7 @@ class TestTheBasisIsJudgedByTheCompanysOwnNextForecast:
         from stock_ai.backtest.wall import audit_splits
 
         return audit_splits(
-            values if values is not None else self._values(), crossed, {}, {}, (), {}, set()
+            values if values is not None else self._values(), crossed, {}, {}, (), _no_extras()
         )
 
     def test_a_pre_split_forecast_matches_the_rescaled_amount(self) -> None:
@@ -2825,7 +2831,7 @@ class TestTheCostAndTheBiasOfNotCarrying:
         from stock_ai.backtest.wall import audit_splits
 
         values = TestTheBasisIsJudgedByTheCompanysOwnNextForecast._values()
-        audit = audit_splits(values, [_crossed(7_000.0, 400.0, 18.0)], {}, {}, (), {}, set())
+        audit = audit_splits(values, [_crossed(7_000.0, 400.0, 18.0)], {}, {}, (), _no_extras())
 
         assert audit.worst_month == "2013-10"
         assert audit.worst_month_rows == 5, "**分母は (b) の前**（残った4 + 外した1）"
@@ -2841,7 +2847,7 @@ class TestTheCostAndTheBiasOfNotCarrying:
         # **A は直前の月にいちばん低い利回りだった。**
         values[("A", before)] = (dt.date(2013, 8, 1), 0.001)
 
-        audit = audit_splits(values, [_crossed(7_000.0, 400.0, 18.0)], {}, {}, (), {}, set())
+        audit = audit_splits(values, [_crossed(7_000.0, 400.0, 18.0)], {}, {}, (), _no_extras())
 
         counts = audit.bias["分割"]
         assert counts[0] == 1, "第1分位（利回りの低い側）"
@@ -2850,7 +2856,7 @@ class TestTheCostAndTheBiasOfNotCarrying:
     def test_no_month_before_is_said_out_loud(self) -> None:
         from stock_ai.backtest.wall import BIAS_QUANTILES, audit_splits
 
-        audit = audit_splits({}, [_crossed(7_000.0, 400.0, 18.0)], {}, {}, (), {}, set())
+        audit = audit_splits({}, [_crossed(7_000.0, 400.0, 18.0)], {}, {}, (), _no_extras())
 
         assert audit.bias["分割"][BIAS_QUANTILES] == 1
 
@@ -2868,7 +2874,7 @@ class TestTheUncrossedRowsAreSortedNotExplained:
     def _audit(self, items, prices, changes):
         from stock_ai.backtest.wall import audit_splits
 
-        return audit_splits({}, (), prices, changes, items, {}, set())
+        return audit_splits({}, (), prices, changes, items, _no_extras())
 
     def test_a_split_before_the_disclosure_is_found(self) -> None:
         """**分割の後に、分割前の基準で書かれた予想**の形。"""
@@ -2998,8 +3004,7 @@ class TestTheAuditTablesFitEightyColumns:
             {},
             {},
             (),
-            {},
-            set(),
+            _no_extras(),
         )
 
         printed = _render(cli._basis_table(audit.buckets))
@@ -3173,8 +3178,11 @@ class TestTheExtraDividendIsLookedUpNotAssumed:
 
     ITEM_MONTH = "2016-06"
 
-    def _audit(self, extras, seen):
+    def _audit(self, extras, seen, marked=None):
         from stock_ai.backtest.wall import audit_splits
+        from stock_ai.data.jquants_dividend import ExtraDividends
+
+        found = ExtraDividends(extras=extras, marked=marked or {}, seen=frozenset(seen))
 
         item = _implausible("1972", self.ITEM_MONTH, dt.date(2016, 5, 13), 300.0, 660.0)
         prices = {
@@ -3182,7 +3190,7 @@ class TestTheExtraDividendIsLookedUpNotAssumed:
             ("1972", pd.Period("2016-05", freq="M")): (dt.date(2016, 5, 31), 662.0),
         }
         changes = {"1972": ((dt.date(2008, 1, 4), 1.0),)}
-        (row,) = audit_splits({}, (), prices, changes, [item], extras, seen).uncrossed
+        (row,) = audit_splits({}, (), prices, changes, [item], found).uncrossed
         return row
 
     def test_a_special_dividend_in_the_window_is_found(self) -> None:
@@ -3202,6 +3210,15 @@ class TestTheExtraDividendIsLookedUpNotAssumed:
     def test_a_symbol_the_dividend_files_never_saw_is_unknown(self) -> None:
         assert self._audit({}, set()).extra_paid is None
 
+    def test_a_mark_without_an_amount_is_counted_apart(self) -> None:
+        """**額が空でも印だけ立つ行がありうる**（配布サンプルの 8697）。"""
+        marked = {"1972": [(dt.date(2016, 5, 13), dt.date(2017, 3, 29))]}
+
+        row = self._audit({}, {"1972"}, marked=marked)
+
+        assert row.extra_paid is False
+        assert row.extra_marked is True
+
     def test_the_dividend_reader_collects_only_positive_extras(self, tmp_path) -> None:
         import csv as csv_module
         import gzip
@@ -3210,11 +3227,20 @@ class TestTheExtraDividendIsLookedUpNotAssumed:
         from stock_ai.data.jquants_archive import MANIFEST, MANIFEST_COLUMNS
         from stock_ai.data.jquants_dividend import extra_dividends
 
-        fields = ["PubDate", "Code", "ExDate", "DivRate", "CommDivRate", "SpecDivRate"]
+        fields = [
+            "PubDate",
+            "Code",
+            "ExDate",
+            "DivRate",
+            "CommSpecCode",
+            "CommDivRate",
+            "SpecDivRate",
+        ]
         rows = [
-            ["2016-05-13", "19720", "2017-03-29", "300", "", "250"],
-            ["2016-05-13", "72030", "2017-03-29", "100", "", ""],
-            ["2016-05-13", "86970", "2017-03-29", "50", "10", ""],
+            ["2016-05-13", "19720", "2017-03-29", "300", "0", "", "250"],
+            ["2016-05-13", "72030", "2017-03-29", "100", "0", "", ""],
+            ["2016-05-13", "86970", "2017-03-29", "50", "2", "10", ""],
+            ["2016-05-13", "99840", "2017-03-29", "46", "2", "", ""],
         ]
         out = io.StringIO()
         writer = csv_module.writer(out, lineterminator="\n")
@@ -3227,11 +3253,25 @@ class TestTheExtraDividendIsLookedUpNotAssumed:
             ",".join(MANIFEST_COLUMNS) + f"\n/{key},1,1,x,,2026-09-21\n", encoding="utf-8"
         )
 
-        extras, seen = extra_dividends(tmp_path)
+        found = extra_dividends(tmp_path)
 
-        assert seen == {"1972", "7203", "8697"}
-        assert set(extras) == {"1972", "8697"}, "**記念配当も数える。普通の配当は数えない。**"
-        assert extras["8697"][0][3] == pytest.approx(10.0)
+        assert found.seen == {"1972", "7203", "8697", "9984"}
+        assert set(found.extras) == {"1972", "8697"}, "**記念配当も数える。普通は数えない。**"
+        assert found.extras["8697"][0][3] == pytest.approx(10.0)
+        assert set(found.marked) == {"8697", "9984"}, "**額が空でも印は拾う。**"
+        assert (found.rows, found.special_filled, found.commemorative_filled) == (4, 1, 1)
+        assert not found.warnings(), "**埋まっていれば鳴らない。**"
+
+    def test_an_empty_column_says_zero_proves_nothing(self) -> None:
+        """**列が空なら「在った 0」は落ちようのない検査である**（ユーザーの指摘）。"""
+        from stock_ai.data.jquants_dividend import ExtraDividends
+
+        found = ExtraDividends(rows=1_000, special_filled=0, commemorative_filled=3)
+
+        printed = "\n".join(found.warnings())
+        assert "SpecDivRate" in printed
+        assert "根拠にならない" in printed
+        assert "CommDivRate" not in printed, "**埋まっている列では鳴らない。**"
 
 
 class TestTheCountsAreNotCalledASorting:
@@ -3251,7 +3291,7 @@ class TestTheCountsAreNotCalledASorting:
             at_disclosure=0.078,
         )
 
-        cli._print_uncrossed((both,))
+        cli._print_uncrossed((both,), _no_extras())
 
         printed = capsys.readouterr().out
         assert "列ごとの数" in printed
@@ -3284,6 +3324,24 @@ class TestMaterialThatTurnsUpLeavesTheMissingTable:
 
         assert [item.candidate for item, _summary in present] == [17]
         assert [item.candidate for item in absent] == [8]
+
+    def test_the_cell_shows_the_numbers_that_decided_it(self, tmp_path) -> None:
+        """**札は「材料は在る」と言い、欄は材料の量しか見せていなかった**（2026-09-26）。"""
+        from stock_ai.backtest.wall import split_missing
+
+        row = TestTheEarningsScheduleIsCounted._row
+        files = {
+            "20141001": [row("13060", "2014-10-01", "2014-10-30")],
+            "20141101": [row("13060", "2014-10-20", "2014-11-05")],
+        }
+        archive = TestTheEarningsScheduleIsCounted._archive(tmp_path, files)
+
+        ((_item, summary),), _absent = split_missing(archive, self._missing())
+
+        assert "予定日が公表日より後 2" in summary
+        assert "予定日が動いた組 1" in summary
+        assert "`PubDate` 2014-10〜" in summary
+        assert "重ならない行" not in summary, "**出し直しが無いと読ませる数を出さない。**"
 
     def test_no_files_keeps_it_in_the_missing_table(self, tmp_path) -> None:
         """**両向きに置く。** 原本が無ければ「無い」のまま。"""
