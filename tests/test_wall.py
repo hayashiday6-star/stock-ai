@@ -2708,6 +2708,106 @@ class TestNotCarryingAcrossASplit:
         assert parameter.default is inspect.Parameter.empty
 
 
+class TestTheLaterEventsAreOnlyCounted:
+    """**組み替え日の後の分割・併合は、その日には知りようがない。** 数えるだけ。
+
+    (b) にも利回りにも持ち込まない（2026-09-26、ユーザーの条件）。**持ち込めば
+    ``values`` が変わる**ので、事象が在っても無くても ``values`` が同じことを見る。
+    """
+
+    #: 組み替え（2017-02-28）の後、2017-06-01 に 1:400 の分割。
+    LATE_SPLIT = ((dt.date(2016, 1, 4), 1 / 400), (dt.date(2017, 6, 1), 1.0))
+
+    @staticmethod
+    def _rows(*later):
+        from stock_ai.backtest.wall import DIVIDEND_COLUMN
+
+        rows = [TestTheImplausibleYieldsComeBack._row(forecast="30")]
+        for disclosed, amount in later:
+            rows.append({**rows[0], "DiscDate": disclosed, DIVIDEND_COLUMN: amount})
+        return rows
+
+    @staticmethod
+    def _prices(*extra):
+        prices = {("1306", pd.Period("2017-02", freq="M")): (dt.date(2017, 2, 28), 1_000.0)}
+        for month, day in extra:
+            prices[("1306", pd.Period(month, freq="M"))] = (day, 1_000.0)
+        return prices
+
+    def test_the_values_do_not_depend_on_a_later_split(self, tmp_path) -> None:
+        from stock_ai.backtest.wall import dividend_yields
+
+        archive = TestTheImplausibleYieldsComeBack._archive(tmp_path, self._rows())
+
+        with_event, census = dividend_yields(archive, self._prices(), {"1306": self.LATE_SPLIT})
+        without, _census = dividend_yields(archive, self._prices(), {})
+
+        assert with_event == without
+        assert ("1306", pd.Period("2017-02", freq="M")) in with_event
+        (event,) = census.later
+        assert event.event_on == dt.date(2017, 6, 1)
+        assert event.ratio == pytest.approx(400.0)
+        assert event.direction == "分割"
+        assert not census.crossed, "**(b) は組み替え日までしか見ない。**"
+
+    def test_a_forecast_already_on_the_later_basis_is_found(self, tmp_path) -> None:
+        """事象の後の最初の開示（30）に近い → **既に後の基準で書かれていた。**"""
+        from stock_ai.backtest.wall import dividend_yields
+
+        archive = TestTheImplausibleYieldsComeBack._archive(
+            tmp_path, self._rows(("2017-08-10", "30"))
+        )
+
+        _values, census = dividend_yields(archive, self._prices(), {"1306": self.LATE_SPLIT})
+
+        (event,) = census.later
+        assert event.next_forecast == pytest.approx(30.0)
+        assert event.written_after is True
+
+    def test_a_forecast_on_the_earlier_basis_is_not_counted_as_early(self, tmp_path) -> None:
+        """**両向きに置く。** 次の開示 × 比（0.08 × 400 = 32）に近い → 前の基準のまま。"""
+        from stock_ai.backtest.wall import dividend_yields
+
+        archive = TestTheImplausibleYieldsComeBack._archive(
+            tmp_path, self._rows(("2017-08-10", "0.08"))
+        )
+
+        _values, census = dividend_yields(archive, self._prices(), {"1306": self.LATE_SPLIT})
+
+        (event,) = census.later
+        assert event.written_after is False
+
+    def test_the_disclosure_before_the_event_is_not_the_yardstick(self, tmp_path) -> None:
+        """物差しは**事象の後の**最初の開示。事象の前の開示（まだ前の基準）ではない。"""
+        from stock_ai.backtest.wall import dividend_yields
+
+        archive = TestTheImplausibleYieldsComeBack._archive(
+            tmp_path, self._rows(("2017-04-10", "30"), ("2017-08-10", "0.08"))
+        )
+
+        _values, census = dividend_yields(archive, self._prices(), {"1306": self.LATE_SPLIT})
+
+        event = next(row for row in census.later if row.month == "2017-02")
+        assert event.next_forecast == pytest.approx(0.08)
+
+    def test_a_short_history_without_an_event_is_unjudged(self, tmp_path) -> None:
+        """**事象が見つからなくても、履歴が届いていなければ「無かった」ではない。**"""
+        from stock_ai.backtest.wall import dividend_yields
+
+        archive = TestTheImplausibleYieldsComeBack._archive(tmp_path, self._rows())
+        flat = {"1306": ((dt.date(2016, 1, 4), 1.0),)}
+
+        _values, short = dividend_yields(archive, self._prices(), flat)
+        _values, long = dividend_yields(
+            archive, self._prices(("2018-03", dt.date(2018, 3, 30))), flat
+        )
+
+        assert short.later_unreached == 1
+        assert long.later_unreached == 0
+        assert not short.later
+        assert not long.later
+
+
 def _no_extras():
     from stock_ai.data.jquants_dividend import ExtraDividends
 
@@ -2957,6 +3057,57 @@ class TestTheUncrossedRowsAreSortedNotExplained:
         assert row.neither
 
 
+class TestTheLaterConsolidationIsASeparateColumn:
+    """**後の併合比は、組み替え日の時点では知りようがない。** 仕分けに混ぜない。"""
+
+    def _audit(self, items, prices, changes):
+        from stock_ai.backtest.wall import audit_splits
+
+        return audit_splits({}, (), prices, changes, items, _no_extras())
+
+    @staticmethod
+    def _prices(*extra):
+        prices = {
+            ("H", pd.Period("2009-02", freq="M")): (dt.date(2009, 2, 27), 7.0),
+            ("H", pd.Period("2009-01", freq="M")): (dt.date(2009, 1, 30), 7.0),
+        }
+        for month, day in extra:
+            prices[("H", pd.Period(month, freq="M"))] = (day, 70.0)
+        return prices
+
+    #: 組み替え（2009-02-27）の後、2009-10-01 に 10株を1株へ併合。
+    CONSOLIDATION = ((dt.date(2007, 1, 4), 10.0), (dt.date(2009, 10, 1), 1.0))
+
+    def test_a_later_consolidation_that_fits_is_found_but_neither_stays(self) -> None:
+        item = _implausible("H", "2009-02", dt.date(2009, 1, 10), 10.5, 7.0)
+
+        (row,) = self._audit([item], self._prices(), {"H": self.CONSOLIDATION}).uncrossed
+
+        assert row.split_after == pytest.approx(0.1)
+        assert row.later_consolidation_explains is True
+        assert row.neither, "**後から分かることで、その日の仕分けを動かさない。**"
+
+    def test_a_consolidation_too_small_to_explain_it_does_not(self) -> None:
+        """150% に 0.1 を掛けても 15%——収まる。300% なら 30% で収まらない。"""
+        item = _implausible("H", "2009-02", dt.date(2009, 1, 10), 21.0, 7.0)
+
+        (row,) = self._audit([item], self._prices(), {"H": self.CONSOLIDATION}).uncrossed
+
+        assert row.later_consolidation_explains is False
+
+    def test_no_later_history_is_unjudged(self) -> None:
+        item = _implausible("H", "2009-02", dt.date(2009, 1, 10), 10.5, 7.0)
+        flat = {"H": ((dt.date(2007, 1, 4), 1.0),)}
+
+        (short,) = self._audit([item], self._prices(), flat).uncrossed
+        (long,) = self._audit(
+            [item], self._prices(("2010-03", dt.date(2010, 3, 31))), flat
+        ).uncrossed
+
+        assert short.later_consolidation_explains is None
+        assert long.later_consolidation_explains is False
+
+
 def _render(renderable, width: int = 80) -> str:
     from rich.console import Console
 
@@ -3079,6 +3230,11 @@ class TestTheYieldAuditRunsEndToEnd:
         assert "(a) に変えてよい条件" in result.output
         assert "分割 100〜" in result.output
         assert "20% を超えた銘柄月は1つも無い" in result.output, "**(b) の後は残らない。**"
+        # 分割の前の月は残り、**後1年に分割がある**。予想 7000 は次の開示 18 × 400 に
+        # 近いので「前のまま」に数える。**後から分かる欄は、別の行で出る。**
+        assert "後から分かる穴" in result.output
+        assert "後 365 日以内に分割" in result.output
+        assert "直せない穴" in result.output
 
 
 class TestTheEarningsScheduleIsCounted:
@@ -3272,6 +3428,39 @@ class TestTheExtraDividendIsLookedUpNotAssumed:
         assert "SpecDivRate" in printed
         assert "根拠にならない" in printed
         assert "CommDivRate" not in printed, "**埋まっている列では鳴らない。**"
+
+
+class TestTheLaterTableFitsEightyColumns:
+    """後から分かる穴の表も、幅 80 で刷って切れないことを見る。"""
+
+    def test_every_cell_is_kept(self) -> None:
+        from stock_ai import cli
+        from stock_ai.backtest.wall import LaterEvent
+
+        def event(symbol, forecast, ratio, next_forecast):
+            return LaterEvent(
+                symbol=symbol,
+                month="2016-05",
+                forecast=forecast,
+                event_on=dt.date(2016, 10, 1),
+                ratio=ratio,
+                next_forecast=next_forecast,
+            )
+
+        later = (
+            event("A", 30.0, 0.1, 300.0),
+            event("B", 30.0, 0.1, 30.0),
+            event("C", 30.0, 2.0, None),
+            event("D", 30.0, 2.0, 15.0),
+        )
+
+        printed = _render(cli._later_table(later))
+
+        assert "…" not in printed
+        consolidation = next(line for line in printed.splitlines() if "併合" in line)
+        assert "50.0%" in consolidation, "**1件が既に後の基準、1件が前のまま。**"
+        split = next(line for line in printed.splitlines() if "分割" in line and "│" in line)
+        assert "0.0%" in split
 
 
 class TestTheCountsAreNotCalledASorting:

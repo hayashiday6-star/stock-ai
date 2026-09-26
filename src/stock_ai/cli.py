@@ -6761,6 +6761,10 @@ def yield_audit(
       当てはめる
     - (b) の後も 20% を超える行と、その仕分け（開示前1年の分割、開示した月の
       株価、判定できない、どちらでもない）
+    - **後から分かる欄**（組み替え日の時点では知りようがない。上と混ぜない）:
+      組み替えの後1年に分割か併合があった銘柄月と、そのうち予想が**既に事象の
+      後の基準で書かれていた**数（物差しは事象の後の最初の開示）。20% 超の行の
+      うち、後の併合比を掛けると収まる数
 
     **取りには行かない。** 原本を読むだけである。
     """
@@ -6803,6 +6807,7 @@ def yield_audit(
         extras,
     )
     _print_split_audit(audit)
+    _print_later_events(census.later, census.later_unreached, census.observations)
     if not census.worst:
         console.print(
             f"[green]**(b) の後、{IMPLAUSIBLE_YIELD:.0%} を超えた銘柄月は1つも無い。**[/]"
@@ -6946,6 +6951,56 @@ def _print_split_audit(audit: object) -> None:
     )
 
 
+def _print_later_events(later: tuple[object, ...], unreached: int, kept: int) -> None:
+    """Size the hole left by forecasts written on a basis that did not exist yet.
+
+    **組み替え日の時点では知りようのない情報である。** (b) にも利回りにも使って
+    いないので、**「その日に知りえた」数と同じ行に置かない**（`docs/POSTMORTEMS.md`
+    【混】）。
+    """
+    from stock_ai.backtest.wall import LATER_EVENT_DAYS
+
+    splits = sum(1 for row in later if row.direction == "分割")  # type: ignore[attr-defined]
+    console.print(
+        f"[bold]**後から分かる穴**[/][dim]（組み替え日の時点では知りようがない。"
+        f"**(b) にも利回りにも使っていない**）: (b) の後の {kept:,} 銘柄月のうち、"
+        f"後 {LATER_EVENT_DAYS} 日以内に分割 {splits:,}・併合 {len(later) - splits:,}、"
+        f"**判定できない**（事象が見つからず、後の価格が届かない）{unreached:,}。[/]"
+    )
+    if later:
+        console.print(_later_table(later))
+    console.print(
+        "[dim]  「既に後」は、**事象の前なのに事象の後の基準で書かれていた**予想で、"
+        "組み替え日の利回りは併合なら高すぎ、分割なら低すぎに出ている。"
+        "**直す手は、分割・併合の公表日が取れるかどうかで決まる。取れないなら"
+        "直せない穴である。**[/]"
+    )
+
+
+def _later_table(later: tuple[object, ...]) -> Table:
+    """Build the per-direction table of forecasts already written on the later basis."""
+    table = Table(title="事象の前に、既に後の基準で書かれていたか（物差し: 事象の後の最初の開示）")
+    for column in ("向き", "銘柄月", "銘柄", "既に後", "前のまま", "不明", "後の割合"):
+        table.add_column(column, justify="left" if column == "向き" else "right")
+    for direction in ("分割", "併合"):
+        rows = [row for row in later if row.direction == direction]  # type: ignore[attr-defined]
+        if not rows:
+            continue
+        early = sum(1 for row in rows if row.written_after is True)  # type: ignore[attr-defined]
+        normal = sum(1 for row in rows if row.written_after is False)  # type: ignore[attr-defined]
+        judged = early + normal
+        table.add_row(
+            direction,
+            f"{len(rows):,}",
+            f"{len({row.symbol for row in rows}):,}",  # type: ignore[attr-defined]
+            f"{early:,}",
+            f"{normal:,}",
+            f"{len(rows) - judged:,}",
+            "—" if not judged else f"{early / judged:.1%}",
+        )
+    return table
+
+
 def _basis_table(buckets: tuple[object, ...]) -> Table:
     """Build the per-bucket table of which basis the carried forecasts were written in."""
     table = Table(title="(a) の検査: 予想はどちらの基準で書かれていたか")
@@ -6994,6 +7049,16 @@ def _print_uncrossed(uncrossed: tuple[object, ...], extras: object) -> None:
         f"開示した月の株価なら収まっていた **{len(fell):,}**、"
         f"**判定できない**（開示前1年の価格が無い {len(short):,}・開示月の終値が無い "
         f"{len(no_close):,}）、**両方測れてどちらでもない {len(neither):,}**。[/]"
+    )
+    # **後から分かる欄は、上の行と混ぜない。** 組み替え日の時点では知りようがない。
+    later = [row.later_consolidation_explains for row in uncrossed]  # type: ignore[attr-defined]
+    later_neither = [row.later_consolidation_explains for row in neither]  # type: ignore[attr-defined]
+    console.print(
+        f"[dim]  **後から分かる欄**（組み替え日の時点では知りようがない。上の列には"
+        f"入れていない）: 後1年に併合があり、併合比を掛けると収まる "
+        f"**{later.count(True):,}**（どちらでもない {len(neither):,} 件のうち "
+        f"**{later_neither.count(True):,}**）・収まらないか併合が無い {later.count(False):,}・"
+        f"**判定できない**（後1年の価格が届かない）{later.count(None):,}。[/]"
     )
     if neither:
         symbols = sorted({row.item.symbol for row in neither})  # type: ignore[attr-defined]

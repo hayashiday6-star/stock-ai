@@ -1680,6 +1680,78 @@ class CrossedForecast:
         return self.forecast / self.close
 
 
+#: 組み替え日の**後**に分割・併合を探す日数（候補14 の監査）。
+#:
+#: **出典は無い。決めの値である**（2026-09-26、ユーザーが承認）。会社予想は
+#: 会計年度ごとなので1年とした。
+#:
+#: **ここで見つかるものは、組み替え日の時点では知りようのない情報である。**
+#: 穴の大きさを数えるだけで、**(b) の規則にも利回りの計算にも使わない**
+#: ——最終データで過去の判断を裁かない（`docs/POSTMORTEMS.md`【混】）。
+LATER_EVENT_DAYS = 365
+
+
+def _first_event_after(
+    changes: tuple[tuple[dt.date, float], ...], after: dt.date, days: int
+) -> dt.date | None:
+    """``after`` より後 ``days`` 日以内に、**分割か併合をまたいだ最初の日**。
+
+    またいだかは (b) と同じ :func:`_crossed` で見る。無ければ ``None``。
+    """
+    until = after + dt.timedelta(days=days)
+    for when, _factor in changes:
+        if when <= after:
+            continue
+        if when > until:
+            break
+        if _crossed(split_ratio_between(changes, after, when)):
+            return when
+    return None
+
+
+@dataclasses.dataclass(frozen=True)
+class LaterEvent:
+    """(b) の後に残った銘柄月のうち、**組み替え日の後に分割か併合があった**もの。
+
+    **組み替え日の時点では知りようのない情報である**（:data:`LATER_EVENT_DAYS`）。
+    穴の大きさを数えるためだけに持って返る。**利回りにも (b) にも使っていない**
+    ——``values`` は、これが在っても無くても同じである。
+    """
+
+    symbol: str
+    month: str
+    forecast: float
+    """組み替え日に使った予想（開示日 ≤ 組み替え日）。"""
+
+    event_on: dt.date
+    ratio: float
+    """組み替え日から事象の日までの分割比。併合なら 1 未満。"""
+
+    next_forecast: float | None
+    """**事象の後の最初の開示**（事象の後の基準で書かれている）。物差しである。
+
+    引き継ぎの期限内に無いか、その間にまた分割か併合があれば ``None``。
+    """
+
+    @property
+    def direction(self) -> str:
+        """``分割`` か ``併合``。"""
+        return "分割" if self.ratio > 1.0 else "併合"
+
+    @property
+    def written_after(self) -> bool | None:
+        """予想が、**事象の前なのに既に事象の後の基準で書かれていたか。**
+
+        事象の後の最初の開示に近ければ ``True``、それに比を掛けた額（事象の前の
+        基準）に近ければ ``False``、比べられなければ ``None``。``True`` なら、
+        組み替え日の利回りは併合で高すぎ、分割で低すぎに出ている。
+        """
+        if self.next_forecast is None:
+            return None
+        verdict = _closer(self.forecast, self.next_forecast, self.next_forecast * self.ratio)
+        return None if verdict is None else verdict == "as_carried"
+
+
 @dataclasses.dataclass(frozen=True)
 class YieldCensus:
     """配当利回りを畳むときに落ちたもの。**合計だけ出すと、その中に紛れる。**"""
@@ -1732,6 +1804,16 @@ class YieldCensus:
     **`__post_init__` が件数と数を突き合わせる**ので、**札だけ古くなる形が
     消える**（`KnifeEvents` と同じ作り）。
     """
+
+    later: tuple[LaterEvent, ...] = ()
+    """**組み替え日の後に分割か併合があった**銘柄月（:class:`LaterEvent`）。
+
+    **組み替え日の時点では知りようがない。** 監査でだけ使う。
+    """
+
+    later_unreached: int = 0
+    """事象が見つからず、価格の履歴も :data:`LATER_EVENT_DAYS` 日後に届いていない
+    銘柄月。**「無かった」ではなく「判定できない」である。**"""
 
     def __post_init__(self) -> None:
         """**持って返った数が、数えた数を超えていないこと。**"""
@@ -1963,6 +2045,12 @@ def dividend_yields(
     no_price = implausible = stale = 0
     worst: list[ImplausibleYield] = []
     crossed: list[CrossedForecast] = []
+    later: list[LaterEvent] = []
+    later_unreached = 0
+    last_priced = {
+        symbol: max(rebalance for _month, rebalance, _close in months)
+        for symbol, months in by_symbol.items()
+    }
     for symbol, entries in disclosed.items():
         entries.sort(key=lambda item: item[0])
         days = [day for day, _amount, _actual in entries]
@@ -2018,6 +2106,23 @@ def dividend_yields(
             # `value_on` の関門が何も弾かなくなる。
             values[(symbol, month)] = (when, found)
 
+            # **ここから下は監査だけである。** 組み替え日の時点では知りようのない
+            # 情報なので、上の値にも (b) にも戻さない（`LATER_EVENT_DAYS`）。
+            event_on = _first_event_after(changes, rebalance, LATER_EVENT_DAYS)
+            if event_on is not None:
+                later.append(
+                    LaterEvent(
+                        symbol=symbol,
+                        month=str(month),
+                        forecast=amount,
+                        event_on=event_on,
+                        ratio=split_ratio_between(changes, rebalance, event_on),
+                        next_forecast=_next_forecast(entries, days, changes, event_on, stale_days),
+                    )
+                )
+            elif last_priced[symbol] < rebalance + dt.timedelta(days=LATER_EVENT_DAYS):
+                later_unreached += 1
+
     return values, YieldCensus(
         rows=rows,
         symbols=len(disclosed),
@@ -2032,6 +2137,8 @@ def dividend_yields(
         stale=stale,
         stale_days=stale_days,
         crossed=tuple(crossed),
+        later=tuple(later),
+        later_unreached=later_unreached,
         # **利回りの大きい順に、上限まで。** 貼られる前提で作る。
         worst=tuple(
             sorted(worst, key=lambda item: item.yielded, reverse=True)[:MAX_IMPLAUSIBLE_KEPT]
@@ -2182,6 +2289,16 @@ class Uncrossed:
     符号の意味は分からないので、**特別配当とは読み替えない。**
     """
 
+    split_after: float = 1.0
+    """組み替え日から :data:`LATER_EVENT_DAYS` 日後までの分割比。
+
+    **組み替え日の時点では知りようがない。** :attr:`neither` には入れない。
+    """
+
+    later_judged: bool = False
+    """``split_after`` で判定できるか。価格の履歴が1年後に届いているか、届いて
+    いなくても分割か併合が見つかっていれば判定できる。"""
+
     @property
     def split_before_explains(self) -> bool:
         """開示前の分割比で割り戻すと、ありえる高さに収まる。
@@ -2209,8 +2326,26 @@ class Uncrossed:
 
     @property
     def neither(self) -> bool:
-        """**両方測れて、どちらにも当たらない。** 別の原因が在る。"""
+        """**両方測れて、どちらにも当たらない。** 別の原因が在る。
+
+        **その日に知りえた物差しだけで決める。** :attr:`later_consolidation_explains`
+        は入れない——後から分かることで、この仕分けを動かさない。
+        """
         return not self.unjudged and not self.split_before_explains and not self.price_fell
+
+    @property
+    def later_consolidation_explains(self) -> bool | None:
+        """**後に併合があり、併合比を掛けると、ありえる高さに収まる。**
+
+        **併合の後の基準で、併合の前に書かれた予想**の形である。**組み替え日の
+        時点では知りようがない。** 判定できなければ ``None``。
+        """
+        if not self.later_judged:
+            return None
+        return (
+            self.split_after <= 1.0 / SPLIT_STEP
+            and self.item.yielded * self.split_after <= IMPLAUSIBLE_YIELD
+        )
 
 
 #: 特別配当・記念配当を探す窓（日）。**権利落ちが開示から何日以内か。**
@@ -2293,6 +2428,9 @@ def audit_splits(
        分子も分母も同じ基準なので、そこでの分位は信用できる。**流動性の絞りの
        前**の分位である
     4. **分割をまたいでいない高すぎる行の仕分け**（:class:`Uncrossed`）
+
+    :attr:`Uncrossed.split_after` だけは**組み替え日の後の分割比**で、その日には
+    知りようがない。**4 の仕分けには入れず、別の欄で返す。**
 
     Args:
         values: :func:`dividend_yields` の返り値（(b) の後）。
@@ -2392,6 +2530,11 @@ def audit_splits(
         quantile = min(BIAS_QUANTILES - 1, below * BIAS_QUANTILES // len(ranked))
         counts[quantile] += 1
 
+    last_priced: dict[str, dt.date] = {}
+    for (symbol, _month), (day, _close) in prices.items():
+        if symbol not in last_priced or last_priced[symbol] < day:
+            last_priced[symbol] = day
+
     uncrossed: list[Uncrossed] = []
     for item in worst:
         changes = factor_changes.get(item.symbol, ())
@@ -2430,6 +2573,14 @@ def audit_splits(
                 within(published, ex_date)
                 for published, ex_date in extras.marked.get(item.symbol, ())
             )
+        # **後から分かる欄。** 組み替え日の時点では知りようがないので、上の
+        # 物差しとは別に持つ（`LATER_EVENT_DAYS`）。
+        split_after = 1.0
+        later_judged = False
+        if rebalance is not None:
+            ahead = rebalance[0] + dt.timedelta(days=LATER_EVENT_DAYS)
+            split_after = split_ratio_between(changes, rebalance[0], ahead)
+            later_judged = last_priced[item.symbol] >= ahead or _crossed(split_after)
         uncrossed.append(
             Uncrossed(
                 item=item,
@@ -2438,6 +2589,8 @@ def audit_splits(
                 at_disclosure=at_disclosure,
                 extra_paid=extra_paid,
                 extra_marked=extra_marked,
+                split_after=split_after,
+                later_judged=later_judged,
             )
         )
 
